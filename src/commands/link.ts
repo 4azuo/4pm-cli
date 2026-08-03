@@ -50,7 +50,7 @@ export async function runLink(
     console.log(`\n   ${hashcode1}\n`);
     console.log("2. The web will show a confirmation code — paste it here.");
     const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const hashcode2 = (await rl.question("confirmation code: ")).trim();
+    const hashcode2 = (await rl.question("Confirmation code: ")).trim();
     rl.close();
     result = await confirmPairing(serverUrl, hashcode2, collectFingerprint());
   }
