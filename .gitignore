@@ -1,0 +1,11 @@
+# Build output
+dist/
+dist-standalone/
+node_modules/
+
+# Local env
+.env
+
+# NOTE: vendor/ is COMMITTED (ADR-0194) — it is the trimmed @4pm/* subset that makes this
+# repo build standalone. In the monorepo it is regenerated from 22-packages by the
+# prebuild/pretypecheck hook; in the public repo the CI sync job refreshes it. Do not ignore it.

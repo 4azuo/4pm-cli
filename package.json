@@ -1,0 +1,35 @@
+{
+  "name": "@4pm/cli",
+  "version": "0.0.0",
+  "private": true,
+  "description": "4PM CLI — drives Claude/Codex CLIs on AI worker machines (Node + TypeScript)",
+  "license": "LicenseRef-4PM-Source-Available",
+  "type": "module",
+  "bin": {
+    "4pm": "./dist/index.js"
+  },
+  "scripts": {
+    "vendor": "node scripts/vendor-shared.mjs --write",
+    "predev": "node scripts/vendor-shared.mjs --write",
+    "dev": "tsx src/index.ts",
+    "prebuild": "node scripts/vendor-shared.mjs --write",
+    "build": "tsup",
+    "lint": "eslint .",
+    "pretypecheck": "node scripts/vendor-shared.mjs --write",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1095.0",
+    "ink": "^5.1.0",
+    "react": "^18.3.1",
+    "ws": "^8.21.1",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/ws": "^8.5.0",
+    "tsup": "^8.0.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.9.0"
+  }
+}

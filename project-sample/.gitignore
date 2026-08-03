@@ -1,0 +1,29 @@
+# Claude Code — personal config, do NOT commit
+.claude/settings.local.json
+
+# Placeholder secret values (project.secrets.json) — SENSITIVE, do NOT commit.
+# AI_PLACEHOLDER.md holds only keys + explanations, so it IS committed (not listed here).
+project.secrets.json
+
+# Autonomous workflow — files generated at runtime (lock, per-day logs, state + cron history)
+.claude/.autonomous.lock
+.claude/logs/
+.claude/.autonomous.histories.json
+.claude/cron.out
+
+# RAG — the sqlite-vec index + install state are generated on the worker (not committed)
+.claude/rag/index.db
+.claude/rag/.installing
+.claude/rag/.indexing
+.claude/rag/install.log
+.claude/rag/index.log
+
+# IDE
+.vs/
+
+# Test evidence regenerated each run
+tests/IT/evidence/*
+!tests/IT/evidence/README.md
+
+# Usage check generated each run
+.claude/skills/check-usage/output/*

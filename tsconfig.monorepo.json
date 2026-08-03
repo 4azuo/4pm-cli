@@ -1,0 +1,10 @@
+{
+  "//": "Monorepo-only config (ADR-0194): used by scripts/vendor-shared.mjs to trace @4pm/* symbols against the CANONICAL 22-packages source and regenerate vendor/. Absent-irrelevant in the standalone 4pm-cli repo, where the vendor script no-ops.",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "jsx": "react-jsx"
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist", "project-sample", "scripts", "vendor"]
+}

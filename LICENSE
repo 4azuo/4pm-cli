@@ -1,0 +1,30 @@
+4PM CLI — Source-Available License (All Rights Reserved)
+
+Copyright (c) 2026 4PM. All rights reserved.
+
+This source code is made publicly viewable for transparency and security auditing
+only. It is NOT open source and NOT free software.
+
+You ARE permitted to:
+  - View and read this source code.
+  - Audit it for security and correctness.
+
+You are NOT permitted, without a separate prior written agreement from the
+copyright holder, to:
+  - Use, run, or execute this source (other than the official distributions —
+    the `@4pm/cli` npm package and the official container images — under their
+    own terms);
+  - Copy, modify, adapt, translate, or create derivative works;
+  - Redistribute, sublicense, sell, or otherwise make the source available; or
+  - Remove or alter this notice.
+
+Contributions are accepted only under a separate Contributor License Agreement.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Licensing inquiries: hiroshi.kaze1994@gmail.com

@@ -1,0 +1,34 @@
+{
+  "//": "Standalone build config for the public 4azuo/4pm-cli repo (ADR-0194): @4pm/* resolve to the vendored trimmed subset (vendor/), self-contained so the repo builds with NO monorepo. In the monorepo, vendor/ is regenerated from the canonical 22-packages by the `prebuild`/`pretypecheck` hook (scripts/vendor-shared.mjs) before every build, so it never drifts.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "types": ["node"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "outDir": "dist",
+    "jsx": "react-jsx",
+
+    "baseUrl": ".",
+    "paths": {
+      "@4pm/constants": ["./vendor/@4pm/constants"],
+      "@4pm/dto": ["./vendor/@4pm/dto"],
+      "@4pm/validation": ["./vendor/@4pm/validation"],
+      "@4pm/utils": ["./vendor/@4pm/utils"],
+      "@4pm/ws": ["./vendor/@4pm/ws"]
+    }
+  },
+  "include": ["src", "vendor"],
+  "exclude": ["node_modules", "dist", "project-sample", "scripts"]
+}

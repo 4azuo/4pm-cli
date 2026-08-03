@@ -1,0 +1,8 @@
+{
+  "folders": {
+    "docs": ".",
+    "tests": "tests",
+    "reports": "reports",
+    "src": "src"
+  }
+}
