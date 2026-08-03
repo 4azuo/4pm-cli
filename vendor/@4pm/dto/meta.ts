@@ -19,3 +19,10 @@ export interface CliVersionResponse {
   minSupported: string;
   source: CliDownloadSource;
 }
+
+/** Data 200 GET /meta/config (meta-0002). */
+export interface MetaConfigResponse {
+  /** Public REST origin the cli pairs against — the value for `--server` /
+   *  `FOURPM_SERVER` (dev: http://localhost:42001; prod: the deployment's API origin). */
+  serverUrl: string;
+}
