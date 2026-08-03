@@ -46,11 +46,11 @@ export async function runLink(
   } else {
     const hashcode1 = randomBytes(32).toString("hex");
     console.log(`── 4PM cli pairing (profile: ${explicitProfile ?? "default"}) ─────────────`);
-    console.log("1. Open the 4PM web → /machines, enter hashcode (1):");
+    console.log("1. Open the 4PM web → /machines, enter the pairing code:");
     console.log(`\n   ${hashcode1}\n`);
-    console.log("2. The web will show hashcode (2) — paste it here.");
+    console.log("2. The web will show a confirmation code — paste it here.");
     const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const hashcode2 = (await rl.question("hashcode (2): ")).trim();
+    const hashcode2 = (await rl.question("confirmation code: ")).trim();
     rl.close();
     result = await confirmPairing(serverUrl, hashcode2, collectFingerprint());
   }
@@ -89,7 +89,7 @@ export async function runLink(
   if (scope === "orchestrator") {
     console.log(
       "  (This is the orchestrator/admin link. To pair a worker instead, pick the " +
-        "MACHINE user in the web pairing wizard before entering hashcode (1).)",
+        "MACHINE user in the web pairing wizard before entering the pairing code.)",
     );
   }
 }

@@ -145,7 +145,7 @@ async function main(): Promise<void> {
           "4pm — the 4PM worker-machine CLI",
           "",
           "Usage:",
-          "  4pm link      Pair with the server (hashcode 1→2→3)",
+          "  4pm link      Pair with the server (pairing → confirmation code)",
           "  4pm start     Connect WS, receive commands from the server",
           "  4pm attach    Open the TUI against a running headless daemon (ADR-0192)",
           "  4pm unlink    Delete a link (pick a profile if several)",
