@@ -7,7 +7,6 @@
  */
 import {
   existsSync,
-  mkdirSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -15,6 +14,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { ensureDir } from "../common/io/ensure-dir";
 import type { AiCredential, AiProfile } from "../utils/ai-cli";
 
 /** Legacy default profile name (pre-ADR-0047 fallback). */
@@ -41,7 +41,7 @@ export function defaultProfileName(): string {
 
 /** Point the default profile at a MACHINE userId (written on `4pm link` sans --profile). */
 export function writeDefaultProfile(userId: string): void {
-  mkdirSync(join(homedir(), ".4pm"), { recursive: true });
+  ensureDir(join(homedir(), ".4pm"));
   writeFileSync(defaultPointerPath(), userId, "utf8");
 }
 
@@ -164,7 +164,7 @@ export function listProfiles(): ProfileEntry[] {
  */
 export function profileDir(name: string): string {
   const dir = join(homedir(), ".4pm", "profiles", name);
-  mkdirSync(dir, { recursive: true });
+  ensureDir(dir);
   return dir;
 }
 
