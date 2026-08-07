@@ -157,6 +157,17 @@ export function isUnifiedConfig(config: AiCliConfig): boolean {
 }
 
 /**
+ * The provider the operator pinned via `aiCli`. When it names a known provider the unified run
+ * (ADR-0182) is **scoped** to that provider's credentials (ADR-0197) — failover stays within the
+ * active CLI; a blank/"—"/unknown value ⇒ null = **mixed** (fail over across the whole list).
+ * Legacy per-`aiCli` configs already run one provider, so this only affects the unified plan.
+ */
+export function activeProvider(config: AiCliConfig): AiProvider | null {
+  const v = config.aiCli?.trim();
+  return v && (AI_PROVIDERS as readonly string[]).includes(v) ? (v as AiProvider) : null;
+}
+
+/**
  * The effective claude profile list for the OAuth-only paths (usage snapshot, %session rotation,
  * support answer): the unified list's claude entries when it drives the run, else the legacy
  * `claudeHome`.
@@ -323,10 +334,29 @@ export function planAiRun(prompt: string, config: AiCliConfig, hint: AiWorkingHi
     : planLegacyRun(prompt, config, hint.dir ?? null);
 }
 
-/** The unified mixed-list plan (ADR-0182): one cross-provider, ordered failover chain. */
+/**
+ * The unified mixed-list plan (ADR-0182): an ordered failover chain over `aiProfiles`. By default
+ * it spans every provider (mixed), but a specific `aiCli` **scopes** the chain to that provider's
+ * credentials — failover stays within the active CLI (ADR-0197); only "—" (blank) fails over
+ * across providers.
+ */
 function planUnifiedRun(prompt: string, config: AiCliConfig, workingCredential: string | null): AiPlan {
   const baseEnv = config.aiEnv ?? {};
-  const resolved = config.aiProfiles!.filter(isUsableCredential).map((cred) => {
+  // Scope to the pinned provider unless "—" (mixed) is selected (ADR-0197).
+  const active = activeProvider(config);
+  const usable = config.aiProfiles!.filter(isUsableCredential);
+  const scoped = active ? usable.filter((c) => c.provider === active) : usable;
+  // Pinned provider with no usable credential ⇒ a single default attempt on its own default env
+  // (mirrors the legacy no-profile fallback in planLegacyRun — never silently spills to another CLI).
+  if (active && scoped.length === 0) {
+    return {
+      cmd: active,
+      attempts: [
+        { cmd: active, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, active, prompt), env: { ...baseEnv } },
+      ],
+    };
+  }
+  const resolved = scoped.map((cred) => {
     const cmd = cred.provider;
     const dir = resolveHomePath(cred.profile);
     return { cred, cmd, dir, key: credentialKey(cmd, dir), envVar: profileEnvVar(cmd) };

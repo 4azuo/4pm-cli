@@ -47,7 +47,18 @@ export interface OrgSecuritySettings {
 export interface OrgGeneralSettings {
   /** IANA timezone name (e.g. "UTC", "Asia/Ho_Chi_Minh") — the org's default. */
   timezone: string;
+  /**
+   * Default rows per page for the org's paginated list views (ADR-0198). Drives the `size`
+   * query the web sends; clamped to {@link PAGE_SIZE_BOUNDS}.
+   */
+  pageSize: number;
 }
+
+/** Bounds (rows) for the list page size (ADR-0198) — values outside clamp to the default. */
+export const PAGE_SIZE_BOUNDS = { min: 5, max: 100 } as const;
+
+/** Default rows per page when unset (ADR-0198). */
+export const DEFAULT_PAGE_SIZE = 10;
 
 /** Mail provider identifiers (ADR-0007). */
 export type OrgMailProvider = "console" | "smtp" | "ses" | "resend";
@@ -144,7 +155,7 @@ export interface OrgSettings {
 /** Defaults applied when a settings key is absent. */
 export const DEFAULT_ORG_SETTINGS: OrgSettings = {
   security: { allowSubAccountWithoutEmail: false, ipAllowlist: [] },
-  general: { timezone: "UTC" },
+  general: { timezone: "UTC", pageSize: DEFAULT_PAGE_SIZE },
   mail: {
     provider: "console",
     from: "",
@@ -213,6 +224,12 @@ export function readOrgSettings(settings: Record<string, unknown> | null | undef
         typeof general.timezone === "string" && general.timezone
           ? general.timezone
           : d.general.timezone,
+      pageSize: readTtl(
+        general.pageSize,
+        d.general.pageSize,
+        PAGE_SIZE_BOUNDS.min,
+        PAGE_SIZE_BOUNDS.max,
+      ),
     },
     mail: {
       provider: (["console", "smtp", "ses", "resend"] as const).includes(

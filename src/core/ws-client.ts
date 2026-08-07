@@ -1344,8 +1344,10 @@ export class WsClient {
           this.bus.push({ source: origin, kind: "out", text: resultBuf });
         }
       },
-      onAttemptStart: (label, index, total) => {
-        const text = `→ trying ${plan.cmd} profile "${label}" (${index + 1}/${total})…`;
+      onAttemptStart: (label, index, total, cmd) => {
+        // Use the attempt's OWN provider command (ADR-0197): a mixed plan must not label a codex
+        // attempt as "claude". `plan.cmd` is only the first attempt's representative command.
+        const text = `→ trying ${cmd} profile "${label}" (${index + 1}/${total})…`;
         this.bus.push({ source: origin, kind: "log", text });
         // Mirror the status line to the web console (memo #5) as a `log` frame so it shows
         // there too, without polluting the persisted transcript or the result-collapse detector.

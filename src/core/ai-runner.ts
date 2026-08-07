@@ -34,8 +34,11 @@ export function isSessionLimit(text: string): boolean {
 export interface AiRunHandlers {
   /** One batched output chunk (verbatim) — forward to transcript + server. */
   onChunk: (text: string) => void;
-  /** An attempt is starting (only meaningful when there are multiple profiles). */
-  onAttemptStart: (label: string, index: number, total: number) => void;
+  /**
+   * An attempt is starting (only meaningful when there are multiple profiles). `cmd` is the
+   * attempt's own provider command so a mixed plan logs the right CLI per attempt (ADR-0197).
+   */
+  onAttemptStart: (label: string, index: number, total: number, cmd: string) => void;
   /** An attempt failed (auth or session-limit) — will try the next profile. */
   onAttemptFail: (label: string, reason: AttemptFailReason) => void;
 }
@@ -84,7 +87,7 @@ export async function runAiFailover(
   let finalExit = -1;
   for (let i = 0; i < total; i++) {
     const attempt = plan.attempts[i]!;
-    if (total > 1) handlers.onAttemptStart(attempt.label, i, total);
+    if (total > 1) handlers.onAttemptStart(attempt.label, i, total, attempt.cmd);
     // Parse claude stream-json / codex `exec --json` → readable text for the transcript +
     // real usage; any non-event line passes through verbatim (ADR-0072). Per-attempt, since a
     // mixed plan can switch provider between attempts (ADR-0182). `captured` = display text
