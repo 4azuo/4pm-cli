@@ -21,6 +21,7 @@ import { ensureProfileConfig, readProfileConfig } from "../config/profile";
 import { logger, type LogLevel } from "../common/logger/logger";
 import { SessionBus } from "../core/session-bus";
 import { startControlServer } from "../core/control-server";
+import { startIdleAutoClear } from "../core/idle-auto-clear";
 import { getWorkingProfile } from "../core/ai-profile-state";
 import { profileDisplayLabel, profileLabels } from "../utils/ai-cli";
 import { attachConsoleSink } from "../ui/console-sink";
@@ -108,6 +109,8 @@ export async function runStart(
   const release = (): void => releaseInstanceLock(profileDir);
   // Control channel (ADR-0192 §2) — declared here so the finally can stop it.
   let stopControl: (() => void) | null = null;
+  // Headless idle transcript auto-clear (ADR-0150) — declared here so the finally can stop it.
+  let stopIdleClear: (() => void) | null = null;
   process.once("exit", release);
   // Ensure the "exit" handler runs on Ctrl+C / termination so the lock is released.
   process.once("SIGINT", () => process.exit(0));
@@ -181,10 +184,14 @@ export async function runStart(
       await tui;
     } else {
       attachConsoleSink(bus);
+      // Headless has no Ink TUI, so drive the idle transcript auto-clear here (the TUI runs its
+      // own in ui/app.tsx) — otherwise the config knob is a no-op in a container (ADR-0150).
+      stopIdleClear = startIdleAutoClear(bus, config.autoClearIdleMinutes ?? 10);
       bus.log(`Connecting to ${credential.serverUrl} (profile: ${profileName})…`);
       await runResilient();
     }
   } finally {
+    stopIdleClear?.();
     stopControl?.();
     release();
   }

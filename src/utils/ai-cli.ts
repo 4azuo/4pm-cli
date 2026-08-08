@@ -79,7 +79,7 @@ function isUsableProfile(p: AiProfile): boolean {
 }
 
 /** A credential is usable when it is a usable profile AND names a known provider (ADR-0182). */
-function isUsableCredential(c: AiCredential): boolean {
+export function isUsableCredential(c: AiCredential): boolean {
   return isUsableProfile(c) && AI_PROVIDERS.includes(c.provider);
 }
 
@@ -188,7 +188,7 @@ export function claudeCredentialKeys(config: AiCliConfig): string[] {
  * Resolve a config path: absolute stays as-is; "~/x" and a bare name (e.g.
  * ".claude-1") resolve under $HOME.
  */
-function resolveHomePath(value: string): string {
+export function resolveHomePath(value: string): string {
   if (value.startsWith("~")) return join(homedir(), value.slice(1).replace(/^[/\\]/, ""));
   if (isAbsolute(value)) return value;
   return join(homedir(), value);
@@ -257,7 +257,7 @@ export function profileDisplayLabel(dir: string): string {
 }
 
 /** The env var a given AI CLI reads to pick its profile directory. */
-function profileEnvVar(cmd: string): string | null {
+export function profileEnvVar(cmd: string): string | null {
   if (cmd.includes("claude")) return "CLAUDE_CONFIG_DIR";
   if (cmd.includes("codex")) return "CODEX_HOME";
   return null;

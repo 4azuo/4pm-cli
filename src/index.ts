@@ -9,6 +9,7 @@
 import { runLink } from "./commands/link";
 import { runStart } from "./commands/start";
 import { runAttach } from "./commands/attach";
+import { runAiLogin } from "./commands/ai-login";
 import { runUnlink } from "./commands/unlink";
 import { runUpdate } from "./commands/update";
 import { runVersion } from "./commands/version";
@@ -117,6 +118,16 @@ async function main(): Promise<void> {
       await runAttach(profileDir(name), name);
       break;
     }
+    case "ai-login": {
+      // Authenticate a profile's AI-CLI credential dir in place (ADR-0199, in-container posture).
+      const name = await pickLinkedProfile(explicitProfile, "ai-login");
+      if (!name) {
+        process.exitCode = 1;
+        break;
+      }
+      await runAiLogin(profileDir(name), name, flagValue(rest, "ai") ?? null);
+      break;
+    }
     case "unlink": {
       const name = await pickLinkedProfile(explicitProfile, "unlink");
       if (!name) {
@@ -148,6 +159,7 @@ async function main(): Promise<void> {
           "  4pm link      Pair with the server (pairing → confirmation code)",
           "  4pm start     Connect WS, receive commands from the server",
           "  4pm attach    Open the TUI against a running headless daemon (ADR-0192)",
+          "  4pm ai-login  Log into a profile's AI CLI (claude/codex) in place (ADR-0199)",
           "  4pm unlink    Delete a link (pick a profile if several)",
           "  4pm version   Show the installed version (+ latest from the server)",
           "  4pm update    Update to the latest version now",

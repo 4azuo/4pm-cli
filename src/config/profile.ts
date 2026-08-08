@@ -96,6 +96,16 @@ export interface ProfileConfig {
   /** Extra env passed when spawning the AI CLI (overrides the mapped ones above). */
   aiEnv?: Record<string, string>;
   /**
+   * AI-credential source posture (ADR-0199) — where each profile's provider credentials come from
+   * relative to the container sandbox. Advisory/recipe-driving only (it does NOT change dispatch or
+   * failover — ADR-0182/0197): it drives the web CLI-guide `docker run` recipe + the Form's security
+   * banner, and `4pm ai-login` authenticates a profile's config dir in place.
+   * - `in-container` (default): credentials authenticated inside the container, on the `.4pm` volume.
+   * - `host-mounted`: the host's provider config dir is bind-mounted (read-only) into the container.
+   * - `host-cli`: the cli runs directly on the host (no container sandbox).
+   */
+  aiCredentialMode?: "in-container" | "host-mounted" | "host-cli";
+  /**
    * Auto-clear the TUI transcript after this many minutes with no local (operator) input —
    * bounds an idle session's on-screen buffer. Never clears mid-response. 0 = off; default 10.
    */
@@ -189,6 +199,8 @@ export function defaultProfileConfig(): ProfileConfig {
       { provider: "codex", profile: ".codex", args: [], model: "" },
     ],
     aiFailoverMode: "remember",
+    // Default to the fully-isolated posture (ADR-0199) — auth lives inside the sandbox.
+    aiCredentialMode: "in-container",
     autoUpdate: true,
     commandHistoryUploadMinutes: 10,
     autoClearIdleMinutes: 10,
