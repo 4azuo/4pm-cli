@@ -17,6 +17,11 @@ export interface UserResponse {
   id: string;
   orgId: string;
   username: string;
+  /**
+   * Friendly display name shown in place of the immutable `username` where the account is
+   * presented to humans (ADR-0200) — use `aliasName || username`. Null = show the username.
+   */
+  aliasName: string | null;
   /** null = internal account created without email (ADR-0039). */
   email: string | null;
   phone: string | null;
@@ -34,6 +39,20 @@ export interface UserResponse {
   emailVerifiedAt: string | null;
   /** URL to the avatar image (`/users/:id/avatar`); null when not uploaded (ADR-0028). */
   avatarUrl: string | null;
+  /**
+   * The org's idle privacy-lock timeout in minutes (ADR-0202) — an org policy surfaced on the
+   * self `GET /users/me` so every member can apply it (org.read is ADMIN-only). `0` = off.
+   * Only populated on the `me()` response; omitted elsewhere.
+   */
+  idleLockMinutes?: number;
+  /**
+   * Whether **this session** is currently idle-locked server-side (ADR-0204). Fresh (not cached) on
+   * the `me()` response so a reload while locked re-shows the lock overlay. Only on `me()`.
+   */
+  sessionLocked?: boolean;
+  /** Whether the user has set an unlock PIN (ADR-0205) — the lock overlay offers PIN vs password.
+   * Only on the self `me()` response. */
+  hasPin?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -53,10 +72,35 @@ export interface UserRelationSummary {
   name: string;
 }
 
+/**
+ * A team a user belongs to, enriched for the user Info page (user-0004): the team's avatar,
+ * its lead's display name (null when none) and whether THIS user is the lead.
+ */
+export interface UserTeamSummary extends UserRelationSummary {
+  /** Team avatar URL (`/teams/:id/avatar`), null when none uploaded (ADR-0043). */
+  avatarUrl: string | null;
+  /** Team lead's display name, or null when no lead is set. */
+  leadName: string | null;
+  /** Whether this user is (one of) the team's lead(s). */
+  isLead: boolean;
+}
+
+/**
+ * A project a user can reach (user-0004): either assigned **directly** (`project_users`) or
+ * **via a team** the user belongs to (`project_teams`), or both. `viaTeams` lists the team
+ * names granting access when the reach is team-derived (empty when only direct).
+ */
+export interface UserProjectSummary extends UserRelationSummary {
+  /** True when the user is directly assigned to the project (`project_users`). */
+  direct: boolean;
+  /** Team names that grant access to this project (empty when only direct). */
+  viaTeams: string[];
+}
+
 /** Data GET /users/:id — profile + teams + projects. */
 export interface UserDetailResponse extends UserResponse {
-  teams: UserRelationSummary[];
-  projects: UserRelationSummary[];
+  teams: UserTeamSummary[];
+  projects: UserProjectSummary[];
   /**
    * Last activity time — the most recent `UserRecentProject.occurredAt` (ADR-0029);
    * null when the user has never interacted with a project.
@@ -174,6 +218,8 @@ export const updateUserRequestSchema = z.object({
   phone: phoneSchema.nullable().optional(),
   roles: rolesSchema.optional(),
   ipAllowlist: ipAllowlistSchema.optional(),
+  // Friendly display name (ADR-0200) — shown instead of the immutable username; blank ⇒ cleared.
+  aliasName: z.string().trim().max(60).nullable().optional(),
   // Usage-alert rules (ADR-0110) — manager-only, like the IP allowlist.
   alerts: userAlertsSchema.optional(),
   // cli data retention days (ADR-0115) — manager-only; capped at the plan's retentionDays.
@@ -233,4 +279,59 @@ export interface ContactChangePending {
 /** Response of GET /users/me/contact-change — the pending request or null. */
 export interface ContactChangeStatusResponse {
   pending: ContactChangePending | null;
+}
+
+/**
+ * Body POST /users/me/activity/heartbeat (user-0020, ADR-0201) — the keepalive tick reports
+ * the caller's current presence. `projectId` = the project page the user is on (omitted on
+ * non-project pages). Doubles as the session keepalive (ADR-0098).
+ */
+export const activityHeartbeatSchema = z.object({
+  projectId: z.string().uuid().optional(),
+});
+export type ActivityHeartbeatRequest = z.infer<typeof activityHeartbeatSchema>;
+
+/** Active time a user accrued on one project (ADR-0201) — `activeMs` = summed session duration. */
+export interface ProjectActivity {
+  projectId: string;
+  name: string;
+  activeMs: number;
+}
+
+/**
+ * Data GET /users/:id/stats (user-0021, ADR-0201) — locally-attributable activity statistics for
+ * the User Info page. `totalActiveMs`/`perProject` come from `user_sessions`; the rest from the org
+ * DB. Cross-service per-user counts (community posts, integration issues/tasks) are **not** included
+ * here — they require per-user endpoints on those separate apps (a follow-up per ADR-0201).
+ */
+export interface UserStatsResponse {
+  /** Account creation time (ISO). */
+  createdAt: string;
+  /** Total active time across all sessions (ms). */
+  totalActiveMs: number;
+  /** Active time per project, most-active first. */
+  perProject: ProjectActivity[];
+  /** Teams the user belongs to. */
+  teamCount: number;
+  /** Distinct projects reachable (direct ∪ via team). */
+  projectCount: number;
+  /** Commands attributed to the user (`command_history.userId`). */
+  commandCount: number;
+  /** AI tokens attributed to the user (Σ `command_history.tokens`). */
+  tokenCount: number;
+}
+
+/**
+ * Data GET /teams/:id/stats (team-0010, ADR-0201) — the same activity stats aggregated over the
+ * team's members, plus the team's own `createdAt` and `memberCount`.
+ */
+export interface TeamStatsResponse {
+  createdAt: string;
+  memberCount: number;
+  totalActiveMs: number;
+  perProject: ProjectActivity[];
+  projectCount: number;
+  commandCount: number;
+  /** AI tokens attributed to the team's members (Σ `command_history.tokens`). */
+  tokenCount: number;
 }

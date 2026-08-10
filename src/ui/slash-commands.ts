@@ -40,11 +40,7 @@ const CONFIG_KEYS = [
   "commandHistoryUploadMinutes",
   "autoUpdate",
   "aiEnv",
-  "aiCredentialMode",
 ] as const satisfies readonly (keyof ProfileConfig)[];
-
-/** Valid values for the AI-credential source posture (ADR-0199). */
-const AI_CREDENTIAL_MODES = ["in-container", "host-mounted", "host-cli"] as const;
 
 /** Context handed to a slash command's run(). */
 export interface SlashContext {
@@ -120,12 +116,6 @@ function parseConfigAssignment(
       } catch {
         return { error: `aiEnv must be JSON, e.g. {"KEY":"val"}.` };
       }
-    case "aiCredentialMode":
-      // AI-credential source posture (ADR-0199) — advisory/recipe-driving, not a dispatch change.
-      if (!(AI_CREDENTIAL_MODES as readonly string[]).includes(value)) {
-        return { error: `Use ${AI_CREDENTIAL_MODES.join("|")}, not "${value}".` };
-      }
-      return { patch: { aiCredentialMode: value as ProfileConfig["aiCredentialMode"] } };
     default:
       return { error: `Unknown key "${key}". Allowed: ${CONFIG_KEYS.join(", ")}.` };
   }

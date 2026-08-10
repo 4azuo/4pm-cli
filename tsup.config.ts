@@ -24,12 +24,18 @@ export default defineConfig({
   // the "single ESM output needs no extra assets" intent below and removing that
   // whole failure class (release packaging copies the full dist either way).
   splitting: false,
-  // Bundle workspace packages (main points at src/*.ts) and `ws` (only runtime
-  // dep) so the output needs nothing installed on the worker machine.
+  // Bundle workspace packages (main points at src/*.ts) plus the runtime deps `ws`
+  // and `zod` so the output needs nothing installed on the worker machine. tsup
+  // externalizes package.json `dependencies` by default, so every runtime dep that
+  // must ship inside the single file has to be listed here — otherwise it stays a
+  // bare `import` and the npm-global/self-download install throws ERR_MODULE_NOT_FOUND
+  // at load (`zod` is imported at top level, so it crashes immediately).
   // Bundle the TUI stack (ink/react + their deps) too so the self-download tarball
   // stays self-contained (ADR-0015/0057). yoga-layout (ink's layout engine) inlines
   // its wasm as base64, so the single ESM output needs no extra assets.
-  noExternal: [/^@4pm\//, "ws", "ink", "react", "react/jsx-runtime"],
+  // NOTE: `@aws-sdk/client-s3` is intentionally left external — it is loaded via a
+  // lazy `await import(...)` only on the S3 code path (see core), not at load time.
+  noExternal: [/^@4pm\//, "ws", "zod", "ink", "react", "react/jsx-runtime"],
   // ink's reconciler only `await import('./devtools.js')` when process.env['DEV'] ===
   // 'true' (ADR-0057), and that module top-level `import`s the optional `react-devtools-core`
   // we don't install. With splitting off esbuild inlines the dynamic-import target and would

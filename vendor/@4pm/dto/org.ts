@@ -52,6 +52,12 @@ export interface OrgGeneralSettings {
    * query the web sends; clamped to {@link PAGE_SIZE_BOUNDS}.
    */
   pageSize: number;
+  /**
+   * Idle privacy-lock timeout in minutes for the whole org (ADR-0202). After this much
+   * inactivity the web covers the app with a backdrop until the user re-enters their password.
+   * `0` disables it; other values clamp to {@link IDLE_LOCK_BOUNDS}.
+   */
+  idleLockMinutes: number;
 }
 
 /** Bounds (rows) for the list page size (ADR-0198) — values outside clamp to the default. */
@@ -59,6 +65,12 @@ export const PAGE_SIZE_BOUNDS = { min: 5, max: 100 } as const;
 
 /** Default rows per page when unset (ADR-0198). */
 export const DEFAULT_PAGE_SIZE = 10;
+
+/** Bounds (minutes) for the idle privacy-lock (ADR-0202); `0` (off) is allowed separately. */
+export const IDLE_LOCK_BOUNDS = { min: 1, max: 480 } as const;
+
+/** Default idle privacy-lock timeout in minutes when unset (ADR-0202). */
+export const DEFAULT_IDLE_LOCK_MINUTES = 30;
 
 /** Mail provider identifiers (ADR-0007). */
 export type OrgMailProvider = "console" | "smtp" | "ses" | "resend";
@@ -155,7 +167,7 @@ export interface OrgSettings {
 /** Defaults applied when a settings key is absent. */
 export const DEFAULT_ORG_SETTINGS: OrgSettings = {
   security: { allowSubAccountWithoutEmail: false, ipAllowlist: [] },
-  general: { timezone: "UTC", pageSize: DEFAULT_PAGE_SIZE },
+  general: { timezone: "UTC", pageSize: DEFAULT_PAGE_SIZE, idleLockMinutes: DEFAULT_IDLE_LOCK_MINUTES },
   mail: {
     provider: "console",
     from: "",
@@ -230,6 +242,16 @@ export function readOrgSettings(settings: Record<string, unknown> | null | undef
         PAGE_SIZE_BOUNDS.min,
         PAGE_SIZE_BOUNDS.max,
       ),
+      // 0 = off (allowed); any other value clamps to the idle-lock bounds (ADR-0202).
+      idleLockMinutes:
+        general.idleLockMinutes === 0
+          ? 0
+          : readTtl(
+              general.idleLockMinutes,
+              d.general.idleLockMinutes,
+              IDLE_LOCK_BOUNDS.min,
+              IDLE_LOCK_BOUNDS.max,
+            ),
     },
     mail: {
       provider: (["console", "smtp", "ses", "resend"] as const).includes(
