@@ -185,6 +185,10 @@ export interface MachineLinkResponse {
   connected: boolean;
   /** The physical machine the cli runs on — null for orchestrator/not yet connected. */
   workerId: string | null;
+  /** Running cli version the worker last reported (ADR-0015); null when unknown. */
+  cliVersion?: string | null;
+  /** True when the running cli is older than the configured latest release (ADR-0015). */
+  cliOutdated?: boolean;
   createdAt: string;
 }
 
@@ -252,6 +256,12 @@ export interface MachineUsageStatus {
   busy: boolean;
   /** The physic project it serves (label "current"), or null when idle. */
   serving: { projectId: string; name: string } | null;
+  /** Running cli version the worker last reported (machine.status, ADR-0015); null if unknown. */
+  cliVersion?: string | null;
+  /** True when the running cli is older than the configured latest release (ADR-0015). */
+  cliOutdated?: boolean;
+  /** The latest cli release version (for the "please update" hint); null if not resolved. */
+  latestCliVersion?: string | null;
 }
 
 /** Per-project usage of one machine-link (history — ADR-0072). */
