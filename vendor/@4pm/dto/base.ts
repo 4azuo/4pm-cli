@@ -30,6 +30,23 @@ export interface BaseResponse<T = unknown> {
   total?: number;
 }
 
+/**
+ * Whether a value is already a BaseResponse envelope. The single source of truth for
+ * envelope detection — reused by the server's ResponseInterceptor (skip double-wrapping)
+ * and by S2S clients that unwrap the envelope's `data`. Checked by the full envelope
+ * signature (`success` + `errorCode` + `data`), never by the presence of `data` alone, so
+ * a raw paging payload like `{ data, total }` is not mistaken for an envelope.
+ */
+export function isBaseResponse(value: unknown): value is BaseResponse {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "success" in value &&
+    "errorCode" in value &&
+    "data" in value
+  );
+}
+
 /** Build a successful BaseResponse (optional message). */
 export function successResponse<T>(
   data: T | null,

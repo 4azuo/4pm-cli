@@ -144,6 +144,62 @@ export interface CommandOutputPayload {
   log?: boolean;
 }
 
+/** Status of one worker tool on the machine (worker tools, ADR-0206). */
+export interface ToolStatus {
+  /** Catalog id or npm package name. */
+  id: string;
+  /** Human label (catalog entry's label; the package name for an extra global). */
+  label: string;
+  /** Category badge (`runtime`/`ai-cli`/`vcs`; `runtime` for an extra global). */
+  category: "runtime" | "ai-cli" | "vcs";
+  /** Whether the tool resolves on the worker's PATH. */
+  installed: boolean;
+  /** The detected `--version` output (first line), or null when not installed. */
+  version: string | null;
+  /** False for a detect-only prerequisite (no install/uninstall button). */
+  installable: boolean;
+}
+
+/** tools.list request/reply (machine-0050, ADR-0206) — probe the catalog + extra globals. */
+export interface ToolsListRequest {
+  _?: never;
+}
+export interface ToolsListReply {
+  /** One row per `WORKER_TOOL_CATALOG` entry. */
+  catalog: ToolStatus[];
+  /** Extra globally installed npm packages found on the worker (operator-added). */
+  extras: ToolStatus[];
+}
+
+/** tools.install / tools.uninstall request (machine-0051/0052, ADR-0206) — start a streamed op. */
+export interface ToolsMutateRequest {
+  /** Correlates the streamed `tools.progress`/`tools.done` frames back to this op. */
+  opId: string;
+  /** Catalog id or npm package name. */
+  name: string;
+  /** Package manager to run the global install/uninstall with. */
+  manager: "npm" | "pnpm";
+}
+/** Immediate ack: whether the cli accepted the op (else `error`, e.g. bad name / prerequisite). */
+export interface ToolsMutateReply {
+  started: boolean;
+  error?: string;
+}
+
+/** cli → server push: one stdout/stderr line of a running install/uninstall (ADR-0206). */
+export interface ToolsProgressPayload {
+  opId: string;
+  line: string;
+}
+/** cli → server push: the terminal frame of an install/uninstall op (ADR-0206). */
+export interface ToolsDonePayload {
+  opId: string;
+  /** True when the manager exited 0. */
+  ok: boolean;
+  exitCode: number;
+  error?: string;
+}
+
 /** config.read request/reply (machine-0025, ADR-0141) — the paired profile's config.json. */
 export interface ConfigReadRequest {
   /** No parameters — the cli reads its own paired profile's config.json. */

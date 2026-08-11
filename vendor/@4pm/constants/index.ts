@@ -7,4 +7,5 @@ export * from "./machine";
 export * from "./project";
 export * from "./quota";
 export * from "./roles";
+export * from "./worker-tools";
 export * from "./ws";

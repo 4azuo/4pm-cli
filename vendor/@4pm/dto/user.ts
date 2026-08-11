@@ -2,7 +2,7 @@
  * DTO for the user domain (21-api/user-0001…0006).
  */
 import { z } from "zod";
-import { ALL_ROLES, isValidRoleSet, type Role, type UserStatus } from "@4pm/constants";
+import { ALL_ROLES, isValidRoleSet, type ProjectStatus, type Role, type UserStatus } from "@4pm/constants";
 import {
   emailSchema,
   ipAllowlistSchema,
@@ -95,6 +95,16 @@ export interface UserProjectSummary extends UserRelationSummary {
   direct: boolean;
   /** Team names that grant access to this project (empty when only direct). */
   viaTeams: string[];
+  /** Project lifecycle status (ADR-0092) — rendered as a status badge on the row. */
+  status: ProjectStatus;
+  /** Human members on the project (`project_users`, excluding MACHINE accounts — ADR-0041). */
+  memberCount: number;
+  /** Teams attached to the project (`project_teams`). */
+  teamCount: number;
+  /** Project manager's display name (ADR-0038), or null when none is set. */
+  pmName: string | null;
+  /** Project creation time (ISO). */
+  createdAt: string;
 }
 
 /** Data GET /users/:id — profile + teams + projects. */

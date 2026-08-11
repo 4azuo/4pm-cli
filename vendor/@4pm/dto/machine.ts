@@ -385,6 +385,55 @@ export interface ConfigWriteResponse {
   error?: string;
 }
 
+/** Status of one worker tool on the machine (Tools tab, machine-0050, ADR-0206). */
+export interface WorkerToolStatus {
+  /** Catalog id or npm package name. */
+  id: string;
+  label: string;
+  category: "runtime" | "ai-cli" | "vcs";
+  installed: boolean;
+  version: string | null;
+  /** False for a detect-only prerequisite (no install/uninstall button). */
+  installable: boolean;
+}
+
+/** Data GET /machines/:id/tools — the default catalog + extra global packages (machine-0050). */
+export interface WorkerToolsResponse {
+  catalog: WorkerToolStatus[];
+  extras: WorkerToolStatus[];
+}
+
+/** Body POST /machines/:id/tools/install — install a tool (machine-0051, ADR-0206). */
+export const workerToolInstallSchema = z.object({
+  /** Catalog id or npm package name (validated npm-name shape on the cli). */
+  name: z.string().trim().min(1).max(214),
+  /** Package manager to run the global install with. */
+  manager: z.enum(["npm", "pnpm"]),
+});
+export type WorkerToolInstallRequest = z.infer<typeof workerToolInstallSchema>;
+
+/** Data POST install / DELETE uninstall — the streamed op id to subscribe to (machine-0051/0052). */
+export interface WorkerToolOpResponse {
+  /** Correlates the SSE progress stream (machine-0053). */
+  opId: string;
+}
+
+/** One SSE frame of a worker-tools install/uninstall op (machine-0053, ADR-0206). */
+export type WorkerToolProgressEvent =
+  | { type: "line"; line: string }
+  | { type: "done"; ok: boolean; exitCode: number; error?: string };
+
+/**
+ * Buffered result of a worker-tools op (admin-0061/0062, ADR-0206) — the admin S2S chain runs the
+ * op server-side and returns the collected output at once (no SSE proxy through admin-bff).
+ */
+export interface WorkerToolOpResult {
+  ok: boolean;
+  exitCode: number;
+  lines: string[];
+  error?: string;
+}
+
 /** Body PUT /machines/:id/config — the new config.json as text (validated JSON on the cli). */
 export const configWriteRequestSchema = z.object({
   config: z.string().max(256 * 1024),

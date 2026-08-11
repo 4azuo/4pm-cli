@@ -45,6 +45,11 @@ import {
   type ConfigReadReply,
   type ConfigWriteRequest,
   type ConfigWriteReply,
+  type ToolsListReply,
+  type ToolsMutateRequest,
+  type ToolsMutateReply,
+  type ToolsProgressPayload,
+  type ToolsDonePayload,
   type GitDiffRequest,
   type GitEnvRequest,
   type GitSshKeyRequest,
@@ -132,6 +137,7 @@ import { setCommitAuthor } from "./git-commit-identity";
 import { addProject, scaffoldProject } from "./scaffold";
 import { readProfileConfig, writeProfileConfig } from "../config/profile";
 import { applyConfigText, readConfigText } from "./config-sync";
+import { detectWorkerTools, runWorkerToolOp } from "./worker-tools";
 import { logger, readRecentLogLines, readLogUpload } from "../common/logger/logger";
 import { CLI_VERSION } from "../version";
 
@@ -1059,6 +1065,31 @@ export class WsClient {
           (payload as unknown as ConfigWriteRequest).config,
         );
         this.send(WsChannels.CONFIG_WRITE, res satisfies ConfigWriteReply, message.id);
+        break;
+      }
+      case WsChannels.TOOLS_LIST:
+        // Request/reply (machine-0050, ADR-0206): probe the default catalog + extra globals.
+        void detectWorkerTools().then((reply) =>
+          this.send(WsChannels.TOOLS_LIST, reply satisfies ToolsListReply, message.id),
+        );
+        break;
+      case WsChannels.TOOLS_INSTALL:
+      case WsChannels.TOOLS_UNINSTALL: {
+        // Streamed op (machine-0051/0052, ADR-0206): ack acceptance, then push progress lines and
+        // one terminal `tools.done` frame keyed by opId (server relays them to the browser over SSE).
+        const req = payload as unknown as ToolsMutateRequest;
+        const op = message.channel === WsChannels.TOOLS_INSTALL ? "install" : "uninstall";
+        this.send(message.channel, { started: true } satisfies ToolsMutateReply, message.id);
+        void runWorkerToolOp(op, req.name, req.manager, (line) =>
+          this.send(WsChannels.TOOLS_PROGRESS, { opId: req.opId, line } satisfies ToolsProgressPayload),
+        ).then((res) =>
+          this.send(WsChannels.TOOLS_DONE, {
+            opId: req.opId,
+            ok: res.ok,
+            exitCode: res.exitCode,
+            error: res.error,
+          } satisfies ToolsDonePayload),
+        );
         break;
       }
       case WsChannels.GIT_DIFF:

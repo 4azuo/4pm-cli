@@ -19,6 +19,15 @@ export const WsChannels = {
   // ADR-0141) — the machine-user Settings tab syncs the worker cli's config.
   CONFIG_READ: "config.read",
   CONFIG_WRITE: "config.write",
+  // worker tools management (ADR-0206) — the Tools tab. `tools.list` probes the default
+  // catalog + extra globals (reply); `tools.install`/`tools.uninstall` start a streamed op
+  // (reply = accepted/rejected), then the cli pushes `tools.progress` lines and one
+  // `tools.done` per opId back to the server (relayed to the browser over SSE).
+  TOOLS_LIST: "tools.list",
+  TOOLS_INSTALL: "tools.install",
+  TOOLS_UNINSTALL: "tools.uninstall",
+  TOOLS_PROGRESS: "tools.progress",
+  TOOLS_DONE: "tools.done",
   // autonomous mode control (ADR-0152): read settings+status+books+approvals, tail logs, and
   // write {settings|approvals|userTodo|cron} — the dashboard drives the worker's autonomous engine.
   AUTONOMOUS_READ: "autonomous.read",

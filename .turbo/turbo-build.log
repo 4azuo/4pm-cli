@@ -1,5 +1,5 @@
 
-> @4pm/cli@0.0.0 pretypecheck /home/phonghc/projects/4PM/21-apps/31-cli
+> @4pm/cli@0.0.0 prebuild /home/phonghc/projects/4PM/21-apps/31-cli
 > node scripts/vendor-shared.mjs --write
 
 === vendor-trim report (ADR-0194) ===
@@ -30,6 +30,15 @@ external npm deps (declare in the standalone package.json): zod
 
 Wrote 24 files → 21-apps/31-cli/vendor/
 
-> @4pm/cli@0.0.0 typecheck /home/phonghc/projects/4PM/21-apps/31-cli
-> tsc --noEmit
+> @4pm/cli@0.0.0 build /home/phonghc/projects/4PM/21-apps/31-cli
+> tsup
 
+CLI Building entry: src/index.ts
+CLI Using tsconfig: tsconfig.json
+CLI tsup v8.5.1
+CLI Using tsup config: /home/phonghc/projects/4PM/21-apps/31-cli/tsup.config.ts
+CLI Target: node20
+CLI Cleaning output folder
+ESM Build start
+ESM dist/index.js 1.76 MB
+ESM ⚡️ Build success in 26991ms
