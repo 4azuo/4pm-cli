@@ -14,7 +14,9 @@ import {
   CLI_SETTINGS_BOUNDS,
   type ConsoleSyncEvent,
   type TranscriptEntry as DtoTranscriptEntry,
+  type MachineMetricsPayload,
 } from "@4pm/dto";
+import { createWorkerMetricsSampler } from "./worker-metrics";
 import {
   createEcdhSession,
   decryptPayload,
@@ -60,7 +62,9 @@ import {
   type LogReadRequest,
   type CommandOutputRequest,
   type CommandOutputReply,
+  type RentalFlushReply,
   type ConsoleWatchPayload,
+  type MetricsWatchPayload,
   type MachineUsagePayload,
   type MachineLogPayload,
   type PhysicDeletePayload,
@@ -200,6 +204,15 @@ const CONSOLE_SNAPSHOT_INTERVAL_MS = 30_000;
  */
 const CONSOLE_WATCH_LEASE_MS = 45_000;
 
+/**
+ * Worker resource metrics (ADR-0214): while a viewer has the Workers tab open the server re-asserts
+ * `metrics.watch` (~every 15s) and the cli emits a `machine.metrics` sample this often; it stops if
+ * no renewal arrives within the lease window. Same lease shape as `console.watch` — viewer-gated so
+ * an unwatched cli samples nothing.
+ */
+const METRICS_SAMPLE_INTERVAL_MS = 5_000;
+const METRICS_WATCH_LEASE_MS = 45_000;
+
 /** Map a SessionBus transcript entry to the console-sync wire shape (drops the cli-only `ts`). */
 function toDtoEntry(e: BusTranscriptEntry): DtoTranscriptEntry {
   return { id: e.id, source: e.source, kind: e.kind, text: e.text, level: e.level, resultKind: e.resultKind };
@@ -286,6 +299,16 @@ export class WsClient {
   private consoleSnapshotTimer: NodeJS.Timeout | null = null;
   /** Lease expiry: stop syncing if the server does not renew `console.watch` in time. */
   private consoleWatchExpiry: NodeJS.Timeout | null = null;
+  /**
+   * Worker-metrics state (ADR-0214). `metricsWatching` is set by `metrics.watch` (a viewer has the
+   * Workers tab open); only then does the cli sample + emit `machine.metrics`. The sampler holds the
+   * CPU-delta baseline; both timers are lease-driven like console-sync and reset on reconnect.
+   */
+  private metricsWatching = false;
+  private metricsTimer: NodeJS.Timeout | null = null;
+  private metricsWatchExpiry: NodeJS.Timeout | null = null;
+  /** Lazily created on the first `metrics.watch` (keeps the CPU-delta baseline across samples). */
+  private metricsSampler: ReturnType<typeof createWorkerMetricsSampler> | null = null;
   /** cli → server requests awaiting a reply (quota.check — ADR-0020). */
   private readonly pending = new Map<
     string,
@@ -615,6 +638,8 @@ export class WsClient {
         // A fresh session ⇒ drop any prior console-watch state; the server re-asserts
         // console.watch while a viewer is attached, which re-snapshots (ADR-0150).
         this.stopConsoleSync();
+        // Same for the metrics lease (ADR-0214) — re-armed by the next `metrics.watch`.
+        this.stopMetricsSync();
         this.bus.setStatus("connected");
         this.finishReconnect();
         this.sendMachineStatus();
@@ -1156,6 +1181,14 @@ export class WsClient {
         this.send(WsChannels.COMMAND_OUTPUT_READ, { output } satisfies CommandOutputReply, message.id);
         break;
       }
+      case WsChannels.RENTAL_FLUSH: {
+        // Request/reply (ADR-0210): the machine is being released — flush the pending log tail so
+        // it is persisted server-side before the scrub, then ack. Per-command history was already
+        // pushed on finish, so the log upload is the only queued data. Best-effort; always acks.
+        this.uploadLog();
+        this.send(WsChannels.RENTAL_FLUSH, { ok: true } satisfies RentalFlushReply, message.id);
+        break;
+      }
       case WsChannels.PROJECT_CREATE:
         // Scaffold into <profileDir>/<projectName> (ADR-0080) + AI init + stream progress.
         void scaffoldProject(
@@ -1184,6 +1217,10 @@ export class WsClient {
       case WsChannels.CONSOLE_WATCH:
         // A web Console viewer attached/detached (ADR-0150) — start/stop mirroring the transcript.
         this.setConsoleWatching((payload as unknown as ConsoleWatchPayload).on);
+        break;
+      case WsChannels.METRICS_WATCH:
+        // A viewer has the Workers tab open (ADR-0214) — start/stop sampling worker resources.
+        this.setMetricsWatching((payload as unknown as MetricsWatchPayload).on);
         break;
       default:
         this.bus.log(`Unsupported channel: ${message.channel}`, "warn");
@@ -1713,6 +1750,54 @@ export class WsClient {
   }
 
   /**
+   * Handle `metrics.watch` (ADR-0214) — a renewable lease mirroring `console.watch`. `on` renews it:
+   * on the first assertion the cli samples immediately + starts the ~5s sampler; later renewals just
+   * extend the lease. No renewal within `METRICS_WATCH_LEASE_MS` (or an explicit `on:false`) ⇒ stop.
+   */
+  private setMetricsWatching(on: boolean): void {
+    if (!on) {
+      this.stopMetricsSync();
+      return;
+    }
+    if (this.metricsWatchExpiry) clearTimeout(this.metricsWatchExpiry);
+    this.metricsWatchExpiry = setTimeout(() => this.stopMetricsSync(), METRICS_WATCH_LEASE_MS);
+    this.metricsWatchExpiry.unref?.();
+    if (this.metricsWatching) return; // already sampling — this was a renewal
+    this.metricsWatching = true;
+    void this.sendMachineMetrics();
+    this.metricsTimer = setInterval(() => void this.sendMachineMetrics(), METRICS_SAMPLE_INTERVAL_MS);
+    this.metricsTimer.unref?.();
+  }
+
+  /** Stop sampling worker resources (lease expired / viewer left / reconnect) — clears both timers. */
+  private stopMetricsSync(): void {
+    this.metricsWatching = false;
+    if (this.metricsTimer) {
+      clearInterval(this.metricsTimer);
+      this.metricsTimer = null;
+    }
+    if (this.metricsWatchExpiry) {
+      clearTimeout(this.metricsWatchExpiry);
+      this.metricsWatchExpiry = null;
+    }
+  }
+
+  /** Sample the worker's live CPU/RAM/disk and push a `machine.metrics` frame (ADR-0214). */
+  private async sendMachineMetrics(): Promise<void> {
+    if (!this.sessionKey) return;
+    try {
+      if (!this.metricsSampler) this.metricsSampler = createWorkerMetricsSampler(this.context.profileDir);
+      const resources = await this.metricsSampler.sample();
+      this.send(WsChannels.MACHINE_METRICS, {
+        fingerprint: this.context.machine.fingerprint,
+        resources,
+      } satisfies MachineMetricsPayload);
+    } catch {
+      // best-effort — a sampling error must never disrupt the session
+    }
+  }
+
+  /**
    * Send a cli → server request and await the reply by envelope id (15s timeout).
    * Used for quota.check before spawning an AI cli (ADR-0020).
    */
@@ -1846,6 +1931,7 @@ export class WsClient {
     this.logUploadTimer = null;
     if (this.kbRefreshTimer) clearInterval(this.kbRefreshTimer);
     this.kbRefreshTimer = null;
+    this.stopMetricsSync();
   }
 
   /**

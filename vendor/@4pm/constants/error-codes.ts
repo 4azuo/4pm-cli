@@ -190,6 +190,8 @@ export const ErrorCode = {
   NO_HOSTED_SLOT_AVAILABLE: "NO_HOSTED_SLOT_AVAILABLE",
   // admin changing a rented hosted slot without forceRelease (ADR-0126)
   SLOT_RENTED: "SLOT_RENTED",
+  // re-renting a machine whose rental is already `releasing` — too late to undo (ADR-0210)
+  RENTED_MACHINE_RELEASING: "RENTED_MACHINE_RELEASING",
   // credit wallet & coupons (ADR-0118/0119/0120) — served by payment-server
   CREDIT_INSUFFICIENT: "CREDIT_INSUFFICIENT",
   COUPON_NOT_FOUND: "COUPON_NOT_FOUND",

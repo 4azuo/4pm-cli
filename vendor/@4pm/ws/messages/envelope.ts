@@ -120,6 +120,16 @@ export interface ConsoleWatchPayload {
   on: boolean;
 }
 
+/**
+ * metrics.watch (server → cli — ADR-0214): a renewable lease telling the cli a web viewer has the
+ * Machines→Workers tab open. `on:true` (re-asserted ~every 15s while a viewer is present) ⇒ the cli
+ * samples + emits `machine.metrics` (~every 5s); no renewal within the lease window ⇒ it stops. The
+ * `machine.metrics` payload is the `MachineMetricsPayload` type in `@4pm/dto` (also used server-side).
+ */
+export interface MetricsWatchPayload {
+  on: boolean;
+}
+
 /** command.output (cli → server — batch, cli-ws 0003). */
 export interface CommandOutputPayload {
   commandId: string;
@@ -817,6 +827,21 @@ export interface MachineLogPayload {
   content: string;
   /** Total bytes of ALL the cli's `logs/` files on the worker right now. */
   totalBytes: number;
+}
+
+/**
+ * rental.flush request/reply (server → cli — ADR-0210): before a rented machine in `releasing`
+ * is scrubbed, ask the worker to flush the data the renter keeps (upload its pending log tail; any
+ * per-command history was already pushed on finish). The `ok` ack lets the release sweep finalise
+ * at once instead of waiting the full timeout. Request carries no fields.
+ */
+export interface RentalFlushRequest {
+  /** Reserved for future selective flush; empty for now. */
+  reason?: "release";
+}
+export interface RentalFlushReply {
+  /** True once the worker has flushed its pending data and is safe to scrub. */
+  ok: boolean;
 }
 
 /** command.history (cli → server — ADR-0072): one finished command's rich record. */

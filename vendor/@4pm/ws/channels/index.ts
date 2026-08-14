@@ -84,6 +84,12 @@ export const WsChannels = {
   // whether a web viewer is attached) so an unwatched cli syncs nothing.
   CONSOLE_SYNC: "console.sync",
   CONSOLE_WATCH: "console.watch",
+  // worker resource live-metrics (ADR-0214): the cli streams live CPU/RAM/disk (cgroup-accurate)
+  // only while `metrics.watch` (server → cli: whether a web viewer has the Workers tab open) is on,
+  // so an unwatched cli samples nothing. Buffered ephemerally in Redis (never the DB), separate from
+  // the low-frequency, DB-authoritative `machine.status`.
+  METRICS_WATCH: "metrics.watch",
+  MACHINE_METRICS: "machine.metrics",
   // AI spec-assist (suggest/review/compose) moved off dedicated ai.* channels to
   // command.dispatch({ ai:true }) → the profile-failover AI path (ADR-0100).
   // quota & usage (ADR-0020)
@@ -101,6 +107,10 @@ export const WsChannels = {
   // server → cli (reply): read a finished command's captured output on demand (ADR-0115) —
   // cli stores command-output/{commandId}.log; returns null when pruned/unavailable.
   COMMAND_OUTPUT_READ: "command.output-read",
+  // server → cli (reply): flush pending data before a rented machine is scrubbed (ADR-0210) —
+  // the worker uploads its pending log tail (+ any queued history) then acks, so the release
+  // sweep can finalise without waiting the full 5-minute timeout when the worker is online.
+  RENTAL_FLUSH: "rental.flush",
   // outbound review (ADR-0082): machine→server request, server→outbound evaluate, result back
   REVIEW_REQUEST: "review.request",
   REVIEW_EVALUATE: "review.evaluate",

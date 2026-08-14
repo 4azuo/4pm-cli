@@ -219,6 +219,56 @@ export interface WorkerMachineLinkNode {
   physicProject: PhysicProjectResponse | null;
 }
 
+/**
+ * Live worker resource snapshot (ADR-0214) — collected by the cli (cgroup-accurate in a container,
+ * `os.*` on bare-metal) and streamed over `machine.metrics`. **Never persisted** — buffered in Redis
+ * with a short TTL; `null` on a worker when it isn't currently reporting (offline/unwatched/expired).
+ */
+export interface WorkerResources {
+  /** Current CPU utilization (0–100). */
+  cpuPct: number;
+  /** Logical CPU count available to the worker (cgroup quota or host cores). */
+  cpuCount: number;
+  memUsedMb: number;
+  memTotalMb: number;
+  diskUsedGb: number;
+  diskTotalGb: number;
+  /** `linux` | `darwin` | `win32`. */
+  platform: string;
+  /** `x64` | `arm64` | … */
+  arch: string;
+  /** Where the limits came from: `cgroup` (container-accurate) or `os` (bare-metal/VM fallback). */
+  source: "cgroup" | "os";
+  /** ISO timestamp the sample was taken on the worker. */
+  at: string;
+}
+
+/**
+ * `machine.metrics` payload (cli → server, ADR-0214) — one live resource sample keyed by the
+ * worker fingerprint (a worker can host several clis; last-writer-wins per worker).
+ */
+export interface MachineMetricsPayload {
+  fingerprint: string;
+  resources: WorkerResources;
+}
+
+/** One point of a worker's ~1-minute resource series (machine-0054, ADR-0214). */
+export interface WorkerMetricsSample {
+  cpuPct: number;
+  memUsedMb: number;
+  memTotalMb: number;
+  diskUsedGb: number;
+  diskTotalGb: number;
+  at: string;
+}
+
+/** Data GET /workers/:id/metrics — the expanded worker's live series (machine-0054, ADR-0214). */
+export interface WorkerMetricsSeriesResponse {
+  workerId: string;
+  samples: WorkerMetricsSample[];
+  source: "cgroup" | "os";
+}
+
 /** Worker (physical machine) + the cli → physic project tree (machine-0009). */
 export interface WorkerResponse {
   id: string;
@@ -227,6 +277,8 @@ export interface WorkerResponse {
   status: WorkerStatus;
   lastSeenAt: string | null;
   machineLinks: WorkerMachineLinkNode[];
+  /** Live resource snapshot from the Redis buffer (ADR-0214); null when not reporting. */
+  resources?: WorkerResources | null;
 }
 
 /** One Claude subscription usage window (utilization % + reset — ADR-0072). */
@@ -312,9 +364,13 @@ export interface MachineUsageResponse {
   projects: MachineProjectUsage[];
 }
 
-/** Query GET /workers (machine-0009). */
+/** Query GET /workers (machine-0009) — `search` matches worker/cli/project; min*Pct filter live resources (ADR-0214). */
 export const listWorkersQuerySchema = baseRequestSchema.extend({
   status: z.enum(["online", "offline"]).optional(),
+  /** Only workers whose live CPU/memory/disk usage % ≥ the given threshold (0–100). */
+  minCpuPct: z.coerce.number().min(0).max(100).optional(),
+  minMemPct: z.coerce.number().min(0).max(100).optional(),
+  minDiskPct: z.coerce.number().min(0).max(100).optional(),
 });
 export type ListWorkersQuery = z.infer<typeof listWorkersQuerySchema>;
 
