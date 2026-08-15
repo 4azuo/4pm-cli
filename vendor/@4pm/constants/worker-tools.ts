@@ -51,3 +51,10 @@ export const WORKER_TOOL_CATALOG: readonly WorkerToolCatalogEntry[] = [
 export const WORKER_TOOL_PREREQUISITE_IDS: readonly string[] = WORKER_TOOL_CATALOG.filter(
   (t) => t.installPackage === null,
 ).map((t) => t.id);
+
+/**
+ * Global npm packages that ship **with Node itself** (not operator-installed). They are never
+ * listed as uninstallable "extras" and the cli refuses to install/uninstall them — removing them
+ * would break the runtime.
+ */
+export const WORKER_TOOL_BUNDLED_GLOBALS: readonly string[] = ["npm", "corepack"];

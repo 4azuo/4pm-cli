@@ -7,6 +7,7 @@
  */
 import { spawn } from "node:child_process";
 import {
+  WORKER_TOOL_BUNDLED_GLOBALS,
   WORKER_TOOL_CATALOG,
   WORKER_TOOL_PREREQUISITE_IDS,
   type WorkerToolManager,
@@ -82,9 +83,15 @@ async function listExtras(): Promise<ToolStatus[]> {
   } catch {
     return [];
   }
-  const catalogPkgs = new Set(
-    WORKER_TOOL_CATALOG.map((t) => t.installPackage).filter((p): p is string => !!p),
-  );
+  // Exclude both a tool's install package AND its id/probe name: an npm-managed prerequisite
+  // (e.g. `npm` itself, installPackage null) is still a global package here and must not
+  // reappear as an "extra" — dedupe against the catalog by both keys. Node-bundled globals
+  // (npm/corepack) are runtime plumbing, not operator tools, so they are excluded too.
+  const catalogPkgs = new Set<string>(WORKER_TOOL_BUNDLED_GLOBALS);
+  for (const t of WORKER_TOOL_CATALOG) {
+    catalogPkgs.add(t.id);
+    if (t.installPackage) catalogPkgs.add(t.installPackage);
+  }
   return Object.entries(deps)
     .filter(([name]) => !catalogPkgs.has(name))
     .map(([name, info]) => ({
@@ -127,6 +134,9 @@ function resolvePackage(name: string, op: "install" | "uninstall"): { pkg?: stri
   }
   if (WORKER_TOOL_PREREQUISITE_IDS.includes(name)) {
     return { error: `"${name}" is a prerequisite and cannot be ${op}ed from here.` };
+  }
+  if (WORKER_TOOL_BUNDLED_GLOBALS.includes(name)) {
+    return { error: `"${name}" ships with Node and cannot be ${op}ed from here.` };
   }
   if (!NPM_NAME.test(name)) return { error: `Invalid package name: "${name}".` };
   return { pkg: name };
