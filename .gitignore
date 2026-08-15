@@ -3,6 +3,9 @@ dist/
 dist-standalone/
 node_modules/
 
+# Turborepo task logs / cache
+.turbo/
+
 # Local env
 .env
 

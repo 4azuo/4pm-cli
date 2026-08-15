@@ -241,6 +241,37 @@ export interface WorkerResources {
   source: "cgroup" | "os";
   /** ISO timestamp the sample was taken on the worker. */
   at: string;
+
+  // --- Extended cgroup v2 metrics (ADR-0218) ---
+  // All optional: only present on the `cgroup` source when the controller/file is readable;
+  // the `os` fallback and older clis omit them, and the UI hides what is absent.
+
+  /** % of CPU periods throttled by the cgroup quota this interval (`cpu.stat` nr_throttled/nr_periods). */
+  cpuThrottledPct?: number;
+  /** CPU pressure stall — `cpu.pressure` `some avg10` (0–100). */
+  cpuPressurePct?: number;
+  /** Anonymous (application) memory in MB — `memory.stat` `anon`. */
+  memAnonMb?: number;
+  /** File/page-cache memory in MB — `memory.stat` `file`. */
+  memCacheMb?: number;
+  /** Swap in use (MB) — `memory.swap.current`. */
+  swapUsedMb?: number;
+  /** Swap limit (MB); `null` when unlimited (`memory.swap.max` = `max`). */
+  swapTotalMb?: number | null;
+  /** Memory pressure stall — `memory.pressure` `some avg10` (0–100). */
+  memPressurePct?: number;
+  /** Cumulative OOM-kill count in this cgroup — `memory.events` `oom_kill`. */
+  oomKills?: number;
+  /** Block-device read throughput this interval (MB/s) — `io.stat` rbytes delta. */
+  diskReadMbps?: number;
+  /** Block-device write throughput this interval (MB/s) — `io.stat` wbytes delta. */
+  diskWriteMbps?: number;
+  /** I/O pressure stall — `io.pressure` `some avg10` (0–100). */
+  ioPressurePct?: number;
+  /** Current process/thread count — `pids.current`. */
+  pidsCurrent?: number;
+  /** Process/thread limit; `null` when unlimited (`pids.max` = `max`). */
+  pidsMax?: number | null;
 }
 
 /**
@@ -260,6 +291,14 @@ export interface WorkerMetricsSample {
   diskUsedGb: number;
   diskTotalGb: number;
   at: string;
+  // Trended cgroup v2 rate/pressure fields (ADR-0218) — optional, mirror `WorkerResources`.
+  cpuThrottledPct?: number;
+  cpuPressurePct?: number;
+  memPressurePct?: number;
+  ioPressurePct?: number;
+  diskReadMbps?: number;
+  diskWriteMbps?: number;
+  swapUsedMb?: number;
 }
 
 /** Data GET /workers/:id/metrics — the expanded worker's live series (machine-0054, ADR-0214). */
