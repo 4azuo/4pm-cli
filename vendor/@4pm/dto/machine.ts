@@ -189,6 +189,38 @@ export interface MachineLinkResponse {
   createdAt: string;
 }
 
+/**
+ * Per-tool last-run health (ADR-0223) — stored under `MachineLink.usageSnapshot.toolHealth`,
+ * keyed by the external tool name (claude/codex/gh/glab/git). Written by the `tool.health`
+ * write-back and preserved across `machine.usage` snapshot overwrites.
+ */
+export interface WorkerToolHealthEntry {
+  ok: boolean;
+  message: string | null;
+  at: string;
+}
+export type WorkerToolHealth = Record<string, WorkerToolHealthEntry>;
+
+/** A tool whose last run failed — projected for the admin pool lists (ADR-0223). */
+export interface WorkerFailingTool {
+  tool: string;
+  message: string;
+  at: string;
+}
+
+/**
+ * Project the failing tools (last run not ok) from a machine link's `usageSnapshot` JSON
+ * (ADR-0223), newest-first. Tolerant of null / old snapshots without a `toolHealth` key.
+ */
+export function readFailingTools(usageSnapshot: unknown): WorkerFailingTool[] {
+  const th = (usageSnapshot as { toolHealth?: WorkerToolHealth } | null | undefined)?.toolHealth;
+  if (!th || typeof th !== "object") return [];
+  return Object.entries(th)
+    .filter(([, v]) => v && typeof v === "object" && v.ok === false)
+    .map(([tool, v]) => ({ tool, message: v.message ?? "", at: v.at }))
+    .sort((a, b) => (a.at < b.at ? 1 : -1));
+}
+
 /** Physic project — a project folder on the worker served by one cli. */
 export interface PhysicProjectResponse {
   id: string;

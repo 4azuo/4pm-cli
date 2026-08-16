@@ -97,6 +97,10 @@ export const WsChannels = {
   USAGE_REPORT: "usage.report",
   // cli → server: Claude subscription usage snapshot (5h / weekly — ADR-0072)
   MACHINE_USAGE: "machine.usage",
+  // cli → server: last-run result of an external tool (claude/codex/gh/glab/git — ADR-0223).
+  // One-way, sent immediately after each direct tool invocation (last-wins per tool); the
+  // server merges it into `MachineLink.usageSnapshot.toolHealth` for the admin pool lists.
+  TOOL_HEALTH: "tool.health",
   // cli → server: durable per-command history record on finish (ADR-0072)
   COMMAND_HISTORY: "command.history",
   // cli → server: periodic upload of the cli's own JSONL log file (ADR-0122) — stored

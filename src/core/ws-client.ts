@@ -118,6 +118,7 @@ import { readWorkerFile } from "./fs-read";
 import { writeWorkerFile } from "./fs-write";
 import { runSupportAnswer, refreshSupportKb } from "./support-answer";
 import { runKnowledgeCompose } from "./knowledge-compose";
+import { setToolHealthSink, reportToolResult } from "./tool-health";
 import {
   isAutonomousRunning,
   readAutonomous,
@@ -592,6 +593,7 @@ export class WsClient {
         socket.on("close", (code) => {
           this.clearHeartbeat();
           this.sessionKey = null;
+          setToolHealthSink(null); // stop tool-health reporting until the next session (ADR-0223)
           logger.debug("ws.close", { code });
           if (code === CLOSE_DRAINING) {
             // Server draining (rolling deploy) — reconnect to another instance
@@ -645,6 +647,9 @@ export class WsClient {
         this.startUsagePolling();
         this.startLogUpload();
         this.startKbRefresh();
+        // Route per-tool health reports to the server over the live session (ADR-0223); `send`
+        // is a no-op until the session key is set, so this is safe to (re)wire here each connect.
+        setToolHealthSink((report) => this.send(WsChannels.TOOL_HEALTH, report));
         // Wake anything awaiting readiness (a prompt queued during reconnect).
         this.connectWaiters.splice(0).forEach((fn) => fn());
         return;
@@ -857,6 +862,9 @@ export class WsClient {
               this.bus.push({ source: "server", kind: "aires", text: `${supportCmd} ›` });
               this.bus.push({ source: "server", kind: "out", text: reply.body });
             }
+            // Surface the AI CLI's health to the admin pool (ADR-0223) — the support agent's most
+            // common failure ("Not logged in") is exactly what an operator needs to see.
+            reportToolResult(supportCmd, !reply.error, reply.error);
             this.send(WsChannels.SUPPORT_ANSWER, reply, message.id);
           })
           .finally(() => this.bus.endBusy("support-answer"));

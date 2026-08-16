@@ -803,6 +803,23 @@ export interface MachineUsagePayload {
   };
 }
 
+/**
+ * tool.health report (cli → server — ADR-0223): the last-run result of one external tool the
+ * cli invokes directly (claude/codex/gh/glab/git). Sent immediately after each run (last-wins
+ * per tool); the server merges it into `MachineLink.usageSnapshot.toolHealth`. Carries only a
+ * short human reason on failure — never stdout/secrets.
+ */
+export interface ToolHealthReport {
+  /** Normalized tool binary name (`claude｜codex｜gh｜glab｜git｜…`). */
+  tool: string;
+  /** Did the last run succeed? */
+  ok: boolean;
+  /** Short human reason when `ok` is false (e.g. "Not logged in"); null on success. */
+  message: string | null;
+  /** ISO timestamp of the run. */
+  at: string;
+}
+
 /** log.read request/reply (server → cli — ADR-0072): tail the cli's own JSONL logs. */
 export interface LogReadRequest {
   /** Max lines from the newest log file (default 200). */

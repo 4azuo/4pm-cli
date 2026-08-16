@@ -8,6 +8,7 @@
 import { spawn } from "node:child_process";
 import type { KnowledgeComposeReply, KnowledgeComposeRequest } from "@4pm/ws";
 import { isAuthFailure, isSessionLimit } from "./ai-runner";
+import { reportToolResult } from "./tool-health";
 import type { ResolvedClaudeProfile } from "../utils/ai-cli";
 
 /** How to run the AI CLI for a compose (resolved by the caller from the profile config). */
@@ -89,7 +90,10 @@ export async function runKnowledgeCompose(
   for (let i = 0; i < attempts.length; i++) {
     try {
       const { code, out, err } = await runOnce(ai.cmd, attempts[i]!, prompt, physicRoot, ai.env);
-      if (code === 0 && out.trim()) return { bodyMarkdown: out.trim() };
+      if (code === 0 && out.trim()) {
+        reportToolResult(ai.cmd, true); // AI CLI ran ok (ADR-0223)
+        return { bodyMarkdown: out.trim() };
+      }
       const combined = err || out;
       lastReason = `exited ${code}: ${combined.slice(0, 500)}`;
       if ((!isAuthFailure(combined) && !isSessionLimit(combined)) || i === attempts.length - 1) break;
@@ -98,5 +102,6 @@ export async function runKnowledgeCompose(
       break;
     }
   }
+  reportToolResult(ai.cmd, false, lastReason); // AI CLI failed across all profiles (ADR-0223)
   return { bodyMarkdown: "", error: lastReason };
 }

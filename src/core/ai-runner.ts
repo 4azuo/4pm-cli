@@ -7,6 +7,7 @@
  * real token usage (ADR-0072). The caller reports it to the server + transcript.
  */
 import { runCommand } from "./executor";
+import { reportToolResult } from "./tool-health";
 import type { AiPlan } from "../utils/ai-cli";
 import { createAiStreamParser, estimateTokens, type AiUsage } from "./ai-stream";
 
@@ -85,8 +86,13 @@ export async function runAiFailover(
 ): Promise<AiRunResult> {
   const total = plan.attempts.length;
   let finalExit = -1;
+  // Track the last attempt's provider + captured output so a total failure can report the AI
+  // CLI's health to the admin pool (ADR-0223).
+  let lastCmd = plan.attempts[0]?.cmd ?? "claude";
+  let lastCaptured = "";
   for (let i = 0; i < total; i++) {
     const attempt = plan.attempts[i]!;
+    lastCmd = attempt.cmd;
     if (total > 1) handlers.onAttemptStart(attempt.label, i, total, attempt.cmd);
     // Parse claude stream-json / codex `exec --json` → readable text for the transcript +
     // real usage; any non-event line passes through verbatim (ADR-0072). Per-attempt, since a
@@ -107,9 +113,11 @@ export async function runAiFailover(
       captured += tail;
       handlers.onChunk(tail);
     }
+    lastCaptured = captured;
     if (finalExit === 0) {
       const usage = parser.usage();
       if (usage.tokens === 0) usage.tokens = estimateTokens(captured);
+      reportToolResult(attempt.cmd, true); // AI CLI ran ok (ADR-0223)
       return { exitCode: 0, workedDir: attempt.dir, workedKey: attempt.key, workedCmd: attempt.cmd, usage };
     }
     // Retry on an auth failure OR a session/usage-limit hit; a genuine error surfaces
@@ -122,5 +130,15 @@ export async function runAiFailover(
     if (!reason || i === total - 1) break;
     handlers.onAttemptFail(attempt.label, reason);
   }
+  // Every attempt failed — report the AI CLI's health with a short reason (ADR-0223).
+  reportToolResult(lastCmd, false, summarizeAiFailure(lastCaptured, finalExit));
   return { exitCode: finalExit, workedDir: null, workedKey: null, workedCmd: null, usage: { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 } };
+}
+
+/** A short, human reason for a failed AI run — reused by the tool-health report (ADR-0223). */
+function summarizeAiFailure(captured: string, exitCode: number): string {
+  if (isAuthFailure(captured)) return "Not logged in";
+  if (isSessionLimit(captured)) return "Usage limit reached";
+  const firstLine = captured.split("\n").map((l) => l.trim()).find((l) => l.length > 0);
+  return firstLine || `exited ${exitCode}`;
 }
