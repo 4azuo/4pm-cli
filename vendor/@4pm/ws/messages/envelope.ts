@@ -793,6 +793,14 @@ export interface MachineUsagePayload {
   extra?: { usedCredits: number; currency: string };
   /** ISO timestamp of this check. */
   checkedAt: string;
+  /** Worker network probe (ADR-0221) — mirrors `@4pm/dto` `WorkerNetworkProbe`; observe-only, the web
+   *  warns when the network is left open. Omitted by old clients. Persisted inside `usageSnapshot`. */
+  network?: {
+    outbound: "open" | "restricted";
+    inbound: "exposed" | "isolated";
+    containerized: boolean;
+    checkedAt: string;
+  };
 }
 
 /** log.read request/reply (server → cli — ADR-0072): tail the cli's own JSONL logs. */

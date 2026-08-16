@@ -127,7 +127,7 @@ import {
 } from "./autonomous";
 import { listAgents, readAgent, writeAgent } from "./agents";
 import { installPackage, listPackages, packPackage, removePackage } from "./packages";
-import { writeEgressAllowlist } from "./sandbox";
+import { probeNetwork } from "./network-probe";
 import { applyGitAuth } from "./git-auth";
 import { readSecrets, writeSecrets } from "./secrets";
 import { readAgentTools, writeAgentTools } from "./agent-tools";
@@ -526,9 +526,6 @@ export class WsClient {
         // Folder-scope hardening (project aiScope): when on, prepend a guard to every AI
         // prompt so the agent only uses content inside the served project folder.
         this.restrictToFolder = token.aiRestrictToFolder === true;
-        // Sandbox egress policy (project aiScope.sandbox — ADR-0192 §3): materialize the allowlist
-        // to a file the container's egress proxy/entrypoint enforces (the cli can't firewall itself).
-        writeEgressAllowlist(this.context.profileDir, token.aiSandbox ?? null);
         // Git-auth method (ADR-0192 §4): for a token method + an injected `FOURPM_GIT_TOKEN`, write
         // the HTTPS git credential the store helper uses; `self`/`deploy-key` are a no-op.
         applyGitAuth(token.gitAuth ?? null);
@@ -1961,6 +1958,10 @@ export class WsClient {
       };
       snapshot.aiCli = aiCli;
       snapshot.profile = profile;
+      // Worker network probe (ADR-0221): detect outbound reachability + inbound exposure +
+      // containerized-ness so the web can warn when the worker's network isn't sandboxed.
+      // Observe-only, never blocks.
+      snapshot.network = await probeNetwork();
       this.usageSnapshot = snapshot; // for the TUI header
       this.bus.setUsage?.(snapshot);
       this.send(WsChannels.MACHINE_USAGE, snapshot);

@@ -3,7 +3,7 @@
  * attach/detach + memo; create-from-spec/add/spec-assist included).
  */
 import { z } from "zod";
-import type { ProjectStatus } from "@4pm/constants";
+import { UsageMetric, type ProjectStatus } from "@4pm/constants";
 import { ipAllowlistSchema } from "@4pm/validation";
 import { baseRequestSchema, deletedFilterSchema, pinnedFilterSchema } from "./base";
 import type { UserResponse } from "./user";
@@ -79,6 +79,9 @@ export interface ProjectCliInfo {
   userId: string | null;
   /** The serving MACHINE user is a rented (4PM pool) worker (ADR-0132/0173). */
   isRented: boolean;
+  /** Latest worker network probe (ADR-0221) — the project page warns when the worker's network is
+   *  left open. Null when the cli hasn't reported one yet (old clients / not connected). */
+  network: WorkerNetworkProbe | null;
 }
 
 /** Data GET /projects/:id/members — effective members (direct + via teams), humans only (ADR-0078). */
@@ -144,6 +147,41 @@ export interface ProjectTokenSettings {
   sessionSwitchPct: number;
   /** Estimated-token ceiling for a single prompt; 0 = no limit. */
   perPromptTokenLimit: number;
+}
+
+/**
+ * Project usage-alert rule (ADR-0220) — fires when the project's AI usage crosses a threshold,
+ * delivering to a designated email and/or an in-app notification to a chosen project user.
+ * `budgetPercent`: fire at `threshold`% (1–100) of the project's token/command budget in the
+ * current period. `absolute`: fire when month-to-date tokens/commands reach `threshold`. At
+ * least one of `email` / `notifyUserId` should be set. Stored under `projects.settings.alerts`.
+ */
+export const PROJECT_ALERT_KINDS = ["budgetPercent", "absolute"] as const;
+export type ProjectAlertKind = (typeof PROJECT_ALERT_KINDS)[number];
+
+export const projectAlertRuleSchema = z.object({
+  id: z.string().min(1).max(64),
+  kind: z.enum(PROJECT_ALERT_KINDS),
+  metric: z.enum([UsageMetric.AI_TOKENS, UsageMetric.COMMANDS]),
+  threshold: z.number().int().min(1),
+  email: z.union([z.string().email(), z.literal("")]).optional(),
+  notifyUserId: z.union([z.string().uuid(), z.literal("")]).optional(),
+  enabled: z.boolean().default(true),
+});
+export type ProjectAlertRule = z.infer<typeof projectAlertRuleSchema>;
+
+/** The `alerts` block of `projects.settings` (ADR-0220). */
+export const projectAlertsSchema = z.object({
+  rules: z.array(projectAlertRuleSchema).max(20).default([]),
+});
+export type ProjectAlerts = z.infer<typeof projectAlertsSchema>;
+
+/** Read the project usage-alert rules out of a loosely-typed `projects.settings` JSON (ADR-0220). */
+export function readProjectAlertRules(
+  settings: Record<string, unknown> | null | undefined,
+): ProjectAlertRule[] {
+  const parsed = projectAlertsSchema.safeParse((settings ?? {})["alerts"] ?? { rules: [] });
+  return parsed.success ? parsed.data.rules : [];
 }
 
 /**
@@ -217,23 +255,44 @@ export function compileRulePattern(entry: string): RegExp {
  * the cli via the daily `ws_token` (machine-0003), same path as the token knobs.
  */
 /**
- * Sandbox egress policy per project (ADR-0192 §3), stored under `settings.aiScope.sandbox`. The
- * containerized worker's network egress is bounded to `allowedDomains` when `network='allowlist'`
- * (the main exfiltration control); `'open'` (default) imposes no restriction. Enforcement is at the
- * container/egress-proxy layer — the cli materializes the allowlist for it (the process can't
- * firewall itself). Server-managed (the agent can never widen its own jail).
+ * Worker network probe result (ADR-0221). 4PM cannot enforce the worker's network from inside the
+ * cli, so instead of a server-set policy the cli **actively probes** the worker's network posture
+ * (both directions) and whether it runs containerized; the web shows non-blocking warnings when the
+ * network is left open. Carried on the `machine.usage` snapshot; observe-only (never blocks a
+ * dispatch). `outbound` = can the worker reach the open internet (egress); `inbound` = is the worker
+ * exposed to incoming connections on a public interface.
  */
-export interface ProjectSandboxSettings {
-  network: "open" | "allowlist";
-  /** Allowed egress hosts when `network='allowlist'` (hostnames, lower-cased, capped). */
-  allowedDomains: string[];
+export interface WorkerNetworkProbe {
+  /** `open` = the worker reached the open internet (not sandboxed); `restricted` = it could not. */
+  outbound: "open" | "restricted";
+  /** `exposed` = the worker listens on a public interface (reachable from outside); `isolated` = not. */
+  inbound: "exposed" | "isolated";
+  /** True when the worker detects it runs inside a container (`/.dockerenv` / cgroup hint). */
+  containerized: boolean;
+  /** ISO timestamp of this probe. */
+  checkedAt: string;
+}
+
+/**
+ * Read the worker network probe (ADR-0221) out of a loosely-typed `machine.usage` snapshot JSON —
+ * the cli carries it under `snapshot.network`. Returns null when absent/malformed (old clients).
+ */
+export function readWorkerNetwork(snapshot: unknown): WorkerNetworkProbe | null {
+  const n = (snapshot as { network?: unknown } | null)?.network as
+    | Partial<WorkerNetworkProbe>
+    | undefined;
+  if (!n || (n.outbound !== "open" && n.outbound !== "restricted")) return null;
+  return {
+    outbound: n.outbound,
+    inbound: n.inbound === "exposed" ? "exposed" : "isolated",
+    containerized: n.containerized === true,
+    checkedAt: typeof n.checkedAt === "string" ? n.checkedAt : "",
+  };
 }
 
 export interface ProjectAiScopeSettings {
   /** Restrict the AI agent to the served project folder (default false). */
   restrictToFolder: boolean;
-  /** Network egress sandbox policy for the containerized worker (ADR-0192). */
-  sandbox: ProjectSandboxSettings;
 }
 
 /**
@@ -249,9 +308,6 @@ export type GitAuthMethod = (typeof GIT_AUTH_METHODS)[number];
 export interface ProjectGitAuthSettings {
   method: GitAuthMethod;
 }
-
-/** Max egress allowlist entries (guards oversized settings). */
-export const SANDBOX_ALLOWLIST_MAX = 100;
 
 /**
  * Marketplace package policy per project (ADR-0185/0186), stored under `settings.packages`.
@@ -274,15 +330,18 @@ export interface ProjectSettings {
   packages: ProjectPackagesSettings;
   /** Git-auth method for the worker (ADR-0192 §4). */
   gitAuth: ProjectGitAuthSettings;
+  /** Project usage-alert rules (ADR-0220) — empty when none configured. */
+  alerts: ProjectAlertRule[];
 }
 
 /** Defaults applied when a project settings key is absent (ADR-0081/0082/0113). */
 export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
   tokens: { sessionSwitchPct: 0, perPromptTokenLimit: 0 },
   templates: {},
-  aiScope: { restrictToFolder: false, sandbox: { network: "open", allowedDomains: [] } },
+  aiScope: { restrictToFolder: false },
   packages: { autoUpdate: false },
   gitAuth: { method: "self" },
+  alerts: [],
   outboundReview: {
     enabled: false,
     ruleCheck: false,
@@ -311,25 +370,6 @@ function readTokenKnob(value: unknown, min: number, max: number): number {
   if (value === 0) return 0;
   const v = Math.floor(value);
   return v >= min && v <= max ? v : 0;
-}
-
-/** Sanitize one egress host: lower-cased hostname chars only (`a-z0-9.-*`), else dropped. */
-function sanitizeDomain(v: unknown): string | null {
-  if (typeof v !== "string") return null;
-  const s = v.trim().toLowerCase();
-  return s.length > 0 && s.length <= 253 && /^[a-z0-9.*-]+$/.test(s) ? s : null;
-}
-
-/** Read the sandbox egress policy (ADR-0192): default `open`; allowlist domains sanitized + capped. */
-function readSandbox(raw: unknown): ProjectSandboxSettings {
-  const s = (raw ?? {}) as Partial<ProjectSandboxSettings>;
-  const network = s.network === "allowlist" ? "allowlist" : "open";
-  const allowedDomains = Array.isArray(s.allowedDomains)
-    ? Array.from(
-        new Set(s.allowedDomains.map(sanitizeDomain).filter((d): d is string => d !== null)),
-      ).slice(0, SANDBOX_ALLOWLIST_MAX)
-    : [];
-  return { network, allowedDomains };
 }
 
 /**
@@ -378,12 +418,12 @@ export function readProjectSettings(
   }
   return {
     templates,
+    alerts: readProjectAlertRules(settings),
     aiScope: {
       restrictToFolder:
         typeof aiScope.restrictToFolder === "boolean"
           ? aiScope.restrictToFolder
           : DEFAULT_PROJECT_SETTINGS.aiScope.restrictToFolder,
-      sandbox: readSandbox(aiScope.sandbox),
     },
     packages: {
       autoUpdate:

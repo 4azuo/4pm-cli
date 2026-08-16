@@ -11,7 +11,7 @@ import type {
 import { hexTokenSchema } from "@4pm/validation";
 import { baseRequestSchema } from "./base";
 import type { CommandOrigin } from "./command";
-import type { GitAuthMethod, ProjectSandboxSettings, ProjectTokenSettings } from "./project";
+import type { GitAuthMethod, ProjectTokenSettings, WorkerNetworkProbe } from "./project";
 
 /** Body POST /machine-links/pair (machine-0001). */
 export const pairRequestSchema = z.object({
@@ -119,12 +119,6 @@ export interface WsTokenResponse {
    */
   aiRestrictToFolder: boolean;
   /**
-   * Sandbox egress policy of the project this link serves (ADR-0192 §3). When `network:'allowlist'`
-   * the containerized worker's egress is bounded to `allowedDomains`; the cli materializes it for
-   * the container's egress enforcement. `null` for orchestrator/idle links or when `network:'open'`.
-   */
-  aiSandbox: ProjectSandboxSettings | null;
-  /**
    * Git-auth method of the project this link serves (ADR-0192 §4) — tells the worker how to
    * authenticate git (`self`/`deploy-key` need no token config; `gitlab-group-token`/`github-app`
    * configure an injected/minted token for HTTPS). `null` for orchestrator/idle links or `self`.
@@ -189,6 +183,9 @@ export interface MachineLinkResponse {
   cliVersion?: string | null;
   /** True when the running cli is older than the configured latest release (ADR-0015). */
   cliOutdated?: boolean;
+  /** Latest worker network probe (ADR-0221) — the machine-user page shows outbound/inbound posture
+   *  and warns when it's open. Null when the cli hasn't reported one yet (old clients / offline). */
+  network?: WorkerNetworkProbe | null;
   createdAt: string;
 }
 
