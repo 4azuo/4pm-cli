@@ -303,6 +303,13 @@ export interface WorkerMetricsSeriesResponse {
   workerId: string;
   samples: WorkerMetricsSample[];
   source: "cgroup" | "os";
+  /**
+   * Latest full resource snapshot (ADR-0214) — richer than a series point (carries vCPU count,
+   * platform/arch and the extended cgroup v2 metrics), so a standalone viewer (the machine-user
+   * Info tab / the project Dashboard) can render the container-info column without the workers
+   * list row. `null` when the worker isn't currently reporting.
+   */
+  resources: WorkerResources | null;
 }
 
 /** Worker (physical machine) + the cli → physic project tree (machine-0009). */
@@ -395,6 +402,8 @@ export interface MachineUsageResponse {
   linkId: string;
   userId: string;
   username: string;
+  /** The worker (physical machine) hosting this cli — for the per-cli container-metrics panel; null when unpaired. */
+  workerId: string | null;
   status: MachineUsageStatus;
   subscription: MachineUsageSubscription | null;
   projects: MachineProjectUsage[];
