@@ -17,7 +17,11 @@ import { promisify } from "node:util";
 import type { SupportAnswerReply, SupportAnswerRequest } from "@4pm/ws";
 import { logger } from "../common/logger/logger";
 import { isAuthFailure, isSessionLimit } from "./ai-runner";
+import { createAiStreamParser, estimateTokens, type AiUsage } from "./ai-stream";
 import type { ResolvedClaudeProfile } from "../utils/ai-cli";
+
+/** Zero usage — the fallback when a run captured no token counts. */
+const NO_USAGE: AiUsage = { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
 
 /**
  * How to run claude for a support answer — resolved by the caller from the profile config so the
@@ -157,9 +161,17 @@ function runClaudeOnce(
   profile: ResolvedClaudeProfile | null,
   prompt: string,
   extraEnv: Record<string, string> | undefined,
-): Promise<{ code: number; out: string; err: string }> {
+): Promise<{ code: number; out: string; err: string; usage: AiUsage }> {
   return new Promise((resolve, reject) => {
-    const args = ["-p", ...(profile?.model ? ["--model", profile.model] : [])];
+    // Ask claude for `--output-format stream-json --verbose` so the run's real token usage is
+    // captured (ADR-0072/0224) — the same lane the normal AI dispatch uses; the parser turns the
+    // JSON events back into the readable answer text. codex/other CLIs pass through unchanged.
+    const isClaude = cmd.includes("claude");
+    const args = [
+      "-p",
+      ...(profile?.model ? ["--model", profile.model] : []),
+      ...(isClaude ? ["--output-format", "stream-json", "--verbose"] : []),
+    ];
     // Select the signed-in account (the fix — ADR-0170): without CLAUDE_CONFIG_DIR claude falls
     // back to its default config, whose token is unrelated to the operator's configured profiles.
     const env: NodeJS.ProcessEnv = {
@@ -168,6 +180,8 @@ function runClaudeOnce(
       ...(profile ? { CLAUDE_CONFIG_DIR: profile.dir } : {}),
     };
     const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], env });
+    // Parse claude stream-json → readable text + usage; a non-json cmd passes text through verbatim.
+    const parser = createAiStreamParser(cmd);
     let out = "";
     let err = "";
     const timer = setTimeout(() => {
@@ -175,7 +189,7 @@ function runClaudeOnce(
       reject(new Error("claude answer timed out"));
     }, ANSWER_TIMEOUT_MS);
     timer.unref();
-    child.stdout.on("data", (d: Buffer) => (out += d.toString()));
+    child.stdout.on("data", (d: Buffer) => (out += parser.push(d.toString())));
     child.stderr.on("data", (d: Buffer) => (err += d.toString()));
     child.on("error", (e) => {
       clearTimeout(timer);
@@ -183,7 +197,8 @@ function runClaudeOnce(
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      resolve({ code: code ?? -1, out, err });
+      out += parser.flush();
+      resolve({ code: code ?? -1, out, err, usage: parser.usage() });
     });
     child.stdin.write(prompt);
     child.stdin.end();
@@ -195,13 +210,16 @@ function runClaudeOnce(
  * to the next on an auth failure or a session/usage-limit hit — the same failover the normal AI
  * dispatch uses (ADR-0057). Resolves the answer text; throws a diagnosable tail if all fail.
  */
-async function runClaudeWithFailover(prompt: string, ai: SupportAnswerAi): Promise<string> {
+async function runClaudeWithFailover(
+  prompt: string,
+  ai: SupportAnswerAi,
+): Promise<{ text: string; usage: AiUsage }> {
   // No profile configured ⇒ a single default-env attempt (matches the pre-profile behavior).
   const attempts: (ResolvedClaudeProfile | null)[] = ai.profiles.length > 0 ? ai.profiles : [null];
   let lastReason = "no attempt";
   for (let i = 0; i < attempts.length; i++) {
-    const { code, out, err } = await runClaudeOnce(ai.cmd, attempts[i]!, prompt, ai.env);
-    if (code === 0 && out.trim()) return out.trim();
+    const { code, out, err, usage } = await runClaudeOnce(ai.cmd, attempts[i]!, prompt, ai.env);
+    if (code === 0 && out.trim()) return { text: out.trim(), usage };
     // claude may report the failure on stdout rather than stderr (empty stderr + exit 1).
     const combined = err || out;
     lastReason = `exited ${code}: ${combined.slice(0, 500)}`;
@@ -223,9 +241,29 @@ export async function runSupportAnswer(
     const dir = await ensureRepo(profileDir, req.repo);
     const docs = collectDocs(dir);
     if (!docs.trim()) return { body: "", error: "KB repo has no documentation" };
-    const body = await runClaudeWithFailover(buildPrompt(docs, req.question, req.askerRole), ai);
-    if (!body) return { body: "", error: "empty answer" };
-    return { body };
+    const { text, usage } = await runClaudeWithFailover(
+      buildPrompt(docs, req.question, req.askerRole),
+      ai,
+    );
+    if (!text) return { body: "", error: "empty answer" };
+    // Report the run's token usage so the server records it against the FAQ project (ADR-0224);
+    // fall back to a length estimate when the stream carried no usage (older claude / non-json cli).
+    const u = usage.tokens > 0 ? usage : { ...NO_USAGE, tokens: estimateTokens(text) };
+    return {
+      body: text,
+      tokens: u.tokens,
+      ...(usage.tokens > 0
+        ? {
+            tokensBreakdown: {
+              input: usage.input,
+              output: usage.output,
+              cacheRead: usage.cacheRead,
+              cacheCreation: usage.cacheCreation,
+            },
+          }
+        : {}),
+      finishedAt: new Date().toISOString(),
+    };
   } catch (err) {
     logger.warn("support.answer.failed", { error: String(err) });
     return { body: "", error: String(err) };

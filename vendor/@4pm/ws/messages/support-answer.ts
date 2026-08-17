@@ -19,10 +19,31 @@ export interface SupportAnswerRequest {
   };
 }
 
+/** The claude run's token split for a support answer (ADR-0224). */
+export interface SupportAnswerUsage {
+  /** input_tokens of the run. */
+  input: number;
+  /** output_tokens of the run. */
+  output: number;
+  /** cache_read_input_tokens of the run. */
+  cacheRead: number;
+  /** cache_creation_input_tokens of the run. */
+  cacheCreation: number;
+}
+
 /** cli → server: the composed answer (or an error the dispatcher maps to unavailable). */
 export interface SupportAnswerReply {
   /** The grounded answer text; empty when the agent could not produce one. */
   body: string;
   /** Optional error marker when the worker failed (repo clone, spawn, timeout…). */
   error?: string;
+  /**
+   * Real token usage of the claude run (ADR-0224) — the server records it against the seeded
+   * `4pm-faq` project. Absent / 0 when the run produced no usage (older cli, plain-text fallback).
+   */
+  tokens?: number;
+  /** The token split behind `tokens` (ADR-0224); absent when `tokens` is. */
+  tokensBreakdown?: SupportAnswerUsage;
+  /** When the answer finished, ISO-8601 (ADR-0224); the server defaults to now when absent. */
+  finishedAt?: string;
 }

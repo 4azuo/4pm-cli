@@ -439,6 +439,9 @@ export interface MachineUsageResponse {
   status: MachineUsageStatus;
   subscription: MachineUsageSubscription | null;
   projects: MachineProjectUsage[];
+  /** Latest worker network probe (ADR-0221) — the machine-user Info tab shows outbound/inbound
+   *  posture from it. Null when the cli hasn't reported one yet (old clients / offline). */
+  network?: WorkerNetworkProbe | null;
 }
 
 /** Query GET /workers (machine-0009) — `search` matches worker/cli/project; min*Pct filter live resources (ADR-0214). */
