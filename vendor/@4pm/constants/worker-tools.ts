@@ -25,31 +25,41 @@ export interface WorkerToolCatalogEntry {
   /** Argument used to probe the version (always `--version` today; kept explicit for clarity). */
   versionArg: string;
   /**
-   * The npm package to install for this tool, or `null` for a **detect-only** prerequisite
-   * (runtime/OS binary that is not installed through npm/pnpm — shown with a guidance note, no
-   * install/uninstall button).
+   * The npm package this tool is distributed as — kept as the tool's **package identity** (dedup
+   * against the detected global "extras" list, and the Documents "how it is installed" reference),
+   * or `null` for a runtime/OS binary not distributed through npm/pnpm. This is **not** the same as
+   * "installable via the panel" — see `installable`.
    */
   installPackage: string | null;
+  /**
+   * Whether the Tools panel offers **install/uninstall** for this tool (ADR-0227). `false` ⇒ a
+   * **detect-only prerequisite**: the panel shows it read-only ("Prerequisite"), never installs or
+   * uninstalls it — even when it has an `installPackage` (the tool is provisioned/managed
+   * out-of-band, e.g. 4PM-managed on a rented pool worker). The whole default catalog is detect-only.
+   */
+  installable: boolean;
 }
 
 /**
- * The default worker-tool catalog (ADR-0206). `installPackage: null` ⇒ detect-only (a
- * prerequisite the panel never installs/uninstalls).
+ * The default worker-tool catalog (ADR-0206/0227). Every default tool is **detect-only**
+ * (`installable: false`) — the panel probes + displays it but never installs/uninstalls it;
+ * ad-hoc install/uninstall is reserved for arbitrary extra global packages. `installPackage` is
+ * still the package identity (extras-dedup + Documents reference), independent of `installable`.
  */
 export const WORKER_TOOL_CATALOG: readonly WorkerToolCatalogEntry[] = [
-  { id: "git", label: "Git", category: "vcs", versionArg: "--version", installPackage: null },
-  { id: "node", label: "Node.js", category: "runtime", versionArg: "--version", installPackage: null },
-  { id: "npm", label: "npm", category: "runtime", versionArg: "--version", installPackage: null },
-  { id: "pnpm", label: "pnpm", category: "runtime", versionArg: "--version", installPackage: "pnpm" },
-  { id: "claude", label: "Claude Code", category: "ai-cli", versionArg: "--version", installPackage: "@anthropic-ai/claude-code" },
-  { id: "codex", label: "Codex", category: "ai-cli", versionArg: "--version", installPackage: "@openai/codex" },
-  { id: "gh", label: "GitHub CLI", category: "vcs", versionArg: "--version", installPackage: null },
-  { id: "glab", label: "GitLab CLI", category: "vcs", versionArg: "--version", installPackage: null },
+  { id: "git", label: "Git", category: "vcs", versionArg: "--version", installPackage: null, installable: false },
+  { id: "node", label: "Node.js", category: "runtime", versionArg: "--version", installPackage: null, installable: false },
+  { id: "npm", label: "npm", category: "runtime", versionArg: "--version", installPackage: null, installable: false },
+  { id: "pnpm", label: "pnpm", category: "runtime", versionArg: "--version", installPackage: "pnpm", installable: false },
+  { id: "claude", label: "Claude Code", category: "ai-cli", versionArg: "--version", installPackage: "@anthropic-ai/claude-code", installable: false },
+  { id: "codex", label: "Codex", category: "ai-cli", versionArg: "--version", installPackage: "@openai/codex", installable: false },
+  { id: "gh", label: "GitHub CLI", category: "vcs", versionArg: "--version", installPackage: null, installable: false },
+  { id: "glab", label: "GitLab CLI", category: "vcs", versionArg: "--version", installPackage: null, installable: false },
 ] as const;
 
 /** The catalog ids that are detect-only prerequisites (cannot be installed/uninstalled). */
 export const WORKER_TOOL_PREREQUISITE_IDS: readonly string[] = WORKER_TOOL_CATALOG.filter(
-  (t) => t.installPackage === null,
+  (t) => !t.installable,
 ).map((t) => t.id);
 
 /**

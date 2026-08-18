@@ -15,7 +15,7 @@ import { readCredential, writeCredential } from "../core/credential";
 import { collectFingerprint } from "../core/fingerprint";
 import { confirmPairing, pairWithToken } from "../services/api";
 import { ensureProfileConfig, profileDir, writeDefaultProfile } from "../config/profile";
-import { INSECURE_URL_WARNING, isInsecureRemoteUrl } from "../utils/secure-url";
+import { assertSecureRemoteUrl } from "../utils/secure-url";
 
 /**
  * A filesystem-safe profile name derived from the account username (ADR-0063): readable
@@ -34,9 +34,10 @@ export async function runLink(
   explicitProfile: string | null,
   token: string | null = null,
 ): Promise<void> {
-  // Warn before any credential leaves the machine when the server URL is plaintext to a
-  // non-local host (ADR-0194 Phase-0 finding #1) — the hashcodes/token below travel in the clear.
-  if (isInsecureRemoteUrl(serverUrl)) console.warn(`\n${INSECURE_URL_WARNING}\n`);
+  // Hard-block before any credential leaves the machine when the server URL is plaintext to
+  // a non-local host (ADR-0194 Phase-0 finding #1) — the hashcodes/token below would travel
+  // in the clear to an unauthenticated server. Opt out only on a trusted private network.
+  assertSecureRemoteUrl(serverUrl);
   // Headless pairing (ADR-0192 §6): a provisioning token (`--token` / FOURPM_PAIR_TOKEN) exchanges
   // for hashcode (3) with no interactive hashcode dance — the container/pool boot path.
   let result;

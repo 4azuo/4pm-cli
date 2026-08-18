@@ -39,3 +39,32 @@ export const INSECURE_URL_WARNING =
   "Pairing codes and the ws_token are sent in cleartext and the server is not " +
   "authenticated (the app-layer encryption does not protect against a man-in-the-middle). " +
   "Use an https:// server URL in production.";
+
+/**
+ * True when the operator has explicitly opted out of the plaintext-remote block via
+ * `FOURPM_ALLOW_INSECURE_TRANSPORT=1` — an escape hatch for a deliberately isolated private
+ * network. The default (unset) blocks; localhost is always allowed regardless (see
+ * `isInsecureRemoteUrl`).
+ */
+export function insecureTransportAllowed(): boolean {
+  const flag = (process.env.FOURPM_ALLOW_INSECURE_TRANSPORT ?? "").trim().toLowerCase();
+  return flag === "1" || flag === "true" || flag === "yes";
+}
+
+/** The fatal message shown when a plaintext remote URL is hard-blocked. */
+export const INSECURE_URL_BLOCKED =
+  "✗ Refusing to connect over plaintext (http/ws) to a non-local host: credentials " +
+  "(pairing codes / ws_token) would travel in the clear to an unauthenticated server. " +
+  "Use an https://server URL. To override on a trusted private network only, set " +
+  "FOURPM_ALLOW_INSECURE_TRANSPORT=1.";
+
+/**
+ * Hard-block a plaintext remote transport. Throws when `url` is a plaintext scheme against
+ * a non-local host and the operator has not opted out — the caller must abort before any
+ * credential leaves the machine. A no-op for secure/local URLs (and when opted out).
+ */
+export function assertSecureRemoteUrl(url: string): void {
+  if (isInsecureRemoteUrl(url) && !insecureTransportAllowed()) {
+    throw new Error(INSECURE_URL_BLOCKED);
+  }
+}

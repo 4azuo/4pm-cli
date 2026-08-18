@@ -10,6 +10,7 @@ import type {
   WsTokenResponse,
 } from "@4pm/dto";
 import type { MachineFingerprint } from "../core/fingerprint";
+import { assertSecureRemoteUrl } from "../utils/secure-url";
 
 /** An error from the server carrying an errorCode. */
 export class CliApiError extends Error {
@@ -42,6 +43,9 @@ async function unwrap<T>(res: Response): Promise<T> {
  * POST JSON to the server.
  */
 async function post<T>(serverUrl: string, path: string, body: unknown): Promise<T> {
+  // Hard-block plaintext transport to a non-local host before any credential leaves the
+  // machine (ADR-0194 finding #1): the hashcodes/ws_token below travel unauthenticated.
+  assertSecureRemoteUrl(serverUrl);
   const res = await fetch(`${serverUrl}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

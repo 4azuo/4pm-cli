@@ -97,7 +97,7 @@ import {
   setWorkingCredential,
   setWorkingProfile,
 } from "./ai-profile-state";
-import { INSECURE_URL_WARNING, isInsecureRemoteUrl } from "../utils/secure-url";
+import { INSECURE_URL_BLOCKED, insecureTransportAllowed, isInsecureRemoteUrl } from "../utils/secure-url";
 import {
   claudeCredentialKeys,
   claudeHomeDirs,
@@ -238,7 +238,6 @@ export class WsClient {
   private ecdh: EcdhSession | null = null;
   private wsToken = "";
   /** Warn about a plaintext-remote server URL only once per process (ADR-0194 finding #1). */
-  private insecureWarned = false;
   private heartbeat: NodeJS.Timeout | null = null;
   private usageTimer: NodeJS.Timeout | null = null;
   private logUploadTimer: NodeJS.Timeout | null = null;
@@ -557,11 +556,15 @@ export class WsClient {
         const wsBase = this.credential.wsUrl ?? this.credential.serverUrl;
         const wsUrl = wsBase.replace(/^http/, "ws") + "/ws";
         // Plaintext WS to a non-local host ⇒ the ws_token + session travel unauthenticated
-        // (the ECDH handshake doesn't authenticate the server — ADR-0194 finding #1). Warn once.
-        if (!this.insecureWarned && isInsecureRemoteUrl(wsUrl)) {
-          this.insecureWarned = true;
-          this.bus.log(INSECURE_URL_WARNING, "warn");
-          logger.warn("ws.insecure-transport", { url: wsBase });
+        // (the ECDH handshake doesn't authenticate the server — ADR-0194 finding #1). Hard-block
+        // and stop for good (no reconnect loop over an insecure link); opt out only on a trusted
+        // private network via FOURPM_ALLOW_INSECURE_TRANSPORT=1.
+        if (isInsecureRemoteUrl(wsUrl) && !insecureTransportAllowed()) {
+          this.stopped = true;
+          this.bus.log(INSECURE_URL_BLOCKED, "error");
+          this.bus.setStatus("stopped");
+          logger.error("ws.insecure-transport-blocked", { url: wsBase });
+          throw new Error(INSECURE_URL_BLOCKED);
         }
         const socket = new WebSocket(wsUrl);
         this.socket = socket;

@@ -115,7 +115,7 @@ export async function detectWorkerTools(): Promise<ToolsListReply> {
         category: t.category,
         installed: version !== null,
         version,
-        installable: t.installPackage !== null,
+        installable: t.installable,
       };
     }),
   );
@@ -127,10 +127,12 @@ export async function detectWorkerTools(): Promise<ToolsListReply> {
 function resolvePackage(name: string, op: "install" | "uninstall"): { pkg?: string; error?: string } {
   const entry = WORKER_TOOL_CATALOG.find((t) => t.id === name);
   if (entry) {
-    if (entry.installPackage === null) {
+    // A default-catalog tool is detect-only (ADR-0227): never installed/uninstalled by id, even
+    // when it carries an `installPackage` (that stays only its package identity for dedup/docs).
+    if (!entry.installable) {
       return { error: `"${name}" is a prerequisite and cannot be ${op}ed from here.` };
     }
-    return { pkg: entry.installPackage };
+    return { pkg: entry.installPackage ?? name };
   }
   if (WORKER_TOOL_PREREQUISITE_IDS.includes(name)) {
     return { error: `"${name}" is a prerequisite and cannot be ${op}ed from here.` };
