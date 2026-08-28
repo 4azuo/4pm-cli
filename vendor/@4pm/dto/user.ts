@@ -11,6 +11,7 @@ import {
   usernameSchema,
 } from "@4pm/validation";
 import { baseRequestSchema, deletedFilterSchema } from "./base";
+import type { WorkerFailingTool } from "./machine";
 
 /** User profile returned by the API (never includes password_hash). */
 export interface UserResponse {
@@ -53,6 +54,12 @@ export interface UserResponse {
   /** Whether the user has set an unlock PIN (ADR-0205) — the lock overlay offers PIN vs password.
    * Only on the self `me()` response. */
   hasPin?: boolean;
+  /**
+   * Tools whose last run failed on this account's cli (ADR-0223) — populated only for MACHINE users
+   * (project Members), so a user sees the last tool/connect error like the admin pools. Omitted for
+   * human accounts and when the cli is healthy.
+   */
+  failingTools?: WorkerFailingTool[];
   createdAt: string;
   updatedAt: string;
 }

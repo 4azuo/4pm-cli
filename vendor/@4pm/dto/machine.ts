@@ -186,6 +186,9 @@ export interface MachineLinkResponse {
   /** Latest worker network probe (ADR-0221) — the machine-user page shows outbound/inbound posture
    *  and warns when it's open. Null when the cli hasn't reported one yet (old clients / offline). */
   network?: WorkerNetworkProbe | null;
+  /** Tools whose last run failed (ADR-0223) — surfaced to the tenant web (Machines / Members) so a
+   *  user sees the cli's last tool/connect error, like the admin pools. Empty/omitted = all healthy. */
+  failingTools?: WorkerFailingTool[];
   createdAt: string;
 }
 
