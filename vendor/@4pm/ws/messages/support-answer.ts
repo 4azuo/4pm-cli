@@ -31,12 +31,32 @@ export interface SupportAnswerUsage {
   cacheCreation: number;
 }
 
+/**
+ * The agent's inline moderation verdict on the question (ADR-0237) — produced in the same claude
+ * run that composes the answer, so no extra model/pass. The server persists it onto the user's
+ * HelpMessage; the admin Conversations monitor flags off-topic / sensitive questions from it.
+ */
+export interface SupportAnswerModeration {
+  /** false ⇒ the question is not about how to use 4PM (out of scope). */
+  onTopic: boolean;
+  /** true ⇒ the question contains sensitive / inappropriate content. */
+  sensitive: boolean;
+  /** A short human-readable reason for the flag (empty when neither flag is set). */
+  reason?: string;
+}
+
 /** cli → server: the composed answer (or an error the dispatcher maps to unavailable). */
 export interface SupportAnswerReply {
   /** The grounded answer text; empty when the agent could not produce one. */
   body: string;
   /** Optional error marker when the worker failed (repo clone, spawn, timeout…). */
   error?: string;
+  /**
+   * Inline moderation verdict on the question (ADR-0237). Absent when the run produced no verdict
+   * (older cli, or the structured output could not be parsed) — the server then treats it as
+   * on-topic / not-sensitive (never flags).
+   */
+  moderation?: SupportAnswerModeration;
   /**
    * Real token usage of the claude run (ADR-0224) — the server records it against the seeded
    * `4pm-faq` project. Absent / 0 when the run produced no usage (older cli, plain-text fallback).

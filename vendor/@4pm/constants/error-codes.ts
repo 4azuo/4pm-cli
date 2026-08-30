@@ -227,6 +227,10 @@ export const ErrorCode = {
   SUPPORT_TICKET_CLOSED: "SUPPORT_TICKET_CLOSED",
   HELP_POOL_UNAVAILABLE: "HELP_POOL_UNAVAILABLE",
   HELP_RATE_LIMITED: "HELP_RATE_LIMITED",
+  // AI Help admin moderation (ADR-0237): the user/org is blocked from the channel, or the whole
+  // AI support service is toggled off platform-wide.
+  HELP_BLOCKED: "HELP_BLOCKED",
+  HELP_DISABLED: "HELP_DISABLED",
 } as const;
 
 /** Union type of error codes. */

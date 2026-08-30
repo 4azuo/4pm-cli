@@ -58,6 +58,12 @@ export interface OrgGeneralSettings {
    * `0` disables it; other values clamp to {@link IDLE_LOCK_BOUNDS}.
    */
   idleLockMinutes: number;
+  /**
+   * How many worker-config template versions to keep (ADR-0234). When a new version is saved,
+   * versions older than the most recent N are pruned (a retention cap). Clamped to
+   * {@link WORKER_CONFIG_VERSIONS_BOUNDS}.
+   */
+  workerConfigVersionsKept: number;
 }
 
 /** Bounds (rows) for the list page size (ADR-0198) — values outside clamp to the default. */
@@ -71,6 +77,12 @@ export const IDLE_LOCK_BOUNDS = { min: 1, max: 480 } as const;
 
 /** Default idle privacy-lock timeout in minutes when unset (ADR-0202). */
 export const DEFAULT_IDLE_LOCK_MINUTES = 30;
+
+/** Bounds for how many worker-config template versions are kept (ADR-0234). */
+export const WORKER_CONFIG_VERSIONS_BOUNDS = { min: 1, max: 100 } as const;
+
+/** Default number of worker-config template versions kept when unset (ADR-0234). */
+export const DEFAULT_WORKER_CONFIG_VERSIONS_KEPT = 5;
 
 /** Mail provider identifiers (ADR-0007). */
 export type OrgMailProvider = "console" | "smtp" | "ses" | "resend";
@@ -167,7 +179,12 @@ export interface OrgSettings {
 /** Defaults applied when a settings key is absent. */
 export const DEFAULT_ORG_SETTINGS: OrgSettings = {
   security: { allowSubAccountWithoutEmail: false, ipAllowlist: [] },
-  general: { timezone: "UTC", pageSize: DEFAULT_PAGE_SIZE, idleLockMinutes: DEFAULT_IDLE_LOCK_MINUTES },
+  general: {
+    timezone: "UTC",
+    pageSize: DEFAULT_PAGE_SIZE,
+    idleLockMinutes: DEFAULT_IDLE_LOCK_MINUTES,
+    workerConfigVersionsKept: DEFAULT_WORKER_CONFIG_VERSIONS_KEPT,
+  },
   mail: {
     provider: "console",
     from: "",
@@ -252,6 +269,12 @@ export function readOrgSettings(settings: Record<string, unknown> | null | undef
               IDLE_LOCK_BOUNDS.min,
               IDLE_LOCK_BOUNDS.max,
             ),
+      workerConfigVersionsKept: readTtl(
+        general.workerConfigVersionsKept,
+        d.general.workerConfigVersionsKept,
+        WORKER_CONFIG_VERSIONS_BOUNDS.min,
+        WORKER_CONFIG_VERSIONS_BOUNDS.max,
+      ),
     },
     mail: {
       provider: (["console", "smtp", "ses", "resend"] as const).includes(

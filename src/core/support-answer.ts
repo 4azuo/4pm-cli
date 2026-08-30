@@ -14,7 +14,11 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { SupportAnswerReply, SupportAnswerRequest } from "@4pm/ws";
+import type {
+  SupportAnswerModeration,
+  SupportAnswerReply,
+  SupportAnswerRequest,
+} from "@4pm/ws";
 import { logger } from "../common/logger/logger";
 import { isAuthFailure, isSessionLimit } from "./ai-runner";
 import { createAiStreamParser, estimateTokens, type AiUsage } from "./ai-stream";
@@ -143,12 +147,62 @@ function buildPrompt(docs: string, question: string, askerRole: "admin" | "user"
     roleNote,
     "Answer concisely in the user's language; reference the relevant doc heading/path when useful.",
     "",
+    // Structured output for inline moderation (ADR-0237): the same run also classifies the question.
+    "Return ONLY a single JSON object (no markdown fences, no prose around it) with these keys:",
+    '  "onTopic": boolean   — false if the question is NOT about how to use the 4PM product,',
+    '  "sensitive": boolean — true if the question is inappropriate / abusive OR asks how to hack,',
+    "                         bypass security, gain unauthorized access, take over or steal another",
+    "                         user's/org's account or data, obtain credentials, or any malicious intent,",
+    '  "reason": string     — a short reason when onTopic is false or sensitive is true, else "",',
+    '  "answer": string     — your reply to the user, in markdown (in the user\'s language).',
+    "Refusal policy (ADR-0237): if the question is off-topic (onTopic false) OR sensitive, DO NOT",
+    "answer it. Set \"answer\" to this EXACT same polite refusal for BOTH cases (in the user's",
+    "language, do not reveal which category or hint at the reason): \"Sorry, I can only help with",
+    "questions about how to use 4PM. For anything else, please contact human support.\" Only answer",
+    "normally when onTopic is true AND sensitive is false.",
+    "",
     "===== DOCUMENTATION =====",
     docs,
     "",
     "===== QUESTION =====",
     question,
   ].join("\n");
+}
+
+/** The parsed structured answer: the reply body + an optional moderation verdict (ADR-0237). */
+interface ParsedAnswer {
+  body: string;
+  moderation?: SupportAnswerModeration;
+}
+
+/**
+ * Parse the model's structured JSON output `{ onTopic, sensitive, reason, answer }` into the answer
+ * body + moderation verdict (ADR-0237). Tolerates markdown fences / surrounding prose by extracting
+ * the first `{`…last `}` slice. Degrades gracefully: when no valid JSON object with an `answer`
+ * string is found, the whole text becomes the body and the verdict is omitted (treated on-topic).
+ */
+function parseModeratedAnswer(text: string): ParsedAnswer {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start !== -1 && end > start) {
+    try {
+      const obj = JSON.parse(text.slice(start, end + 1)) as {
+        onTopic?: unknown;
+        sensitive?: unknown;
+        reason?: unknown;
+        answer?: unknown;
+      };
+      if (typeof obj.answer === "string" && obj.answer.trim()) {
+        const onTopic = obj.onTopic !== false; // default on-topic unless explicitly false
+        const sensitive = obj.sensitive === true;
+        const reason = typeof obj.reason === "string" ? obj.reason : "";
+        return { body: obj.answer.trim(), moderation: { onTopic, sensitive, reason } };
+      }
+    } catch {
+      // fall through to the plain-text fallback
+    }
+  }
+  return { body: text.trim() };
 }
 
 /**
@@ -246,11 +300,16 @@ export async function runSupportAnswer(
       ai,
     );
     if (!text) return { body: "", error: "empty answer" };
+    // Split the structured output into the answer body + inline moderation verdict (ADR-0237);
+    // a non-JSON run degrades to the whole text as the body with no verdict.
+    const { body, moderation } = parseModeratedAnswer(text);
+    if (!body) return { body: "", error: "empty answer" };
     // Report the run's token usage so the server records it against the FAQ project (ADR-0224);
     // fall back to a length estimate when the stream carried no usage (older claude / non-json cli).
-    const u = usage.tokens > 0 ? usage : { ...NO_USAGE, tokens: estimateTokens(text) };
+    const u = usage.tokens > 0 ? usage : { ...NO_USAGE, tokens: estimateTokens(body) };
     return {
-      body: text,
+      body,
+      ...(moderation ? { moderation } : {}),
       tokens: u.tokens,
       ...(usage.tokens > 0
         ? {
