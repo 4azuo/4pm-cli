@@ -1,18 +1,18 @@
 /**
- * Run an AI-CLI prompt with profile failover (ADR-0057): try the plan's profile
- * attempts in order; if an attempt fails to authenticate (401 / revoked token) **or hits
- * its session/usage limit**, move to the next profile; stop on the first success (or a
- * genuine error, or once every profile is exhausted). Streams readable text through
- * onChunk (parsed from claude stream-json / codex `exec --json`) and captures the run's
- * real token usage (ADR-0072). The caller reports it to the server + transcript.
+ * Run an AI-CLI prompt with profile failover (ADR-0057, ADR-0240): try the plan's profile
+ * attempts in order; on **any** failed attempt move to the next profile (auth / session-limit /
+ * out-of-credits / other), and stop on the first success — or once every profile is exhausted,
+ * surfacing that last failure. Streams readable text through onChunk (parsed from claude
+ * stream-json / codex `exec --json`) and captures the run's real token usage (ADR-0072). The
+ * caller reports it to the server + transcript.
  */
 import { runCommand } from "./executor";
 import { reportToolResult } from "./tool-health";
 import type { AiPlan } from "../utils/ai-cli";
 import { createAiStreamParser, estimateTokens, type AiUsage } from "./ai-stream";
 
-/** Why an attempt was skipped, so the caller can log an accurate reason. */
-export type AttemptFailReason = "auth" | "limit";
+/** Why an attempt was skipped, so the caller can log an accurate reason (ADR-0240: any error fails over). */
+export type AttemptFailReason = "auth" | "limit" | "other";
 
 /** Detect an auth failure in an attempt's output (to decide whether to try the next). */
 export function isAuthFailure(text: string): boolean {
@@ -120,14 +120,14 @@ export async function runAiFailover(
       reportToolResult(attempt.cmd, true); // AI CLI ran ok (ADR-0223)
       return { exitCode: 0, workedDir: attempt.dir, workedKey: attempt.key, workedCmd: attempt.cmd, usage };
     }
-    // Retry on an auth failure OR a session/usage-limit hit; a genuine error surfaces
-    // as-is. Once the last profile is reached (all exhausted), stop and surface it.
-    const reason: AttemptFailReason | null = isAuthFailure(captured)
+    // Fail over on ANY failed attempt (ADR-0240): auth / session-limit / out-of-credits / other —
+    // classify only for an accurate log. Stop once the last profile is reached (all exhausted).
+    const reason: AttemptFailReason = isAuthFailure(captured)
       ? "auth"
       : isSessionLimit(captured)
         ? "limit"
-        : null;
-    if (!reason || i === total - 1) break;
+        : "other";
+    if (i === total - 1) break;
     handlers.onAttemptFail(attempt.label, reason);
   }
   // Every attempt failed — report the AI CLI's health with a short reason (ADR-0223).

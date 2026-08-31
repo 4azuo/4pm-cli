@@ -20,7 +20,6 @@ import type {
   SupportAnswerRequest,
 } from "@4pm/ws";
 import { logger } from "../common/logger/logger";
-import { isAuthFailure, isSessionLimit } from "./ai-runner";
 import { createAiStreamParser, estimateTokens, type AiUsage } from "./ai-stream";
 import type { ResolvedClaudeProfile } from "../utils/ai-cli";
 
@@ -261,8 +260,8 @@ function runClaudeOnce(
 
 /**
  * Run the answer prompt across the operator's configured claude profiles (working-first), moving
- * to the next on an auth failure or a session/usage-limit hit — the same failover the normal AI
- * dispatch uses (ADR-0057). Resolves the answer text; throws a diagnosable tail if all fail.
+ * to the next on **any** failed attempt — the same failover the normal AI dispatch uses
+ * (ADR-0057, ADR-0240). Resolves the answer text; throws a diagnosable tail once all profiles fail.
  */
 async function runClaudeWithFailover(
   prompt: string,
@@ -277,7 +276,8 @@ async function runClaudeWithFailover(
     // claude may report the failure on stdout rather than stderr (empty stderr + exit 1).
     const combined = err || out;
     lastReason = `exited ${code}: ${combined.slice(0, 500)}`;
-    if ((!isAuthFailure(combined) && !isSessionLimit(combined)) || i === attempts.length - 1) break;
+    // Any failed attempt fails over to the next profile (ADR-0240); stop once all are exhausted.
+    if (i === attempts.length - 1) break;
   }
   throw new Error(`claude ${lastReason}`);
 }

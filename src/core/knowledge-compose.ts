@@ -3,11 +3,10 @@
  * `knowledge.compose` dispatch the cli runs the AI CLI (claude) IN THE PROJECT'S WORKING DIRECTORY
  * so it can read the code/docs, with a prompt to distil the project into a shareable knowledge
  * article, and returns the composed markdown. Profile handling (signed-in account + model +
- * auth/limit failover) mirrors the normal AI dispatch (ADR-0057) and the support agent (ADR-0170).
+ * any-error failover) mirrors the normal AI dispatch (ADR-0057/0240) and the support agent (ADR-0170).
  */
 import { spawn } from "node:child_process";
 import type { KnowledgeComposeReply, KnowledgeComposeRequest } from "@4pm/ws";
-import { isAuthFailure, isSessionLimit } from "./ai-runner";
 import { reportToolResult } from "./tool-health";
 import type { ResolvedClaudeProfile } from "../utils/ai-cli";
 
@@ -77,7 +76,7 @@ function runOnce(
 
 /**
  * Distil the project into a markdown article, trying the configured claude profiles working-first
- * (auth/limit failover — ADR-0057). Returns `{ bodyMarkdown }` or `{ bodyMarkdown:"", error }`.
+ * (any-error failover — ADR-0057/0240). Returns `{ bodyMarkdown }` or `{ bodyMarkdown:"", error }`.
  */
 export async function runKnowledgeCompose(
   req: KnowledgeComposeRequest,
@@ -96,7 +95,8 @@ export async function runKnowledgeCompose(
       }
       const combined = err || out;
       lastReason = `exited ${code}: ${combined.slice(0, 500)}`;
-      if ((!isAuthFailure(combined) && !isSessionLimit(combined)) || i === attempts.length - 1) break;
+      // Any failed attempt fails over to the next profile (ADR-0240); stop once all are exhausted.
+      if (i === attempts.length - 1) break;
     } catch (e) {
       lastReason = String(e);
       break;
