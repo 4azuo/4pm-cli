@@ -74,6 +74,12 @@ function readInstalledVersion(): string {
  * Update via npm global — a shared binary, applies to every instance (ADR-0014).
  */
 function updateViaNpm(version: string): void {
+  // `version` comes from the server's update manifest and is interpolated into a shell
+  // command — require a plain semver before exec so a malformed/hostile value can't inject
+  // shell (the self-download path already gates on sha256 + optional signature, ADR-0015).
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
+    throw new Error(`Refusing to update: invalid version string "${version}".`);
+  }
   execSync(`npm i -g @4pm/cli@${version}`, { stdio: "inherit" });
 }
 

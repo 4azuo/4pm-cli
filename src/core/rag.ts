@@ -263,6 +263,12 @@ export async function ragQuery(root: string, queryText: string, k = 8): Promise<
 
 /** rag.install — launch a background install of `model` (pip + model warm-up). Returns started. */
 export async function ragInstall(root: string, model: string): Promise<RagInstallReply> {
+  // `model` is interpolated into a shell-spawned python `-c` string (via $RAG_MODEL below),
+  // so restrict it to a plain HuggingFace repo id — a quote/metacharacter would break out of
+  // the Python string literal and inject code (defense-in-depth: caller is a project operator).
+  if (!/^[A-Za-z0-9._/-]+$/.test(model)) {
+    return { ok: false, started: false, error: "invalid model name" };
+  }
   const py = await detectPython();
   if (!py.found) return { ok: false, started: false, error: "python3 not found on the worker" };
   if (existsSync(join(root, RAG_REL, ".installing"))) return { ok: true, started: true };
