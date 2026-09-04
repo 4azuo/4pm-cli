@@ -519,6 +519,8 @@ export class WsClient {
         writeProfileConfig(this.context.profileDir, {
           sessionSwitchPct: token.projectTokens?.sessionSwitchPct ?? 0,
           perPromptTokenLimit: token.projectTokens?.perPromptTokenLimit ?? 0,
+          // Project AI-run timeout override (ADR-0243) — 0 ⇒ inherit the machine-user setting.
+          projectAiRunTimeoutSec: token.projectTokens?.aiRunTimeoutSec ?? 0,
         });
         // Whether inputs must pass outbound review before spawning AI (ADR-0082) — the cli
         // asks the server (it picks the outbound reviewer) on each prompt when enabled.
@@ -1276,6 +1278,13 @@ export class WsClient {
    */
   private async runAiPrompt(prompt: string, commandId: string, origin: CommandOrigin): Promise<void> {
     const config = readProfileConfig(this.context.profileDir);
+    // AI-run wall-clock ceiling (ADR-0243): the serving project's override wins over the
+    // machine-user default; 0 ⇒ no limit. Enforced per attempt by the executor so a hung/looping
+    // AI CLI (e.g. a heavy spec review/compose) can't leave the dispatch spinning forever.
+    const projectTimeoutSec = config.projectAiRunTimeoutSec ?? 0;
+    const machineTimeoutSec = config.aiRunTimeoutSec ?? 0;
+    const timeoutSec = projectTimeoutSec > 0 ? projectTimeoutSec : machineTimeoutSec;
+    const aiRunTimeoutMs = timeoutSec > 0 ? timeoutSec * 1000 : 0;
     // Per-prompt token cap (ADR-0081): reject before spawning when the prompt's estimated
     // tokens exceed the project limit. Cheaper than starting a run just to abort it.
     const perPromptLimit = config.perPromptTokenLimit ?? 0;
@@ -1437,7 +1446,7 @@ export class WsClient {
         this.bus.push({ source: origin, kind: "log", text, level: "warn" });
         this.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: `${text}\n`, log: true });
       },
-    });
+    }, aiRunTimeoutMs);
 
     this.bus.endBusy(plan.cmd);
     // Remember the working profile so the next prompt tries it first (ADR-0057) + show it in the

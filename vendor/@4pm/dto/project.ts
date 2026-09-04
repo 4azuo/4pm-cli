@@ -147,6 +147,12 @@ export interface ProjectTokenSettings {
   sessionSwitchPct: number;
   /** Estimated-token ceiling for a single prompt; 0 = no limit. */
   perPromptTokenLimit: number;
+  /**
+   * Wall-clock ceiling (seconds) for a single AI run before the cli terminates the spawned
+   * AI CLI (ADR-0243). **Overrides** the machine-user's own `aiRunTimeoutSec` (Worker config)
+   * for a cli serving this project. 0 = inherit the machine-user setting (no project override).
+   */
+  aiRunTimeoutSec: number;
 }
 
 /**
@@ -336,7 +342,7 @@ export interface ProjectSettings {
 
 /** Defaults applied when a project settings key is absent (ADR-0081/0082/0113). */
 export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
-  tokens: { sessionSwitchPct: 0, perPromptTokenLimit: 0 },
+  tokens: { sessionSwitchPct: 0, perPromptTokenLimit: 0, aiRunTimeoutSec: 0 },
   templates: {},
   aiScope: { restrictToFolder: false },
   packages: { autoUpdate: false },
@@ -362,6 +368,8 @@ export const OUTBOUND_REVIEW_MAX_LIST = 50;
 export const PROJECT_TOKEN_BOUNDS = {
   sessionSwitchPct: { min: 70, max: 90 },
   perPromptTokenLimit: { min: 1_000, max: 2_000_000 },
+  // AI-run timeout override (ADR-0243): 0 = inherit the machine-user setting, else 30s–1h.
+  aiRunTimeoutSec: { min: 30, max: 3_600 },
 } as const;
 
 /** Read a knob: 0 ("off") or within bounds, else the default (0). */
@@ -446,6 +454,11 @@ export function readProjectSettings(
         tokens.perPromptTokenLimit,
         B.perPromptTokenLimit.min,
         B.perPromptTokenLimit.max,
+      ),
+      aiRunTimeoutSec: readTokenKnob(
+        tokens.aiRunTimeoutSec,
+        B.aiRunTimeoutSec.min,
+        B.aiRunTimeoutSec.max,
       ),
     },
     outboundReview: {

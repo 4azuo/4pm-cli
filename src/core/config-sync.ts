@@ -17,7 +17,14 @@ import {
  * Fields the server assigns/refreshes per `ws_token` (ADR-0081) — never overwritten from the
  * web: an edit keeps their current on-disk value so it can't fight the server's runtime knobs.
  */
-const SERVER_MANAGED_KEYS = ["physicPath", "sessionSwitchPct", "perPromptTokenLimit"] as const;
+const SERVER_MANAGED_KEYS = [
+  "physicPath",
+  "sessionSwitchPct",
+  "perPromptTokenLimit",
+  // Project AI-run timeout override mirror (ADR-0243) — the ws_token refreshes it; a Worker-config
+  // edit must not fight it. NOTE: the machine-user's own `aiRunTimeoutSec` is NOT here (operator-editable).
+  "projectAiRunTimeoutSec",
+] as const;
 
 /** Read the profile's config.json as text (canonical defaults when the file is absent). */
 export function readConfigText(profileDir: string): string {

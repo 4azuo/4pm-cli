@@ -65,24 +65,28 @@ function runAttempt(
   cwd: string,
   env: Record<string, string>,
   onChunk: (text: string) => void,
+  timeoutMs: number,
 ): Promise<number> {
   return new Promise((resolve) => {
     void runCommand({ commandId, cmd, args, path: cwd, env }, (out) => {
       if (out.chunk) onChunk(out.chunk);
       if (out.done) resolve(out.exitCode ?? -1);
-    });
+    }, timeoutMs > 0 ? { timeoutMs } : undefined);
   });
 }
 
 /**
  * Execute the plan with failover. Returns the final exit code + the working profile
- * dir (if any) so the caller can remember it for next time.
+ * dir (if any) so the caller can remember it for next time. `timeoutMs` (ADR-0243) caps EACH
+ * attempt's wall-clock — a hung/looping AI CLI is terminated and reported as a failed attempt so
+ * failover still moves on; 0 ⇒ no cap.
  */
 export async function runAiFailover(
   plan: AiPlan,
   commandId: string,
   cwd: string,
   handlers: AiRunHandlers,
+  timeoutMs = 0,
 ): Promise<AiRunResult> {
   const total = plan.attempts.length;
   let finalExit = -1;
@@ -107,7 +111,7 @@ export async function runAiFailover(
         handlers.onChunk(text);
       }
     };
-    finalExit = await runAttempt(commandId, attempt.cmd, attempt.args, cwd, attempt.env, emit);
+    finalExit = await runAttempt(commandId, attempt.cmd, attempt.args, cwd, attempt.env, emit, timeoutMs);
     const tail = parser.flush();
     if (tail) {
       captured += tail;

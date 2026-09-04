@@ -109,6 +109,19 @@ export interface ProfileConfig {
   sessionSwitchPct?: number;
   /** Estimated-token ceiling for a single prompt; 0 = no limit. */
   perPromptTokenLimit?: number;
+  /**
+   * Machine-user default wall-clock ceiling (seconds) for a single AI run before the cli
+   * terminates the spawned AI CLI (ADR-0243). Operator-editable via the Worker config; 0 = no
+   * limit. Overridden per-project by the read-only `projectAiRunTimeoutSec` mirror below when >0.
+   */
+  aiRunTimeoutSec?: number;
+  /**
+   * Read-only mirror of the serving project's AI-run timeout override (ADR-0243), refreshed from
+   * each `ws_token` like the two knobs above. Server is the source of truth; >0 wins over the
+   * machine-user `aiRunTimeoutSec`; 0 ⇒ no project override. Never operator-editable (a Worker-config
+   * write preserves it — a server-managed key).
+   */
+  projectAiRunTimeoutSec?: number;
 }
 
 /**
@@ -192,6 +205,9 @@ export function defaultProfileConfig(): ProfileConfig {
     autoUpdate: true,
     commandHistoryUploadMinutes: 10,
     autoClearIdleMinutes: 10,
+    // Terminate a single AI run after 5 min by default (ADR-0243) so a hung/looping AI CLI
+    // (e.g. a heavy spec review/compose) can't spin the dispatcher forever; 0 = no limit.
+    aiRunTimeoutSec: 300,
   };
 }
 
