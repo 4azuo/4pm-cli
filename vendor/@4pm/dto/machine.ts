@@ -11,7 +11,27 @@ import type {
 import { hexTokenSchema } from "@4pm/validation";
 import { baseRequestSchema } from "./base";
 import type { CommandOrigin } from "./command";
-import type { GitAuthMethod, ProjectTokenSettings, WorkerNetworkProbe } from "./project";
+import type {
+  GitAuthMethod,
+  ProjectMemoryMode,
+  ProjectTokenSettings,
+  WorkerNetworkProbe,
+} from "./project";
+
+/**
+ * Shared AI memory pushed to the cli on `ws_token` (ADR-0245) for the project a link serves: the
+ * stored rolling `text` (seeds the cli cache on connect/reconnect) plus the project's override
+ * settings the cli resolves against its own machine-user memory config. `null` for orchestrator/idle
+ * links or when the project has no stored memory yet.
+ */
+export interface ProjectAiMemoryPush {
+  /** The stored compacted memory text for this (project × link); empty when none yet. */
+  text: string;
+  /** Project override of memory enablement (on/off/inherit the machine-user setting). */
+  mode: ProjectMemoryMode;
+  /** Project override of the memory char budget; 0 = inherit the machine-user budget. */
+  budgetChars: number;
+}
 
 /** Body POST /machine-links/pair (machine-0001). */
 export const pairRequestSchema = z.object({
@@ -111,6 +131,11 @@ export interface WsTokenResponse {
    * (project/cli token limits) are NOT here — the cli learns them via `quota.check`.
    */
   projectTokens: ProjectTokenSettings | null;
+  /**
+   * Shared AI memory (ADR-0245) of the project this link serves: the stored rolling text (seeds the
+   * cli cache) + the project's override settings. `null` for orchestrator/idle links.
+   */
+  aiMemory: ProjectAiMemoryPush | null;
   /**
    * Folder-scope hardening of the project this link serves (ADR project aiScope). When
    * true the cli prepends a guard to every AI prompt telling the agent to only use content

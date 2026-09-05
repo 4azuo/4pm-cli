@@ -221,11 +221,14 @@ export function folderScopeGuard(folder: string, prompt: string): string {
  * + the profile's `args` (extras appended on top — ADR-0158) + `--model <model>` when set
  * + the prompt.
  */
-function buildRunArgs(profile: AiProfile, cmd: string, prompt: string): string[] {
+function buildRunArgs(profile: AiProfile, cmd: string, prompt: string, resumeId?: string): string[] {
   const extras = profile.args ?? [];
   const model = profile.model?.trim();
   const modelArgs = model ? ["--model", model] : [];
-  return [...requiredArgs(cmd), ...extras, ...modelArgs, prompt];
+  // Native session resume (ADR-0245) — claude only; resumes the prior conversation on the SAME
+  // profile so the shared memory need not be re-injected. Non-claude / no id ⇒ a fresh session.
+  const resumeArgs = resumeId && cmd.includes("claude") ? ["--resume", resumeId] : [];
+  return [...requiredArgs(cmd), ...resumeArgs, ...extras, ...modelArgs, prompt];
 }
 
 /**
@@ -328,10 +331,15 @@ export interface AiWorkingHint {
  * (unified) or dir (legacy) is moved to the front. No usable profile ⇒ a single "default" attempt
  * (the CLI's own default env).
  */
-export function planAiRun(prompt: string, config: AiCliConfig, hint: AiWorkingHint = {}): AiPlan {
+export function planAiRun(
+  prompt: string,
+  config: AiCliConfig,
+  hint: AiWorkingHint = {},
+  resume: Map<string, string> = new Map(),
+): AiPlan {
   return isUnifiedConfig(config)
-    ? planUnifiedRun(prompt, config, hint.credential ?? null)
-    : planLegacyRun(prompt, config, hint.dir ?? null);
+    ? planUnifiedRun(prompt, config, hint.credential ?? null, resume)
+    : planLegacyRun(prompt, config, hint.dir ?? null, resume);
 }
 
 /**
@@ -340,7 +348,12 @@ export function planAiRun(prompt: string, config: AiCliConfig, hint: AiWorkingHi
  * credentials — failover stays within the active CLI (ADR-0197); only "—" (blank) fails over
  * across providers.
  */
-function planUnifiedRun(prompt: string, config: AiCliConfig, workingCredential: string | null): AiPlan {
+function planUnifiedRun(
+  prompt: string,
+  config: AiCliConfig,
+  workingCredential: string | null,
+  resume: Map<string, string>,
+): AiPlan {
   const baseEnv = config.aiEnv ?? {};
   // Scope to the pinned provider unless "—" (mixed) is selected (ADR-0197).
   const active = activeProvider(config);
@@ -374,14 +387,19 @@ function planUnifiedRun(prompt: string, config: AiCliConfig, workingCredential: 
     label: cred.label?.trim() || profileDisplayLabel(dir),
     dir,
     key,
-    args: buildRunArgs(cred, cmd, prompt),
+    args: buildRunArgs(cred, cmd, prompt, resume.get(key)),
     env: envVar ? { ...baseEnv, [envVar]: dir } : { ...baseEnv },
   }));
   return { cmd: attempts[0]?.cmd ?? DEFAULT_AI_CLI, attempts };
 }
 
 /** The legacy single-provider plan (per `aiCli`) — unchanged behavior for pre-ADR-0182 configs. */
-function planLegacyRun(prompt: string, config: AiCliConfig, workingDir: string | null): AiPlan {
+function planLegacyRun(
+  prompt: string,
+  config: AiCliConfig,
+  workingDir: string | null,
+  resume: Map<string, string>,
+): AiPlan {
   // `||` (not `??`): a blank aiCli ("mixed"/none — ADR-0182) falls back to claude here.
   const cmd = config.aiCli || DEFAULT_AI_CLI;
   const baseEnv = config.aiEnv ?? {};
@@ -408,13 +426,16 @@ function planLegacyRun(prompt: string, config: AiCliConfig, workingDir: string |
           ...resolved.filter((r) => r.dir !== workingDir),
         ]
       : resolved;
-  const attempts: AiAttempt[] = ordered.map(({ profile, dir }) => ({
-    cmd,
-    label: profileDisplayLabel(dir),
-    dir,
-    key: credentialKey(cmd, dir),
-    args: buildRunArgs(profile, cmd, prompt),
-    env: { ...baseEnv, [envVar]: dir },
-  }));
+  const attempts: AiAttempt[] = ordered.map(({ profile, dir }) => {
+    const key = credentialKey(cmd, dir);
+    return {
+      cmd,
+      label: profileDisplayLabel(dir),
+      dir,
+      key,
+      args: buildRunArgs(profile, cmd, prompt, resume.get(key)),
+      env: { ...baseEnv, [envVar]: dir },
+    };
+  });
   return { cmd, attempts };
 }

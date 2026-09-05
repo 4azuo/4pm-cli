@@ -10,7 +10,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import type { SessionBus, SessionStatus, TranscriptEntry } from "../core/session-bus";
 import { appendInputHistory, loadInputHistory } from "../core/input-history";
-import { readProfileConfig } from "../config/profile";
+import { readProfileConfig, resolveIdleAutoClearMinutes } from "../config/profile";
 import type { SessionInfo } from "./session-info";
 import { Banner } from "./banner";
 import { flattenEntries, TranscriptLine } from "./transcript";
@@ -78,12 +78,10 @@ export function App({
   // captured as the answer instead of being routed as a command/prompt.
   const [pendingConfirm, setPendingConfirm] = useState<{ prompt: string; onYes: () => void } | null>(null);
 
-  // Idle transcript auto-clear (memo): after this many ms with no local (operator) input,
-  // wipe the on-screen buffer to keep an idle session bounded. 0 = disabled (config-driven).
-  const [autoClearIdleMs] = useState(() => {
-    const min = readProfileConfig(info.profileDir).autoClearIdleMinutes ?? 10;
-    return min > 0 ? min * 60_000 : 0;
-  });
+  // Idle transcript auto-clear (memo): after this many idle minutes with no local (operator) input,
+  // wipe the on-screen buffer to keep an idle session bounded. The window is resolved per tick from
+  // the config (project override wins over the machine-user value — ADR-0244), so a live change via
+  // `ws_token` applies without a restart. 0 ⇒ disabled.
   // Timestamp of the last activity (local operator input OR a server-dispatched line);
   // drives the idle check. Only `system` lifecycle lines don't count. Seeded to session start.
   const lastActivityRef = useRef(startedAt);
@@ -170,20 +168,21 @@ export function App({
   // Never clears while a response is streaming (`busy`), during a y/N confirm, or when there
   // is nothing to clear.
   useEffect(() => {
-    if (autoClearIdleMs <= 0) return;
     const timer = setInterval(() => {
+      const idleMs = resolveIdleAutoClearMinutes(readProfileConfig(info.profileDir)) * 60_000;
+      if (idleMs <= 0) return; // disabled (or no serving project yet)
       if (busyRef.current !== null || pendingConfirmRef.current || entriesLenRef.current === 0) return;
-      if (Date.now() - lastActivityRef.current < autoClearIdleMs) return;
+      if (Date.now() - lastActivityRef.current < idleMs) return;
       clearTranscript();
       bus.push({
         source: "system",
         kind: "log",
-        text: `Transcript auto-cleared after ${Math.round(autoClearIdleMs / 60_000)} min idle.`,
+        text: `Transcript auto-cleared after ${Math.round(idleMs / 60_000)} min idle.`,
       });
       lastActivityRef.current = Date.now();
     }, 60_000);
     return () => clearInterval(timer);
-  }, [autoClearIdleMs, bus, clearTranscript]);
+  }, [info.profileDir, bus, clearTranscript]);
 
   // Keep the whole frame strictly SHORTER than the terminal (reserve one row): when an Ink frame
   // fills the terminal height it repaints via a full clear each render (flicker); one row of
@@ -243,7 +242,12 @@ export function App({
       runSlashCommand(trimmed, {
         info,
         print: (text, level) => bus.push({ source: "local", kind: "log", text, level }),
-        clear: clearTranscript,
+        // A manual `/clear` also resets the shared AI memory + native session (ADR-0245); the idle
+        // auto-clear path calls clearTranscript() directly (display-only), so it does NOT reset.
+        clear: () => {
+          clearTranscript();
+          bus.clearSession();
+        },
         quit: () => exit(),
         confirm: (prompt, onYes) => {
           bus.push({ source: "local", kind: "log", text: prompt });

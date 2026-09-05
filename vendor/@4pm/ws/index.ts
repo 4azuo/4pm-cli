@@ -6,4 +6,5 @@ export * from "./channels/index";
 export * from "./crypto";
 export * from "./messages/envelope";
 export * from "./messages/knowledge-compose";
+export * from "./messages/memory";
 export * from "./messages/support-answer";

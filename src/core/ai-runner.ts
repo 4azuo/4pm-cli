@@ -55,6 +55,8 @@ export interface AiRunResult {
   workedCmd: string | null;
   /** Real token usage of the successful attempt (estimate fallback — ADR-0072). */
   usage: AiUsage;
+  /** The claude session id of the successful attempt (ADR-0245 native resume); "" when none. */
+  sessionId: string;
 }
 
 /** Run a single attempt, resolving with its exit code; streams chunks to onChunk. */
@@ -122,7 +124,14 @@ export async function runAiFailover(
       const usage = parser.usage();
       if (usage.tokens === 0) usage.tokens = estimateTokens(captured);
       reportToolResult(attempt.cmd, true); // AI CLI ran ok (ADR-0223)
-      return { exitCode: 0, workedDir: attempt.dir, workedKey: attempt.key, workedCmd: attempt.cmd, usage };
+      return {
+        exitCode: 0,
+        workedDir: attempt.dir,
+        workedKey: attempt.key,
+        workedCmd: attempt.cmd,
+        usage,
+        sessionId: parser.sessionId(),
+      };
     }
     // Fail over on ANY failed attempt (ADR-0240): auth / session-limit / out-of-credits / other —
     // classify only for an accurate log. Stop once the last profile is reached (all exhausted).
@@ -136,7 +145,7 @@ export async function runAiFailover(
   }
   // Every attempt failed — report the AI CLI's health with a short reason (ADR-0223).
   reportToolResult(lastCmd, false, summarizeAiFailure(lastCaptured, finalExit));
-  return { exitCode: finalExit, workedDir: null, workedKey: null, workedCmd: null, usage: { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 } };
+  return { exitCode: finalExit, workedDir: null, workedKey: null, workedCmd: null, usage: { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, sessionId: "" };
 }
 
 /** A short, human reason for a failed AI run — reused by the tool-health report (ADR-0223). */

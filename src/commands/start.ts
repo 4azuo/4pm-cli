@@ -17,7 +17,12 @@ import {
   lockHolder,
   releaseInstanceLock,
 } from "../core/instance-lock";
-import { ensureProfileConfig, readProfileConfig } from "../config/profile";
+import {
+  backfillProfileConfig,
+  ensureProfileConfig,
+  readProfileConfig,
+  resolveIdleAutoClearMinutes,
+} from "../config/profile";
 import { logger, type LogLevel } from "../common/logger/logger";
 import { SessionBus } from "../core/session-bus";
 import { startControlServer } from "../core/control-server";
@@ -69,6 +74,10 @@ export async function runStart(
   // if config.json is still missing, so it never ends up as the partial file the first
   // ws_token would otherwise create (keeps the structure identical to `/config init`).
   ensureProfileConfig(profileDir);
+  // Backfill any operator-default keys a pre-existing config.json lacks (ADR-0244 follow-up), so a
+  // config written before a default existed (e.g. `aiRunTimeoutSec: 300`) still gets the safeguard
+  // instead of resolving to "no limit"/"off".
+  backfillProfileConfig(profileDir);
 
   // Auto-update before connecting (ADR-0015) — keeps profile/.cre intact
   const config = readProfileConfig(profileDir);
@@ -185,8 +194,11 @@ export async function runStart(
     } else {
       attachConsoleSink(bus);
       // Headless has no Ink TUI, so drive the idle transcript auto-clear here (the TUI runs its
-      // own in ui/app.tsx) — otherwise the config knob is a no-op in a container (ADR-0150).
-      stopIdleClear = startIdleAutoClear(bus, config.autoClearIdleMinutes ?? 10);
+      // own in ui/app.tsx) — otherwise the config knob is a no-op in a container (ADR-0150). The
+      // window is re-read each tick so the project override (ws_token — ADR-0244) applies live.
+      stopIdleClear = startIdleAutoClear(bus, () =>
+        resolveIdleAutoClearMinutes(readProfileConfig(profileDir)),
+      );
       bus.log(`Connecting to ${credential.serverUrl} (profile: ${profileName})…`);
       await runResilient();
     }

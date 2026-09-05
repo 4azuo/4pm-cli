@@ -25,6 +25,8 @@ export interface AiStreamParser {
   flush(): string;
   /** The usage captured so far (from the `result` event; zeros until seen). */
   usage(): AiUsage;
+  /** The claude session id seen in the stream (ADR-0245 native resume); "" when none/non-claude. */
+  sessionId(): string;
 }
 
 /** A claude stream-json OR codex `exec --json` event (only the fields we read). */
@@ -43,6 +45,8 @@ interface StreamEvent {
     reasoning_output_tokens?: number;
   };
   total_cost_usd?: number;
+  /** claude: the session id (carried on `system`/`result` events) — for native `--resume` (ADR-0245). */
+  session_id?: string;
   /** codex: the completed item (agent_message carries the assistant text). */
   item?: { type?: string; text?: string };
 }
@@ -67,9 +71,12 @@ export function createAiStreamParser(cli: string): AiStreamParser {
   const isJson = isClaude || isCodex;
   let buffer = "";
   const acc: AiUsage = { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+  let sessionId = "";
 
   /** Handle one claude stream-json event; returns the display text to show. */
   function handleClaude(ev: StreamEvent): string {
+    // Any claude event (system/init, assistant, result) may carry the session id (ADR-0245).
+    if (typeof ev.session_id === "string" && ev.session_id) sessionId = ev.session_id;
     if (ev.type === "result" && ev.usage) {
       acc.input = ev.usage.input_tokens ?? 0;
       acc.output = ev.usage.output_tokens ?? 0;
@@ -143,6 +150,7 @@ export function createAiStreamParser(cli: string): AiStreamParser {
       return handled === null ? line : handled;
     },
     usage: () => ({ ...acc }),
+    sessionId: () => sessionId,
   };
 }
 

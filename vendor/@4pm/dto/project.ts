@@ -153,6 +153,12 @@ export interface ProjectTokenSettings {
    * for a cli serving this project. 0 = inherit the machine-user setting (no project override).
    */
   aiRunTimeoutSec: number;
+  /**
+   * Idle transcript auto-clear window (minutes) for a cli serving this project (ADR-0244).
+   * **Overrides** the machine-user's own `autoClearIdleMinutes` (Worker config). 0 = inherit
+   * the machine-user setting (no project override).
+   */
+  autoClearIdleMinutes: number;
 }
 
 /**
@@ -324,10 +330,38 @@ export interface ProjectPackagesSettings {
   autoUpdate: boolean;
 }
 
+/**
+ * Shared AI memory policy per project (ADR-0245), stored under `settings.memory`. Overrides the
+ * machine-user's own memory config for a cli serving this project: `mode` `on`/`off` forces it,
+ * `inherit` defers to the machine-user setting; `budgetChars` `0` = inherit the machine-user budget,
+ * else the char ceiling of the compacted rolling memory.
+ */
+export const PROJECT_MEMORY_MODES = ["inherit", "on", "off"] as const;
+export type ProjectMemoryMode = (typeof PROJECT_MEMORY_MODES)[number];
+export interface ProjectMemorySettings {
+  mode: ProjectMemoryMode;
+  budgetChars: number;
+}
+
+/**
+ * GET project AI memory (ADR-0245) — the current stored rolling memory for a `(project × link)`,
+ * read by the Console's Memory sub-tab (the server holds the copy the cli pushed via `memory.update`).
+ */
+export interface ProjectAiMemoryResponse {
+  /** The stored compacted memory text (empty when none yet). */
+  text: string;
+  /** Monotonic revision (increments on each update). */
+  rev: number;
+  /** ISO timestamp of the last update, or null when never written. */
+  updatedAt: string | null;
+}
+
 /** Typed view of `Project.settings` (ADR-0081/0082/0113). */
 export interface ProjectSettings {
   tokens: ProjectTokenSettings;
   outboundReview: OutboundReviewSettings;
+  /** Shared AI memory override policy (ADR-0245). */
+  memory: ProjectMemorySettings;
   /** Selected template file per kind (ADR-0113) — kind → org template file id. */
   templates: ProjectTemplateSelection;
   /** AI-scope policy (folder-restriction prompt guard). */
@@ -342,7 +376,8 @@ export interface ProjectSettings {
 
 /** Defaults applied when a project settings key is absent (ADR-0081/0082/0113). */
 export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
-  tokens: { sessionSwitchPct: 0, perPromptTokenLimit: 0, aiRunTimeoutSec: 0 },
+  tokens: { sessionSwitchPct: 0, perPromptTokenLimit: 0, aiRunTimeoutSec: 0, autoClearIdleMinutes: 0 },
+  memory: { mode: "inherit", budgetChars: 0 },
   templates: {},
   aiScope: { restrictToFolder: false },
   packages: { autoUpdate: false },
@@ -370,7 +405,12 @@ export const PROJECT_TOKEN_BOUNDS = {
   perPromptTokenLimit: { min: 1_000, max: 2_000_000 },
   // AI-run timeout override (ADR-0243): 0 = inherit the machine-user setting, else 30s–1h.
   aiRunTimeoutSec: { min: 30, max: 3_600 },
+  // Idle auto-clear override (ADR-0244): 0 = inherit the machine-user setting, else 1min–24h.
+  autoClearIdleMinutes: { min: 1, max: 1_440 },
 } as const;
+
+/** Bounds for the memory char budget (ADR-0245): 0 = inherit the machine-user budget, else 500–50k. */
+export const PROJECT_MEMORY_BUDGET_BOUNDS = { min: 500, max: 50_000 } as const;
 
 /** Read a knob: 0 ("off") or within bounds, else the default (0). */
 function readTokenKnob(value: unknown, min: number, max: number): number {
@@ -424,9 +464,20 @@ export function readProjectSettings(
     const v = rawTemplates[kind];
     if (typeof v === "string" && v) templates[kind] = v;
   }
+  const memory = (settings?.memory ?? {}) as Partial<ProjectMemorySettings>;
   return {
     templates,
     alerts: readProjectAlertRules(settings),
+    memory: {
+      mode: PROJECT_MEMORY_MODES.includes(memory.mode as ProjectMemoryMode)
+        ? (memory.mode as ProjectMemoryMode)
+        : DEFAULT_PROJECT_SETTINGS.memory.mode,
+      budgetChars: readTokenKnob(
+        memory.budgetChars,
+        PROJECT_MEMORY_BUDGET_BOUNDS.min,
+        PROJECT_MEMORY_BUDGET_BOUNDS.max,
+      ),
+    },
     aiScope: {
       restrictToFolder:
         typeof aiScope.restrictToFolder === "boolean"
@@ -459,6 +510,11 @@ export function readProjectSettings(
         tokens.aiRunTimeoutSec,
         B.aiRunTimeoutSec.min,
         B.aiRunTimeoutSec.max,
+      ),
+      autoClearIdleMinutes: readTokenKnob(
+        tokens.autoClearIdleMinutes,
+        B.autoClearIdleMinutes.min,
+        B.autoClearIdleMinutes.max,
       ),
     },
     outboundReview: {

@@ -27,6 +27,7 @@ import {
   type CommandDispatchPayload,
   type CommandHistoryPayload,
   type CommandOrigin,
+  type MemoryUpdatePayload,
   type EcdhSession,
   type FsListRequest,
   type FsReadRequest,
@@ -89,7 +90,7 @@ import type { SessionBus, TranscriptEntry as BusTranscriptEntry } from "./sessio
 import { UpdateScheduler } from "./update-scheduler";
 import { CliApiError, requestWsToken } from "../services/api";
 import { runCommand } from "./executor";
-import { runAiFailover } from "./ai-runner";
+import { runAiFailover, type AiRunHandlers, type AiRunResult } from "./ai-runner";
 import { estimateTokens } from "./ai-stream";
 import {
   getWorkingCredential,
@@ -140,11 +141,17 @@ import { manageSshKey } from "./git-ssh-key";
 import { gitCommit, gitCommitDiff, gitLog, gitRepos } from "./git-history";
 import { setCommitAuthor } from "./git-commit-identity";
 import { addProject, scaffoldProject } from "./scaffold";
-import { readProfileConfig, writeProfileConfig } from "../config/profile";
+import { readProfileConfig, resolveMemoryConfig, writeProfileConfig } from "../config/profile";
+import { runMemoryCompaction } from "./memory-compact";
 import { applyConfigText, readConfigText } from "./config-sync";
 import { detectWorkerTools, runWorkerToolOp } from "./worker-tools";
 import { logger, readRecentLogLines, readLogUpload } from "../common/logger/logger";
 import { CLI_VERSION } from "../version";
+
+/** Preamble prepended before the shared AI memory when seeding a fresh native session (ADR-0245). */
+const MEMORY_SEED_HEADER =
+  "CONTEXT MEMORY from earlier in this conversation (may span prior sessions/accounts). Use it as " +
+  "background; do not repeat it back unless relevant:";
 
 const HEARTBEAT_MS = 30_000;
 /** How often to poll the Claude subscription usage API (ADR-0072). */
@@ -252,6 +259,13 @@ export class WsClient {
    * when true the cli prepends a folder-scope guard to every AI prompt. Fed by each ws_token.
    */
   private restrictToFolder = false;
+  /**
+   * Shared AI memory (ADR-0245) cache for the served project: the rolling compacted text (seeded by
+   * `ws_token`, updated after each run) + the last native `session_id` per credential key (for
+   * `--resume` on the same profile). Per (project × link) — this cli instance is one link.
+   */
+  private aiMemory = "";
+  private readonly sessionIdByKey = new Map<string, string>();
   private stopped = false;
   /** Resolver to wake the backoff sleep early (set while waiting) — for /reconnect. */
   private wakeReconnect: (() => void) | null = null;
@@ -348,6 +362,8 @@ export class WsClient {
       this.emitConsole({ kind: "update", entry: toDtoEntry(entry) }),
     );
     context.bus.onClear(() => this.emitConsoleClear());
+    // A manual `/clear` (not idle auto-clear) resets the shared AI memory + native sessions (ADR-0245).
+    context.bus.onClearSession(() => this.resetMemorySession());
   }
 
   /**
@@ -521,7 +537,16 @@ export class WsClient {
           perPromptTokenLimit: token.projectTokens?.perPromptTokenLimit ?? 0,
           // Project AI-run timeout override (ADR-0243) — 0 ⇒ inherit the machine-user setting.
           projectAiRunTimeoutSec: token.projectTokens?.aiRunTimeoutSec ?? 0,
+          // Project idle auto-clear override (ADR-0244) — 0 ⇒ inherit the machine-user setting.
+          projectAutoClearIdleMinutes: token.projectTokens?.autoClearIdleMinutes ?? 0,
+          // Project shared-AI-memory override mirrors (ADR-0245).
+          projectAiMemoryMode: token.aiMemory?.mode ?? "inherit",
+          projectAiMemoryBudgetChars: token.aiMemory?.budgetChars ?? 0,
         });
+        // Seed the shared-AI-memory cache (ADR-0245) from the server's stored copy — only when the
+        // cli holds none yet (a fresh process / reconnect), so a periodic ws_token refresh never
+        // clobbers a newer value this cli itself wrote (it is the sole writer for its link).
+        if (token.aiMemory && !this.aiMemory) this.aiMemory = token.aiMemory.text;
         // Whether inputs must pass outbound review before spawning AI (ADR-0082) — the cli
         // asks the server (it picks the outbound reviewer) on each prompt when enabled.
         this.outboundReviewEnabled = token.outboundReview?.enabled === true;
@@ -1359,13 +1384,30 @@ export class WsClient {
     // folder, prepend a guard so the agent only uses content inside the served worker
     // folder. Only the AI actually sees this — the markers/announce/history below keep
     // echoing the raw operator prompt so the console shows exactly what was typed.
-    const effectivePrompt =
+    const guardedPrompt =
       this.restrictToFolder && this.physicRoot ? folderScopeGuard(this.physicRoot, prompt) : prompt;
-    const plan = planAiRun(
-      effectivePrompt,
-      config,
-      unified ? { credential: startCred ?? workingCred } : { dir: startDir ?? workingDir },
-    );
+    const hint = unified
+      ? { credential: startCred ?? workingCred }
+      : { dir: startDir ?? workingDir };
+    // Shared AI memory (ADR-0245): resume the native session on the SAME profile when we have one
+    // (it already carries the context — no re-inject), else seed a fresh session with the compacted
+    // memory. Probe the plan once to learn the first attempt's credential/provider, then decide.
+    const memCfg = resolveMemoryConfig(config);
+    const firstAttempt = planAiRun(guardedPrompt, config, hint).attempts[0];
+    const resumeId =
+      memCfg.enabled && firstAttempt?.key && firstAttempt.cmd === "claude"
+        ? this.sessionIdByKey.get(firstAttempt.key)
+        : undefined;
+    let effectivePrompt = guardedPrompt;
+    let resume = new Map<string, string>();
+    if (resumeId) {
+      // Native session alive → resume each profile's own session; do NOT re-inject the memory.
+      resume = this.sessionIdByKey;
+    } else if (memCfg.enabled && this.aiMemory) {
+      // Native session reset (new/failed-over profile, or memory cleared) → seed with the memory.
+      effectivePrompt = `${MEMORY_SEED_HEADER}\n${this.aiMemory}\n\n${guardedPrompt}`;
+    }
+    const plan = planAiRun(effectivePrompt, config, hint, resume);
     // Representative argv for the announce/history markers (args are now per-profile —
     // the first attempt's are used; failover may run a different profile's args).
     const markerArgs = plan.attempts[0]?.args ?? [];
@@ -1399,12 +1441,15 @@ export class WsClient {
     let displayMode: "pending" | "prose" | "result" = "pending";
     let resultId: string | null = null;
     let resultBuf = "";
-    const result = await runAiFailover(plan, commandId, cwd, {
+    // The full assistant answer text (verbatim), captured for the shared-memory compaction (ADR-0245).
+    let answerText = "";
+    const handlers: AiRunHandlers = {
       onChunk: (text) => {
         if (!responseHeaderShown) {
           this.bus.push({ source: origin, kind: "aires", text: `${plan.cmd} ›` });
           responseHeaderShown = true;
         }
+        answerText += text;
         // Server stream + local history are always verbatim (display collapse is render-only).
         appendCommandOutput(commandId, text);
         this.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: text });
@@ -1446,9 +1491,15 @@ export class WsClient {
         this.bus.push({ source: origin, kind: "log", text, level: "warn" });
         this.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: `${text}\n`, log: true });
       },
-    }, aiRunTimeoutMs);
-
-    this.bus.endBusy(plan.cmd);
+    };
+    // endBusy in a `finally` so a thrown/rejected run still releases the busy state — otherwise a
+    // stuck `busy` blocks the idle auto-clear indefinitely (it never clears mid-response — ADR-0244).
+    let result: AiRunResult;
+    try {
+      result = await runAiFailover(plan, commandId, cwd, handlers, aiRunTimeoutMs);
+    } finally {
+      this.bus.endBusy(plan.cmd);
+    }
     // Remember the working profile so the next prompt tries it first (ADR-0057) + show it in the
     // header. Unified plans remember one cross-provider credential key (ADR-0182); the legacy plan
     // remembers the per-cmd dir. (In "priority" mode the memory is written but ignored on read.)
@@ -1525,6 +1576,52 @@ export class WsClient {
           : `✗ ${plan.cmd} failed (exit ${result.exitCode}) — see the error above`,
       level: result.exitCode === 0 ? "info" : "error",
     });
+    // Shared AI memory (ADR-0245): remember the native session id for a same-profile `--resume`, then
+    // fold the exchange into the rolling memory (a background compaction) so the next reset re-grounds
+    // the AI. The reply is already shown + busy is off, so this never blocks the console.
+    if (memCfg.enabled && result.exitCode === 0) {
+      if (result.workedKey && result.sessionId) {
+        this.sessionIdByKey.set(result.workedKey, result.sessionId);
+      }
+      void this.updateSharedMemory(config, prompt, answerText, memCfg.budgetChars).catch(() => {});
+    }
+  }
+
+  /**
+   * Fold the latest exchange into the shared AI memory (ADR-0245): a background claude compaction to a
+   * budget-bounded summary, cached locally + written back to the server (`memory.update`). Best-effort —
+   * a failed/empty compaction keeps the previous memory (no write). Claude-only (mirrors the design's
+   * native-session focus); a non-claude worker simply never compacts.
+   */
+  private async updateSharedMemory(
+    config: ReturnType<typeof readProfileConfig>,
+    userPrompt: string,
+    answer: string,
+    budgetChars: number,
+  ): Promise<void> {
+    if (!answer.trim()) return;
+    const profiles = resolveClaudeProfiles(config, this.physicRoot);
+    const cwd = this.physicRoot ?? process.cwd();
+    const newMemory = await runMemoryCompaction(
+      { cmd: "claude", profiles, env: config.aiEnv },
+      cwd,
+      { oldMemory: this.aiMemory, prompt: userPrompt, answer, budgetChars },
+    );
+    if (!newMemory) return; // compaction failed ⇒ keep the previous memory
+    this.aiMemory = newMemory;
+    this.send(WsChannels.MEMORY_UPDATE, { text: newMemory } satisfies MemoryUpdatePayload);
+  }
+
+  /**
+   * Reset the shared AI memory + native sessions for a "new conversation" (ADR-0245) — a manual
+   * `/clear`. Drops the cached memory + every remembered `session_id` (so the next run starts a fresh
+   * native session) and clears the server-stored memory. Idle auto-clear does NOT call this
+   * (display-only — ADR-0244).
+   */
+  resetMemorySession(): void {
+    this.aiMemory = "";
+    this.sessionIdByKey.clear();
+    this.send(WsChannels.MEMORY_UPDATE, { text: "" } satisfies MemoryUpdatePayload);
   }
 
   /**

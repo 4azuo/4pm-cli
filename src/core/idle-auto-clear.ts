@@ -9,11 +9,11 @@
 import type { SessionBus } from "./session-bus";
 
 /**
- * Start the headless idle auto-clear loop; returns a stop function. `idleMinutes <= 0` disables it.
+ * Start the headless idle auto-clear loop; returns a stop function. `idleMinutes` is a **getter**
+ * so the window follows a live config change (the project override arrives/updates via `ws_token`
+ * — ADR-0244); it is re-read each tick. `<= 0` from the getter disables clearing for that tick.
  */
-export function startIdleAutoClear(bus: SessionBus, idleMinutes: number): () => void {
-  const idleMs = Math.max(0, idleMinutes) * 60_000;
-  if (idleMs <= 0) return () => {};
+export function startIdleAutoClear(bus: SessionBus, idleMinutes: () => number): () => void {
   // Any pushed line (server output, AI req/res, lifecycle log) counts as activity — mirrors the
   // TUI driver, which resets on both operator input and a server-dispatched line.
   let lastActivity = Date.now();
@@ -21,6 +21,8 @@ export function startIdleAutoClear(bus: SessionBus, idleMinutes: number): () => 
     lastActivity = Date.now();
   });
   const timer = setInterval(() => {
+    const idleMs = Math.max(0, idleMinutes()) * 60_000;
+    if (idleMs <= 0) return; // disabled (or no serving project yet)
     // Never clear mid-response (a tool is still running) or when there is nothing to clear.
     if (bus.busy !== null || bus.snapshot().length === 0) return;
     if (Date.now() - lastActivity < idleMs) return;

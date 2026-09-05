@@ -110,6 +110,20 @@ export class SessionBus {
     return () => this.emitter.off("clear", fn);
   }
 
+  /**
+   * Signal a "new conversation" (a MANUAL `/clear`, ADR-0245) — distinct from `clear()`, which the
+   * idle auto-clear (ADR-0244) also calls. Consumers reset the shared AI memory + native session.
+   */
+  clearSession(): void {
+    this.emitter.emit("clearSession");
+  }
+
+  /** Subscribe to a manual `/clear` reset (shared-memory + native-session reset — ADR-0245). */
+  onClearSession(fn: () => void): () => void {
+    this.emitter.on("clearSession", fn);
+    return () => this.emitter.off("clearSession", fn);
+  }
+
   /** The current transcript entries (a copy) — the console-sync snapshot source (ADR-0150). */
   snapshot(): TranscriptEntry[] {
     return [...this.history];

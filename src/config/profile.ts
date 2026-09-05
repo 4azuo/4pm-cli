@@ -122,6 +122,29 @@ export interface ProfileConfig {
    * write preserves it — a server-managed key).
    */
   projectAiRunTimeoutSec?: number;
+  /**
+   * Read-only mirror of the serving project's idle auto-clear override (ADR-0244), refreshed from
+   * each `ws_token` like the knobs above. Server is the source of truth; >0 wins over the
+   * machine-user `autoClearIdleMinutes`; 0 ⇒ no project override. Never operator-editable (a
+   * Worker-config write preserves it — a server-managed key).
+   */
+  projectAutoClearIdleMinutes?: number;
+  /**
+   * Shared AI memory (ADR-0245) — machine-user defaults, operator-editable via the Worker config.
+   * `aiMemoryEnabled` turns the rolling cross-profile memory on for this worker (default false;
+   * costs an extra compaction AI call per turn); `aiMemoryBudgetChars` caps the compacted text
+   * (default 6000). Overridden per-project by the two read-only mirror keys below.
+   */
+  aiMemoryEnabled?: boolean;
+  aiMemoryBudgetChars?: number;
+  /**
+   * Read-only mirror of the serving project's memory override (ADR-0245), refreshed from each
+   * `ws_token`. Server is the source of truth; `mode` `on`/`off` forces enablement (else `inherit`
+   * defers to `aiMemoryEnabled`), `projectAiMemoryBudgetChars` `>0` wins over `aiMemoryBudgetChars`.
+   * Never operator-editable (server-managed keys).
+   */
+  projectAiMemoryMode?: "inherit" | "on" | "off";
+  projectAiMemoryBudgetChars?: number;
 }
 
 /**
@@ -208,7 +231,34 @@ export function defaultProfileConfig(): ProfileConfig {
     // Terminate a single AI run after 5 min by default (ADR-0243) so a hung/looping AI CLI
     // (e.g. a heavy spec review/compose) can't spin the dispatcher forever; 0 = no limit.
     aiRunTimeoutSec: 300,
+    // Shared AI memory (ADR-0245) — off by default (opt-in; costs a compaction call per turn).
+    aiMemoryEnabled: false,
+    aiMemoryBudgetChars: 6000,
   };
+}
+
+/**
+ * Resolve the effective shared-AI-memory config (ADR-0245) for a serving cli: the project override
+ * (server-managed mirror) wins — `mode` `on`/`off` forces enablement, else `inherit` defers to the
+ * machine-user `aiMemoryEnabled`; the project budget wins when `>0`, else the machine-user budget
+ * (default 6000). `enabled:false` ⇒ memory is off (no inject, no compaction).
+ */
+export function resolveMemoryConfig(config: ProfileConfig): { enabled: boolean; budgetChars: number } {
+  const mode = config.projectAiMemoryMode ?? "inherit";
+  const enabled = mode === "on" ? true : mode === "off" ? false : (config.aiMemoryEnabled ?? false);
+  const projectBudget = config.projectAiMemoryBudgetChars ?? 0;
+  const budgetChars = projectBudget > 0 ? projectBudget : (config.aiMemoryBudgetChars ?? 6000);
+  return { enabled, budgetChars };
+}
+
+/**
+ * Resolve the effective idle transcript auto-clear window (minutes) for a serving cli (ADR-0244):
+ * the project override (`projectAutoClearIdleMinutes`, the server-managed mirror) wins when > 0,
+ * else the machine-user's own `autoClearIdleMinutes` (default 10). 0 ⇒ disabled.
+ */
+export function resolveIdleAutoClearMinutes(config: ProfileConfig): number {
+  const project = config.projectAutoClearIdleMinutes ?? 0;
+  return project > 0 ? project : (config.autoClearIdleMinutes ?? 10);
 }
 
 /**
@@ -219,6 +269,30 @@ export function ensureProfileConfig(dir: string): boolean {
   if (existsSync(join(dir, "config.json"))) return false;
   writeProfileConfig(dir, defaultProfileConfig());
   return true;
+}
+
+/**
+ * Backfill absent operator-default keys into an EXISTING config.json (ADR-0244 follow-up).
+ * `ensureProfileConfig` seeds defaults only when the file is missing, so a config written before a
+ * default was introduced (e.g. `aiRunTimeoutSec`) keeps that field absent — which resolves to
+ * "no limit"/"off" and silently defeats the safeguard. On boot we merge in any missing default
+ * key (a present value — including an explicit `0` — is never overwritten; server-managed mirror
+ * keys are absent from the defaults, so they stay untouched) and write back only when something
+ * changed. Returns whether it wrote.
+ */
+export function backfillProfileConfig(dir: string): boolean {
+  if (!existsSync(join(dir, "config.json"))) return false;
+  const current = readProfileConfig(dir) as Record<string, unknown>;
+  const next = { ...current };
+  let changed = false;
+  for (const [key, value] of Object.entries(defaultProfileConfig() as Record<string, unknown>)) {
+    if (next[key] === undefined) {
+      next[key] = value;
+      changed = true;
+    }
+  }
+  if (changed) overwriteProfileConfig(dir, next as ProfileConfig);
+  return changed;
 }
 
 /**
