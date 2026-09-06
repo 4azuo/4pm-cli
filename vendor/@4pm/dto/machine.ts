@@ -451,6 +451,12 @@ export interface CommandHistoryItem {
   origin: CommandOrigin;
   /** The cli (machine-link) that ran the command. */
   machineLinkId: string;
+  /**
+   * Display name of the machine-user (cli) that ran the command (command-0005 column, ADR-0249) —
+   * `aliasName || username` (ADR-0200); a short `machineLinkId` prefix when the machine-user is unknown
+   * (link deleted). Distinct from `initiatedByName` on the activity feed (who dispatched from the web).
+   */
+  machineUser: string;
   cmd: string;
   args: string[];
   status: string;
