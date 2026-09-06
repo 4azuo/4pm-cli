@@ -1172,11 +1172,17 @@ export class WsClient {
         );
         break;
       case WsChannels.TOOLS_INSTALL:
-      case WsChannels.TOOLS_UNINSTALL: {
-        // Streamed op (machine-0051/0052, ADR-0206): ack acceptance, then push progress lines and
-        // one terminal `tools.done` frame keyed by opId (server relays them to the browser over SSE).
+      case WsChannels.TOOLS_UNINSTALL:
+      case WsChannels.TOOLS_UPDATE: {
+        // Streamed op (machine-0051/0052/0055, ADR-0206/0252): ack acceptance, then push progress
+        // lines and one terminal `tools.done` frame keyed by opId (server relays them over SSE).
         const req = payload as unknown as ToolsMutateRequest;
-        const op = message.channel === WsChannels.TOOLS_INSTALL ? "install" : "uninstall";
+        const op =
+          message.channel === WsChannels.TOOLS_INSTALL
+            ? "install"
+            : message.channel === WsChannels.TOOLS_UPDATE
+              ? "update"
+              : "uninstall";
         this.send(message.channel, { started: true } satisfies ToolsMutateReply, message.id);
         void runWorkerToolOp(op, req.name, req.manager, (line) =>
           this.send(WsChannels.TOOLS_PROGRESS, { opId: req.opId, line } satisfies ToolsProgressPayload),

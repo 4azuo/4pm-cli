@@ -175,6 +175,8 @@ export interface ToolStatus {
   version: string | null;
   /** False for a detect-only prerequisite (no install/uninstall button). */
   installable: boolean;
+  /** True when the tool offers update-to-latest (npm-distributed catalog tool or extra — ADR-0252). */
+  updatable: boolean;
 }
 
 /** tools.list request/reply (machine-0050, ADR-0206) — probe the catalog + extra globals. */
@@ -188,13 +190,16 @@ export interface ToolsListReply {
   extras: ToolStatus[];
 }
 
-/** tools.install / tools.uninstall request (machine-0051/0052, ADR-0206) — start a streamed op. */
+/**
+ * tools.install / tools.uninstall / tools.update request (machine-0051/0052/0055, ADR-0206/0252) —
+ * start a streamed op. The op is derived from the WS channel; this payload is shared by all three.
+ */
 export interface ToolsMutateRequest {
   /** Correlates the streamed `tools.progress`/`tools.done` frames back to this op. */
   opId: string;
   /** Catalog id or npm package name. */
   name: string;
-  /** Package manager to run the global install/uninstall with. */
+  /** Package manager to run the global install/uninstall/update with. */
   manager: "npm" | "pnpm";
 }
 /** Immediate ack: whether the cli accepted the op (else `error`, e.g. bad name / prerequisite). */

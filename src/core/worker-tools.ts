@@ -14,6 +14,9 @@ import {
 } from "@4pm/constants";
 import type { ToolStatus, ToolsListReply } from "@4pm/ws";
 
+/** The streamed worker-tool ops: install/uninstall (ADR-0206) + update-to-latest (ADR-0252). */
+export type ToolOp = "install" | "uninstall" | "update";
+
 /** npm package name shape (scoped or plain, lowercase) — guards what we hand to the manager. */
 const NPM_NAME = /^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
 
@@ -101,6 +104,7 @@ async function listExtras(): Promise<ToolStatus[]> {
       installed: true,
       version: info.version ?? null,
       installable: true,
+      updatable: true,
     }));
 }
 
@@ -116,6 +120,7 @@ export async function detectWorkerTools(): Promise<ToolsListReply> {
         installed: version !== null,
         version,
         installable: t.installable,
+        updatable: t.updatable,
       };
     }),
   );
@@ -123,39 +128,47 @@ export async function detectWorkerTools(): Promise<ToolsListReply> {
   return { catalog, extras };
 }
 
-/** Resolve the npm package to (un)install for a name; validation errors return `{ error }`. */
-function resolvePackage(name: string, op: "install" | "uninstall"): { pkg?: string; error?: string } {
+/** English past tense for an op, used in the rejection message ("cannot be <past> from here"). */
+function opPast(op: ToolOp): string {
+  return op === "install" ? "installed" : op === "uninstall" ? "uninstalled" : "updated";
+}
+
+/** Resolve the npm package to install/uninstall/update for a name; validation errors return `{ error }`. */
+function resolvePackage(name: string, op: ToolOp): { pkg?: string; error?: string } {
   const entry = WORKER_TOOL_CATALOG.find((t) => t.id === name);
   if (entry) {
-    // A default-catalog tool is detect-only (ADR-0227): never installed/uninstalled by id, even
-    // when it carries an `installPackage` (that stays only its package identity for dedup/docs).
-    if (!entry.installable) {
-      return { error: `"${name}" is a prerequisite and cannot be ${op}ed from here.` };
+    // A default-catalog tool is detect-only for install/uninstall (ADR-0227) but the npm-distributed
+    // ones (pnpm/claude/codex) are update-to-latest-open (ADR-0252). `installPackage` stays the
+    // package identity used to resolve the target for either allowed op.
+    const allowed = op === "update" ? entry.updatable : entry.installable;
+    if (!allowed) {
+      return { error: `"${name}" is a prerequisite and cannot be ${opPast(op)} from here.` };
     }
     return { pkg: entry.installPackage ?? name };
   }
   if (WORKER_TOOL_PREREQUISITE_IDS.includes(name)) {
-    return { error: `"${name}" is a prerequisite and cannot be ${op}ed from here.` };
+    return { error: `"${name}" is a prerequisite and cannot be ${opPast(op)} from here.` };
   }
   if (WORKER_TOOL_BUNDLED_GLOBALS.includes(name)) {
-    return { error: `"${name}" ships with Node and cannot be ${op}ed from here.` };
+    return { error: `"${name}" ships with Node and cannot be ${opPast(op)} from here.` };
   }
   if (!NPM_NAME.test(name)) return { error: `Invalid package name: "${name}".` };
   return { pkg: name };
 }
 
-/** The manager's global install/uninstall argv. */
-function opArgs(op: "install" | "uninstall", manager: WorkerToolManager, pkg: string): string[] {
-  if (manager === "pnpm") return [op === "install" ? "add" : "remove", "-g", pkg];
-  return [op === "install" ? "install" : "uninstall", "-g", pkg];
+/** The manager's global install/uninstall/update argv (update pins `@latest` to bump to newest). */
+function opArgs(op: ToolOp, manager: WorkerToolManager, pkg: string): string[] {
+  if (op === "uninstall") return manager === "pnpm" ? ["remove", "-g", pkg] : ["uninstall", "-g", pkg];
+  const target = op === "update" ? `${pkg}@latest` : pkg;
+  return manager === "pnpm" ? ["add", "-g", target] : ["install", "-g", target];
 }
 
 /**
- * machine-0051/0052 — run a global install/uninstall, streaming each line to `onLine`.
+ * machine-0051/0052/0055 — run a global install/uninstall/update, streaming each line to `onLine`.
  * Rejected names return `{ ok:false, error }` without spawning (the caller maps to a done frame).
  */
 export async function runWorkerToolOp(
-  op: "install" | "uninstall",
+  op: ToolOp,
   name: string,
   manager: WorkerToolManager,
   onLine: (line: string) => void,

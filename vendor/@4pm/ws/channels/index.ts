@@ -26,6 +26,9 @@ export const WsChannels = {
   TOOLS_LIST: "tools.list",
   TOOLS_INSTALL: "tools.install",
   TOOLS_UNINSTALL: "tools.uninstall",
+  // update-to-latest of an npm-distributed catalog tool or an extra (ADR-0252): same streamed
+  // shape as install/uninstall — the cli reinstalls the package at `@latest`.
+  TOOLS_UPDATE: "tools.update",
   TOOLS_PROGRESS: "tools.progress",
   TOOLS_DONE: "tools.done",
   // autonomous mode control (ADR-0152): read settings+status+books+approvals, tail logs, and

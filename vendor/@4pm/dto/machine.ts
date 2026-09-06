@@ -581,6 +581,8 @@ export interface WorkerToolStatus {
   version: string | null;
   /** False for a detect-only prerequisite (no install/uninstall button). */
   installable: boolean;
+  /** True when the tool offers update-to-latest (npm-distributed catalog tool or extra — ADR-0252). */
+  updatable: boolean;
 }
 
 /** Data GET /machines/:id/tools — the default catalog + extra global packages (machine-0050). */
