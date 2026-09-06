@@ -53,19 +53,27 @@ function textColor(line: DisplayLine): string | undefined {
   return undefined; // passthrough output / info — default terminal color
 }
 
+/** A leading AI-run start-time stamp on an `aireq` marker ("yyyy/MM/dd HH:mm:ss ", ADR-0249). */
+const START_STAMP_RE = /^(\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2} )/;
+
 /**
  * Render an AI marker line ("<cmd> ‹ …" request / "<cmd> › …" response): the CLI name
- * before the arrow is colored so the prompt/response boundary stands out. Continuation
- * rows of a wrapped request (no arrow) fall back to the default color.
+ * before the arrow is colored so the prompt/response boundary stands out. A request's leading
+ * start-time stamp (ADR-0249) is dimmed rather than colored as the name. Continuation rows of a
+ * wrapped request (no arrow) fall back to the default color.
  */
 function AiMarkerLine({ line }: { line: DisplayLine }): React.ReactElement {
   const arrow = line.kind === "aireq" ? "‹" : "›";
   const idx = line.text.indexOf(arrow);
   if (idx < 0) return <Text>{line.text || " "}</Text>;
+  const before = line.text.slice(0, idx);
+  const stamp = line.kind === "aireq" ? (START_STAMP_RE.exec(before)?.[1] ?? "") : "";
+  const name = stamp ? before.slice(stamp.length) : before;
   return (
     <Text>
+      {stamp ? <Text dimColor>{stamp}</Text> : null}
       <Text color="cyan" bold>
-        {line.text.slice(0, idx)}
+        {name}
       </Text>
       <Text dimColor>{arrow}</Text>
       <Text>{line.text.slice(idx + 1)}</Text>

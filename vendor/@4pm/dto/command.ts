@@ -259,6 +259,7 @@ export const CLI_SLASH_COMMANDS: CliSlashCommandMeta[] = [
   { name: "collapse", usage: "/collapse [N]", description: "Collapse an expanded ▸[N] block" },
   { name: "reconnect", usage: "/reconnect", description: "Reconnect to the server now (skip the backoff)" },
   { name: "whoami", usage: "/whoami", description: "Show this machine account + its teams & projects" },
+  { name: "ai-profile", usage: "/ai-profile [list|use <n>|reset]", description: "List AI profiles / switch which one runs" },
   { name: "config", usage: "/config [show|init|set <k> <v>|delete <k>]", description: "View / init / update / delete profile config" },
   { name: "claude-cmd", usage: "/claude-cmd /context", description: "Run an AI-CLI slash command (e.g. /context, /usage)" },
   { name: "clear", usage: "/clear", description: "Clear the transcript" },

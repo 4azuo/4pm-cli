@@ -76,16 +76,25 @@ function runAttempt(
   commandId: string,
   cmd: string,
   args: string[],
+  stdin: string,
   cwd: string,
   env: Record<string, string>,
   onChunk: (text: string) => void,
   timeoutMs: number,
 ): Promise<number> {
   return new Promise((resolve) => {
-    void runCommand({ commandId, cmd, args, path: cwd, env }, (out) => {
-      if (out.chunk) onChunk(out.chunk);
-      if (out.done) resolve(out.exitCode ?? -1);
-    }, timeoutMs > 0 ? { timeoutMs } : undefined);
+    // The prompt rides stdin, not argv (ADR-0251), so a large review/compose can't exceed
+    // `MAX_ARG_STRLEN`. `.catch` is defence in depth: the executor already guards `spawn` against a
+    // synchronous throw, but should `runCommand` ever reject, settle the attempt as failed (exit -1)
+    // so failover moves on instead of the whole dispatch hanging on an unobserved rejection.
+    runCommand(
+      { commandId, cmd, args, path: cwd, env },
+      (out) => {
+        if (out.chunk) onChunk(out.chunk);
+        if (out.done) resolve(out.exitCode ?? -1);
+      },
+      { stdin, ...(timeoutMs > 0 ? { timeoutMs } : {}) },
+    ).catch(() => resolve(-1));
   });
 }
 
@@ -125,7 +134,7 @@ export async function runAiFailover(
         handlers.onChunk(text);
       }
     };
-    finalExit = await runAttempt(commandId, attempt.cmd, attempt.args, cwd, attempt.env, emit, timeoutMs);
+    finalExit = await runAttempt(commandId, attempt.cmd, attempt.args, attempt.stdin, cwd, attempt.env, emit, timeoutMs);
     const tail = parser.flush();
     if (tail) {
       captured += tail;

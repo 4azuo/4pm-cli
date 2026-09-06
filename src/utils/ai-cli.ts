@@ -44,9 +44,10 @@ const ONE_SHOT_DISALLOWED_CLAUDE_TOOLS = [
 /**
  * Extra pre-prompt args that make a claude run one-shot (ADR-0249): `--max-turns=1` (equals form so
  * an older claude that doesn't know the flag treats it as an ignored unknown option, NOT a stray
- * positional that would become the prompt) caps the agentic loop; `--disallowedTools` blocks the
- * tools; and `--permission-mode default` is a NON-variadic terminator placed last so the variadic
- * `--disallowedTools` can't eat the prompt (which `buildRunArgs` appends right after). Claude only —
+ * positional) caps the agentic loop; `--disallowedTools` blocks the tools; and `--permission-mode
+ * default` is a NON-variadic terminator placed last so the variadic `--disallowedTools` consumes only
+ * its tool token. The prompt no longer follows on argv (it rides stdin — ADR-0251), so the
+ * terminator's "shield the prompt" role is moot but the flag is still a valid setting. Claude only —
  * codex `exec` is already single-shot. Empty for a non-claude cmd.
  */
 function oneShotArgs(cmd: string): string[] {
@@ -146,8 +147,14 @@ export interface AiAttempt {
   dir: string | null;
   /** Stable credential key (provider + resolved dir), or null for the default env — remembered. */
   key: string | null;
-  /** Full argv after the command (pre-prompt args + `--model` + the prompt). */
+  /**
+   * The argv after the command (required metering args + `--model` + one-shot caps) — **without**
+   * the prompt (ADR-0251): the prompt rides `stdin`, not a positional, so it can't exceed
+   * `MAX_ARG_STRLEN`.
+   */
   args: string[];
+  /** The prompt to feed on the child's stdin (ADR-0251) — `claude -p` / `codex exec` both read it. */
+  stdin: string;
   env: Record<string, string>;
 }
 
@@ -252,14 +259,14 @@ export function folderScopeGuard(folder: string, prompt: string): string {
 /**
  * Compose the argv after the command: the hardcoded required args (always, for metering)
  * + the profile's `args` (extras appended on top — ADR-0158) + `--model <model>` when set
- * + one-shot caps when `oneShot` (ADR-0249) + the prompt. The one-shot args go LAST (right before
- * the prompt) so their non-variadic terminator (`--permission-mode default`) shields the prompt
- * from the variadic `--disallowedTools`.
+ * + one-shot caps when `oneShot` (ADR-0249). The prompt is **not** appended (ADR-0251): it rides
+ * the child's stdin, so it can't exceed `MAX_ARG_STRLEN` (`claude -p` / `codex exec` read stdin
+ * when no positional prompt is given). The one-shot args stay LAST — their non-variadic terminator
+ * (`--permission-mode default`) still bounds the variadic `--disallowedTools`.
  */
 function buildRunArgs(
   profile: AiProfile,
   cmd: string,
-  prompt: string,
   resumeId?: string,
   oneShot = false,
 ): string[] {
@@ -277,7 +284,7 @@ function buildRunArgs(
       ? [`--max-turns=${Math.floor(turns)}`]
       : [];
   const oneShotExtra = oneShot ? oneShotArgs(cmd) : perProfileTurns;
-  return [...requiredArgs(cmd), ...resumeArgs, ...extras, ...modelArgs, ...oneShotExtra, prompt];
+  return [...requiredArgs(cmd), ...resumeArgs, ...extras, ...modelArgs, ...oneShotExtra];
 }
 
 /**
@@ -416,7 +423,7 @@ function planUnifiedRun(
     return {
       cmd: active,
       attempts: [
-        { cmd: active, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, active, prompt, undefined, oneShot), env: { ...baseEnv } },
+        { cmd: active, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, active, undefined, oneShot), stdin: prompt, env: { ...baseEnv } },
       ],
     };
   }
@@ -438,7 +445,8 @@ function planUnifiedRun(
     label: cred.label?.trim() || profileDisplayLabel(dir),
     dir,
     key,
-    args: buildRunArgs(cred, cmd, prompt, resume.get(key), oneShot),
+    args: buildRunArgs(cred, cmd, resume.get(key), oneShot),
+    stdin: prompt,
     env: envVar ? { ...baseEnv, [envVar]: dir } : { ...baseEnv },
   }));
   return { cmd: attempts[0]?.cmd ?? DEFAULT_AI_CLI, attempts };
@@ -459,7 +467,7 @@ function planLegacyRun(
   const defaultPlan: AiPlan = {
     cmd,
     attempts: [
-      { cmd, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, cmd, prompt, undefined, oneShot), env: { ...baseEnv } },
+      { cmd, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, cmd, undefined, oneShot), stdin: prompt, env: { ...baseEnv } },
     ],
   };
   if (!envVar) return defaultPlan;
@@ -485,7 +493,8 @@ function planLegacyRun(
       label: profileDisplayLabel(dir),
       dir,
       key,
-      args: buildRunArgs(profile, cmd, prompt, resume.get(key), oneShot),
+      args: buildRunArgs(profile, cmd, resume.get(key), oneShot),
+      stdin: prompt,
       env: { ...baseEnv, [envVar]: dir },
     };
   });

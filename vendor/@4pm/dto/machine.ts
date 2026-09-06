@@ -208,6 +208,9 @@ export interface MachineLinkResponse {
   cliVersion?: string | null;
   /** True when the running cli is older than the configured latest release (ADR-0015). */
   cliOutdated?: boolean;
+  /** True when the running cli is older than CLI_MIN_SUPPORTED_VERSION (ADR-0015) — the server
+   *  rejects it at the WS handshake, so it must be upgraded to (re)connect. */
+  cliUnsupported?: boolean;
   /** Latest worker network probe (ADR-0221) — the machine-user page shows outbound/inbound posture
    *  and warns when it's open. Null when the cli hasn't reported one yet (old clients / offline). */
   network?: WorkerNetworkProbe | null;
@@ -415,8 +418,14 @@ export interface MachineUsageStatus {
   cliVersion?: string | null;
   /** True when the running cli is older than the configured latest release (ADR-0015). */
   cliOutdated?: boolean;
+  /** True when the running cli is older than CLI_MIN_SUPPORTED_VERSION (ADR-0015) — the server
+   *  rejects it at the WS handshake, so it must be upgraded to (re)connect. */
+  cliUnsupported?: boolean;
   /** The latest cli release version (for the "please update" hint); null if not resolved. */
   latestCliVersion?: string | null;
+  /** The minimum cli version the server still accepts (for the "unsupported" red hint); null if
+   *  not resolved. */
+  minSupportedCliVersion?: string | null;
 }
 
 /** Per-project usage of one machine-link (history — ADR-0072). */
@@ -479,6 +488,9 @@ export const listWorkersQuerySchema = baseRequestSchema.extend({
   minCpuPct: z.coerce.number().min(0).max(100).optional(),
   minMemPct: z.coerce.number().min(0).max(100).optional(),
   minDiskPct: z.coerce.number().min(0).max(100).optional(),
+  /** Hide workers with no cli attached (clis = 0). The web defaults this on; unchecking the
+   *  "show empty CLIs" box drops it so empty workers are listed too. */
+  hideEmptyClis: z.enum(["true", "false"]).transform((v) => v === "true").optional(),
 });
 export type ListWorkersQuery = z.infer<typeof listWorkersQuerySchema>;
 

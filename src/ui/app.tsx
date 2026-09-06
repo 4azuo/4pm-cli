@@ -254,6 +254,9 @@ export function App({
           setPendingConfirm({ prompt, onYes });
         },
         submitAi: (aiInput) => bus.submitLocal(aiInput),
+        // /ai-profile use/reset updates the header's active-profile label at once (ADR-0250);
+        // the bus event feeds the React state (see the onActiveProfile subscription above).
+        setActiveProfile: (label) => bus.setActiveProfile(label),
         reconnect: () => bus.requestReconnect(),
         expand: expandFold,
         collapse: collapseFold,

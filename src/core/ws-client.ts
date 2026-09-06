@@ -93,12 +93,14 @@ import { runCommand } from "./executor";
 import { runAiFailover, type AiRunHandlers, type AiRunResult } from "./ai-runner";
 import { estimateTokens } from "./ai-stream";
 import {
+  getPinnedCredential,
   getWorkingCredential,
   getWorkingProfile,
   setWorkingCredential,
   setWorkingProfile,
 } from "./ai-profile-state";
 import { INSECURE_URL_BLOCKED, insecureTransportAllowed, isInsecureRemoteUrl } from "../utils/secure-url";
+import { formatTimestampInZone } from "../utils/time";
 import {
   claudeCredentialKeys,
   claudeHomeDirs,
@@ -296,6 +298,9 @@ export class WsClient {
   private reconnectEntryId: string | null = null;
   /** Org-configured reconnect cap (seconds) from the last ws_token — overrides env. */
   private orgReconnectMaxSec: number | null = null;
+  /** Org timezone (IANA) from the last ws_token (ADR-0132) — a rented worker follows its renter's
+   *  org; used to stamp the AI-run start time on the `aireq` transcript marker (ADR-0249). */
+  private orgTimezone = "UTC";
   /** Env override for the reconnect cap (seconds); resolved once at construction. */
   private readonly envReconnectMaxSec = envReconnectMaxSec();
   /** Process start (ms) — uptime for a web-dispatched `/status` (ADR-0249). */
@@ -531,6 +536,11 @@ export class WsClient {
         // The org's reconnect cap (ADR-0056) overrides the local env for the next backoff.
         if (typeof token.reconnectMaxBackoffSec === "number") {
           this.orgReconnectMaxSec = token.reconnectMaxBackoffSec;
+        }
+        // Org timezone (ADR-0132) — rented workers carry the renter's; used for the AI-run start
+        // stamp. Kept even if empty-guarded so a stale token never blanks it.
+        if (typeof token.timezone === "string" && token.timezone) {
+          this.orgTimezone = token.timezone;
         }
         // Refresh the org's daily auto-update policy (ADR-0074) — carried by each ws_token.
         if (typeof token.autoUpdateDaily === "boolean") {
@@ -1392,13 +1402,21 @@ export class WsClient {
     const unified = isUnifiedConfig(config);
     const mode = config.aiFailoverMode ?? "remember";
     const workingDir = unified ? null : getWorkingProfile(this.context.profileDir, cmd);
-    const workingCred =
-      unified && mode === "remember" ? getWorkingCredential(this.context.profileDir) : null;
+    // Operator manual pin (ADR-0250): when set it is the working-first hint on EVERY prompt,
+    // overriding aiFailoverMode (remember/priority). Absent ⇒ the mode's own behaviour: "remember"
+    // starts from the auto-remembered working credential, "priority" always from the list top.
+    const pinnedCred = unified ? getPinnedCredential(this.context.profileDir) : null;
+    const workingCred = unified
+      ? (pinnedCred ?? (mode === "remember" ? getWorkingCredential(this.context.profileDir) : null))
+      : null;
     // Rotate the Claude profile under session pressure (ADR-0081): when the project set
     // sessionSwitchPct and the current 5h session utilization is at/over it, prefer the
     // NEXT candidate profile for this run instead of the near-exhausted working one. Claude-only.
+    // A manual pin (ADR-0250) is the operator's explicit choice, so it bypasses this pre-rotation —
+    // a real auth/limit failure still falls through to the failover backups.
     const startDir = unified ? null : this.profileUnderSessionPressure(config, cmd, workingDir);
-    const startCred = unified ? this.credentialUnderSessionPressure(config, workingCred) : null;
+    const startCred =
+      unified && !pinnedCred ? this.credentialUnderSessionPressure(config, workingCred) : null;
     if (startDir && startDir !== workingDir) {
       this.bus.push({
         source: origin,
@@ -1444,8 +1462,12 @@ export class WsClient {
     // Representative argv for the announce/history markers (args are now per-profile —
     // the first attempt's are used; failover may run a different profile's args).
     const markerArgs = plan.attempts[0]?.args ?? [];
-    // Request marker: "<cmd> ‹ <prompt>" (the CLI name is colored in the transcript).
-    this.bus.push({ source: origin, kind: "aireq", text: `${plan.cmd} ‹ ${prompt}` });
+    // Request marker: "<yyyy/MM/dd HH:mm:ss> <cmd> ‹ <prompt>" (ADR-0249) — the leading start-time
+    // stamp (org timezone; rented workers use the renter's — ADR-0132) marks when the AI began
+    // processing the prompt. The TUI + web dim the stamp and color the CLI name (see AiMarkerLine /
+    // colorAiLine). This is the same instant `aiStartedMs` measures the run duration from.
+    const startStamp = formatTimestampInZone(new Date(), this.orgTimezone);
+    this.bus.push({ source: origin, kind: "aireq", text: `${startStamp} ${plan.cmd} ‹ ${prompt}` });
     logger.info("command.ai", { commandId, origin, cmd: plan.cmd, profiles: plan.attempts.length });
     // A local prompt has no server record yet ⇒ announce it (ADR-0057); a server-dispatched
     // AI prompt already has a tracking record from command-0001.
@@ -1724,6 +1746,8 @@ export class WsClient {
         emit(note);
       },
       submitAi: () => {}, // only /claude-cmd uses this, and it is special-cased above
+      // /ai-profile use/reset from the web Console updates the shared header too (ADR-0250).
+      setActiveProfile: (label) => this.bus.setActiveProfile(label),
       reconnect: () => this.reconnectNow(),
       expand: () => emit("Use the web console's fold viewer to expand blocks."),
       collapse: () => emit("Use the web console's fold viewer to collapse blocks."),

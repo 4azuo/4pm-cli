@@ -17,6 +17,14 @@ export interface RunCommandOptions {
    * AI CLI can't leave the dispatch waiting on a `done` frame forever. Omitted/0 ⇒ no cap.
    */
   timeoutMs?: number;
+  /**
+   * Prompt to feed on the child's **stdin** instead of as an argv positional (ADR-0251). An AI
+   * prompt can be large (a full-spec review embeds all 62 fields); a single argv element is capped
+   * at Linux's 128 KiB `MAX_ARG_STRLEN`, above which `spawn` throws `E2BIG`. `claude -p` / `codex
+   * exec` both read a prompt from stdin, so the dispatch AI runs pass it here. Omitted ⇒ stdin is
+   * closed empty (the default for non-AI console commands).
+   */
+  stdin?: string;
 }
 
 /**
@@ -31,13 +39,35 @@ export async function runCommand(
   opts?: RunCommandOptions,
 ): Promise<void> {
   let seq = 0;
-  const child = spawn(dispatch.cmd, dispatch.args ?? [], {
-    cwd: dispatch.path,
-    env: { ...process.env, ...dispatch.env },
-    shell: false,
-  });
-  // No stdin is piped to spawned CLIs — close it so tools that probe stdin (e.g. the
-  // AI CLIs) get EOF immediately instead of blocking for input.
+  // Guard the spawn (ADR-0251): `spawn` throws **synchronously** for some failures — notably
+  // `E2BIG` when an argv element exceeds `MAX_ARG_STRLEN` (128 KiB) — WITHOUT emitting an async
+  // `error` event. Left unguarded, the throw becomes a rejected promise the caller never observes,
+  // so the run never settles and the dispatch spins forever. Turn any such throw into a terminal
+  // `done` (like the `error` handler) so failover moves on instead of hanging.
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = spawn(dispatch.cmd, dispatch.args ?? [], {
+      cwd: dispatch.path,
+      env: { ...process.env, ...dispatch.env },
+      shell: false,
+    });
+  } catch (err) {
+    emit({
+      commandId: dispatch.commandId,
+      seq: seq++,
+      chunk: `spawn error: ${(err as Error).message}\n`,
+      done: true,
+      exitCode: -1,
+    });
+    return;
+  }
+  // Feed the prompt on stdin when given (AI runs — ADR-0251), else close stdin empty so tools that
+  // probe stdin (e.g. the AI CLIs) get EOF immediately instead of blocking for input. Guard the
+  // stream against `EPIPE` (the child may exit before we finish writing) so it can't crash the cli.
+  child.stdin?.on("error", () => {});
+  if (opts?.stdin != null) {
+    child.stdin?.write(opts.stdin);
+  }
   child.stdin?.end();
 
   // Wall-clock timeout (ADR-0243): on expiry, note it in the stream then kill the child. The

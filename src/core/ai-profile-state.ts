@@ -64,3 +64,41 @@ export function setWorkingCredential(profileDir: string, key: string): void {
     // Best-effort.
   }
 }
+
+/**
+ * Reserved key for the operator's MANUAL profile pin (ADR-0250) — kept in the same state file
+ * alongside `__credential__`. Unlike `__credential__` (auto-remembered by failover), the pin is set
+ * explicitly via `/ai-profile use` and is honoured as the working-first hint on EVERY prompt,
+ * overriding `aiFailoverMode` (remember/priority). Failover to the other profiles stays as a backup;
+ * the pin persists until the operator switches again or clears it (`/ai-profile reset`).
+ */
+const PINNED_CREDENTIAL_KEY = "__pinned__";
+
+/** The operator-pinned credential key (manual override — ADR-0250), or null when none is pinned. */
+export function getPinnedCredential(profileDir: string): string | null {
+  return readState(profileDir)[PINNED_CREDENTIAL_KEY] ?? null;
+}
+
+/** Persist the operator-pinned credential key (best-effort). */
+export function setPinnedCredential(profileDir: string, key: string): void {
+  const state = readState(profileDir);
+  if (state[PINNED_CREDENTIAL_KEY] === key) return;
+  state[PINNED_CREDENTIAL_KEY] = key;
+  try {
+    writeFileSync(statePath(profileDir), JSON.stringify(state, null, 2), "utf8");
+  } catch {
+    // Best-effort.
+  }
+}
+
+/** Clear the operator-pinned credential — return to automatic failover (`/ai-profile reset`). */
+export function clearPinnedCredential(profileDir: string): void {
+  const state = readState(profileDir);
+  if (!(PINNED_CREDENTIAL_KEY in state)) return;
+  delete state[PINNED_CREDENTIAL_KEY];
+  try {
+    writeFileSync(statePath(profileDir), JSON.stringify(state, null, 2), "utf8");
+  } catch {
+    // Best-effort.
+  }
+}

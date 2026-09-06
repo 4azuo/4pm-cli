@@ -16,6 +16,20 @@ import {
 } from "../config/profile";
 import { getCommandHistory } from "../core/command-history";
 import { readCommandOutput } from "../core/command-output-store";
+import {
+  clearPinnedCredential,
+  getPinnedCredential,
+  getWorkingCredential,
+  setPinnedCredential,
+} from "../core/ai-profile-state";
+import {
+  credentialKey,
+  isUsableCredential,
+  labelFromCredentialKey,
+  profileDisplayLabel,
+  resolveHomePath,
+  type AiCredential,
+} from "../utils/ai-cli";
 import { readRecentLogLines } from "../common/logger/logger";
 import type { SessionInfo } from "./session-info";
 
@@ -58,6 +72,8 @@ export interface SlashContext {
   submitAi: (input: string) => void;
   /** Force an immediate reconnect — for /reconnect. */
   reconnect: () => void;
+  /** Update the header's active-AI-profile label — for /ai-profile use/reset (ADR-0250). */
+  setActiveProfile: (label: string | null) => void;
   /** Toggle a fold's expansion (ADR-0108); `n` defaults to the newest fold — for /expand. */
   expand: (n?: number) => void;
   /** Collapse a fold (ADR-0108); `n` defaults to the newest fold — for /collapse. */
@@ -275,6 +291,88 @@ function runWhoami(ctx: SlashContext): void {
   });
 }
 
+/** Display label for a unified credential entry (its `label`, else the account email / dir name). */
+function aiProfileLabel(c: AiCredential): string {
+  return c.label?.trim() || profileDisplayLabel(resolveHomePath(c.profile));
+}
+
+/**
+ * /ai-profile [list | use <n> | reset] — view the worker's AI credential profiles (ADR-0182) and
+ * switch which one runs (ADR-0250). `use <n>` PINS entry `n`: it is tried first on every prompt
+ * (overriding aiFailoverMode), with failover to the rest kept as a backup; `reset` returns to
+ * automatic failover. Operates on the unified mixed list (`config.aiProfiles`); a legacy
+ * per-provider config has nothing to switch here.
+ */
+function runAiProfile(ctx: SlashContext): void {
+  const dir = ctx.info.profileDir;
+  const config = readProfileConfig(dir);
+  const list = Array.isArray(config.aiProfiles) ? config.aiProfiles : [];
+  const [sub, ...rest] = ctx.args;
+  const action = (sub ?? "list").toLowerCase();
+
+  if (action === "list") {
+    if (list.length === 0) {
+      ctx.print("No AI profiles configured (config.aiProfiles is empty).", "warn");
+      ctx.print("This worker may use a legacy per-provider config — /config show to inspect.");
+      return;
+    }
+    const pinned = getPinnedCredential(dir);
+    const working = getWorkingCredential(dir);
+    ctx.print("AI profiles (config order = failover priority) · /ai-profile use <n> to switch:");
+    list.forEach((c, i) => {
+      const usable = isUsableCredential(c);
+      const key = usable ? credentialKey(c.provider, resolveHomePath(c.profile)) : null;
+      const flags: string[] = [];
+      if (key && key === pinned) flags.push("pinned");
+      // "active" = the profile that last authenticated (the header) — hidden while a pin overrides it.
+      else if (key && !pinned && key === working) flags.push("active");
+      if (c.enabled === false) flags.push("disabled");
+      const model = c.model?.trim() ? ` · model=${c.model.trim()}` : "";
+      const flagStr = flags.length ? `  (${flags.join(", ")})` : "";
+      const marker = key && key === pinned ? "*" : " ";
+      ctx.print(`  ${marker}[${i + 1}] ${c.provider.padEnd(11)} ${aiProfileLabel(c)}${model}${flagStr}`);
+    });
+    if (pinned) {
+      ctx.print("A profile is pinned — tried first every prompt; /ai-profile reset returns to auto.");
+    }
+    return;
+  }
+
+  if (action === "reset" || action === "auto" || action === "clear") {
+    clearPinnedCredential(dir);
+    ctx.print("✔ AI profile pin cleared — failover is back to automatic (config order / remembered).");
+    // Header reverts to the last-remembered working profile (or blank until the next run).
+    const working = getWorkingCredential(dir);
+    ctx.setActiveProfile(working ? labelFromCredentialKey(working) : null);
+    return;
+  }
+
+  if (action === "use" || action === "switch") {
+    const n = Number(rest[0]);
+    if (!Number.isInteger(n) || n < 1 || n > list.length) {
+      ctx.print(`usage: /ai-profile use <n>   (n = 1-${list.length || "?"} from /ai-profile list)`, "error");
+      return;
+    }
+    const cred = list[n - 1]!;
+    if (!isUsableCredential(cred)) {
+      const why = cred.enabled === false ? "it is disabled" : "it has no usable profile dir / provider";
+      ctx.print(`Profile [${n}] "${aiProfileLabel(cred)}" can't be used — ${why}.`, "error");
+      return;
+    }
+    const credDir = resolveHomePath(cred.profile);
+    setPinnedCredential(dir, credentialKey(cred.provider, credDir));
+    // Header uses the same label a run would show (account email / dir basename — see ws-client's
+    // post-run setActiveProfile) so switching doesn't flicker to a different name after the next run.
+    ctx.setActiveProfile(profileDisplayLabel(credDir));
+    ctx.print(
+      `✔ switched to ${cred.provider} profile "${aiProfileLabel(cred)}" — tried first from the next prompt (failover keeps the rest as backup).`,
+    );
+    return;
+  }
+
+  ctx.print(`Unknown /ai-profile subcommand "${sub}". Use: list | use <n> | reset.`, "error");
+}
+
 /** /expand [N] · /collapse [N] — toggle/fold a numbered `▸[N]` block (ADR-0108). */
 function runFold(ctx: SlashContext, action: "expand" | "collapse"): void {
   if (ctx.maxBlock === 0) {
@@ -366,6 +464,12 @@ const COMMANDS: SlashCommand[] = [
     usage: "/whoami",
     description: "Show this machine account + its teams & projects",
     run: runWhoami,
+  },
+  {
+    name: "ai-profile",
+    usage: "/ai-profile [list|use <n>|reset]",
+    description: "List AI profiles / switch which one runs (ADR-0250)",
+    run: runAiProfile,
   },
   {
     name: "config",
