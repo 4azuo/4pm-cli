@@ -141,7 +141,14 @@ import { manageSshKey } from "./git-ssh-key";
 import { gitCommit, gitCommitDiff, gitLog, gitRepos } from "./git-history";
 import { setCommitAuthor } from "./git-commit-identity";
 import { addProject, scaffoldProject } from "./scaffold";
-import { readProfileConfig, resolveMemoryConfig, writeProfileConfig } from "../config/profile";
+import {
+  readProfileConfig,
+  resolveMemoryConfig,
+  resolveWebBlockedCommands,
+  writeProfileConfig,
+} from "../config/profile";
+import { runSlashCommand } from "../ui/slash-commands";
+import type { SessionInfo } from "../ui/session-info";
 import { runMemoryCompaction } from "./memory-compact";
 import { applyConfigText, readConfigText } from "./config-sync";
 import { detectWorkerTools, runWorkerToolOp } from "./worker-tools";
@@ -223,7 +230,16 @@ const METRICS_WATCH_LEASE_MS = 45_000;
 
 /** Map a SessionBus transcript entry to the console-sync wire shape (drops the cli-only `ts`). */
 function toDtoEntry(e: BusTranscriptEntry): DtoTranscriptEntry {
-  return { id: e.id, source: e.source, kind: e.kind, text: e.text, level: e.level, resultKind: e.resultKind };
+  return {
+    id: e.id,
+    source: e.source,
+    kind: e.kind,
+    text: e.text,
+    level: e.level,
+    resultKind: e.resultKind,
+    // Processing time on a terminal `exit` entry (ADR-0249) — the web renders it inline.
+    ...(e.durationMs != null ? { durationMs: e.durationMs } : {}),
+  };
 }
 
 /** WsClient run context — credential + machine identity + profile + session bus. */
@@ -282,6 +298,8 @@ export class WsClient {
   private orgReconnectMaxSec: number | null = null;
   /** Env override for the reconnect cap (seconds); resolved once at construction. */
   private readonly envReconnectMaxSec = envReconnectMaxSec();
+  /** Process start (ms) — uptime for a web-dispatched `/status` (ADR-0249). */
+  private readonly startedAtMs = Date.now();
   private readonly credential: Credential;
   /** The physic project folder root this cli serves (null = no project) — fs.list is
    *  scoped to it so the web FsPicker can only browse inward, never out. */
@@ -798,9 +816,16 @@ export class WsClient {
           ai: dispatch.ai ?? false,
         });
         // AI-prompt dispatch (web AI mode): `cmd` is the raw prompt — run it through the
-        // same profile-failover path as a locally-typed prompt (not a raw spawn).
+        // same profile-failover path as a locally-typed prompt (not a raw spawn). `aiOneShot`
+        // (ADR-0249) caps a text-only run (review/compose/suggest/generators) so it can't loop.
         if (dispatch.ai) {
-          void this.runAiPrompt(dispatch.cmd, dispatch.commandId, "server");
+          // A `/…` line is a 4pm-cli slash command, not an AI prompt (ADR-0249) — run it on the
+          // worker (like the TUI) unless the operator blocked it via `webBlockedCommands`.
+          if (dispatch.cmd.trimStart().startsWith("/")) {
+            void this.runWebSlashCommand(dispatch.cmd, dispatch.commandId);
+          } else {
+            void this.runAiPrompt(dispatch.cmd, dispatch.commandId, "server", dispatch.aiOneShot ?? false);
+          }
           break;
         }
         recordCommand({
@@ -815,6 +840,8 @@ export class WsClient {
           text: `$ ${dispatch.cmd} ${dispatch.args.join(" ")}`.trimEnd(),
         });
         this.bus.startBusy(dispatch.cmd);
+        // Wall-clock start for the processing-time badge on the `exit` entry (ADR-0249).
+        const cmdStartMs = Date.now();
         void runCommand(dispatch, (out) => {
           if (out.chunk) {
             this.bus.push({ source: "server", kind: "out", text: out.chunk });
@@ -830,6 +857,7 @@ export class WsClient {
               kind: "exit",
               text: code === 0 ? "✓ done" : `✗ failed (exit ${code})`,
               level: code === 0 ? "info" : "error",
+              durationMs: Date.now() - cmdStartMs,
             });
           }
         });
@@ -1301,7 +1329,12 @@ export class WsClient {
    * exactly like typing the prompt in the cli (tries profiles, meters real tokens) instead
    * of spawning the text as a raw command. Streams output to the transcript AND the server.
    */
-  private async runAiPrompt(prompt: string, commandId: string, origin: CommandOrigin): Promise<void> {
+  private async runAiPrompt(
+    prompt: string,
+    commandId: string,
+    origin: CommandOrigin,
+    oneShot = false,
+  ): Promise<void> {
     const config = readProfileConfig(this.context.profileDir);
     // AI-run wall-clock ceiling (ADR-0243): the serving project's override wins over the
     // machine-user default; 0 ⇒ no limit. Enforced per attempt by the executor so a hung/looping
@@ -1407,7 +1440,7 @@ export class WsClient {
       // Native session reset (new/failed-over profile, or memory cleared) → seed with the memory.
       effectivePrompt = `${MEMORY_SEED_HEADER}\n${this.aiMemory}\n\n${guardedPrompt}`;
     }
-    const plan = planAiRun(effectivePrompt, config, hint, resume);
+    const plan = planAiRun(effectivePrompt, config, hint, resume, oneShot);
     // Representative argv for the announce/history markers (args are now per-profile —
     // the first attempt's are used; failover may run a different profile's args).
     const markerArgs = plan.attempts[0]?.args ?? [];
@@ -1428,6 +1461,8 @@ export class WsClient {
     }
     recordCommand({ commandId, cmd: plan.cmd, args: markerArgs });
     const startedAt = new Date().toISOString();
+    // Wall-clock start for the processing-time badge on the run's `exit` entry (ADR-0249).
+    const aiStartedMs = Date.now();
     this.bus.startBusy(plan.cmd);
 
     // Try the profile candidates until one authenticates; stream verbatim to the
@@ -1487,7 +1522,9 @@ export class WsClient {
         const text =
           reason === "limit"
             ? `profile "${label}" hit its session limit — trying next`
-            : `profile "${label}" failed to authenticate — trying next`;
+            : reason === "credits"
+              ? `profile "${label}" is out of usage credits — trying next`
+              : `profile "${label}" failed to authenticate — trying next`;
         this.bus.push({ source: origin, kind: "log", text, level: "warn" });
         this.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: `${text}\n`, log: true });
       },
@@ -1575,6 +1612,7 @@ export class WsClient {
           ? "✓ ready — enter your next prompt"
           : `✗ ${plan.cmd} failed (exit ${result.exitCode}) — see the error above`,
       level: result.exitCode === 0 ? "info" : "error",
+      durationMs: Date.now() - aiStartedMs,
     });
     // Shared AI memory (ADR-0245): remember the native session id for a same-profile `--resume`, then
     // fold the exchange into the rolling memory (a background compaction) so the next reset re-grounds
@@ -1585,6 +1623,121 @@ export class WsClient {
       }
       void this.updateSharedMemory(config, prompt, answerText, memCfg.budgetChars).catch(() => {});
     }
+  }
+
+  /**
+   * Run a `/…` 4pm-cli slash command dispatched from the web Console (ADR-0249). Mirrors the TUI's
+   * `runSlashCommand` with a **server-origin** context that streams `print` output back over
+   * command.output + console.sync, so a web user gets the same commands as an operator at the
+   * machine — EXCEPT any the operator disabled via `webBlockedCommands`. `/claude-cmd <x>` forwards
+   * `x` to the AI CLI (a real AI run). Fold ops (`/expand`/`/collapse`) are TUI-only — the web has
+   * its own fold viewer — so they just print a hint. Interactive `confirm` (e.g. `/config init`) is
+   * not supported from the web.
+   */
+  private async runWebSlashCommand(line: string, commandId: string): Promise<void> {
+    const origin: CommandOrigin = "server";
+    const config = readProfileConfig(this.context.profileDir);
+    const trimmed = line.trim();
+    const startedMs = Date.now();
+    // Echo the command like the TUI so the web transcript shows what ran.
+    this.bus.push({ source: origin, kind: "cmd", text: trimmed });
+    recordCommand({ commandId, cmd: trimmed, args: [] });
+    let seq = 0;
+    // Stream one text line back to the web (command.output) + persist it for the history blob.
+    const emit = (text: string): void => {
+      appendCommandOutput(commandId, `${text}\n`);
+      this.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: `${text}\n` });
+    };
+    /**
+     * Settle the command: send the terminal `done` (web stream resolves), record history, and push
+     * an `exit` transcript entry so the Console (which renders console.sync, not command.output)
+     * frees its input + shows the processing time (ADR-0246/0249).
+     */
+    const settle = (exitCode: number): void => {
+      this.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: "", done: true, exitCode });
+      finishCommand(commandId, exitCode);
+      this.send(WsChannels.COMMAND_HISTORY, {
+        commandId,
+        cmd: trimmed,
+        args: [],
+        status: exitCode === 0 ? "done" : "failed",
+        exitCode,
+      });
+      this.bus.push({
+        source: origin,
+        kind: "exit",
+        text: exitCode === 0 ? "✓ done" : `✗ failed (exit ${exitCode})`,
+        level: exitCode === 0 ? "info" : "error",
+        durationMs: Date.now() - startedMs,
+      });
+    };
+    // Resolve the command name (strip `/`, first token, map the /exit alias) for the block check.
+    const rawName = trimmed.replace(/^\//, "").trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+    const name = rawName === "exit" ? "quit" : rawName;
+    const blocked = resolveWebBlockedCommands(config);
+    if (blocked.has(name) || blocked.has(rawName)) {
+      const msg = `Command /${rawName} is disabled on this worker (blocked by the machine config).`;
+      this.bus.push({ source: origin, kind: "log", text: msg, level: "error" });
+      emit(msg);
+      settle(1);
+      return;
+    }
+    // `/claude-cmd <x>` is a real AI run — forward `x` to the AI CLI on the same command id.
+    if (name === "claude-cmd") {
+      const rest = trimmed.replace(/^\/claude-cmd\s*/i, "").trim();
+      if (!rest) {
+        emit("usage: /claude-cmd /context  (forwards to the AI CLI)");
+        settle(1);
+        return;
+      }
+      await this.runAiPrompt(rest, commandId, origin, false);
+      return; // runAiPrompt settles the command itself
+    }
+    // Static session info for /status·/version·/whoami (whoami over the wire isn't wired here ⇒ null).
+    const info: SessionInfo = {
+      version: CLI_VERSION,
+      scope: this.bus.scope ?? "project",
+      profile: basename(this.context.profileDir),
+      profileDir: this.context.profileDir,
+      serverUrl: this.context.credential.serverUrl,
+      physicPath: this.physicRoot ?? config.physicPath ?? null,
+      aiCli: config.aiCli || "claude",
+      whoami: async () => null,
+    };
+    runSlashCommand(trimmed, {
+      info,
+      print: (text, level) => {
+        this.bus.push({ source: origin, kind: "log", text, level });
+        emit(text);
+      },
+      clear: () => {
+        this.bus.clear();
+        this.bus.clearSession();
+      },
+      quit: () => {
+        emit("Quit requested from the web console — the worker cli is shutting down.");
+        setTimeout(() => process.exit(0), 200);
+      },
+      confirm: (prompt) => {
+        const note = `${prompt} — interactive prompts aren't supported from the web console; run it on the machine.`;
+        this.bus.push({ source: origin, kind: "log", text: note, level: "warn" });
+        emit(note);
+      },
+      submitAi: () => {}, // only /claude-cmd uses this, and it is special-cased above
+      reconnect: () => this.reconnectNow(),
+      expand: () => emit("Use the web console's fold viewer to expand blocks."),
+      collapse: () => emit("Use the web console's fold viewer to collapse blocks."),
+      maxBlock: 0,
+      live: {
+        status: this.bus.status,
+        scope: this.bus.scope ?? "",
+        worker: this.bus.worker,
+        project: this.bus.project,
+        activeProfile: this.bus.activeProfile,
+        startedAt: this.startedAtMs,
+      },
+    });
+    settle(0);
   }
 
   /**

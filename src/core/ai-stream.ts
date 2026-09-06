@@ -27,6 +27,15 @@ export interface AiStreamParser {
   usage(): AiUsage;
   /** The claude session id seen in the stream (ADR-0245 native resume); "" when none/non-claude. */
   sessionId(): string;
+  /**
+   * Whether the run reported an API error in its terminal `result` event (ADR-0249): claude
+   * returns **exit 0** even when it is out of credits / rate-limited / not logged in, marking the
+   * `result` with `is_error:true` (+ an `api_error_status` like 429). This lets the failover treat
+   * such a run as a FAILED attempt (⇒ try the next profile) instead of a success that hands the
+   * "out of usage credits" text back as the answer. `{ isError:false }` until a `result` says
+   * otherwise (and always for codex, which has no such field).
+   */
+  apiError(): { isError: boolean; status: number | null };
 }
 
 /** A claude stream-json OR codex `exec --json` event (only the fields we read). */
@@ -47,6 +56,10 @@ interface StreamEvent {
   total_cost_usd?: number;
   /** claude: the session id (carried on `system`/`result` events) — for native `--resume` (ADR-0245). */
   session_id?: string;
+  /** claude `result`: true when the run ended in an error (out-of-credits/rate-limit/auth) — ADR-0249. */
+  is_error?: boolean;
+  /** claude `result`: HTTP-ish status of that error (e.g. 429 out-of-credits); null when none. */
+  api_error_status?: number | null;
   /** codex: the completed item (agent_message carries the assistant text). */
   item?: { type?: string; text?: string };
 }
@@ -72,18 +85,30 @@ export function createAiStreamParser(cli: string): AiStreamParser {
   let buffer = "";
   const acc: AiUsage = { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
   let sessionId = "";
+  // API-error verdict from the terminal `result` event (ADR-0249); stays false until seen.
+  let apiError: { isError: boolean; status: number | null } = { isError: false, status: null };
 
   /** Handle one claude stream-json event; returns the display text to show. */
   function handleClaude(ev: StreamEvent): string {
     // Any claude event (system/init, assistant, result) may carry the session id (ADR-0245).
     if (typeof ev.session_id === "string" && ev.session_id) sessionId = ev.session_id;
-    if (ev.type === "result" && ev.usage) {
-      acc.input = ev.usage.input_tokens ?? 0;
-      acc.output = ev.usage.output_tokens ?? 0;
-      acc.cacheRead = ev.usage.cache_read_input_tokens ?? 0;
-      acc.cacheCreation = ev.usage.cache_creation_input_tokens ?? 0;
-      acc.tokens = acc.input + acc.output;
-      if (typeof ev.total_cost_usd === "number") acc.costUsd = ev.total_cost_usd;
+    if (ev.type === "result") {
+      // Capture the run's error verdict (ADR-0249): claude exits 0 even when out of credits /
+      // rate-limited / not logged in, flagging it here so the failover can move to the next profile.
+      if (ev.is_error === true) {
+        apiError = {
+          isError: true,
+          status: typeof ev.api_error_status === "number" ? ev.api_error_status : null,
+        };
+      }
+      if (ev.usage) {
+        acc.input = ev.usage.input_tokens ?? 0;
+        acc.output = ev.usage.output_tokens ?? 0;
+        acc.cacheRead = ev.usage.cache_read_input_tokens ?? 0;
+        acc.cacheCreation = ev.usage.cache_creation_input_tokens ?? 0;
+        acc.tokens = acc.input + acc.output;
+        if (typeof ev.total_cost_usd === "number") acc.costUsd = ev.total_cost_usd;
+      }
       return ""; // final text already streamed via assistant events
     }
     if (ev.type === "assistant") {
@@ -151,6 +176,7 @@ export function createAiStreamParser(cli: string): AiStreamParser {
     },
     usage: () => ({ ...acc }),
     sessionId: () => sessionId,
+    apiError: () => ({ ...apiError }),
   };
 }
 

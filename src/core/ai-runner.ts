@@ -12,7 +12,7 @@ import type { AiPlan } from "../utils/ai-cli";
 import { createAiStreamParser, estimateTokens, type AiUsage } from "./ai-stream";
 
 /** Why an attempt was skipped, so the caller can log an accurate reason (ADR-0240: any error fails over). */
-export type AttemptFailReason = "auth" | "limit" | "other";
+export type AttemptFailReason = "auth" | "limit" | "credits" | "other";
 
 /** Detect an auth failure in an attempt's output (to decide whether to try the next). */
 export function isAuthFailure(text: string): boolean {
@@ -27,6 +27,18 @@ export function isAuthFailure(text: string): boolean {
  */
 export function isSessionLimit(text: string): boolean {
   return /hit your (?:session|usage|weekly) limit|(?:session|usage|rate|weekly) limit (?:reached|exceeded)|\b(?:session|usage|weekly) limit\b|usage limit reached/i.test(
+    text,
+  );
+}
+
+/**
+ * Detect an out-of-credits / payment-required failure (ADR-0249) — e.g. claude's "You're out of
+ * usage credits. Run /usage-credits …" or a `credits_required` / `out_of_credits` marker. Claude
+ * returns **exit 0** for this, so the failover relies on the `result` event's `is_error` flag; this
+ * text check only classifies the reason for an accurate log.
+ */
+export function isOutOfCredits(text: string): boolean {
+  return /out of (?:usage )?credits|credits[_ ]required|out[_ ]of[_ ]credits|insufficient credits/i.test(
     text,
   );
 }
@@ -120,7 +132,12 @@ export async function runAiFailover(
       handlers.onChunk(tail);
     }
     lastCaptured = captured;
-    if (finalExit === 0) {
+    // A clean exit is NOT enough (ADR-0249): claude returns exit 0 even when out of credits /
+    // rate-limited / not logged in, marking the terminal `result` with `is_error:true`. Treat such
+    // a run as a FAILED attempt so failover moves to the next profile instead of handing the
+    // "out of usage credits" text back as the answer.
+    const apiErr = parser.apiError();
+    if (finalExit === 0 && !apiErr.isError) {
       const usage = parser.usage();
       if (usage.tokens === 0) usage.tokens = estimateTokens(captured);
       reportToolResult(attempt.cmd, true); // AI CLI ran ok (ADR-0223)
@@ -133,13 +150,18 @@ export async function runAiFailover(
         sessionId: parser.sessionId(),
       };
     }
+    // Reflect an exit-0-but-errored run as a non-zero exit so the last-attempt return (and the web)
+    // surfaces the streamed error text instead of treating it as success (ADR-0249).
+    if (finalExit === 0 && apiErr.isError) finalExit = apiErr.status && apiErr.status > 0 ? apiErr.status : 1;
     // Fail over on ANY failed attempt (ADR-0240): auth / session-limit / out-of-credits / other —
     // classify only for an accurate log. Stop once the last profile is reached (all exhausted).
     const reason: AttemptFailReason = isAuthFailure(captured)
       ? "auth"
-      : isSessionLimit(captured)
-        ? "limit"
-        : "other";
+      : apiErr.status === 429 || isOutOfCredits(captured)
+        ? "credits"
+        : isSessionLimit(captured)
+          ? "limit"
+          : "other";
     if (i === total - 1) break;
     handlers.onAttemptFail(attempt.label, reason);
   }
@@ -151,6 +173,7 @@ export async function runAiFailover(
 /** A short, human reason for a failed AI run — reused by the tool-health report (ADR-0223). */
 function summarizeAiFailure(captured: string, exitCode: number): string {
   if (isAuthFailure(captured)) return "Not logged in";
+  if (isOutOfCredits(captured)) return "Out of usage credits";
   if (isSessionLimit(captured)) return "Usage limit reached";
   const firstLine = captured.split("\n").map((l) => l.trim()).find((l) => l.length > 0);
   return firstLine || `exited ${exitCode}`;

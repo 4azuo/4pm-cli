@@ -116,6 +116,14 @@ export interface ProfileConfig {
    */
   aiRunTimeoutSec?: number;
   /**
+   * 4pm-cli slash commands blocked from the **web Console** (ADR-0249) — operator-editable via the
+   * Worker config + config templates. A `/name` line dispatched from the web runs on the worker
+   * unless its `name` is listed here. Machine-user policy (not per-project); default blocks the two
+   * that tamper with / kill the worker — `quit` + `config` — everything else allowed (`[]` = allow all).
+   * The TUI is unaffected (an operator at the machine keeps every command).
+   */
+  webBlockedCommands?: string[];
+  /**
    * Read-only mirror of the serving project's AI-run timeout override (ADR-0243), refreshed from
    * each `ws_token` like the two knobs above. Server is the source of truth; >0 wins over the
    * machine-user `aiRunTimeoutSec`; 0 ⇒ no project override. Never operator-editable (a Worker-config
@@ -231,6 +239,11 @@ export function defaultProfileConfig(): ProfileConfig {
     // Terminate a single AI run after 5 min by default (ADR-0243) so a hung/looping AI CLI
     // (e.g. a heavy spec review/compose) can't spin the dispatcher forever; 0 = no limit.
     aiRunTimeoutSec: 300,
+    // Web-Console blocked slash commands (ADR-0249): block the two that tamper with / kill the
+    // worker by default — `/quit` (stops the cli — DoS) and `/config` (writes config.json). Every
+    // other command (incl. /reconnect, /logs — non-destructive) is allowed; operators adjust this
+    // list in the Worker config. Empty ⇒ allow all.
+    webBlockedCommands: ["quit", "config"],
     // Shared AI memory (ADR-0245) — off by default (opt-in; costs a compaction call per turn).
     aiMemoryEnabled: false,
     aiMemoryBudgetChars: 6000,
@@ -259,6 +272,21 @@ export function resolveMemoryConfig(config: ProfileConfig): { enabled: boolean; 
 export function resolveIdleAutoClearMinutes(config: ProfileConfig): number {
   const project = config.projectAutoClearIdleMinutes ?? 0;
   return project > 0 ? project : (config.autoClearIdleMinutes ?? 10);
+}
+
+/** The safe default web-blocked commands (ADR-0249) when the key is absent — quit + config. */
+export const DEFAULT_WEB_BLOCKED_COMMANDS = ["quit", "config"];
+
+/**
+ * The set of 4pm-cli slash commands blocked from the web Console (ADR-0249) — the operator's
+ * `webBlockedCommands` normalised to lower-case names. **Absent (undefined) ⇒ the safe default**
+ * (quit + config); an explicit `[]` ⇒ allow all. TUI is never gated.
+ */
+export function resolveWebBlockedCommands(config: ProfileConfig): Set<string> {
+  const list = Array.isArray(config.webBlockedCommands)
+    ? config.webBlockedCommands
+    : DEFAULT_WEB_BLOCKED_COMMANDS;
+  return new Set(list.map((c) => String(c).trim().toLowerCase()).filter(Boolean));
 }
 
 /**

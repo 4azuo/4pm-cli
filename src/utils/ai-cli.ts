@@ -28,6 +28,32 @@ const REQUIRED_AI_ARGS: { claude: string[]; codex: string[]; antigravity: string
   antigravity: [],
 };
 
+/**
+ * Agentic tools disallowed for a one-shot AI run (ADR-0249) — a comma-separated single token so
+ * claude's variadic `--disallowedTools <tools...>` consumes exactly this arg (a terminator flag
+ * follows so it can't swallow the prompt). A text-in → text-out spec review/compose/suggest has no
+ * reason to run these; blocking them stops the run from wandering the repo / editing files / looping.
+ */
+const ONE_SHOT_DISALLOWED_CLAUDE_TOOLS = [
+  "Bash", "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit", "Task", "WebSearch", "WebFetch",
+  "Skill", "SlashCommand", "ToolSearch", "TaskCreate", "TaskGet", "TaskList", "TaskOutput",
+  "TaskStop", "TaskUpdate", "Monitor", "DesignSync", "CronCreate", "CronDelete", "CronList",
+  "EnterWorktree", "ExitWorktree", "RemoteTrigger", "ScheduleWakeup", "SendMessage", "PushNotification",
+].join(",");
+
+/**
+ * Extra pre-prompt args that make a claude run one-shot (ADR-0249): `--max-turns=1` (equals form so
+ * an older claude that doesn't know the flag treats it as an ignored unknown option, NOT a stray
+ * positional that would become the prompt) caps the agentic loop; `--disallowedTools` blocks the
+ * tools; and `--permission-mode default` is a NON-variadic terminator placed last so the variadic
+ * `--disallowedTools` can't eat the prompt (which `buildRunArgs` appends right after). Claude only —
+ * codex `exec` is already single-shot. Empty for a non-claude cmd.
+ */
+function oneShotArgs(cmd: string): string[] {
+  if (!cmd.includes("claude")) return [];
+  return ["--max-turns=1", "--disallowedTools", ONE_SHOT_DISALLOWED_CLAUDE_TOOLS, "--permission-mode", "default"];
+}
+
 /** The hardcoded required args for a command (substring match — `cmd` may be a path). */
 function requiredArgs(cmd: string): string[] {
   if (cmd.includes("claude")) return REQUIRED_AI_ARGS.claude;
@@ -53,6 +79,13 @@ export interface AiProfile {
   args?: string[];
   model?: string;
   enabled?: boolean;
+  /**
+   * Per-profile agentic turn cap for claude (ADR-0249) — passed as `--max-turns=<n>` on a normal
+   * (non-one-shot) run so an operator can bound a profile's agentic loop. Unset/0 ⇒ no cap. Ignored
+   * for a one-shot spec-assist run (that always forces `--max-turns=1` + disallowed tools) and for
+   * non-claude providers.
+   */
+  maxTurns?: number;
 }
 
 /** The AI providers a credential can target — each maps to a CLI command + config-dir env var. */
@@ -219,16 +252,32 @@ export function folderScopeGuard(folder: string, prompt: string): string {
 /**
  * Compose the argv after the command: the hardcoded required args (always, for metering)
  * + the profile's `args` (extras appended on top — ADR-0158) + `--model <model>` when set
- * + the prompt.
+ * + one-shot caps when `oneShot` (ADR-0249) + the prompt. The one-shot args go LAST (right before
+ * the prompt) so their non-variadic terminator (`--permission-mode default`) shields the prompt
+ * from the variadic `--disallowedTools`.
  */
-function buildRunArgs(profile: AiProfile, cmd: string, prompt: string, resumeId?: string): string[] {
+function buildRunArgs(
+  profile: AiProfile,
+  cmd: string,
+  prompt: string,
+  resumeId?: string,
+  oneShot = false,
+): string[] {
   const extras = profile.args ?? [];
   const model = profile.model?.trim();
   const modelArgs = model ? ["--model", model] : [];
   // Native session resume (ADR-0245) — claude only; resumes the prior conversation on the SAME
   // profile so the shared memory need not be re-injected. Non-claude / no id ⇒ a fresh session.
   const resumeArgs = resumeId && cmd.includes("claude") ? ["--resume", resumeId] : [];
-  return [...requiredArgs(cmd), ...resumeArgs, ...extras, ...modelArgs, prompt];
+  // One-shot forces `--max-turns=1` + disallowed tools (ADR-0249); a normal run uses the profile's
+  // own `maxTurns` cap when set (claude only, equals-form so an older claude ignores it safely).
+  const turns = profile.maxTurns;
+  const perProfileTurns =
+    !oneShot && cmd.includes("claude") && typeof turns === "number" && turns > 0
+      ? [`--max-turns=${Math.floor(turns)}`]
+      : [];
+  const oneShotExtra = oneShot ? oneShotArgs(cmd) : perProfileTurns;
+  return [...requiredArgs(cmd), ...resumeArgs, ...extras, ...modelArgs, ...oneShotExtra, prompt];
 }
 
 /**
@@ -336,10 +385,11 @@ export function planAiRun(
   config: AiCliConfig,
   hint: AiWorkingHint = {},
   resume: Map<string, string> = new Map(),
+  oneShot = false,
 ): AiPlan {
   return isUnifiedConfig(config)
-    ? planUnifiedRun(prompt, config, hint.credential ?? null, resume)
-    : planLegacyRun(prompt, config, hint.dir ?? null, resume);
+    ? planUnifiedRun(prompt, config, hint.credential ?? null, resume, oneShot)
+    : planLegacyRun(prompt, config, hint.dir ?? null, resume, oneShot);
 }
 
 /**
@@ -353,6 +403,7 @@ function planUnifiedRun(
   config: AiCliConfig,
   workingCredential: string | null,
   resume: Map<string, string>,
+  oneShot: boolean,
 ): AiPlan {
   const baseEnv = config.aiEnv ?? {};
   // Scope to the pinned provider unless "—" (mixed) is selected (ADR-0197).
@@ -365,7 +416,7 @@ function planUnifiedRun(
     return {
       cmd: active,
       attempts: [
-        { cmd: active, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, active, prompt), env: { ...baseEnv } },
+        { cmd: active, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, active, prompt, undefined, oneShot), env: { ...baseEnv } },
       ],
     };
   }
@@ -387,7 +438,7 @@ function planUnifiedRun(
     label: cred.label?.trim() || profileDisplayLabel(dir),
     dir,
     key,
-    args: buildRunArgs(cred, cmd, prompt, resume.get(key)),
+    args: buildRunArgs(cred, cmd, prompt, resume.get(key), oneShot),
     env: envVar ? { ...baseEnv, [envVar]: dir } : { ...baseEnv },
   }));
   return { cmd: attempts[0]?.cmd ?? DEFAULT_AI_CLI, attempts };
@@ -399,6 +450,7 @@ function planLegacyRun(
   config: AiCliConfig,
   workingDir: string | null,
   resume: Map<string, string>,
+  oneShot: boolean,
 ): AiPlan {
   // `||` (not `??`): a blank aiCli ("mixed"/none — ADR-0182) falls back to claude here.
   const cmd = config.aiCli || DEFAULT_AI_CLI;
@@ -407,7 +459,7 @@ function planLegacyRun(
   const defaultPlan: AiPlan = {
     cmd,
     attempts: [
-      { cmd, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, cmd, prompt), env: { ...baseEnv } },
+      { cmd, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, cmd, prompt, undefined, oneShot), env: { ...baseEnv } },
     ],
   };
   if (!envVar) return defaultPlan;
@@ -433,7 +485,7 @@ function planLegacyRun(
       label: profileDisplayLabel(dir),
       dir,
       key,
-      args: buildRunArgs(profile, cmd, prompt, resume.get(key)),
+      args: buildRunArgs(profile, cmd, prompt, resume.get(key), oneShot),
       env: { ...baseEnv, [envVar]: dir },
     };
   });

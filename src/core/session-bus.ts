@@ -32,6 +32,9 @@ export interface TranscriptEntry {
   ts: number;
   /** For a `result` entry — whether the body is json or code (drives the marker + pretty-print). */
   resultKind?: "json" | "code";
+  /** Processing time (ms) of the finished run (ADR-0249) — set on the terminal `exit` entry so the
+   *  TUI + web Console show how long each command/AI prompt took. Absent on other entries. */
+  durationMs?: number;
 }
 
 /** Fields a producer supplies; id/ts/level default when omitted. */
@@ -41,6 +44,8 @@ export interface TranscriptInput {
   text: string;
   level?: "info" | "warn" | "error";
   resultKind?: "json" | "code";
+  /** Processing time (ms) — set on a terminal `exit` entry (ADR-0249). */
+  durationMs?: number;
 }
 
 /**

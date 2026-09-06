@@ -88,6 +88,13 @@ export interface CommandDispatchPayload {
    * locally-typed prompt — instead of spawning `cmd` verbatim. `args` is ignored.
    */
   ai?: boolean;
+  /**
+   * One-shot AI run (ADR-0249): a text-in → text-out prompt (spec review/compose/suggest/
+   * generators) the cli must run WITHOUT its agentic tool loop — `--max-turns 1` + disallowed
+   * agentic tools — so it can't wander the repo / edit files / loop forever. Only meaningful
+   * with `ai:true`; absent ⇒ a full agent run (Console tab, Git merge).
+   */
+  aiOneShot?: boolean;
 }
 
 /**

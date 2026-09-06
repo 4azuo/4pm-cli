@@ -48,6 +48,14 @@ export const dispatchCommandRequestSchema = z
      * against the git allowlist (`isGitCommandAllowed`). Absent ⇒ normal console dispatch.
      */
     gitOp: z.enum(["read", "write"]).optional(),
+    /**
+     * One-shot AI mode (ADR-0249): the prompt is a text-in → text-out task (spec review /
+     * compose / suggest / generators) that must NOT trigger the AI CLI's agentic tool loop.
+     * The cli caps such a run (`--max-turns 1` + disallowed agentic tools) so it can't wander
+     * the repo / edit files / loop forever. Only meaningful with `ai:true`; absent ⇒ a full
+     * agent run (the Console tab + Git merge, which legitimately use tools).
+     */
+    aiOneShot: z.boolean().optional(),
   })
   // A plain executable command stays tightly capped; only AI prompts may be large.
   .superRefine((v, ctx) => {
@@ -119,6 +127,12 @@ export interface CommandActivityEvent {
   status: "running" | "done" | "failed";
   exitCode?: number | null;
   startedAt: string;
+  /**
+   * Display name of the user who dispatched this command (ADR-0249) — `web` dispatches carry
+   * the authenticated caller so the Console header can show "last run by <name>"; absent for a
+   * `local` (cli-typed) run or when the name is unknown.
+   */
+  initiatedByName?: string;
 }
 
 /**
@@ -139,6 +153,12 @@ export interface TranscriptEntry {
   level: "info" | "warn" | "error";
   /** For a `result` entry — whether the body is json or code (drives the marker + pretty-print). */
   resultKind?: "json" | "code";
+  /**
+   * Processing time in milliseconds (ADR-0249) — set on the terminal `exit` entry of a run
+   * (wall-clock from its `cmd`/`aireq` echo to completion) so the Console can show how long each
+   * command/AI prompt took. Absent on non-terminal entries and on entries the cli can't time.
+   */
+  durationMs?: number;
 }
 
 /**
@@ -165,9 +185,11 @@ export type ConsoleSyncEvent =
 export const listCommandsQuerySchema = baseRequestSchema.extend({
   projectId: z.string().uuid(),
   // Optional search filters (command-0005): `search` (from BaseRequest) matches the command
-  // text/status; `from`/`to` are an inclusive `YYYY-MM-DD` date range over `startedAt`.
+  // text/status; `from`/`to` are an inclusive `YYYY-MM-DD` date range over `startedAt`;
+  // `machineLinkId` (ADR-0249) filters to one machine-user's commands (absent ⇒ all).
   from: z.string().optional(),
   to: z.string().optional(),
+  machineLinkId: z.string().uuid().optional(),
 });
 export type ListCommandsQuery = z.infer<typeof listCommandsQuerySchema>;
 
@@ -208,3 +230,40 @@ export interface CommandOutputResponse {
   input: string | null;
   unavailableReason: CommandOutputUnavailableReason;
 }
+
+/** Metadata for one 4pm-cli slash command (ADR-0249) — name · usage · description. */
+export interface CliSlashCommandMeta {
+  /** Command word without the leading `/` (e.g. "clear"). */
+  name: string;
+  /** Usage hint (e.g. "/history [N]"). */
+  usage: string;
+  /** One-line description. */
+  description: string;
+}
+
+/**
+ * The 4pm-cli slash commands (ADR-0249) — the **shared** source of truth for both the web Console
+ * autocomplete and the Worker-config allow/deny group, kept here so the cli, web and config UI never
+ * drift. The cli owns the actual handlers (`src/ui/slash-commands.ts`) and maps them by `name`; from
+ * the web Console a `/name` line runs the matching command on the worker unless an operator blocked it
+ * via `webBlockedCommands`. Keep this list in sync with the cli's command registry.
+ */
+export const CLI_SLASH_COMMANDS: CliSlashCommandMeta[] = [
+  { name: "help", usage: "/help", description: "List slash commands" },
+  { name: "version", usage: "/version", description: "Show the cli version" },
+  { name: "status", usage: "/status", description: "Show connection + profile + session status" },
+  { name: "history", usage: "/history [N]", description: "List the last N executed commands (+ time)" },
+  { name: "output", usage: "/output <n>", description: "Replay a command's output (n from /history)" },
+  { name: "logs", usage: "/logs [N]", description: "Tail the profile's structured log" },
+  { name: "expand", usage: "/expand [N]", description: "Expand a collapsed ▸[N] block" },
+  { name: "collapse", usage: "/collapse [N]", description: "Collapse an expanded ▸[N] block" },
+  { name: "reconnect", usage: "/reconnect", description: "Reconnect to the server now (skip the backoff)" },
+  { name: "whoami", usage: "/whoami", description: "Show this machine account + its teams & projects" },
+  { name: "config", usage: "/config [show|init|set <k> <v>|delete <k>]", description: "View / init / update / delete profile config" },
+  { name: "claude-cmd", usage: "/claude-cmd /context", description: "Run an AI-CLI slash command (e.g. /context, /usage)" },
+  { name: "clear", usage: "/clear", description: "Clear the transcript" },
+  { name: "quit", usage: "/quit", description: "Quit the cli (also /exit)" },
+];
+
+/** The slash-command names, for building an allow/deny set (ADR-0249). */
+export const CLI_SLASH_COMMAND_NAMES: string[] = CLI_SLASH_COMMANDS.map((c) => c.name);
