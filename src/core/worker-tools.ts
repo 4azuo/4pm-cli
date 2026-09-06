@@ -12,7 +12,8 @@ import {
   WORKER_TOOL_PREREQUISITE_IDS,
   type WorkerToolManager,
 } from "@4pm/constants";
-import type { ToolStatus, ToolsListReply } from "@4pm/ws";
+import type { ToolStatus, ToolsAutoUpdateReply, ToolsListReply } from "@4pm/ws";
+import { readProfileConfig, writeProfileConfig } from "../config/profile";
 
 /** The streamed worker-tool ops: install/uninstall (ADR-0206) + update-to-latest (ADR-0252). */
 export type ToolOp = "install" | "uninstall" | "update";
@@ -76,7 +77,7 @@ async function detectOne(cmd: string, versionArg: string): Promise<string | null
 }
 
 /** List extra globally installed npm packages (not in the catalog) via `npm ls -g`. */
-async function listExtras(): Promise<ToolStatus[]> {
+async function listExtras(autoUpdateSet: Set<string> = new Set()): Promise<ToolStatus[]> {
   const { out } = await run("npm", ["ls", "-g", "--depth=0", "--json"], undefined, 20_000);
   // `npm ls` exits non-zero on peer-dep warnings but still prints JSON — parse regardless.
   if (!out.trim()) return [];
@@ -105,11 +106,16 @@ async function listExtras(): Promise<ToolStatus[]> {
       version: info.version ?? null,
       installable: true,
       updatable: true,
+      autoUpdate: autoUpdateSet.has(name),
     }));
 }
 
-/** machine-0050 — probe the default catalog + list extra globals. */
-export async function detectWorkerTools(): Promise<ToolsListReply> {
+/**
+ * machine-0050 — probe the default catalog + list extra globals. `autoUpdateTools` (the worker's
+ * `config.json` flags, ADR-0253) marks each row's `autoUpdate` so the panel toggle reflects state.
+ */
+export async function detectWorkerTools(autoUpdateTools: string[] = []): Promise<ToolsListReply> {
+  const autoUpdateSet = new Set(autoUpdateTools);
   const catalog = await Promise.all(
     WORKER_TOOL_CATALOG.map(async (t): Promise<ToolStatus> => {
       const version = await detectOne(t.id, t.versionArg);
@@ -121,10 +127,11 @@ export async function detectWorkerTools(): Promise<ToolsListReply> {
         version,
         installable: t.installable,
         updatable: t.updatable,
+        autoUpdate: autoUpdateSet.has(t.id),
       };
     }),
   );
-  const extras = await listExtras().catch(() => []);
+  const extras = await listExtras(autoUpdateSet).catch(() => []);
   return { catalog, extras };
 }
 
@@ -180,4 +187,37 @@ export async function runWorkerToolOp(
   onLine(`$ ${manager} ${opArgs(op, manager, resolved.pkg).join(" ")}`);
   const { code } = await run(manager, opArgs(op, manager, resolved.pkg), onLine);
   return { ok: code === 0, exitCode: code, error: code === 0 ? undefined : `${manager} exited ${code}` };
+}
+
+/**
+ * machine-0056 (ADR-0253) — toggle a tool's per-tool auto-update flag in the worker `config.json`
+ * (`autoUpdateTools`). Validates the name the same way as an update op (a detect-only prerequisite /
+ * invalid package is rejected without persisting), then merges/removes it and writes the config.
+ */
+export function setToolAutoUpdate(profileDir: string, name: string, enabled: boolean): ToolsAutoUpdateReply {
+  const resolved = resolvePackage(name, "update");
+  if (resolved.error) return { ok: false, error: resolved.error };
+  const current = readProfileConfig(profileDir).autoUpdateTools ?? [];
+  const set = new Set(current);
+  if (enabled) set.add(name);
+  else set.delete(name);
+  writeProfileConfig(profileDir, { autoUpdateTools: [...set] });
+  return { ok: true };
+}
+
+/**
+ * Update every flagged tool to `@latest` (ADR-0253) — run by the daily maintenance tick when the
+ * worker is idle (ADR-0074). Uses `npm` (the panel's default manager); a rejected/invalid name is
+ * skipped, not fatal, so one bad flag never blocks the rest. Best-effort; `onLine` receives progress.
+ */
+export async function autoUpdateFlaggedTools(
+  tools: string[],
+  onLine: (line: string) => void,
+): Promise<void> {
+  for (const name of tools) {
+    const res = await runWorkerToolOp("update", name, "npm", onLine).catch(
+      (err: unknown) => ({ ok: false, exitCode: 1, error: String(err) }),
+    );
+    onLine(res.ok ? `✓ ${name} updated` : `✗ ${name}: ${res.error ?? "failed"}`);
+  }
 }

@@ -51,6 +51,8 @@ import {
   type ToolsListReply,
   type ToolsMutateRequest,
   type ToolsMutateReply,
+  type ToolsAutoUpdateRequest,
+  type ToolsAutoUpdateReply,
   type ToolsProgressPayload,
   type ToolsDonePayload,
   type GitDiffRequest,
@@ -153,7 +155,7 @@ import { runSlashCommand } from "../ui/slash-commands";
 import type { SessionInfo } from "../ui/session-info";
 import { runMemoryCompaction } from "./memory-compact";
 import { applyConfigText, readConfigText } from "./config-sync";
-import { detectWorkerTools, runWorkerToolOp } from "./worker-tools";
+import { detectWorkerTools, runWorkerToolOp, setToolAutoUpdate } from "./worker-tools";
 import { logger, readRecentLogLines, readLogUpload } from "../common/logger/logger";
 import { CLI_VERSION } from "../version";
 
@@ -1166,11 +1168,20 @@ export class WsClient {
         break;
       }
       case WsChannels.TOOLS_LIST:
-        // Request/reply (machine-0050, ADR-0206): probe the default catalog + extra globals.
-        void detectWorkerTools().then((reply) =>
+        // Request/reply (machine-0050, ADR-0206): probe the default catalog + extra globals. Pass the
+        // per-tool auto-update flags (config.json, ADR-0253) so each row's `autoUpdate` reflects state.
+        void detectWorkerTools(readProfileConfig(this.context.profileDir).autoUpdateTools ?? []).then((reply) =>
           this.send(WsChannels.TOOLS_LIST, reply satisfies ToolsListReply, message.id),
         );
         break;
+      case WsChannels.TOOLS_AUTOUPDATE: {
+        // Request/reply (machine-0056, ADR-0253): toggle a tool's auto-update flag in config.json.
+        // A prerequisite / invalid name is rejected without persisting (mirrors runWorkerToolOp).
+        const req = payload as unknown as ToolsAutoUpdateRequest;
+        const res = setToolAutoUpdate(this.context.profileDir, req.name, req.enabled);
+        this.send(WsChannels.TOOLS_AUTOUPDATE, res satisfies ToolsAutoUpdateReply, message.id);
+        break;
+      }
       case WsChannels.TOOLS_INSTALL:
       case WsChannels.TOOLS_UNINSTALL:
       case WsChannels.TOOLS_UPDATE: {

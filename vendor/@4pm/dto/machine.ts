@@ -589,6 +589,8 @@ export interface WorkerToolStatus {
   installable: boolean;
   /** True when the tool offers update-to-latest (npm-distributed catalog tool or extra — ADR-0252). */
   updatable: boolean;
+  /** True when this tool is flagged for per-tool auto-update in the worker `config.json` (ADR-0253). */
+  autoUpdate: boolean;
 }
 
 /** Data GET /machines/:id/tools — the default catalog + extra global packages (machine-0050). */
@@ -605,6 +607,20 @@ export const workerToolInstallSchema = z.object({
   manager: z.enum(["npm", "pnpm"]),
 });
 export type WorkerToolInstallRequest = z.infer<typeof workerToolInstallSchema>;
+
+/** Body PUT /machines/:id/tools/auto-update — toggle per-tool auto-update (machine-0056, ADR-0253). */
+export const workerToolAutoUpdateSchema = z.object({
+  /** Catalog id or installed extra's npm package name. */
+  name: z.string().trim().min(1).max(214),
+  /** true = flag this tool for auto-update to @latest; false = clear it. */
+  enabled: z.boolean(),
+});
+export type WorkerToolAutoUpdateRequest = z.infer<typeof workerToolAutoUpdateSchema>;
+
+/** Data PUT /machines/:id/tools/auto-update — whether the flag was persisted (machine-0056). */
+export interface WorkerToolAutoUpdateResponse {
+  ok: boolean;
+}
 
 /** Data POST install / DELETE uninstall — the streamed op id to subscribe to (machine-0051/0052). */
 export interface WorkerToolOpResponse {

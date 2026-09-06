@@ -11,6 +11,7 @@ import { logger } from "../common/logger/logger";
 import { CLI_VERSION } from "../version";
 import { readProfileConfig } from "../config/profile";
 import { updateToLatest } from "./update";
+import { autoUpdateFlaggedTools } from "./worker-tools";
 import type { SessionBus } from "./session-bus";
 
 /** How often the scheduler re-evaluates whether the daily update is due (ms). */
@@ -115,6 +116,10 @@ export class UpdateScheduler {
   private async runUpdate(): Promise<void> {
     this.updating = true;
     try {
+      // Per-tool worker auto-update (ADR-0253) runs FIRST — the cli self-update below re-execs the
+      // process on success, which would otherwise skip the flagged tools. Best-effort; a failed tool
+      // never blocks the cli update. Shares this org-gated, idle-only window (ADR-0074).
+      await this.updateFlaggedTools();
       this.bus.log("Scheduled auto-update: checking for a new version…");
       const result = await updateToLatest(this.serverUrl);
       if (result.action === "already-latest") {
@@ -140,5 +145,15 @@ export class UpdateScheduler {
     } finally {
       this.updating = false;
     }
+  }
+
+  /** Update each tool flagged for auto-update in config.json to @latest (ADR-0253) — best-effort. */
+  private async updateFlaggedTools(): Promise<void> {
+    const tools = readProfileConfig(this.profileDir).autoUpdateTools ?? [];
+    if (tools.length === 0) return;
+    this.bus.log(`Scheduled tool auto-update: ${tools.join(", ")}…`);
+    await autoUpdateFlaggedTools(tools, (line) => logger.info("update.tool.line", { line })).catch(
+      (err: unknown) => logger.warn("update.tool.error", { error: String(err) }),
+    );
   }
 }

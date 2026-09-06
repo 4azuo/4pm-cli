@@ -31,6 +31,9 @@ export const WsChannels = {
   TOOLS_UPDATE: "tools.update",
   TOOLS_PROGRESS: "tools.progress",
   TOOLS_DONE: "tools.done",
+  // toggle per-tool auto-update (ADR-0253): request/reply — the cli persists the flag in
+  // config.json (`autoUpdateTools`); the ADR-0074 idle daily tick later runs the flagged tools.
+  TOOLS_AUTOUPDATE: "tools.autoUpdate",
   // autonomous mode control (ADR-0152): read settings+status+books+approvals, tail logs, and
   // write {settings|approvals|userTodo|cron} — the dashboard drives the worker's autonomous engine.
   AUTONOMOUS_READ: "autonomous.read",

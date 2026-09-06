@@ -177,6 +177,8 @@ export interface ToolStatus {
   installable: boolean;
   /** True when the tool offers update-to-latest (npm-distributed catalog tool or extra — ADR-0252). */
   updatable: boolean;
+  /** True when this tool is flagged for per-tool auto-update in `config.json` (ADR-0253). */
+  autoUpdate: boolean;
 }
 
 /** tools.list request/reply (machine-0050, ADR-0206) — probe the catalog + extra globals. */
@@ -219,6 +221,23 @@ export interface ToolsDonePayload {
   /** True when the manager exited 0. */
   ok: boolean;
   exitCode: number;
+  error?: string;
+}
+
+/**
+ * tools.autoUpdate request/reply (machine-0056, ADR-0253) — toggle per-tool auto-update. The cli
+ * merges/removes `name` in `config.json` `autoUpdateTools` and replies `ok`; the ADR-0074 idle daily
+ * tick later runs `@latest` for each flagged tool.
+ */
+export interface ToolsAutoUpdateRequest {
+  /** Catalog id or npm package name. */
+  name: string;
+  /** true = flag for auto-update; false = clear the flag. */
+  enabled: boolean;
+}
+export interface ToolsAutoUpdateReply {
+  /** True when the flag was persisted; false with `error` when the name is a prerequisite / invalid. */
+  ok: boolean;
   error?: string;
 }
 

@@ -60,6 +60,12 @@ export function clearDefaultProfileIf(name: string): void {
 export interface ProfileConfig {
   /** Auto-update on startup (ADR-0015) — defaults to true. */
   autoUpdate?: boolean;
+  /**
+   * Catalog ids / npm package names flagged for per-tool auto-update (ADR-0253). The daily
+   * maintenance tick (ADR-0074, org-gated + idle-only) runs `npm i -g <pkg>@latest` for each.
+   * Toggled from the Tools panel via `tools.autoUpdate` (machine-0056). Empty/absent ⇒ none.
+   */
+  autoUpdateTools?: string[];
   /** The physic project folder this cli serves (assigned by the server). */
   physicPath?: string | null;
   /** Interval to upload command history to R2 (minutes) — defaults to 10. */
