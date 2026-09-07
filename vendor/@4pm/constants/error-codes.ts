@@ -150,6 +150,10 @@ export const ErrorCode = {
   AI_INIT_FAILED: "AI_INIT_FAILED",
   // AI spec-assist (suggest/review/compose) run failed on the worker cli (ADR-0100).
   AI_ASSIST_FAILED: "AI_ASSIST_FAILED",
+  // Client-side guard (ADR-0255): the built AI prompt is longer than AI_PROMPT_MAX_LEN, so the
+  // web blocks the dispatch and shows an actionable "spec too large" message instead of letting
+  // the server reject it as a confusing VALIDATION_FAILED.
+  AI_PROMPT_TOO_LARGE: "AI_PROMPT_TOO_LARGE",
   REPO_NOT_FOUND: "REPO_NOT_FOUND",
   // invitation
   INVITATION_TOKEN_INVALID: "INVITATION_TOKEN_INVALID",

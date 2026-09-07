@@ -6,9 +6,16 @@
 import { z } from "zod";
 import { baseRequestSchema } from "./base";
 
-/** Max `command` length for an executable command vs an AI prompt (ADR-0106). */
+/**
+ * Max `command` length for an executable command vs an AI prompt (ADR-0106).
+ * The AI-prompt cap was raised 200k → 500k (ADR-0255): the whole-spec review/compose prompts
+ * embed the full self-describing envelope (+ `_aiReview`/`_aiTree` meta for compose), and a
+ * genuinely large spec pushes that past 200k chars — which the dispatch pipe rejected as a
+ * confusing `VALIDATION_FAILED` before the AI ever ran. 500k (~125k tokens) leaves ample
+ * headroom while staying well within the model context window.
+ */
 export const COMMAND_MAX_LEN = 8_000;
-export const AI_PROMPT_MAX_LEN = 200_000;
+export const AI_PROMPT_MAX_LEN = 500_000;
 
 /** Where a command was initiated: `web` (dispatch) vs `local` (cli TUI) — ADR-0107. */
 export type CommandOrigin = "web" | "local";
