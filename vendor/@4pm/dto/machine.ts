@@ -162,6 +162,15 @@ export interface WsTokenResponse {
    */
   machineUsername: string;
   /**
+   * Worker tool restore manifest (ADR-0254) — the tools + exact versions this machine user should
+   * have, plus its per-tool auto-update flags. On boot the cli reconciles its installed tools to
+   * `manifest` (installing a missing/mismatched version) so a container recreation restores the
+   * toolchain. When a copy-apply is queued (`pendingToolManifest`) that manifest **wins** here
+   * (pending takes precedence over the self-restore snapshot); otherwise it is the link's own last
+   * reported snapshot. `null` when the server holds no snapshot and nothing is queued.
+   */
+  toolRestore: WorkerToolRestorePush | null;
+  /**
    * WebSocket base URL the cli should connect to (ADR-0131 phase 3 cutover). When present,
    * the cli opens `<wsUrl>/ws` on `@4pm/cli-server` instead of the server gateway and heals
    * it into `.cre`. Absent ⇒ the cli keeps using its `serverUrl` (old behaviour / server
@@ -593,10 +602,68 @@ export interface WorkerToolStatus {
   autoUpdate: boolean;
 }
 
-/** Data GET /machines/:id/tools — the default catalog + extra global packages (machine-0050). */
+/**
+ * Data GET /machines/:id/tools — the default catalog + extra global packages (machine-0050). Since
+ * ADR-0254 this is read from the DB `MachineLink.toolSnapshot` (not a live probe), so an offline
+ * worker still returns its last-synced set; `checkedAt`/`online` drive the panel's staleness + Refresh.
+ */
 export interface WorkerToolsResponse {
   catalog: WorkerToolStatus[];
   extras: WorkerToolStatus[];
+  /** When the worker last reported this snapshot (ADR-0254); null when it never has. */
+  checkedAt: string | null;
+  /** Whether the worker is currently online — Refresh (live re-detect + report) is enabled only then. */
+  online: boolean;
+}
+
+/** One tool to reconcile to an exact version on boot / copy-apply (ADR-0254). */
+export interface ToolManifestEntry {
+  /** Catalog id or npm package name. */
+  name: string;
+  /** Exact version to (re)install — `npm i -g <name>@<version>`. */
+  version: string;
+  /** Manager used to (re)install it. */
+  manager: "npm" | "pnpm";
+}
+
+/**
+ * Persisted worker tool snapshot (ADR-0254) — the JSON stored in `MachineLink.toolSnapshot`: the last
+ * detected set the worker reported. Drives the DB-backed Tools panel and is the restore-on-boot target.
+ */
+export interface WorkerToolSnapshot {
+  catalog: WorkerToolStatus[];
+  extras: WorkerToolStatus[];
+}
+
+/**
+ * Restore payload seeded to the cli on `ws_token` (ADR-0254): the self-restore manifest derived from
+ * the last reported snapshot (installed npm-distributed tools at their exact versions) + the per-tool
+ * auto-update flags for the daily tick. `null` when the server has no snapshot for this link yet.
+ */
+export interface WorkerToolRestorePush {
+  manifest: ToolManifestEntry[];
+  /** Catalog ids / extra names flagged for per-tool auto-update (ADR-0253, now DB-stored — ADR-0254). */
+  autoUpdate: string[];
+}
+
+/**
+ * Body POST /machines/tools/copy (ADR-0254) — copy one machine user's tool set (at its versions) onto
+ * others. Validated: a source link + ≥1 distinct target links (all in the caller's org).
+ */
+export const workerToolCopySchema = z.object({
+  /** Source machine-link id whose `toolSnapshot` supplies the manifest. */
+  sourceLinkId: z.string().uuid(),
+  /** Target machine-link ids to queue the manifest for (pushed on their next connect). */
+  targetLinkIds: z.array(z.string().uuid()).min(1).max(200),
+});
+export type WorkerToolCopyRequest = z.infer<typeof workerToolCopySchema>;
+
+/** Data POST /machines/tools/copy — how many targets were queued (ADR-0254). */
+export interface WorkerToolCopyResponse {
+  /** Number of target links a pending manifest was written to. */
+  queued: number;
+  /** Number of those targets currently online (they apply immediately; the rest on next connect). */
+  online: number;
 }
 
 /** Body POST /machines/:id/tools/install — install a tool (machine-0051, ADR-0206). */

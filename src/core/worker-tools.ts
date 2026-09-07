@@ -221,3 +221,48 @@ export async function autoUpdateFlaggedTools(
     onLine(res.ok ? `✓ ${name} updated` : `✗ ${name}: ${res.error ?? "failed"}`);
   }
 }
+
+/** Install a package at an EXACT version (`npm i -g name@version`) — the restore/copy op (ADR-0254). */
+async function installPinned(
+  name: string,
+  version: string,
+  manager: WorkerToolManager,
+  onLine: (line: string) => void,
+): Promise<{ ok: boolean; error?: string }> {
+  const resolved = resolvePackage(name, "update");
+  if (resolved.error || !resolved.pkg) return { ok: false, error: resolved.error ?? "Invalid package." };
+  const target = `${resolved.pkg}@${version}`;
+  const args = manager === "pnpm" ? ["add", "-g", target] : ["install", "-g", target];
+  onLine(`$ ${manager} ${args.join(" ")}`);
+  const { code } = await run(manager, args, onLine);
+  return { ok: code === 0, error: code === 0 ? undefined : `${manager} exited ${code}` };
+}
+
+/**
+ * Reconcile the worker's installed tools to a manifest of exact versions (ADR-0254) — the
+ * restore-on-boot / copy-apply op. Detects the current set once, then installs each manifest entry
+ * whose version is missing or differs (`npm i -g name@version`). Best-effort: a per-tool failure is
+ * logged, never fatal, so one bad entry never blocks the rest. Prerequisites are skipped by
+ * `resolvePackage`. Returns whether it ran (always true unless it threw).
+ */
+export async function reconcileTools(
+  manifest: { name: string; version: string; manager: WorkerToolManager }[],
+  onLine: (line: string) => void,
+): Promise<void> {
+  if (manifest.length === 0) return;
+  const { catalog, extras } = await detectWorkerTools();
+  const versionByName = new Map(
+    [...catalog, ...extras]
+      .filter((r) => r.installed && r.version)
+      .map((r) => [r.id, r.version as string]),
+  );
+  for (const entry of manifest) {
+    const current = versionByName.get(entry.name);
+    if (current && current.includes(entry.version)) continue; // already at the recorded version
+    onLine(`Restoring ${entry.name}@${entry.version}…`);
+    const res = await installPinned(entry.name, entry.version, entry.manager, onLine).catch(
+      (err: unknown) => ({ ok: false, error: String(err) }),
+    );
+    onLine(res.ok ? `✓ ${entry.name}@${entry.version}` : `✗ ${entry.name}: ${res.error ?? "failed"}`);
+  }
+}

@@ -55,6 +55,9 @@ import {
   type ToolsAutoUpdateReply,
   type ToolsProgressPayload,
   type ToolsDonePayload,
+  type ToolsReportPayload,
+  type ToolsRestoreRequest,
+  type ToolsRestoreReply,
   type GitDiffRequest,
   type GitEnvRequest,
   type GitSshKeyRequest,
@@ -155,7 +158,7 @@ import { runSlashCommand } from "../ui/slash-commands";
 import type { SessionInfo } from "../ui/session-info";
 import { runMemoryCompaction } from "./memory-compact";
 import { applyConfigText, readConfigText } from "./config-sync";
-import { detectWorkerTools, runWorkerToolOp, setToolAutoUpdate } from "./worker-tools";
+import { detectWorkerTools, reconcileTools, runWorkerToolOp, setToolAutoUpdate } from "./worker-tools";
 import { logger, readRecentLogLines, readLogUpload } from "../common/logger/logger";
 import { CLI_VERSION } from "../version";
 
@@ -374,6 +377,8 @@ export class WsClient {
       context.credential.serverUrl,
       context.profileDir,
       context.bus,
+      // After the idle daily tick updates flagged tools, report the fresh snapshot (ADR-0254).
+      () => void this.reportWorkerTools(),
     );
     // The operator's local commands (TUI input box) run through the same executor.
     context.bus.onLocalSubmit((input) => void this.runLocalCommand(input));
@@ -389,6 +394,21 @@ export class WsClient {
     context.bus.onClear(() => this.emitConsoleClear());
     // A manual `/clear` (not idle auto-clear) resets the shared AI memory + native sessions (ADR-0245).
     context.bus.onClearSession(() => this.resetMemorySession());
+  }
+
+  /**
+   * Detect the worker's tools and report the snapshot to the server (ADR-0254, `tools.report`) so the
+   * DB-backed Tools panel + restore target stay current. One-way, best-effort — a detect/send failure
+   * never disrupts the session. Called after each tool op, after the daily tick, and after a restore.
+   */
+  private async reportWorkerTools(): Promise<void> {
+    try {
+      const autoUpdate = readProfileConfig(this.context.profileDir).autoUpdateTools ?? [];
+      const { catalog, extras } = await detectWorkerTools(autoUpdate);
+      this.send(WsChannels.TOOLS_REPORT, { catalog, extras } satisfies ToolsReportPayload);
+    } catch (err) {
+      logger.warn("tools.report.error", { error: String(err) });
+    }
   }
 
   /**
@@ -572,6 +592,9 @@ export class WsClient {
           // Project shared-AI-memory override mirrors (ADR-0245).
           projectAiMemoryMode: token.aiMemory?.mode ?? "inherit",
           projectAiMemoryBudgetChars: token.aiMemory?.budgetChars ?? 0,
+          // Per-tool auto-update flags (ADR-0253) are now DB-owned (ADR-0254) — mirror the server's
+          // list locally so the idle daily tick (UpdateScheduler) can read it without a round-trip.
+          autoUpdateTools: token.toolRestore?.autoUpdate ?? [],
         });
         // Seed the shared-AI-memory cache (ADR-0245) from the server's stored copy — only when the
         // cli holds none yet (a fresh process / reconnect), so a periodic ws_token refresh never
@@ -1175,8 +1198,10 @@ export class WsClient {
         );
         break;
       case WsChannels.TOOLS_AUTOUPDATE: {
-        // Request/reply (machine-0056, ADR-0253): toggle a tool's auto-update flag in config.json.
-        // A prerequisite / invalid name is rejected without persisting (mirrors runWorkerToolOp).
+        // Request/reply (machine-0056): the server now persists the flag in the DB (ADR-0254) and
+        // forwards this ONLY to an online worker for immediacy, so the local `config.json` mirror —
+        // read by the ADR-0074 daily tick — updates now instead of at the next ws_token. A
+        // prerequisite / invalid name is rejected without persisting (mirrors runWorkerToolOp).
         const req = payload as unknown as ToolsAutoUpdateRequest;
         const res = setToolAutoUpdate(this.context.profileDir, req.name, req.enabled);
         this.send(WsChannels.TOOLS_AUTOUPDATE, res satisfies ToolsAutoUpdateReply, message.id);
@@ -1197,14 +1222,36 @@ export class WsClient {
         this.send(message.channel, { started: true } satisfies ToolsMutateReply, message.id);
         void runWorkerToolOp(op, req.name, req.manager, (line) =>
           this.send(WsChannels.TOOLS_PROGRESS, { opId: req.opId, line } satisfies ToolsProgressPayload),
-        ).then((res) =>
+        ).then((res) => {
           this.send(WsChannels.TOOLS_DONE, {
             opId: req.opId,
             ok: res.ok,
             exitCode: res.exitCode,
             error: res.error,
-          } satisfies ToolsDonePayload),
-        );
+          } satisfies ToolsDonePayload);
+          // Report the new snapshot to the DB (ADR-0254) so the panel + restore target stay current.
+          void this.reportWorkerTools();
+        });
+        break;
+      }
+      case WsChannels.TOOLS_RESTORE: {
+        // Reconcile the worker to a pushed manifest NOW (ADR-0254): the copy-apply / restore path. The
+        // cli installs each missing/mismatched `name@version`, reports its new snapshot, then replies so
+        // the server can clear the pending pointer. Best-effort; per-tool failures never fail the reply.
+        const req = payload as unknown as ToolsRestoreRequest;
+        void reconcileTools(
+          req.manifest.map((m) => ({ name: m.name, version: m.version, manager: m.manager })),
+          (line) => this.bus.log(line),
+        )
+          .then(() => this.reportWorkerTools())
+          .then(() => this.send(WsChannels.TOOLS_RESTORE, { ok: true } satisfies ToolsRestoreReply, message.id))
+          .catch((err: unknown) =>
+            this.send(
+              WsChannels.TOOLS_RESTORE,
+              { ok: false, error: String(err) } satisfies ToolsRestoreReply,
+              message.id,
+            ),
+          );
         break;
       }
       case WsChannels.GIT_DIFF:

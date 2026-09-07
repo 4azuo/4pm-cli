@@ -33,7 +33,20 @@ export const WsChannels = {
   TOOLS_DONE: "tools.done",
   // toggle per-tool auto-update (ADR-0253): request/reply — the cli persists the flag in
   // config.json (`autoUpdateTools`); the ADR-0074 idle daily tick later runs the flagged tools.
+  // (ADR-0254: the flag is now persisted to the DB `toolSnapshot`; this channel is repurposed —
+  // machine-0056 forwards it to an ONLINE worker only, to update its local config.json mirror
+  // immediately instead of waiting for the next ws_token seed.)
   TOOLS_AUTOUPDATE: "tools.autoUpdate",
+  // cli → server one-way (ADR-0254): report the worker's detected tool snapshot — the server
+  // persists it to `MachineLink.toolSnapshot` for the DB-backed Tools panel + restore-on-boot.
+  // Sent on the ADR-0074 daily idle tick, after each install/uninstall/update op, and on boot
+  // AFTER restore completes. The read/restore direction rides `ws_token` (seeds the cli).
+  TOOLS_REPORT: "tools.report",
+  // server → cli (reply, ADR-0254): push a tool manifest to reconcile NOW — used by "copy tools"
+  // to apply immediately to an online target (the offline path rides `ws_token.toolRestore` on the
+  // next connect). The cli installs each missing/mismatched `name@version`, then reports; the reply
+  // says whether it applied so the server can clear the pending manifest.
+  TOOLS_RESTORE: "tools.restore",
   // autonomous mode control (ADR-0152): read settings+status+books+approvals, tail logs, and
   // write {settings|approvals|userTodo|cron} — the dashboard drives the worker's autonomous engine.
   AUTONOMOUS_READ: "autonomous.read",

@@ -63,7 +63,9 @@ export interface ProfileConfig {
   /**
    * Catalog ids / npm package names flagged for per-tool auto-update (ADR-0253). The daily
    * maintenance tick (ADR-0074, org-gated + idle-only) runs `npm i -g <pkg>@latest` for each.
-   * Toggled from the Tools panel via `tools.autoUpdate` (machine-0056). Empty/absent ⇒ none.
+   * Since ADR-0254 the authoritative flags live in the DB `MachineLink.toolSnapshot`; this is a
+   * **server-seeded local mirror** written from `ws_token.toolRestore.autoUpdate` on each connect, so
+   * the idle tick can read it without a round-trip. Empty/absent ⇒ none.
    */
   autoUpdateTools?: string[];
   /** The physic project folder this cli serves (assigned by the server). */

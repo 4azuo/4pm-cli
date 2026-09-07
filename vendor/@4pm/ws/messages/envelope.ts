@@ -241,6 +241,38 @@ export interface ToolsAutoUpdateReply {
   error?: string;
 }
 
+/**
+ * tools.report payload (cli → server one-way, ADR-0254) — the worker's detected tool snapshot,
+ * persisted to `MachineLink.toolSnapshot`. Same shape as `ToolsListReply`; sent on the ADR-0074 daily
+ * idle tick, after each install/uninstall/update op, and on boot AFTER restore-on-boot completes (the
+ * load-bearing ordering: a post-recreate image baseline must never overwrite the snapshot pre-restore).
+ */
+export interface ToolsReportPayload {
+  catalog: ToolStatus[];
+  extras: ToolStatus[];
+}
+
+/** One tool to reconcile to an exact version (ADR-0254) — mirrors `@4pm/dto` `ToolManifestEntry`. */
+export interface ToolManifestItem {
+  name: string;
+  version: string;
+  manager: "npm" | "pnpm";
+}
+
+/**
+ * tools.restore request/reply (server → cli, ADR-0254) — push a manifest to reconcile NOW (a copy-apply
+ * to an online target). The cli installs each missing/mismatched `name@version`, reports its new
+ * snapshot, and replies whether it applied (so the server can clear the pending manifest).
+ */
+export interface ToolsRestoreRequest {
+  manifest: ToolManifestItem[];
+}
+export interface ToolsRestoreReply {
+  /** True when the reconcile ran (per-tool failures are non-fatal); false with `error` otherwise. */
+  ok: boolean;
+  error?: string;
+}
+
 /** config.read request/reply (machine-0025, ADR-0141) — the paired profile's config.json. */
 export interface ConfigReadRequest {
   /** No parameters — the cli reads its own paired profile's config.json. */

@@ -38,6 +38,8 @@ export class UpdateScheduler {
     private readonly serverUrl: string,
     private readonly profileDir: string,
     private readonly bus: SessionBus,
+    /** Called after the idle tick reconciles the flagged tools, so the cli reports its new snapshot (ADR-0254). */
+    private readonly onToolsChanged?: () => void,
   ) {}
 
   /** Apply the latest policy (called on each ws_token) and start the tick timer once. */
@@ -155,5 +157,7 @@ export class UpdateScheduler {
     await autoUpdateFlaggedTools(tools, (line) => logger.info("update.tool.line", { line })).catch(
       (err: unknown) => logger.warn("update.tool.error", { error: String(err) }),
     );
+    // Report the (possibly changed) tool snapshot to the server (ADR-0254).
+    this.onToolsChanged?.();
   }
 }
