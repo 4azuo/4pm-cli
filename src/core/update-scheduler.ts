@@ -11,7 +11,7 @@ import { logger } from "../common/logger/logger";
 import { CLI_VERSION } from "../version";
 import { readProfileConfig } from "../config/profile";
 import { updateToLatest } from "./update";
-import { autoUpdateFlaggedTools } from "./worker-tools";
+import { autoUpdateFlaggedTools, resolveInstallTimeoutMs } from "./worker-tools";
 import type { SessionBus } from "./session-bus";
 
 /** How often the scheduler re-evaluates whether the daily update is due (ms). */
@@ -151,10 +151,12 @@ export class UpdateScheduler {
 
   /** Update each tool flagged for auto-update in config.json to @latest (ADR-0253) — best-effort. */
   private async updateFlaggedTools(): Promise<void> {
-    const tools = readProfileConfig(this.profileDir).autoUpdateTools ?? [];
+    const config = readProfileConfig(this.profileDir);
+    const tools = config.autoUpdateTools ?? [];
     if (tools.length === 0) return;
     this.bus.log(`Scheduled tool auto-update: ${tools.join(", ")}…`);
-    await autoUpdateFlaggedTools(tools, (line) => logger.info("update.tool.line", { line })).catch(
+    const timeoutMs = resolveInstallTimeoutMs(config.toolInstallTimeoutSec);
+    await autoUpdateFlaggedTools(tools, (line) => logger.info("update.tool.line", { line }), timeoutMs).catch(
       (err: unknown) => logger.warn("update.tool.error", { error: String(err) }),
     );
     // Report the (possibly changed) tool snapshot to the server (ADR-0254).

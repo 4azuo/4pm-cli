@@ -26,7 +26,10 @@ import {
   type CommandAnnouncePayload,
   type CommandDispatchPayload,
   type CommandHistoryPayload,
+  type CommandImageRef,
   type CommandOrigin,
+  type ImageFetchReply,
+  type ImageFetchRequest,
   type MemoryUpdatePayload,
   type EcdhSession,
   type FsListRequest,
@@ -55,6 +58,7 @@ import {
   type ToolsAutoUpdateReply,
   type ToolsProgressPayload,
   type ToolsDonePayload,
+  type ToolRestoreFailureItem,
   type ToolsReportPayload,
   type ToolsRestoreRequest,
   type ToolsRestoreReply,
@@ -121,6 +125,7 @@ import {
 import { checkClaudeUsage } from "./claude-usage";
 import { evaluateReview } from "./outbound-review";
 import { finishCommand, recordCommand, pruneCommandHistoryByAge } from "./command-history";
+import { materializeImages, rewriteImagePlaceholders, sweepOldAttachments } from "./command-images";
 import { appendCommandOutput, readCommandOutput, pruneCommandOutputByAge } from "./command-output-store";
 import { listDir } from "./fs-browse";
 import { readWorkerFile } from "./fs-read";
@@ -159,7 +164,13 @@ import { runSlashCommand } from "../ui/slash-commands";
 import type { SessionInfo } from "../ui/session-info";
 import { runMemoryCompaction } from "./memory-compact";
 import { applyConfigText, readConfigText } from "./config-sync";
-import { detectWorkerTools, reconcileTools, runWorkerToolOp, setToolAutoUpdate } from "./worker-tools";
+import {
+  detectWorkerTools,
+  reconcileTools,
+  resolveInstallTimeoutMs,
+  runWorkerToolOp,
+  setToolAutoUpdate,
+} from "./worker-tools";
 import { logger, readRecentLogLines, readLogUpload } from "../common/logger/logger";
 import { CLI_VERSION } from "../version";
 
@@ -378,8 +389,9 @@ export class WsClient {
       context.credential.serverUrl,
       context.profileDir,
       context.bus,
-      // After the idle daily tick updates flagged tools, report the fresh snapshot (ADR-0254).
-      () => void this.reportWorkerTools(),
+      // After the idle daily tick updates flagged tools, report the fresh snapshot (ADR-0254). The
+      // `daily` trigger lets the server re-drive a still-failing restore on this spaced tick (ADR-0258).
+      () => void this.reportWorkerTools("daily"),
     );
     // The operator's local commands (TUI input box) run through the same executor.
     context.bus.onLocalSubmit((input) => void this.runLocalCommand(input));
@@ -400,13 +412,24 @@ export class WsClient {
   /**
    * Detect the worker's tools and report the snapshot to the server (ADR-0254, `tools.report`) so the
    * DB-backed Tools panel + restore target stay current. One-way, best-effort — a detect/send failure
-   * never disrupts the session. Called after each tool op, after the daily tick, and after a restore.
+   * never disrupts the session. Called after each tool op (`op`), after the daily tick (`daily`), and
+   * after a restore reconcile (`boot`/`manual`). `trigger` gates the server re-drive (ADR-0258: only
+   * `daily` re-drives a still-failing restore); `restoreFailed` is passed only after a reconcile — a
+   * plain `op`/`daily` report omits it so the server preserves the last known failed set.
    */
-  private async reportWorkerTools(): Promise<void> {
+  private async reportWorkerTools(
+    trigger: NonNullable<ToolsReportPayload["trigger"]> = "op",
+    restoreFailed?: ToolRestoreFailureItem[],
+  ): Promise<void> {
     try {
       const autoUpdate = readProfileConfig(this.context.profileDir).autoUpdateTools ?? [];
       const { catalog, extras } = await detectWorkerTools(autoUpdate);
-      this.send(WsChannels.TOOLS_REPORT, { catalog, extras } satisfies ToolsReportPayload);
+      this.send(WsChannels.TOOLS_REPORT, {
+        catalog,
+        extras,
+        trigger,
+        ...(restoreFailed !== undefined ? { restoreFailed } : {}),
+      } satisfies ToolsReportPayload);
     } catch (err) {
       logger.warn("tools.report.error", { error: String(err) });
     }
@@ -580,6 +603,8 @@ export class WsClient {
           pruneCommandHistoryByAge(token.cliRetentionDays);
           pruneCommandOutputByAge(token.cliRetentionDays);
         }
+        // Sweep stale Console image attachments (>24h) inside the served folder (ADR-0257).
+        if (this.physicRoot) sweepOldAttachments(this.physicRoot);
         // Cache the serving project's runtime token knobs (ADR-0081) so the AI prompt path
         // can rotate profiles on session pressure + cap per-prompt tokens without a
         // round-trip. Server is the source of truth; null ⇒ knobs off (orchestrator/idle).
@@ -882,7 +907,13 @@ export class WsClient {
           if (dispatch.cmd.trimStart().startsWith("/")) {
             void this.runWebSlashCommand(dispatch.cmd, dispatch.commandId);
           } else {
-            void this.runAiPrompt(dispatch.cmd, dispatch.commandId, "server", dispatch.aiOneShot ?? false);
+            void this.runAiPrompt(
+              dispatch.cmd,
+              dispatch.commandId,
+              "server",
+              dispatch.aiOneShot ?? false,
+              dispatch.images,
+            );
           }
           break;
         }
@@ -1243,8 +1274,16 @@ export class WsClient {
               ? "update"
               : "uninstall";
         this.send(message.channel, { started: true } satisfies ToolsMutateReply, message.id);
-        void runWorkerToolOp(op, req.name, req.manager, (line) =>
-          this.send(WsChannels.TOOLS_PROGRESS, { opId: req.opId, line } satisfies ToolsProgressPayload),
+        const opTimeoutMs = resolveInstallTimeoutMs(
+          readProfileConfig(this.context.profileDir).toolInstallTimeoutSec,
+        );
+        void runWorkerToolOp(
+          op,
+          req.name,
+          req.manager,
+          (line) =>
+            this.send(WsChannels.TOOLS_PROGRESS, { opId: req.opId, line } satisfies ToolsProgressPayload),
+          opTimeoutMs,
         ).then((res) => {
           this.send(WsChannels.TOOLS_DONE, {
             opId: req.opId,
@@ -1259,22 +1298,59 @@ export class WsClient {
       }
       case WsChannels.TOOLS_RESTORE: {
         // Reconcile the worker to a pushed manifest NOW (ADR-0254): the copy-apply / restore path. The
-        // cli installs each missing/mismatched `name@version`, reports its new snapshot, then replies so
-        // the server can clear the pending pointer. Best-effort; per-tool failures never fail the reply.
+        // cli installs each missing/mismatched `name@version` (retry+backoff — ADR-0258), then reports
+        // its new snapshot with the classified `restoreFailed`. Best-effort; per-tool failures never
+        // fail the run. Two shapes (ADR-0258): a **manual** restore carries an `opId` — the cli acks
+        // immediately and streams `tools.progress`/`tools.done` keyed by `opId` (machine-0058 → SSE);
+        // the connect-hook/copy/re-drive path has no `opId` and the reply IS the terminal result (so the
+        // server can clear the pending copy pointer). The report `trigger` echoes the request so a
+        // restore-completion report is never mistaken for the `daily` tick that drives the re-drive.
         const req = payload as unknown as ToolsRestoreRequest;
-        void reconcileTools(
-          req.manifest.map((m) => ({ name: m.name, version: m.version, manager: m.manager })),
-          (line) => this.bus.log(line),
-        )
-          .then(() => this.reportWorkerTools())
-          .then(() => this.send(WsChannels.TOOLS_RESTORE, { ok: true } satisfies ToolsRestoreReply, message.id))
-          .catch((err: unknown) =>
-            this.send(
-              WsChannels.TOOLS_RESTORE,
-              { ok: false, error: String(err) } satisfies ToolsRestoreReply,
-              message.id,
-            ),
-          );
+        const restoreTrigger = req.trigger === "manual" ? "manual" : "boot";
+        const installTimeoutMs = resolveInstallTimeoutMs(
+          readProfileConfig(this.context.profileDir).toolInstallTimeoutSec,
+        );
+        const manifest = req.manifest.map((m) => ({ name: m.name, version: m.version, manager: m.manager }));
+        const opId = req.opId;
+        if (opId) {
+          // Streamed manual restore (machine-0058): ack "started" now, stream progress + a terminal done.
+          this.send(WsChannels.TOOLS_RESTORE, { ok: true } satisfies ToolsRestoreReply, message.id);
+          void reconcileTools(
+            manifest,
+            (line) => {
+              this.bus.log(line);
+              this.send(WsChannels.TOOLS_PROGRESS, { opId, line } satisfies ToolsProgressPayload);
+            },
+            installTimeoutMs,
+          )
+            .then(async (restoreFailed) => {
+              this.send(WsChannels.TOOLS_DONE, {
+                opId,
+                ok: restoreFailed.length === 0,
+                exitCode: restoreFailed.length === 0 ? 0 : 1,
+              } satisfies ToolsDonePayload);
+              await this.reportWorkerTools(restoreTrigger, restoreFailed);
+            })
+            .catch((err: unknown) =>
+              this.send(WsChannels.TOOLS_DONE, {
+                opId,
+                ok: false,
+                exitCode: 1,
+                error: String(err),
+              } satisfies ToolsDonePayload),
+            );
+        } else {
+          void reconcileTools(manifest, (line) => this.bus.log(line), installTimeoutMs)
+            .then((restoreFailed) => this.reportWorkerTools(restoreTrigger, restoreFailed))
+            .then(() => this.send(WsChannels.TOOLS_RESTORE, { ok: true } satisfies ToolsRestoreReply, message.id))
+            .catch((err: unknown) =>
+              this.send(
+                WsChannels.TOOLS_RESTORE,
+                { ok: false, error: String(err) } satisfies ToolsRestoreReply,
+                message.id,
+              ),
+            );
+        }
         break;
       }
       case WsChannels.GIT_DIFF:
@@ -1431,6 +1507,7 @@ export class WsClient {
     commandId: string,
     origin: CommandOrigin,
     oneShot = false,
+    images?: CommandImageRef[],
   ): Promise<void> {
     const config = readProfileConfig(this.context.profileDir);
     // AI-run wall-clock ceiling (ADR-0243): the serving project's override wins over the
@@ -1518,12 +1595,27 @@ export class WsClient {
         text: `session ${this.usageSnapshot?.session.utilizationPct ?? 0}% ≥ ${config.sessionSwitchPct}% — switching to Claude profile "${labelFromCredentialKey(startCred)}"`,
       });
     }
+    // Console image attachments (ADR-0257): on a full agent run, materialize each pasted image
+    // inside the served folder (so the folder-scope guard lets the agent read it) and rewrite its
+    // `[Image#N]` placeholder to the on-disk path. Only the AI sees the rewrite — the transcript
+    // echoes the raw prompt below. Skipped for a one-shot run (it disallows `Read`) or an idle cli.
+    // Sweep stale image attachments (>24h) on each run too (ADR-0257) — cheap, best-effort.
+    if (this.physicRoot) sweepOldAttachments(this.physicRoot);
+    let aiBodyPrompt = prompt;
+    if (images?.length && this.physicRoot && !oneShot) {
+      const paths = await materializeImages(this.physicRoot, commandId, images, (imageId) =>
+        this.imageFetch(commandId, imageId),
+      );
+      if (paths.size) aiBodyPrompt = rewriteImagePlaceholders(prompt, paths);
+    }
     // Folder-scope hardening (project aiScope): when the project restricts the AI to its
     // folder, prepend a guard so the agent only uses content inside the served worker
     // folder. Only the AI actually sees this — the markers/announce/history below keep
     // echoing the raw operator prompt so the console shows exactly what was typed.
     const guardedPrompt =
-      this.restrictToFolder && this.physicRoot ? folderScopeGuard(this.physicRoot, prompt) : prompt;
+      this.restrictToFolder && this.physicRoot
+        ? folderScopeGuard(this.physicRoot, aiBodyPrompt)
+        : aiBodyPrompt;
     const hint = unified
       ? { credential: startCred ?? workingCred }
       : { dir: startDir ?? workingDir };
@@ -2210,6 +2302,14 @@ export class WsClient {
   /** quota.check before spawning an AI cli (ADR-0020). */
   checkQuota(metric: string, amount = 1): Promise<QuotaCheckReply> {
     return this.request<QuotaCheckReply>(WsChannels.QUOTA_CHECK, { metric, amount });
+  }
+
+  /** Fetch a Console prompt image blob from the server to materialize on the worker (ADR-0257). */
+  imageFetch(commandId: string, imageId: string): Promise<ImageFetchReply> {
+    return this.request<ImageFetchReply>(WsChannels.IMAGE_FETCH, {
+      commandId,
+      imageId,
+    } satisfies ImageFetchRequest);
   }
 
   /** usage.report batched to the server (ADR-0020); tags each event with the AI profile. */

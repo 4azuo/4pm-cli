@@ -12,7 +12,7 @@ import {
   WORKER_TOOL_PREREQUISITE_IDS,
   type WorkerToolManager,
 } from "@4pm/constants";
-import type { ToolStatus, ToolsAutoUpdateReply, ToolsListReply } from "@4pm/ws";
+import type { ToolRestoreFailureItem, ToolStatus, ToolsAutoUpdateReply, ToolsListReply } from "@4pm/ws";
 import { readProfileConfig, writeProfileConfig } from "../config/profile";
 
 /** The streamed worker-tool ops: install/uninstall (ADR-0206) + update-to-latest (ADR-0252). */
@@ -20,6 +20,58 @@ export type ToolOp = "install" | "uninstall" | "update";
 
 /** npm package name shape (scoped or plain, lowercase) — guards what we hand to the manager. */
 const NPM_NAME = /^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
+
+/** Default per-attempt timeout (ms) for an install/update/restore op (ADR-0258); config overrides it. */
+const TOOL_INSTALL_TIMEOUT_DEFAULT_MS = 300_000;
+/** Max install attempts on a retryable failure (ADR-0258): the first try + 2 retries. */
+const TOOL_INSTALL_MAX_ATTEMPTS = 3;
+/** Base backoff (ms) between retries — grows ~×3 per attempt (5s → 15s → 45s) with jitter. */
+const TOOL_RETRY_BASE_MS = 5_000;
+
+/** Resolve the install/update/restore timeout (ms): the config value (seconds) over the default. */
+export function resolveInstallTimeoutMs(sec?: number): number {
+  return sec && sec > 0 ? sec * 1000 : TOOL_INSTALL_TIMEOUT_DEFAULT_MS;
+}
+
+/** Sleep `ms`, unref'd so a pending retry never keeps the process alive on shutdown. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    t.unref?.();
+  });
+}
+
+/**
+ * Classify an install failure (ADR-0258) — a **retryable** transient cause (our 180s→300s timeout kill
+ * exit 124, or a network/registry signature in the output) is worth a backoff retry; a **permanent** one
+ * (missing package, no matching version, engine refusal) fails fast so it never burns the retry window.
+ */
+export function classifyToolFailure(
+  code: number,
+  out: string,
+): { reason: ToolRestoreFailureItem["reason"]; retryable: boolean } {
+  if (code === 124) return { reason: "timeout", retryable: true };
+  const t = out.toLowerCase();
+  // Permanent: the package or version does not exist / the name is bad — retrying cannot fix it.
+  if (/e404|not found|no such package|is not in this registry|404 not found/.test(t)) {
+    return { reason: "not-found", retryable: false };
+  }
+  if (/etarget|no matching version|notarget/.test(t)) return { reason: "not-found", retryable: false };
+  // Permanent: npm/pnpm refused on the Node engine (a hard error, not the EBADENGINE warning).
+  if (/unsupported_engine|npm error engine|err_pnpm_unsupported_engine/.test(t)) {
+    return { reason: "engine", retryable: false };
+  }
+  // Retryable: transient network / registry failures.
+  if (
+    /econnreset|etimedout|eai_again|enotfound|econnrefused|socket hang up|err_socket|network|network_request_failed|registry.*(50\d|timeout)|request to https?:\/\/.*failed/.test(
+      t,
+    )
+  ) {
+    return { reason: "network", retryable: true };
+  }
+  // Anything else (EACCES, disk, an unrecognized npm error) is treated as permanent — fail fast.
+  return { reason: "other", retryable: false };
+}
 
 /** Run a command, capture stdout, and resolve `{ code, out }`; never rejects (bounded by timeout). */
 function run(
@@ -179,13 +231,14 @@ export async function runWorkerToolOp(
   name: string,
   manager: WorkerToolManager,
   onLine: (line: string) => void,
+  timeoutMs: number = TOOL_INSTALL_TIMEOUT_DEFAULT_MS,
 ): Promise<{ ok: boolean; exitCode: number; error?: string }> {
   const resolved = resolvePackage(name, op);
   if (resolved.error || !resolved.pkg) {
     return { ok: false, exitCode: 1, error: resolved.error ?? "Invalid package." };
   }
   onLine(`$ ${manager} ${opArgs(op, manager, resolved.pkg).join(" ")}`);
-  const { code } = await run(manager, opArgs(op, manager, resolved.pkg), onLine);
+  const { code } = await run(manager, opArgs(op, manager, resolved.pkg), onLine, timeoutMs);
   return { ok: code === 0, exitCode: code, error: code === 0 ? undefined : `${manager} exited ${code}` };
 }
 
@@ -213,43 +266,71 @@ export function setToolAutoUpdate(profileDir: string, name: string, enabled: boo
 export async function autoUpdateFlaggedTools(
   tools: string[],
   onLine: (line: string) => void,
+  timeoutMs: number = TOOL_INSTALL_TIMEOUT_DEFAULT_MS,
 ): Promise<void> {
   for (const name of tools) {
-    const res = await runWorkerToolOp("update", name, "npm", onLine).catch(
+    const res = await runWorkerToolOp("update", name, "npm", onLine, timeoutMs).catch(
       (err: unknown) => ({ ok: false, exitCode: 1, error: String(err) }),
     );
     onLine(res.ok ? `✓ ${name} updated` : `✗ ${name}: ${res.error ?? "failed"}`);
   }
 }
 
-/** Install a package at an EXACT version (`npm i -g name@version`) — the restore/copy op (ADR-0254). */
+/**
+ * Install a package at an EXACT version (`npm i -g name@version`) — the restore/copy op (ADR-0254),
+ * now with **retry + backoff** on a transient failure (ADR-0258). Retries up to
+ * `TOOL_INSTALL_MAX_ATTEMPTS` on a retryable cause (timeout/network) with exponential backoff + jitter,
+ * and **fails fast** on a permanent one (missing package / no version / engine). Returns the classified
+ * failure so `reconcileTools` can report it.
+ */
 async function installPinned(
   name: string,
   version: string,
   manager: WorkerToolManager,
   onLine: (line: string) => void,
-): Promise<{ ok: boolean; error?: string }> {
+  timeoutMs: number = TOOL_INSTALL_TIMEOUT_DEFAULT_MS,
+): Promise<{ ok: boolean; error?: string; reason?: ToolRestoreFailureItem["reason"]; retryable?: boolean }> {
   const resolved = resolvePackage(name, "update");
-  if (resolved.error || !resolved.pkg) return { ok: false, error: resolved.error ?? "Invalid package." };
+  if (resolved.error || !resolved.pkg) {
+    return { ok: false, error: resolved.error ?? "Invalid package.", reason: "other", retryable: false };
+  }
   const target = `${resolved.pkg}@${version}`;
   const args = manager === "pnpm" ? ["add", "-g", target] : ["install", "-g", target];
-  onLine(`$ ${manager} ${args.join(" ")}`);
-  const { code } = await run(manager, args, onLine);
-  return { ok: code === 0, error: code === 0 ? undefined : `${manager} exited ${code}` };
+  for (let attempt = 1; attempt <= TOOL_INSTALL_MAX_ATTEMPTS; attempt++) {
+    const suffix = attempt > 1 ? ` (attempt ${attempt}/${TOOL_INSTALL_MAX_ATTEMPTS})` : "";
+    onLine(`$ ${manager} ${args.join(" ")}${suffix}`);
+    const { code, out } = await run(manager, args, onLine, timeoutMs);
+    if (code === 0) return { ok: true };
+    const { reason, retryable } = classifyToolFailure(code, out);
+    // Fail fast on a permanent cause, or once the attempts are spent.
+    if (!retryable || attempt === TOOL_INSTALL_MAX_ATTEMPTS) {
+      return { ok: false, error: `${manager} exited ${code}`, reason, retryable };
+    }
+    // Exponential backoff (5s → 15s → 45s) with ±20% jitter so retries don't thundering-herd.
+    const base = TOOL_RETRY_BASE_MS * 3 ** (attempt - 1);
+    const wait = Math.round(base * (0.8 + Math.random() * 0.4));
+    onLine(`retrying in ${Math.round(wait / 1000)}s (${reason})…`);
+    await sleep(wait);
+  }
+  // Unreachable (the loop always returns), but satisfies the type checker.
+  return { ok: false, error: `${manager} failed`, reason: "other", retryable: false };
 }
 
 /**
  * Reconcile the worker's installed tools to a manifest of exact versions (ADR-0254) — the
  * restore-on-boot / copy-apply op. Detects the current set once, then installs each manifest entry
- * whose version is missing or differs (`npm i -g name@version`). Best-effort: a per-tool failure is
- * logged, never fatal, so one bad entry never blocks the rest. Prerequisites are skipped by
- * `resolvePackage`. Returns whether it ran (always true unless it threw).
+ * whose version is missing or differs (`npm i -g name@version`, with retry/backoff — ADR-0258).
+ * Best-effort: a per-tool failure is logged, never fatal, so one bad entry never blocks the rest.
+ * Prerequisites are skipped by `resolvePackage`. Returns the tools that stayed missing/mismatched
+ * (classified `restoreFailed` — ADR-0258); an empty array means the reconcile fully satisfied the manifest.
  */
 export async function reconcileTools(
   manifest: { name: string; version: string; manager: WorkerToolManager }[],
   onLine: (line: string) => void,
-): Promise<void> {
-  if (manifest.length === 0) return;
+  timeoutMs: number = TOOL_INSTALL_TIMEOUT_DEFAULT_MS,
+): Promise<ToolRestoreFailureItem[]> {
+  const failed: ToolRestoreFailureItem[] = [];
+  if (manifest.length === 0) return failed;
   const { catalog, extras } = await detectWorkerTools();
   const versionByName = new Map(
     [...catalog, ...extras]
@@ -260,9 +341,25 @@ export async function reconcileTools(
     const current = versionByName.get(entry.name);
     if (current && current.includes(entry.version)) continue; // already at the recorded version
     onLine(`Restoring ${entry.name}@${entry.version}…`);
-    const res = await installPinned(entry.name, entry.version, entry.manager, onLine).catch(
-      (err: unknown) => ({ ok: false, error: String(err) }),
+    const res = await installPinned(entry.name, entry.version, entry.manager, onLine, timeoutMs).catch(
+      (err: unknown): Awaited<ReturnType<typeof installPinned>> => ({
+        ok: false,
+        error: String(err),
+        reason: "other",
+        retryable: false,
+      }),
     );
-    onLine(res.ok ? `✓ ${entry.name}@${entry.version}` : `✗ ${entry.name}: ${res.error ?? "failed"}`);
+    if (res.ok) {
+      onLine(`✓ ${entry.name}@${entry.version}`);
+    } else {
+      onLine(`✗ ${entry.name}: ${res.error ?? "failed"}`);
+      failed.push({
+        name: entry.name,
+        version: entry.version,
+        reason: res.reason ?? "other",
+        retryable: res.retryable ?? false,
+      });
+    }
   }
+  return failed;
 }

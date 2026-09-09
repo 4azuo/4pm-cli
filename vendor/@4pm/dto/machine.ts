@@ -614,6 +614,11 @@ export interface WorkerToolsResponse {
   checkedAt: string | null;
   /** Whether the worker is currently online — Refresh (live re-detect + report) is enabled only then. */
   online: boolean;
+  /**
+   * Tools that failed the last restore reconcile (ADR-0258) — drives the "Restore tools" button's red
+   * count + failed line. Empty/absent when the last restore fully satisfied the recorded snapshot.
+   */
+  restoreFailed?: ToolRestoreFailure[];
 }
 
 /** One tool to reconcile to an exact version on boot / copy-apply (ADR-0254). */
@@ -627,12 +632,35 @@ export interface ToolManifestEntry {
 }
 
 /**
+ * Why a tool failed to reconcile to its recorded version during a restore (ADR-0258). `retryable`
+ * marks a transient cause (timeout/network) the server may re-drive; a permanent one (`not-found`
+ * /`engine`) is surfaced for a human and never auto-re-driven.
+ */
+export type ToolRestoreFailReason = "timeout" | "network" | "not-found" | "engine" | "other";
+export interface ToolRestoreFailure {
+  /** Catalog id or npm package name that stayed missing/mismatched after the reconcile. */
+  name: string;
+  /** The exact version the restore tried to install. */
+  version: string;
+  /** Classified cause of the failure (drives the panel's red line + the server re-drive). */
+  reason: ToolRestoreFailReason;
+  /** True when the cause is transient (server may re-drive on the daily tick); false = permanent. */
+  retryable: boolean;
+}
+
+/**
  * Persisted worker tool snapshot (ADR-0254) — the JSON stored in `MachineLink.toolSnapshot`: the last
  * detected set the worker reported. Drives the DB-backed Tools panel and is the restore-on-boot target.
  */
 export interface WorkerToolSnapshot {
   catalog: WorkerToolStatus[];
   extras: WorkerToolStatus[];
+  /**
+   * Tools that stayed missing/mismatched after the last restore reconcile (ADR-0258) — transient,
+   * cleared to empty on a report where every manifest entry is satisfied. Drives the "Restore tools"
+   * button's red count + line and the server's daily re-drive.
+   */
+  restoreFailed?: ToolRestoreFailure[];
 }
 
 /**

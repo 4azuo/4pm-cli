@@ -17,6 +17,52 @@ import { baseRequestSchema } from "./base";
 export const COMMAND_MAX_LEN = 8_000;
 export const AI_PROMPT_MAX_LEN = 500_000;
 
+/**
+ * Console prompt image attachments (ADR-0257): allowed MIME types, per-image byte cap, and the
+ * max number of images per prompt. Shared by the upload endpoint (server validation) and the web.
+ */
+export const COMMAND_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+export const COMMAND_IMAGE_MAX_COUNT = 10;
+export const COMMAND_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
+export type CommandImageMime = (typeof COMMAND_IMAGE_MIME_TYPES)[number];
+
+/** The file extension for a stored command-image MIME (ADR-0257) — drives the storage key + on-disk name. */
+export function commandImageExt(mime: string): string {
+  switch (mime) {
+    case "image/png":
+      return "png";
+    case "image/jpeg":
+      return "jpg";
+    case "image/webp":
+      return "webp";
+    case "image/gif":
+      return "gif";
+    default:
+      return "bin";
+  }
+}
+
+/** Response of POST /commands/images (command-0008) — the stored image's id + metadata. */
+export interface CommandImageUploadResponse {
+  /** Opaque image id (`<uuid>.<ext>`) — reference it from a dispatch `images[].id`. */
+  id: string;
+  mime: string;
+  name: string;
+  bytes: number;
+}
+
+/**
+ * One image attachment on a Console dispatch (ADR-0257): a prompt placeholder `[Image#N]` bound to an
+ * uploaded image id + its display name/MIME. The serving cli rewrites `placeholder` to the on-disk path.
+ */
+export const commandImageRefSchema = z.object({
+  id: z.string().min(1).max(200),
+  placeholder: z.string().min(1).max(40),
+  name: z.string().max(255),
+  mime: z.enum(COMMAND_IMAGE_MIME_TYPES),
+});
+export type CommandImageRef = z.infer<typeof commandImageRefSchema>;
+
 /** Where a command was initiated: `web` (dispatch) vs `local` (cli TUI) — ADR-0107. */
 export type CommandOrigin = "web" | "local";
 
@@ -55,6 +101,13 @@ export const dispatchCommandRequestSchema = z
      * against the git allowlist (`isGitCommandAllowed`). Absent ⇒ normal console dispatch.
      */
     gitOp: z.enum(["read", "write"]).optional(),
+    /**
+     * Console image attachments (ADR-0257): up to `COMMAND_IMAGE_MAX_COUNT` uploaded images the
+     * prompt references by `[Image#N]` placeholders. Only meaningful with `ai:true` on a full agent
+     * run (one-shot spec-assist disallows `Read`). Rejected with `IMAGE_UPLOAD_BLOCKED` when the
+     * project has `outboundReview.blockImages`.
+     */
+    images: z.array(commandImageRefSchema).max(COMMAND_IMAGE_MAX_COUNT).optional(),
     /**
      * One-shot AI mode (ADR-0249): the prompt is a text-in → text-out task (spec review /
      * compose / suggest / generators) that must NOT trigger the AI CLI's agentic tool loop.

@@ -212,6 +212,13 @@ export interface OutboundReviewSettings {
   /** Repos commits are allowed to target (host/owner/name); empty = derive from git. */
   allowedRepos: string[];
   /**
+   * Block Console prompt image attachments (ADR-0257). A rule/AI review scans text, not binary,
+   * so a project that gates AI input for secrets can forbid image uploads here. When `true` the web
+   * disables image paste and the server rejects a dispatch carrying `images` (`IMAGE_UPLOAD_BLOCKED`).
+   * Default `false`.
+   */
+  blockImages: boolean;
+  /**
    * Per-project rule-scan regex the reviewer cli uses (ADR-0087, full override). Each entry
    * is a regex literal `/body/flags` (or a bare source). Absent in storage ⇒ resolved to
    * `DEFAULT_OUTBOUND_RULES`; an explicit empty list ⇒ that category is disabled.
@@ -389,6 +396,7 @@ export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
     aiReview: false,
     outboundLinkIds: [],
     allowedRepos: [],
+    blockImages: false,
     rules: DEFAULT_OUTBOUND_RULES,
   },
 };
@@ -529,6 +537,7 @@ export function readProjectSettings(
       enabled: typeof review.enabled === "boolean" ? review.enabled : d.enabled,
       ruleCheck: typeof review.ruleCheck === "boolean" ? review.ruleCheck : d.ruleCheck,
       aiReview: typeof review.aiReview === "boolean" ? review.aiReview : d.aiReview,
+      blockImages: typeof review.blockImages === "boolean" ? review.blockImages : d.blockImages,
       outboundLinkIds: strList(review.outboundLinkIds),
       allowedRepos: strList(review.allowedRepos),
       rules: {

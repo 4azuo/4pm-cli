@@ -138,6 +138,9 @@ export const WsChannels = {
   // the worker uploads its pending log tail (+ any queued history) then acks, so the release
   // sweep can finalise without waiting the full 5-minute timeout when the worker is online.
   RENTAL_FLUSH: "rental.flush",
+  // cli → server (reply): fetch a Console prompt image blob to materialize on the worker before
+  // spawning the AI CLI (ADR-0257) — the server reads it from @4pm/storage (org-scoped by link).
+  IMAGE_FETCH: "image.fetch",
   // outbound review (ADR-0082): machine→server request, server→outbound evaluate, result back
   REVIEW_REQUEST: "review.request",
   REVIEW_EVALUATE: "review.evaluate",

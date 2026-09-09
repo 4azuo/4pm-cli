@@ -179,6 +179,8 @@ export const ErrorCode = {
   OUTBOUND_REVIEW_UNAVAILABLE: "OUTBOUND_REVIEW_UNAVAILABLE",
   // A saved outbound rule regex fails to compile or is ReDoS-unsafe (ADR-0087).
   OUTBOUND_RULE_INVALID: "OUTBOUND_RULE_INVALID",
+  // Console image attachment blocked because the project has `outboundReview.blockImages` (ADR-0257).
+  IMAGE_UPLOAD_BLOCKED: "IMAGE_UPLOAD_BLOCKED",
   MEMO_TOO_LONG: "MEMO_TOO_LONG",
   // plan entitlements (ADR-0105) — resource caps + feature gates per plan tier
   PLAN_USER_LIMIT: "PLAN_USER_LIMIT",

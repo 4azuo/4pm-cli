@@ -81,6 +81,39 @@ export interface MachineStatusPayload {
 /** Where a command originated: server-dispatched (web) or cli-local (TUI — ADR-0057). */
 export type CommandOrigin = "server" | "local";
 
+/**
+ * One Console prompt image attachment referenced by a dispatch (ADR-0257). `placeholder` is the
+ * `[Image#N]` token in the prompt the cli rewrites to the materialized file path; `id` addresses the
+ * uploaded blob (`FetchCommandImage`); `mime` picks the on-disk extension. Web/REST carry the same
+ * shape (`@4pm/dto`).
+ */
+export interface CommandImageRef {
+  id: string;
+  placeholder: string;
+  name: string;
+  mime: string;
+}
+
+/**
+ * image.fetch request (cli → server, ADR-0257) — ask for one prompt image blob. `commandId` scopes
+ * the fetch to the in-flight dispatch (the server resolves the storing org from that command record,
+ * which also covers rented machines whose link org differs from the renter's).
+ */
+export interface ImageFetchRequest {
+  commandId: string;
+  imageId: string;
+}
+
+/**
+ * image.fetch reply (server → cli, ADR-0257) — the image bytes as base64 + its content type, or
+ * `error` when the id is unknown / swept by retention / blocked. `dataBase64` is absent on error.
+ */
+export interface ImageFetchReply {
+  mime?: string;
+  dataBase64?: string;
+  error?: string;
+}
+
 /** command.dispatch (server → cli). */
 export interface CommandDispatchPayload {
   commandId: string;
@@ -89,6 +122,13 @@ export interface CommandDispatchPayload {
   cmd: string;
   args: string[];
   env?: Record<string, string>;
+  /**
+   * Console prompt image attachments (ADR-0257) — only on a full agent AI run (`ai:true`,
+   * `aiOneShot` unset). The cli fetches each blob (`FetchCommandImage`), materializes it inside the
+   * served project folder, and rewrites its `[Image#N]` placeholder to the on-disk path before
+   * spawning. Absent/empty ⇒ no images.
+   */
+  images?: CommandImageRef[];
   /**
    * AI prompt mode (ADR-0057): when true, `cmd` holds the **raw prompt** (not an
    * executable) and the cli runs it through the same AI-CLI profile-failover path as a
@@ -254,9 +294,28 @@ export interface ToolsAutoUpdateReply {
  * idle tick, after each install/uninstall/update op, and on boot AFTER restore-on-boot completes (the
  * load-bearing ordering: a post-recreate image baseline must never overwrite the snapshot pre-restore).
  */
+/** Why a tool stayed missing/mismatched after a restore reconcile (ADR-0258) — mirrors `@4pm/dto`. */
+export interface ToolRestoreFailureItem {
+  name: string;
+  version: string;
+  reason: "timeout" | "network" | "not-found" | "engine" | "other";
+  retryable: boolean;
+}
+
 export interface ToolsReportPayload {
   catalog: ToolStatus[];
   extras: ToolStatus[];
+  /**
+   * Tools that failed the last restore reconcile (ADR-0258) — transient, empty when the reported set
+   * satisfies the manifest. Persisted to `toolSnapshot.restoreFailed`; drives the server re-drive.
+   */
+  restoreFailed?: ToolRestoreFailureItem[];
+  /**
+   * What triggered this report (ADR-0258): `op` after an install/uninstall/update, `boot` after
+   * restore-on-boot, `daily` on the idle maintenance tick, `manual` after a machine-0058 restore. The
+   * server re-drives a still-failing restore ONLY on `daily` (spaced, stateless). Absent ⇒ treat as `op`.
+   */
+  trigger?: "op" | "boot" | "daily" | "manual";
 }
 
 /** One tool to reconcile to an exact version (ADR-0254) — mirrors `@4pm/dto` `ToolManifestEntry`. */
@@ -273,6 +332,20 @@ export interface ToolManifestItem {
  */
 export interface ToolsRestoreRequest {
   manifest: ToolManifestItem[];
+  /**
+   * What issued this restore (ADR-0258): `boot` = the connect-hook self/pending push or the daily
+   * re-drive; `manual` = a machine-0058 operator retry. The cli echoes it as the `trigger` of the
+   * follow-up `tools.report` so that restore-completion report is never itself treated as `daily`
+   * (which would loop the server re-drive). Absent ⇒ `boot`.
+   */
+  trigger?: "boot" | "manual";
+  /**
+   * Present for a **manual** streamed restore (machine-0058, ADR-0258): the cli acks immediately, then
+   * streams `tools.progress`/`tools.done` frames keyed by this `opId` (relayed over the machine-0053
+   * SSE, exactly like install/update). Absent ⇒ the connect-hook/copy/re-drive path, where the reply is
+   * the terminal reconcile result (used to clear the pending copy pointer).
+   */
+  opId?: string;
 }
 export interface ToolsRestoreReply {
   /** True when the reconcile ran (per-tool failures are non-fatal); false with `error` otherwise. */

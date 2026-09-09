@@ -68,6 +68,13 @@ export interface ProfileConfig {
    * the idle tick can read it without a round-trip. Empty/absent ⇒ none.
    */
   autoUpdateTools?: string[];
+  /**
+   * Timeout (seconds) for a global tool install/update/restore op (ADR-0258) — bounds each
+   * `npm i -g`/`pnpm add -g` attempt so a hung child can't wedge a restore, while being long enough
+   * for a cold npm on a slow container egress (the old fixed 180s was too short). `0`/absent ⇒ the
+   * 300s default. Detection probes (`--version`, `npm ls -g`) keep their own short timeouts.
+   */
+  toolInstallTimeoutSec?: number;
   /** The physic project folder this cli serves (assigned by the server). */
   physicPath?: string | null;
   /** Interval to upload command history to R2 (minutes) — defaults to 10. */
