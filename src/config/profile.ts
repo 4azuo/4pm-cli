@@ -149,7 +149,7 @@ export interface ProfileConfig {
    * Shared AI memory (ADR-0245) — machine-user defaults, operator-editable via the Worker config.
    * `aiMemoryEnabled` turns the rolling cross-profile memory on for this worker (default false;
    * costs an extra compaction AI call per turn); `aiMemoryBudgetChars` caps the compacted text
-   * (default 6000). Overridden per-project by the two read-only mirror keys below.
+   * (default 1000, max 9999). Overridden per-project by the two read-only mirror keys below.
    */
   aiMemoryEnabled?: boolean;
   aiMemoryBudgetChars?: number;
@@ -254,7 +254,7 @@ export function defaultProfileConfig(): ProfileConfig {
     webBlockedCommands: ["quit", "config"],
     // Shared AI memory (ADR-0245) — off by default (opt-in; costs a compaction call per turn).
     aiMemoryEnabled: false,
-    aiMemoryBudgetChars: 6000,
+    aiMemoryBudgetChars: 1000,
   };
 }
 
@@ -262,13 +262,13 @@ export function defaultProfileConfig(): ProfileConfig {
  * Resolve the effective shared-AI-memory config (ADR-0245) for a serving cli: the project override
  * (server-managed mirror) wins — `mode` `on`/`off` forces enablement, else `inherit` defers to the
  * machine-user `aiMemoryEnabled`; the project budget wins when `>0`, else the machine-user budget
- * (default 6000). `enabled:false` ⇒ memory is off (no inject, no compaction).
+ * (default 1000). `enabled:false` ⇒ memory is off (no inject, no compaction).
  */
 export function resolveMemoryConfig(config: ProfileConfig): { enabled: boolean; budgetChars: number } {
   const mode = config.projectAiMemoryMode ?? "inherit";
   const enabled = mode === "on" ? true : mode === "off" ? false : (config.aiMemoryEnabled ?? false);
   const projectBudget = config.projectAiMemoryBudgetChars ?? 0;
-  const budgetChars = projectBudget > 0 ? projectBudget : (config.aiMemoryBudgetChars ?? 6000);
+  const budgetChars = projectBudget > 0 ? projectBudget : (config.aiMemoryBudgetChars ?? 1000);
   return { enabled, budgetChars };
 }
 

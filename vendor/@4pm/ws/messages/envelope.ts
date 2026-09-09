@@ -69,6 +69,13 @@ export interface MachineStatusPayload {
   physicPathExists?: boolean;
   /** Is autonomous mode running? */
   autonomousRunning?: boolean;
+  /** The machine-user's own AI-run wall-clock limit in seconds (`ProfileConfig.aiRunTimeoutSec`;
+   *  `0` = unlimited) — persisted on `MachineLink` so a dispatch can resolve the **effective**
+   *  timeout (project override else this) and derive the SSE reply windows (ADR-0256). */
+  aiRunTimeoutSec?: number;
+  /** Number of configured AI credentials (the failover profile count) — the floor factor for the
+   *  derived re-attach cap (`effective × profileCount × 1.2`, ADR-0256). */
+  aiProfileCount?: number;
 }
 
 /** Where a command originated: server-dispatched (web) or cli-local (TUI — ADR-0057). */
@@ -999,6 +1006,28 @@ export interface PhysicSyncPayload {
 export interface PhysicDeletePayload {
   /** Physic folder name (= project name) to delete. */
   name: string;
+}
+
+/**
+ * project.tokens — server → cli (ADR-0256): a project's token settings were **saved**, so push the
+ * fresh knobs to every connected serving cli. `ws_token` still **seeds** these on (re)connect; this
+ * channel only carries **updates** so a change (e.g. `aiRunTimeoutSec`) applies on the next run
+ * instead of only after a reconnect. The cli applies them through the **same** `writeProfileConfig`
+ * knob-write it runs from `ws_token.projectTokens` (mirror the fields ADR-0081/0243/0244/0245 deliver).
+ */
+export interface ProjectTokensPayload {
+  /** Project AI-run wall-clock override (seconds); `0` = inherit the machine-user default (ADR-0243). */
+  aiRunTimeoutSec: number;
+  /** Project idle auto-clear override (minutes); `0` = inherit the machine-user default (ADR-0244). */
+  autoClearIdleMinutes: number;
+  /** Rotate the Claude profile at/over this 5h-session utilization %; `0` = off (ADR-0081). */
+  sessionSwitchPct: number;
+  /** Reject a prompt whose estimated tokens exceed this; `0` = off (ADR-0081). */
+  perPromptTokenLimit: number;
+  /** Shared-AI-memory override (ADR-0245): `inherit` ⇒ use the machine-user config. */
+  memory?: { mode: "inherit" | "on" | "off"; budgetChars: number };
+  /** Folder-scope hardening (project aiScope) — prepend a guard to every AI prompt (ADR-0082/aiScope). */
+  restrictToFolder?: boolean;
 }
 
 /**

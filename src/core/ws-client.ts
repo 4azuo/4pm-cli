@@ -75,6 +75,7 @@ import {
   type MachineLogPayload,
   type PhysicDeletePayload,
   type PhysicSyncPayload,
+  type ProjectTokensPayload,
   type ProjectAddPayload,
   type ProjectCreatePayload,
   type QuotaCheckReply,
@@ -833,6 +834,28 @@ export class WsClient {
         void manageSshKey("delete", this.context.profileDir).catch(() => undefined);
         this.bus.setProject(null); // header goes idle — no longer serving a project
         this.physicRoot = null; // idle now ⇒ nothing to browse
+        break;
+      }
+      case WsChannels.PROJECT_TOKENS: {
+        // Live push of the serving project's token knobs (ADR-0256): apply them exactly as the
+        // connect handler applies `ws_token.projectTokens`, so a saved change (e.g. aiRunTimeoutSec)
+        // takes effect on the NEXT run instead of only after a reconnect. `writeProfileConfig` merges,
+        // so only these knobs change; `ws_token` still re-seeds them on the next (re)connect.
+        const tokens = payload as unknown as ProjectTokensPayload;
+        writeProfileConfig(this.context.profileDir, {
+          sessionSwitchPct: tokens.sessionSwitchPct ?? 0,
+          perPromptTokenLimit: tokens.perPromptTokenLimit ?? 0,
+          projectAiRunTimeoutSec: tokens.aiRunTimeoutSec ?? 0,
+          projectAutoClearIdleMinutes: tokens.autoClearIdleMinutes ?? 0,
+          projectAiMemoryMode: tokens.memory?.mode ?? "inherit",
+          projectAiMemoryBudgetChars: tokens.memory?.budgetChars ?? 0,
+        });
+        // Folder-scope hardening is applied per-prompt from this flag — mirror the connect handler.
+        this.restrictToFolder = tokens.restrictToFolder === true;
+        logger.info("project.tokens.applied", {
+          aiRunTimeoutSec: tokens.aiRunTimeoutSec ?? 0,
+          autoClearIdleMinutes: tokens.autoClearIdleMinutes ?? 0,
+        });
         break;
       }
       case WsChannels.COMMAND_DISPATCH: {
@@ -2256,6 +2279,14 @@ export class WsClient {
   private sendMachineStatus(): void {
     const config = readProfileConfig(this.context.profileDir);
     const physicPath = config.physicPath ?? null;
+    // Configured AI-credential count (ADR-0256): the unified list (ADR-0182) when present, else the
+    // legacy per-provider lists — the failover profile count the server uses as the derived
+    // re-attach-cap floor factor (`effective × profileCount × 1.2`).
+    const aiProfileCount = Array.isArray(config.aiProfiles)
+      ? config.aiProfiles.length
+      : (config.claudeHome?.length ?? 0) +
+        (config.codexHome?.length ?? 0) +
+        (config.antigravityHome?.length ?? 0);
     this.send(WsChannels.MACHINE_STATUS, {
       status: "online",
       projects: [],
@@ -2264,6 +2295,10 @@ export class WsClient {
       physicPathExists: physicPath ? existsSync(physicPath) : undefined,
       // Real coarse state (ADR-0152): !paused and a recent tick (was hard-coded false).
       autonomousRunning: physicPath ? isAutonomousRunning(physicPath) : false,
+      // The machine-user AI-run limit (0 = unlimited) + profile count so a dispatch can resolve the
+      // effective timeout and derive the SSE reply windows server-side (ADR-0256).
+      aiRunTimeoutSec: config.aiRunTimeoutSec ?? 0,
+      aiProfileCount,
     });
   }
 

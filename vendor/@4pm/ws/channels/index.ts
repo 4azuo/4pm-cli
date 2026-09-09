@@ -96,6 +96,10 @@ export const WsChannels = {
   // server → cli: the project was deleted ⇒ delete the physic folder; the cli keeps
   // its pairing and goes idle (ADR-0068).
   PHYSIC_DELETE: "physic.delete",
+  // server → cli (ADR-0256): a project's token settings were saved ⇒ push the fresh knobs to every
+  // serving cli so a change (e.g. aiRunTimeoutSec) applies on the next run, not only after a
+  // reconnect. `ws_token` seeds these on connect; this channel only carries updates.
+  PROJECT_TOKENS: "project.tokens",
   // command lifecycle
   COMMAND_ANNOUNCE: "command.announce",
   // console transcript sync (ADR-0150): the cli streams its authoritative SessionBus

@@ -205,6 +205,33 @@ export interface CommandDispatchResponse {
   commandId: string;
   /** `queued` | `dispatched`. */
   status: string;
+  /**
+   * AI dispatch (`ai:true`) only — the client-side SSE re-attach/backstop timeout (ms) the web
+   * should use for this command, derived from the effective AI-run timeout
+   * (`max(evict×1.5, effective×profileCount×1.2)`, `0`/unlimited ⇒ 1500s — ADR-0256). Absent for a
+   * non-AI dispatch; the web falls back to its default when unset.
+   */
+  reattachCapMs?: number;
+}
+
+/**
+ * Derive the SSE reply windows for an AI dispatch from the **effective** AI-run timeout (ADR-0256):
+ * the server's finished-buffer eviction and the client's re-attach/backstop cap. `effectiveSec` is
+ * the project override else the machine-user value (`0`/absent = unlimited); `profileCount` is the
+ * configured failover profile count (the cap-floor factor). Both returned in **ms**.
+ *
+ *   evict = effective × 1.5            (0/unlimited ⇒ 1000s)
+ *   cap   = max(evict × 1.5, effective × profileCount × 1.2)   (0 ⇒ 1500s)
+ */
+export function deriveAiReplyWindows(
+  effectiveSec: number,
+  profileCount: number,
+): { evictMs: number; reattachCapMs: number } {
+  const eff = Number.isFinite(effectiveSec) && effectiveSec > 0 ? Math.floor(effectiveSec) : 0;
+  const profiles = Number.isFinite(profileCount) && profileCount > 0 ? Math.floor(profileCount) : 1;
+  const evictMs = eff > 0 ? eff * 1500 : 1_000_000;
+  const reattachCapMs = Math.max(Math.round(evictMs * 1.5), eff * profiles * 1200);
+  return { evictMs, reattachCapMs };
 }
 
 /** Data GET /commands/:id — command status/result (output via SSE). */

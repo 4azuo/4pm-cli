@@ -397,14 +397,22 @@ export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
 export const OUTBOUND_REVIEW_MAX_LIST = 50;
 
 /**
+ * Bounds for a **positive** AI-run wall-clock timeout in seconds (ADR-0243/0256). The single source
+ * of truth for both the project override (`PROJECT_TOKEN_BOUNDS.aiRunTimeoutSec` below, `0` = inherit)
+ * and the machine-user Worker-config field (`@4pm/ui` `config-model`/`ConfigForm`, `0` = unlimited):
+ * a non-zero value is clamped into `[min, max]`.
+ */
+export const AI_RUN_TIMEOUT_BOUNDS = { min: 30, max: 3_600 } as const;
+
+/**
  * Bounds for the token knobs (ADR-0081): each accepts 0 (off) or a value within
  * `[min, max]`; anything else clamps back to the default (0).
  */
 export const PROJECT_TOKEN_BOUNDS = {
   sessionSwitchPct: { min: 70, max: 90 },
   perPromptTokenLimit: { min: 1_000, max: 2_000_000 },
-  // AI-run timeout override (ADR-0243): 0 = inherit the machine-user setting, else 30s–1h.
-  aiRunTimeoutSec: { min: 30, max: 3_600 },
+  // AI-run timeout override (ADR-0243): 0 = inherit the machine-user setting, else 30s–1h (ADR-0256).
+  aiRunTimeoutSec: AI_RUN_TIMEOUT_BOUNDS,
   // Idle auto-clear override (ADR-0244): 0 = inherit the machine-user setting, else 1min–24h.
   autoClearIdleMinutes: { min: 1, max: 1_440 },
 } as const;
