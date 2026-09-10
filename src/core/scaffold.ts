@@ -5,6 +5,7 @@
  * declared repos of an existing project with no scaffold/AI-init (add — ADR-0117).
  */
 import { cp, mkdir, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -86,11 +87,21 @@ async function provisionRepos(
   }
 }
 
-/** Locate the sample-project template (override via SCAFFOLD_SAMPLE_DIR). */
+/**
+ * Locate the sample-project template (override via SCAFFOLD_SAMPLE_DIR). Robust to both
+ * layouts: the dev source tree (this file at `src/core/` ⇒ template two levels up) and the
+ * tsup bundle (`dist/index.js` ⇒ template copied alongside as `dist/project-sample`, see
+ * tsup.config `onSuccess`). The old single `../../project-sample` assumed the source layout
+ * only, so from the bundled `dist/` it resolved to a non-existent path (ENOENT /project-sample).
+ */
 function sampleDir(): string {
   if (process.env.SCAFFOLD_SAMPLE_DIR) return process.env.SCAFFOLD_SAMPLE_DIR;
   const here = dirname(fileURLToPath(import.meta.url));
-  return resolve(here, "../../project-sample");
+  const bundled = resolve(here, "project-sample"); // dist/project-sample (packaged bundle)
+  for (const candidate of [bundled, resolve(here, "../project-sample"), resolve(here, "../../project-sample")]) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return bundled;
 }
 
 /**

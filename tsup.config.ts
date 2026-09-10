@@ -17,6 +17,18 @@ export default defineConfig({
   target: "node20",
   outDir: "dist",
   clean: true,
+  // The scaffolder copies the `project-sample/` template into new projects (core/scaffold.ts).
+  // tsup bundles JS only, so copy the template dir alongside the bundle as `dist/project-sample`
+  // — it then travels with `dist/` through every channel (npm-global, container image, the
+  // ADR-0015 self-download tarball) and `sampleDir()` resolves it relative to `dist/`.
+  onSuccess: async () => {
+    const { cp } = await import("node:fs/promises");
+    await cp(
+      new URL("project-sample", import.meta.url),
+      new URL("dist/project-sample", import.meta.url),
+      { recursive: true },
+    );
+  },
   // Force a single self-contained `dist/index.js` (ADR-0015). tsup defaults ESM
   // `splitting` to true, which emits a shared `chunk-*.js` that index.js STATICALLY
   // imports — so a dist copied/extracted without that sibling fails at load with
