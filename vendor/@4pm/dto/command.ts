@@ -26,6 +26,20 @@ export const COMMAND_IMAGE_MAX_COUNT = 10;
 export const COMMAND_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
 export type CommandImageMime = (typeof COMMAND_IMAGE_MIME_TYPES)[number];
 
+/**
+ * The exact shape of a stored command-image id (ADR-0257): `<uuidv4>.<ext>`, the only form the server
+ * ever mints (`randomUUID()` + `commandImageExt`). A dispatch's `images[].id` and the preview/gRPC
+ * fetch key are checked against this so a client-supplied id can never carry `/` or `..` path
+ * separators into a storage key (path-traversal guard — the id becomes `command-images/{orgId}/{id}`).
+ */
+export const COMMAND_IMAGE_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(png|jpg|webp|gif)$/;
+
+/** True when `id` is a well-formed command-image id (`<uuidv4>.<ext>`) — see COMMAND_IMAGE_ID_RE. */
+export function isCommandImageId(id: string): boolean {
+  return COMMAND_IMAGE_ID_RE.test(id);
+}
+
 /** The file extension for a stored command-image MIME (ADR-0257) — drives the storage key + on-disk name. */
 export function commandImageExt(mime: string): string {
   switch (mime) {
@@ -56,7 +70,9 @@ export interface CommandImageUploadResponse {
  * uploaded image id + its display name/MIME. The serving cli rewrites `placeholder` to the on-disk path.
  */
 export const commandImageRefSchema = z.object({
-  id: z.string().min(1).max(200),
+  // Constrained to `<uuidv4>.<ext>` (the only id the upload mints) so a client-supplied id can never
+  // inject `/` or `..` into the `command-images/{orgId}/{id}` storage key (path-traversal guard).
+  id: z.string().regex(COMMAND_IMAGE_ID_RE),
   placeholder: z.string().min(1).max(40),
   name: z.string().max(255),
   mime: z.enum(COMMAND_IMAGE_MIME_TYPES),
