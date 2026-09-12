@@ -257,21 +257,68 @@ export function folderScopeGuard(folder: string, prompt: string): string {
 }
 
 /**
+ * Per-run AI execution override (ADR-0261) — the few knobs the web "AI settings" modal can layer
+ * over a profile for one dispatch (per-user, chosen in the browser). Structurally mirrors `@4pm/dto`
+ * `AiRunConfig`; kept local so this pure helper stays framework/dep-free. Every field optional —
+ * an unset field ⇒ the profile default. Provider mapping is best-effort (see {@link overrideArgs} /
+ * {@link overrideEnv}); a knob a provider can't express is ignored so the run still proceeds.
+ */
+export interface AiRunOverride {
+  /** `--model` override (both providers) — wins over the profile's `model`. */
+  model?: string;
+  /** Coarse reasoning-budget level: claude → `MAX_THINKING_TOKENS` env; codex → reasoning-effort. */
+  thinking?: "off" | "low" | "medium" | "high";
+  /** Sampling temperature 0..1 — codex only (`-c model_temperature`); ignored for claude. */
+  temperature?: number;
+}
+
+/** Thinking level → claude `MAX_THINKING_TOKENS` budget (ADR-0261). `off`/absent ⇒ no env. */
+const THINKING_TOKENS: Record<string, number> = { low: 4000, medium: 10000, high: 31999 };
+
+/**
+ * Provider-specific pre-prompt args contributed by a per-run override (ADR-0261). Codex takes its
+ * reasoning effort + temperature as `-c key=value` config overrides; claude expresses thinking via
+ * env (see {@link overrideEnv}) and has no temperature knob, so it adds none here. Best-effort — an
+ * unmapped knob is simply omitted. Pure.
+ */
+function overrideArgs(cmd: string, o?: AiRunOverride): string[] {
+  if (!o || !cmd.includes("codex")) return [];
+  const args: string[] = [];
+  if (o.thinking && o.thinking !== "off") args.push("-c", `model_reasoning_effort="${o.thinking}"`);
+  if (typeof o.temperature === "number") args.push("-c", `model_temperature=${o.temperature}`);
+  return args;
+}
+
+/**
+ * Extra env contributed by a per-run override (ADR-0261) — claude expresses its thinking budget via
+ * `MAX_THINKING_TOKENS` (there is no print-mode flag). Merged into the attempt's env by the planner.
+ * Non-claude / no thinking ⇒ empty. Pure.
+ */
+export function overrideEnv(cmd: string, o?: AiRunOverride): Record<string, string> {
+  if (!o || !cmd.includes("claude")) return {};
+  if (!o.thinking || o.thinking === "off") return {};
+  const budget = THINKING_TOKENS[o.thinking];
+  return budget ? { MAX_THINKING_TOKENS: String(budget) } : {};
+}
+
+/**
  * Compose the argv after the command: the hardcoded required args (always, for metering)
  * + the profile's `args` (extras appended on top — ADR-0158) + `--model <model>` when set
- * + one-shot caps when `oneShot` (ADR-0249). The prompt is **not** appended (ADR-0251): it rides
- * the child's stdin, so it can't exceed `MAX_ARG_STRLEN` (`claude -p` / `codex exec` read stdin
- * when no positional prompt is given). The one-shot args stay LAST — their non-variadic terminator
- * (`--permission-mode default`) still bounds the variadic `--disallowedTools`.
+ * + per-run override args (ADR-0261) + one-shot caps when `oneShot` (ADR-0249). The prompt is
+ * **not** appended (ADR-0251): it rides the child's stdin, so it can't exceed `MAX_ARG_STRLEN`
+ * (`claude -p` / `codex exec` read stdin when no positional prompt is given). The one-shot args stay
+ * LAST — their non-variadic terminator (`--permission-mode default`) still bounds the variadic
+ * `--disallowedTools`. A per-run `override.model` wins over the profile's `model`.
  */
 function buildRunArgs(
   profile: AiProfile,
   cmd: string,
   resumeId?: string,
   oneShot = false,
+  override?: AiRunOverride,
 ): string[] {
   const extras = profile.args ?? [];
-  const model = profile.model?.trim();
+  const model = override?.model?.trim() || profile.model?.trim();
   const modelArgs = model ? ["--model", model] : [];
   // Native session resume (ADR-0245) — claude only; resumes the prior conversation on the SAME
   // profile so the shared memory need not be re-injected. Non-claude / no id ⇒ a fresh session.
@@ -284,7 +331,14 @@ function buildRunArgs(
       ? [`--max-turns=${Math.floor(turns)}`]
       : [];
   const oneShotExtra = oneShot ? oneShotArgs(cmd) : perProfileTurns;
-  return [...requiredArgs(cmd), ...resumeArgs, ...extras, ...modelArgs, ...oneShotExtra];
+  return [
+    ...requiredArgs(cmd),
+    ...resumeArgs,
+    ...extras,
+    ...modelArgs,
+    ...overrideArgs(cmd, override),
+    ...oneShotExtra,
+  ];
 }
 
 /**
@@ -393,10 +447,11 @@ export function planAiRun(
   hint: AiWorkingHint = {},
   resume: Map<string, string> = new Map(),
   oneShot = false,
+  override?: AiRunOverride,
 ): AiPlan {
   return isUnifiedConfig(config)
-    ? planUnifiedRun(prompt, config, hint.credential ?? null, resume, oneShot)
-    : planLegacyRun(prompt, config, hint.dir ?? null, resume, oneShot);
+    ? planUnifiedRun(prompt, config, hint.credential ?? null, resume, oneShot, override)
+    : planLegacyRun(prompt, config, hint.dir ?? null, resume, oneShot, override);
 }
 
 /**
@@ -411,6 +466,7 @@ function planUnifiedRun(
   workingCredential: string | null,
   resume: Map<string, string>,
   oneShot: boolean,
+  override?: AiRunOverride,
 ): AiPlan {
   const baseEnv = config.aiEnv ?? {};
   // Scope to the pinned provider unless "—" (mixed) is selected (ADR-0197).
@@ -423,7 +479,7 @@ function planUnifiedRun(
     return {
       cmd: active,
       attempts: [
-        { cmd: active, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, active, undefined, oneShot), stdin: prompt, env: { ...baseEnv } },
+        { cmd: active, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, active, undefined, oneShot, override), stdin: prompt, env: { ...baseEnv, ...overrideEnv(active, override) } },
       ],
     };
   }
@@ -445,9 +501,11 @@ function planUnifiedRun(
     label: cred.label?.trim() || profileDisplayLabel(dir),
     dir,
     key,
-    args: buildRunArgs(cred, cmd, resume.get(key), oneShot),
+    args: buildRunArgs(cred, cmd, resume.get(key), oneShot, override),
     stdin: prompt,
-    env: envVar ? { ...baseEnv, [envVar]: dir } : { ...baseEnv },
+    env: envVar
+      ? { ...baseEnv, [envVar]: dir, ...overrideEnv(cmd, override) }
+      : { ...baseEnv, ...overrideEnv(cmd, override) },
   }));
   return { cmd: attempts[0]?.cmd ?? DEFAULT_AI_CLI, attempts };
 }
@@ -459,6 +517,7 @@ function planLegacyRun(
   workingDir: string | null,
   resume: Map<string, string>,
   oneShot: boolean,
+  override?: AiRunOverride,
 ): AiPlan {
   // `||` (not `??`): a blank aiCli ("mixed"/none — ADR-0182) falls back to claude here.
   const cmd = config.aiCli || DEFAULT_AI_CLI;
@@ -467,7 +526,7 @@ function planLegacyRun(
   const defaultPlan: AiPlan = {
     cmd,
     attempts: [
-      { cmd, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, cmd, undefined, oneShot), stdin: prompt, env: { ...baseEnv } },
+      { cmd, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, cmd, undefined, oneShot, override), stdin: prompt, env: { ...baseEnv, ...overrideEnv(cmd, override) } },
     ],
   };
   if (!envVar) return defaultPlan;
@@ -493,9 +552,9 @@ function planLegacyRun(
       label: profileDisplayLabel(dir),
       dir,
       key,
-      args: buildRunArgs(profile, cmd, resume.get(key), oneShot),
+      args: buildRunArgs(profile, cmd, resume.get(key), oneShot, override),
       stdin: prompt,
-      env: { ...baseEnv, [envVar]: dir },
+      env: { ...baseEnv, [envVar]: dir, ...overrideEnv(cmd, override) },
     };
   });
   return { cmd, attempts };

@@ -13,6 +13,9 @@ export const WsChannels = {
   // ADR-0151) — the Git tab's manual conflict resolution (`project.git_write`); the only
   // git-tab write not carried by a git command over command dispatch.
   FS_WRITE: "fs.write",
+  // server → cli (reply): create/rename/move/delete a file or folder in the project tree,
+  // each op path-clamped to the physic root (machine-0059, ADR-0260, `project.files_write`).
+  FS_MUTATE: "fs.mutate",
   GIT_DIFF: "git.diff",
   GIT_ENV: "git.env",
   // server → cli (reply): read/write the paired profile's config.json (machine-0025/0026,

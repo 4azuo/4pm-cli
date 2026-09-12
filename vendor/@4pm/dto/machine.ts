@@ -769,6 +769,36 @@ export interface FsWriteResponse {
 }
 
 /**
+ * Body POST /machines/:id/fs/mutate — create/rename/move/delete a file or folder in the project
+ * tree, each op physic-root-clamped (machine-0059, ADR-0260, `project.files_write`).
+ */
+export const fsMutateRequestSchema = z.object({
+  op: z.enum(["mkdir", "create", "move", "delete"]),
+  path: z.string().max(1024).optional(),
+  content: z.string().max(FILE_WRITE_MAX_BYTES).optional(),
+  from: z.string().max(1024).optional(),
+  to: z.string().max(1024).optional(),
+});
+export type FsMutateRequestBody = z.infer<typeof fsMutateRequestSchema>;
+
+/** Data POST /machines/:id/fs/mutate — result of the worker mutation (machine-0059). */
+export interface FsMutateResponse {
+  /** The resolved (clamped) path acted on. */
+  path: string;
+}
+
+/**
+ * Body POST /machines/:id/tasks/approve — approve/unapprove one AI Todo task (machine-0060,
+ * ADR-0259 #3). Writes `.autonomous.approvals.json` with the approver (server-filled trace); gated by
+ * `project.task_approve`. Reuses the autonomous `approvals` write on the cli.
+ */
+export const taskApproveRequestSchema = z.object({
+  taskId: z.string().min(1).max(64),
+  approved: z.boolean(),
+});
+export type TaskApproveRequestBody = z.infer<typeof taskApproveRequestSchema>;
+
+/**
  * Body PUT /machines/:id/autonomous — a discriminated write to the autonomous engine
  * (machine-0029, ADR-0152). The **author** (`by`) is filled by the server from the
  * authenticated user (trace, not client-supplied) before forwarding to the cli.

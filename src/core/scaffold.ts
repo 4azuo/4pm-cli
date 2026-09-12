@@ -17,6 +17,7 @@ import type {
   ProjectProgressPayload,
 } from "@4pm/ws";
 import { repoName } from "@4pm/dto";
+import { PROJECT_TEMPLATE } from "@4pm/constants";
 import { aiGenerate } from "./ai-assist";
 
 const run = promisify(execFile);
@@ -114,8 +115,12 @@ export async function scaffoldProject(
   profileDir: string,
   onProgress?: ProgressEmitter,
 ): Promise<ProjectJobReply> {
-  const emit = (step: string, message: string): void =>
+  // Track the current step so a failure reply can name what broke (ADR-0263).
+  let lastStep = "start";
+  const emit = (step: string, message: string): void => {
+    lastStep = step;
     onProgress?.({ projectId: payload.projectId, step, message });
+  };
   try {
     // The folder lives inside the cli profile (ADR-0080); allow SCAFFOLD_ROOT override.
     const root = process.env.SCAFFOLD_ROOT ? resolve(process.env.SCAFFOLD_ROOT) : resolve(profileDir);
@@ -137,11 +142,26 @@ export async function scaffoldProject(
     if (repos.length > 0) await provisionRepos(target, repos, emit);
     // AI init (ADR-0080): subagent files + README + CLAUDE from the spec (best-effort).
     if (payload.spec) await aiInit(target, payload.spec, emit);
+    // Stamp the template-version marker (ADR-0262) so the web can later detect template drift.
+    emit("version", "Writing .4pm/.4pm.json…");
+    await writeTemplateMarker(target);
     onProgress?.({ projectId: payload.projectId, step: "done", message: "Scaffold complete.", done: true });
     return { ok: true, path: target };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return { ok: false, error: err instanceof Error ? err.message : String(err), step: lastStep };
   }
+}
+
+/**
+ * Write `<target>/.4pm/.4pm.json` with the template version this project was scaffolded from
+ * (ADR-0262). The version comes from the vendored `@4pm/constants` PROJECT_TEMPLATE, so a created
+ * project's stamped version can't drift from the server's "latest". Best-effort within the scaffold.
+ */
+async function writeTemplateMarker(target: string): Promise<void> {
+  const dir = join(target, ".4pm");
+  await mkdir(dir, { recursive: true });
+  const marker = { templateVersion: PROJECT_TEMPLATE.version, scaffoldedAt: new Date().toISOString() };
+  await writeFile(join(dir, ".4pm.json"), JSON.stringify(marker, null, 2) + "\n", "utf8");
 }
 
 /** One declared subagent of a spec (loose read from the jsonb). */
@@ -208,8 +228,11 @@ export async function addProject(
   profileDir: string,
   onProgress?: ProgressEmitter,
 ): Promise<ProjectJobReply> {
-  const emit = (step: string, message: string): void =>
+  let lastStep = "start";
+  const emit = (step: string, message: string): void => {
+    lastStep = step;
     onProgress?.({ projectId: payload.projectId, step, message });
+  };
   try {
     const root = process.env.SCAFFOLD_ROOT ? resolve(process.env.SCAFFOLD_ROOT) : resolve(profileDir);
     const target = join(root, payload.projectName);
@@ -219,6 +242,6 @@ export async function addProject(
     onProgress?.({ projectId: payload.projectId, step: "done", message: "Project added.", done: true });
     return { ok: true, path: target };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return { ok: false, error: err instanceof Error ? err.message : String(err), step: lastStep };
   }
 }

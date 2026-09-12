@@ -11,7 +11,7 @@ The integration branch is named **`${ai_dev_branch}$`** (the placeholder is reso
 `AI_PLACEHOLDER.md`); a task branch is **merged straight into `${ai_dev_branch}$`** (no PR).
 
 > Survival rule: **each cycle does exactly ONE small task** to avoid running out of tokens mid-way. If a
-> step fails, log it in `AI_DONE.md` under "Incidents", **clean the lock (Step 8)**, then stop — don't
+> step fails, log it as a row in the **Incidents** table of `AI_DONE.md`, **clean the lock (Step 8)**, then stop — don't
 > push on.
 >
 > **Lock (`.claude/.autonomous.lock`):** whether the cycle ends normally or on error, you MUST delete
@@ -55,7 +55,7 @@ The integration branch is named **`${ai_dev_branch}$`** (the placeholder is reso
      options to choose from. Each question has a date + an empty answer slot.
    - **Clear `USER_TODO.md`** back to the empty template (Step 2.4) — do NOT generate tasks this cycle.
      The user will read `USER_QA.md`, clarify, and re-post the request into `USER_TODO.md` for a later cycle.
-   - Note in `AI_DONE.md` ("Incidents/notes") that this cycle stopped waiting for an answer, then go to
+   - Append a row to the **Incidents** table in `AI_DONE.md` that this cycle stopped waiting for an answer, then go to
      Step 8 (clean the lock) and **stop**.
 3. If the request is clear enough: split it into small tasks doable in ~1 cycle. Write them into
    `AI_TODO.md` per `.claude/templates/AI_TODO.sample.md` (**7-column table:
@@ -100,7 +100,7 @@ The integration branch is named **`${ai_dev_branch}$`** (the placeholder is reso
    Pick the next task: **run group by group** (smallest group with an eligible task first), **within a
    group prefer `Priority` High → Medium → Low**, then line order.
    - **If NO eligible task** (empty, or all waiting for approval / dependencies — including tasks just
-     generated in Step 2): **take no task**. Write one line into `AI_DONE.md` ("Incidents/notes")
+     generated in Step 2): **take no task**. Append a row to the **Incidents** table in `AI_DONE.md`
      (e.g. "this cycle only generated tasks / waiting for VERIFY approval / waiting for dependencies"),
      then go to Step 8 (clean the lock) and **stop**.
 2. Move that task into `AI_PROGRESS.md` (with a start timestamp, per
@@ -127,7 +127,7 @@ The integration branch is named **`${ai_dev_branch}$`** (the placeholder is reso
      (remove every `<<<<<<< ======= >>>>>>>` marker), `git add <file>`, then `git commit --no-edit` to
      finish the merge. If a conflict is too complex to be sure → `git merge --abort`, write a question
      into `USER_QA.md`, go to Step 8 and stop (don't guess).
-3. Record the task in `AI_DONE.md` (ID, description, timestamp — per `.claude/templates/AI_DONE.sample.md`).
+3. Record the task by **appending a row to the Done table** in `AI_DONE.md` (Timestamp, ID, Task description, Files, Notes — per `.claude/templates/AI_DONE.sample.md`; keep the table header intact).
    **Remove it from `AI_PROGRESS.md`**: if nothing is in progress after removal, reset with
    `cp .claude/templates/AI_PROGRESS.empty.md AI_PROGRESS.md`. Likewise, if `AI_TODO.md` is now empty →
    `cp .claude/templates/AI_TODO.empty.md AI_TODO.md`.

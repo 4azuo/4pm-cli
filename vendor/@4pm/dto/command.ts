@@ -82,6 +82,24 @@ export type CommandImageRef = z.infer<typeof commandImageRefSchema>;
 /** Where a command was initiated: `web` (dispatch) vs `local` (cli TUI) — ADR-0107. */
 export type CommandOrigin = "web" | "local";
 
+/**
+ * Per-run AI execution overrides (ADR-0261) — the web "AI settings" modal (Project setup tab) lets
+ * the operator temporarily override, for THIS user's browser only, a few commonly-tuned knobs on top
+ * of the machine profile's default AI config. Every field is optional; an unset field ⇒ the profile
+ * default wins. Layered over the cli profile by the worker (`buildRunArgs`); knobs a provider can't
+ * express are ignored (`thinking` maps to claude `MAX_THINKING_TOKENS` env / codex reasoning-effort;
+ * `temperature` is codex-only). Only meaningful with `ai:true`.
+ */
+export const aiRunConfigSchema = z.object({
+  /** `--model` override for this run (must match the resolved provider's model id). */
+  model: z.string().trim().max(120).optional(),
+  /** Coarse reasoning-budget level, mapped to the provider's own mechanism. */
+  thinking: z.enum(["off", "low", "medium", "high"]).optional(),
+  /** Sampling temperature 0..1 (best-effort per provider). */
+  temperature: z.number().min(0).max(1).optional(),
+});
+export type AiRunConfig = z.infer<typeof aiRunConfigSchema>;
+
 /** Body POST /commands — dispatch a command to the project's cli. */
 export const dispatchCommandRequestSchema = z
   .object({
@@ -132,6 +150,12 @@ export const dispatchCommandRequestSchema = z
      * agent run (the Console tab + Git merge, which legitimately use tools).
      */
     aiOneShot: z.boolean().optional(),
+    /**
+     * Per-run AI execution overrides (ADR-0261): model/thinking/temperature chosen in the web
+     * "AI settings" modal (per-user localStorage), layered over the profile default by the cli.
+     * Only meaningful with `ai:true`.
+     */
+    aiConfig: aiRunConfigSchema.optional(),
   })
   // A plain executable command stays tightly capped; only AI prompts may be large.
   .superRefine((v, ctx) => {

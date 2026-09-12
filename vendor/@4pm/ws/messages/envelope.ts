@@ -114,6 +114,17 @@ export interface ImageFetchReply {
   error?: string;
 }
 
+/**
+ * Per-run AI execution overrides carried on a dispatch (ADR-0261) — structurally mirrors `@4pm/dto`
+ * `AiRunConfig` (kept local so `@4pm/ws` stays dep-free). Chosen in the web "AI settings" modal and
+ * layered over the cli profile by the worker; every field optional (unset ⇒ the profile default).
+ */
+export interface AiRunConfig {
+  model?: string;
+  thinking?: "off" | "low" | "medium" | "high";
+  temperature?: number;
+}
+
 /** command.dispatch (server → cli). */
 export interface CommandDispatchPayload {
   commandId: string;
@@ -142,6 +153,12 @@ export interface CommandDispatchPayload {
    * with `ai:true`; absent ⇒ a full agent run (Console tab, Git merge).
    */
   aiOneShot?: boolean;
+  /**
+   * Per-run AI execution overrides (ADR-0261): model/thinking/temperature chosen in the web
+   * "AI settings" modal (per-user localStorage), layered over the cli profile default by the
+   * worker (`buildRunArgs`). Only present on an `ai:true` dispatch; absent ⇒ the profile default.
+   */
+  aiConfig?: AiRunConfig;
 }
 
 /**
@@ -401,6 +418,33 @@ export interface FsWriteReply {
   path: string;
   /** Bytes written (0 when `ok` is false). */
   bytes: number;
+  error?: string;
+}
+
+/** The fs-mutation operations (machine-0059, ADR-0260). */
+export type FsMutateOp = "mkdir" | "create" | "move" | "delete";
+
+/**
+ * fs.mutate request/reply (machine-0059, ADR-0260) — create/rename/move/delete a file or folder in
+ * the project tree, each op clamped to the physic-project root (`project.files_write`). `rename` is a
+ * `move` within the same folder. Paths are relative to the root; anything escaping it is refused.
+ */
+export interface FsMutateRequest {
+  op: FsMutateOp;
+  /** Target path for `mkdir` / `create` / `delete`. */
+  path?: string;
+  /** Optional seed content for `create` (empty file when absent). */
+  content?: string;
+  /** Source path for `move` (also used as the rename source). */
+  from?: string;
+  /** Destination path for `move` (the new path, or a folder to move into). */
+  to?: string;
+}
+export interface FsMutateReply {
+  /** True when applied; false with `error` on a bad path / name / fs failure. */
+  ok: boolean;
+  /** The resolved (clamped) path acted on. */
+  path: string;
   error?: string;
 }
 
@@ -1144,6 +1188,8 @@ export interface ProjectJobReply {
   path?: string;
   /** Error message when ok=false (English — log/fallback). */
   error?: string;
+  /** The step that failed when ok=false (ADR-0263) — surfaced on the project as `failedStep`. */
+  step?: string;
 }
 
 /** project.progress event — streamed to the browser during scaffold (ADR-0022). */

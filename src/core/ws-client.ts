@@ -33,6 +33,7 @@ import {
   type MemoryUpdatePayload,
   type EcdhSession,
   type FsListRequest,
+  type FsMutateRequest,
   type FsReadRequest,
   type FsWriteRequest,
   type AutonomousLogsRequest,
@@ -130,6 +131,7 @@ import { appendCommandOutput, readCommandOutput, pruneCommandOutputByAge } from 
 import { listDir } from "./fs-browse";
 import { readWorkerFile } from "./fs-read";
 import { writeWorkerFile } from "./fs-write";
+import { mutateFs } from "./fs-mutate";
 import { runSupportAnswer, refreshSupportKb } from "./support-answer";
 import { runKnowledgeCompose } from "./knowledge-compose";
 import { setToolHealthSink, reportToolResult } from "./tool-health";
@@ -913,6 +915,7 @@ export class WsClient {
               "server",
               dispatch.aiOneShot ?? false,
               dispatch.images,
+              dispatch.aiConfig,
             );
           }
           break;
@@ -971,6 +974,15 @@ export class WsClient {
         const req = payload as unknown as FsWriteRequest;
         void writeWorkerFile(this.physicRoot, req.path, req.content).then((reply) =>
           this.send(WsChannels.FS_WRITE, reply, message.id),
+        );
+        break;
+      }
+      case WsChannels.FS_MUTATE: {
+        // Request/reply (machine-0059, ADR-0260): create/rename/move/delete a file or folder,
+        // each op clamped to the physic root (`project.files_write`).
+        const req = payload as unknown as FsMutateRequest;
+        void mutateFs(this.physicRoot, req).then((reply) =>
+          this.send(WsChannels.FS_MUTATE, reply, message.id),
         );
         break;
       }
@@ -1508,6 +1520,9 @@ export class WsClient {
     origin: CommandOrigin,
     oneShot = false,
     images?: CommandImageRef[],
+    // Per-run AI execution overrides (ADR-0261) — model/thinking/temperature from the web modal,
+    // layered over the profile config by planAiRun/buildRunArgs. Absent for local TUI prompts.
+    aiConfig?: CommandDispatchPayload["aiConfig"],
   ): Promise<void> {
     const config = readProfileConfig(this.context.profileDir);
     // AI-run wall-clock ceiling (ADR-0243): the serving project's override wins over the
@@ -1623,7 +1638,7 @@ export class WsClient {
     // (it already carries the context — no re-inject), else seed a fresh session with the compacted
     // memory. Probe the plan once to learn the first attempt's credential/provider, then decide.
     const memCfg = resolveMemoryConfig(config);
-    const firstAttempt = planAiRun(guardedPrompt, config, hint).attempts[0];
+    const firstAttempt = planAiRun(guardedPrompt, config, hint, new Map(), oneShot, aiConfig).attempts[0];
     const resumeId =
       memCfg.enabled && firstAttempt?.key && firstAttempt.cmd === "claude"
         ? this.sessionIdByKey.get(firstAttempt.key)
@@ -1637,7 +1652,7 @@ export class WsClient {
       // Native session reset (new/failed-over profile, or memory cleared) → seed with the memory.
       effectivePrompt = `${MEMORY_SEED_HEADER}\n${this.aiMemory}\n\n${guardedPrompt}`;
     }
-    const plan = planAiRun(effectivePrompt, config, hint, resume, oneShot);
+    const plan = planAiRun(effectivePrompt, config, hint, resume, oneShot, aiConfig);
     // Representative argv for the announce/history markers (args are now per-profile —
     // the first attempt's are used; failover may run a different profile's args).
     const markerArgs = plan.attempts[0]?.args ?? [];

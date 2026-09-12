@@ -24,6 +24,9 @@ export interface ProjectResponse {
   /** Avatar URL `/projects/:id/avatar` (ADR-0043), or null when none. */
   avatarUrl: string | null;
   status: ProjectStatus;
+  /** Scaffold failure reason + failing step (ADR-0263) — set when `status=failed`, else null. */
+  failReason: string | null;
+  failedStep: string | null;
   /** Mid-tier IP allowlist (Org > project > user — ADR-0050); empty = no restriction. */
   ipAllowlist: string[];
   /** Messenger conversation retention in days (0 = keep forever) — ADR-0078. */
