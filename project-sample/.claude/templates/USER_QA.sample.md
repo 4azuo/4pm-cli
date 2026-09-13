@@ -1,7 +1,5 @@
 # USER_QA — Questions & answers
 
-## 2026-01-01 — Login: which providers?
-- Original request: "add a login screen".
-- Unclear: email/password only, or also OAuth (Google/GitHub)?
-- Options: (a) email+password only, (b) also Google, (c) also GitHub.
-- Answer:
+| Date | Original request | Question / options | Answer |
+|------|------------------|--------------------|--------|
+| 2026-01-01 | Add a login screen | Email/password only, or also OAuth? (a) email+password, (b) also Google, (c) also GitHub | |

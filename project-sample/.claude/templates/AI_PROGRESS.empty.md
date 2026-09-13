@@ -1,5 +1,8 @@
 # AI_PROGRESS — Task in progress
 
-> The current in-progress task (set when the cycle starts a task, cleared when it finishes).
+> The current in-progress task — a **single row** in the table below (set when the cycle starts a task,
+> cleared back to this empty template when it finishes) — per `.claude/templates/AI_PROGRESS.sample.md`.
 
-_(no task in progress)_
+| Started | ID | Task description |
+|---------|----|------------------|
+| | | |

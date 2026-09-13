@@ -50,9 +50,10 @@ The integration branch is named **`${ai_dev_branch}$`** (the placeholder is reso
    the empty template remains) → **no** new request → skip task generation.
 2. **If anything is unclear / needs a user decision** (ambiguous, missing info, contradictory, or the
    user said "ask if unclear, don't decide on your own"):
-   - **Do NOT guess** and generate tasks. Write the question into `USER_QA.md` ("Q&A" section) per
-     `.claude/templates/USER_QA.sample.md`: state the original request, what's unclear, and (if possible)
-     options to choose from. Each question has a date + an empty answer slot.
+   - **Do NOT guess** and generate tasks. Append a **row** to `USER_QA.md` per
+     `.claude/templates/USER_QA.sample.md` (columns `Date | Original request | Question / options | Answer`):
+     fill the date, the original request, and what's unclear + (if possible) options to choose from; leave
+     the **Answer** column blank for the user.
    - **Clear `USER_TODO.md`** back to the empty template (Step 2.4) — do NOT generate tasks this cycle.
      The user will read `USER_QA.md`, clarify, and re-post the request into `USER_TODO.md` for a later cycle.
    - Append a row to the **Incidents** table in `AI_DONE.md` that this cycle stopped waiting for an answer, then go to

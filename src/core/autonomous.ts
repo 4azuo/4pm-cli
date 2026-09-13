@@ -56,6 +56,11 @@ function parseJson(text: string): Record<string, unknown> | null {
   }
 }
 
+/** Escape a value so it is safe inside one Markdown table cell (collapse newlines, escape pipes). */
+function tableCell(value: string): string {
+  return value.replace(/\r?\n/g, " ").replace(/\|/g, "\\|").trim();
+}
+
 /** The physic project's tick-script absolute path (the cron line key). */
 function tickScript(root: string): string {
   return join(root, TICK_REL);
@@ -192,9 +197,12 @@ export async function writeAutonomous(
         break;
       }
       case "userTodo": {
+        // USER_TODO is a `| # | Request | Notes |` table (project-template ≥ 1.0.1); append the
+        // posted request as one row, keeping the provenance (who/when) in the Notes column.
         const cur = await readText(join(root, BOOK_FILES.userTodo));
-        const block = `\n\n> posted by ${by} at ${new Date().toISOString()}\n${req.content.trim()}\n`;
-        await writeFile(join(root, BOOK_FILES.userTodo), cur.trimEnd() + block, "utf8");
+        const trace = `posted by ${tableCell(by)} at ${new Date().toISOString()}`;
+        const row = `| | ${tableCell(req.content)} | ${trace} |\n`;
+        await writeFile(join(root, BOOK_FILES.userTodo), cur.replace(/\s*$/, "\n") + row, "utf8");
         break;
       }
       case "cron": {

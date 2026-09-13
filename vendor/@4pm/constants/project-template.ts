@@ -38,8 +38,28 @@ export interface ProjectTemplate {
 
 /** The authoritative scaffold-template version + changelog (ADR-0262). */
 export const PROJECT_TEMPLATE: ProjectTemplate = {
-  version: "1.0.0",
+  version: "1.0.1",
   changelog: [
+    {
+      version: "1.0.1",
+      date: "2026-09-13",
+      summary: "Autonomous 'book' templates unified as Markdown tables (following AI_DONE).",
+      notes: [
+        "Every book is now a structured table: AI_PROGRESS → | Started | ID | Task description |, USER_TODO → | # | Request | Notes |, USER_QA → | Date | Original request | Question / options | Answer | (AI_DONE, AI_TODO, AI_PLACEHOLDER were already tables).",
+        "Web-posted USER_TODO requests append as a table row, with who/when kept in the Notes column.",
+      ],
+      files: [
+        ".claude/templates/AI_PROGRESS.empty.md",
+        ".claude/templates/AI_PROGRESS.sample.md",
+        ".claude/templates/USER_TODO.empty.md",
+        ".claude/templates/USER_TODO.sample.md",
+        ".claude/templates/USER_QA.empty.md",
+        ".claude/templates/USER_QA.sample.md",
+        "AI_PROGRESS.md",
+        "USER_TODO.md",
+        "USER_QA.md",
+      ],
+    },
     {
       version: "1.0.0",
       date: "2026-09-12",
