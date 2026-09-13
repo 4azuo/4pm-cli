@@ -151,6 +151,15 @@ export const dispatchCommandRequestSchema = z
      */
     aiOneShot: z.boolean().optional(),
     /**
+     * Read-only agent AI mode (ADR-0265): the prompt is a task that must **read + inspect the repo
+     * but write nothing** (the project-template "Analyze impact"). Unlike `aiOneShot` it keeps the
+     * read/search tools (`Read`/`Glob`/`Grep`/`Bash`) and runs multi-turn, but the cli blocks the
+     * write/orchestration tools and runs claude under `--permission-mode plan` (codex `--sandbox
+     * read-only`) so it can diff files without editing them. Only meaningful with `ai:true`;
+     * **mutually exclusive with `aiOneShot`** (a run is one-shot | read-only | full-agent).
+     */
+    aiReadOnly: z.boolean().optional(),
+    /**
      * Per-run AI execution overrides (ADR-0261): model/thinking/temperature chosen in the web
      * "AI settings" modal (per-user localStorage), layered over the profile default by the cli.
      * Only meaningful with `ai:true`.
@@ -165,6 +174,14 @@ export const dispatchCommandRequestSchema = z
         code: z.ZodIssueCode.custom,
         path: ["machineLinkId"],
         message: "Provide exactly one of machineLinkId or pick.",
+      });
+    }
+    // A run is one-shot | read-only | full-agent — never one-shot AND read-only (ADR-0265).
+    if (v.aiOneShot && v.aiReadOnly) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["aiReadOnly"],
+        message: "aiOneShot and aiReadOnly are mutually exclusive.",
       });
     }
     if (!v.ai && v.command.length > COMMAND_MAX_LEN) {

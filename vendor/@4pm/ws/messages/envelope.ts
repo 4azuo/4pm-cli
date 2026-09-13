@@ -154,6 +154,14 @@ export interface CommandDispatchPayload {
    */
   aiOneShot?: boolean;
   /**
+   * Read-only agent AI run (ADR-0265): a task that must **read + inspect the repo but write
+   * nothing** (project-template "Analyze impact"). The cli keeps the read/search tools (`Read`/
+   * `Glob`/`Grep`/`Bash`) and runs multi-turn under `--permission-mode plan` (codex `--sandbox
+   * read-only`) with only the write/orchestration tools disallowed. Only meaningful with `ai:true`;
+   * **mutually exclusive with `aiOneShot`**; absent ⇒ one-shot (if set) or a full agent run.
+   */
+  aiReadOnly?: boolean;
+  /**
    * Per-run AI execution overrides (ADR-0261): model/thinking/temperature chosen in the web
    * "AI settings" modal (per-user localStorage), layered over the cli profile default by the
    * worker (`buildRunArgs`). Only present on an `ai:true` dispatch; absent ⇒ the profile default.

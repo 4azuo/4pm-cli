@@ -55,6 +55,49 @@ function oneShotArgs(cmd: string): string[] {
   return ["--max-turns=1", "--disallowedTools", ONE_SHOT_DISALLOWED_CLAUDE_TOOLS, "--permission-mode", "default"];
 }
 
+/**
+ * Tools disallowed for a **read-only agent** run (ADR-0265) — the write/orchestration tools only, as
+ * one comma-separated token (same variadic-consumption trick as {@link ONE_SHOT_DISALLOWED_CLAUDE_TOOLS}).
+ * Unlike one-shot this **keeps** `Read`/`Glob`/`Grep`/`Bash`/`ToolSearch` so the agent can inspect and
+ * diff the repo; it only blocks anything that would modify files or spawn side-effecting work — a
+ * read-only report (template "Analyze impact") must never edit/commit.
+ */
+const READ_ONLY_DISALLOWED_CLAUDE_TOOLS = [
+  "Edit", "Write", "NotebookEdit", "Task", "SlashCommand", "Skill", "WebSearch", "WebFetch",
+  "TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate", "Monitor",
+  "DesignSync", "CronCreate", "CronDelete", "CronList", "EnterWorktree", "ExitWorktree",
+  "RemoteTrigger", "ScheduleWakeup", "SendMessage", "PushNotification",
+].join(",");
+
+/** Default agentic turn cap for a read-only run (ADR-0265) — a profile's own `maxTurns` overrides it. */
+const READ_ONLY_MAX_TURNS = 40;
+
+/**
+ * Extra pre-prompt args that make a claude run a **read-only agent** (ADR-0265): a real `--max-turns`
+ * (the profile's cap when set, else {@link READ_ONLY_MAX_TURNS} — NOT 1, it must read many files over
+ * several turns); `--disallowedTools` blocking only write/orchestration tools; and `--permission-mode
+ * plan` as the NON-variadic terminator placed last (plan mode is read-only: the agent may Read/Glob/
+ * Grep and run read-only Bash to explore but cannot edit files). For codex a read-only sandbox
+ * (`--sandbox read-only`) denies writes. Empty for a non-claude/non-codex cmd.
+ */
+function readOnlyArgs(cmd: string, profileMaxTurns?: number): string[] {
+  if (cmd.includes("claude")) {
+    const turns =
+      typeof profileMaxTurns === "number" && profileMaxTurns > 0
+        ? Math.floor(profileMaxTurns)
+        : READ_ONLY_MAX_TURNS;
+    return [
+      `--max-turns=${turns}`,
+      "--disallowedTools",
+      READ_ONLY_DISALLOWED_CLAUDE_TOOLS,
+      "--permission-mode",
+      "plan",
+    ];
+  }
+  if (cmd.includes("codex")) return ["--sandbox", "read-only"];
+  return [];
+}
+
 /** The hardcoded required args for a command (substring match — `cmd` may be a path). */
 function requiredArgs(cmd: string): string[] {
   if (cmd.includes("claude")) return REQUIRED_AI_ARGS.claude;
@@ -304,7 +347,8 @@ export function overrideEnv(cmd: string, o?: AiRunOverride): Record<string, stri
 /**
  * Compose the argv after the command: the hardcoded required args (always, for metering)
  * + the profile's `args` (extras appended on top — ADR-0158) + `--model <model>` when set
- * + per-run override args (ADR-0261) + one-shot caps when `oneShot` (ADR-0249). The prompt is
+ * + per-run override args (ADR-0261) + one-shot caps when `oneShot` (ADR-0249) or read-only-agent
+ * caps when `readOnly` (ADR-0265; `plan` mode + write-tool disallow, read tools kept). The prompt is
  * **not** appended (ADR-0251): it rides the child's stdin, so it can't exceed `MAX_ARG_STRLEN`
  * (`claude -p` / `codex exec` read stdin when no positional prompt is given). The one-shot args stay
  * LAST — their non-variadic terminator (`--permission-mode default`) still bounds the variadic
@@ -316,6 +360,7 @@ function buildRunArgs(
   resumeId?: string,
   oneShot = false,
   override?: AiRunOverride,
+  readOnly = false,
 ): string[] {
   const extras = profile.args ?? [];
   const model = override?.model?.trim() || profile.model?.trim();
@@ -327,17 +372,23 @@ function buildRunArgs(
   // own `maxTurns` cap when set (claude only, equals-form so an older claude ignores it safely).
   const turns = profile.maxTurns;
   const perProfileTurns =
-    !oneShot && cmd.includes("claude") && typeof turns === "number" && turns > 0
+    !oneShot && !readOnly && cmd.includes("claude") && typeof turns === "number" && turns > 0
       ? [`--max-turns=${Math.floor(turns)}`]
       : [];
-  const oneShotExtra = oneShot ? oneShotArgs(cmd) : perProfileTurns;
+  // Mode caps (mutually exclusive — ADR-0249/0265): one-shot (no tools, 1 turn) ⇒ read-only agent
+  // (read tools kept, plan mode, real turn cap) ⇒ else a normal run with the optional per-profile cap.
+  const modeExtra = oneShot
+    ? oneShotArgs(cmd)
+    : readOnly
+      ? readOnlyArgs(cmd, turns)
+      : perProfileTurns;
   return [
     ...requiredArgs(cmd),
     ...resumeArgs,
     ...extras,
     ...modelArgs,
     ...overrideArgs(cmd, override),
-    ...oneShotExtra,
+    ...modeExtra,
   ];
 }
 
@@ -448,10 +499,11 @@ export function planAiRun(
   resume: Map<string, string> = new Map(),
   oneShot = false,
   override?: AiRunOverride,
+  readOnly = false,
 ): AiPlan {
   return isUnifiedConfig(config)
-    ? planUnifiedRun(prompt, config, hint.credential ?? null, resume, oneShot, override)
-    : planLegacyRun(prompt, config, hint.dir ?? null, resume, oneShot, override);
+    ? planUnifiedRun(prompt, config, hint.credential ?? null, resume, oneShot, override, readOnly)
+    : planLegacyRun(prompt, config, hint.dir ?? null, resume, oneShot, override, readOnly);
 }
 
 /**
@@ -467,6 +519,7 @@ function planUnifiedRun(
   resume: Map<string, string>,
   oneShot: boolean,
   override?: AiRunOverride,
+  readOnly = false,
 ): AiPlan {
   const baseEnv = config.aiEnv ?? {};
   // Scope to the pinned provider unless "—" (mixed) is selected (ADR-0197).
@@ -479,7 +532,7 @@ function planUnifiedRun(
     return {
       cmd: active,
       attempts: [
-        { cmd: active, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, active, undefined, oneShot, override), stdin: prompt, env: { ...baseEnv, ...overrideEnv(active, override) } },
+        { cmd: active, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, active, undefined, oneShot, override, readOnly), stdin: prompt, env: { ...baseEnv, ...overrideEnv(active, override) } },
       ],
     };
   }
@@ -501,7 +554,7 @@ function planUnifiedRun(
     label: cred.label?.trim() || profileDisplayLabel(dir),
     dir,
     key,
-    args: buildRunArgs(cred, cmd, resume.get(key), oneShot, override),
+    args: buildRunArgs(cred, cmd, resume.get(key), oneShot, override, readOnly),
     stdin: prompt,
     env: envVar
       ? { ...baseEnv, [envVar]: dir, ...overrideEnv(cmd, override) }
@@ -518,6 +571,7 @@ function planLegacyRun(
   resume: Map<string, string>,
   oneShot: boolean,
   override?: AiRunOverride,
+  readOnly = false,
 ): AiPlan {
   // `||` (not `??`): a blank aiCli ("mixed"/none — ADR-0182) falls back to claude here.
   const cmd = config.aiCli || DEFAULT_AI_CLI;
@@ -526,7 +580,7 @@ function planLegacyRun(
   const defaultPlan: AiPlan = {
     cmd,
     attempts: [
-      { cmd, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, cmd, undefined, oneShot, override), stdin: prompt, env: { ...baseEnv, ...overrideEnv(cmd, override) } },
+      { cmd, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, cmd, undefined, oneShot, override, readOnly), stdin: prompt, env: { ...baseEnv, ...overrideEnv(cmd, override) } },
     ],
   };
   if (!envVar) return defaultPlan;
@@ -552,7 +606,7 @@ function planLegacyRun(
       label: profileDisplayLabel(dir),
       dir,
       key,
-      args: buildRunArgs(profile, cmd, resume.get(key), oneShot, override),
+      args: buildRunArgs(profile, cmd, resume.get(key), oneShot, override, readOnly),
       stdin: prompt,
       env: { ...baseEnv, [envVar]: dir, ...overrideEnv(cmd, override) },
     };

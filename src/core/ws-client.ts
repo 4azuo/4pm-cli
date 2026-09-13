@@ -902,7 +902,8 @@ export class WsClient {
         });
         // AI-prompt dispatch (web AI mode): `cmd` is the raw prompt — run it through the
         // same profile-failover path as a locally-typed prompt (not a raw spawn). `aiOneShot`
-        // (ADR-0249) caps a text-only run (review/compose/suggest/generators) so it can't loop.
+        // (ADR-0249) caps a text-only run (review/compose/suggest/generators) so it can't loop;
+        // `aiReadOnly` (ADR-0265) runs a read-only agent that inspects the repo but can't write.
         if (dispatch.ai) {
           // A `/…` line is a 4pm-cli slash command, not an AI prompt (ADR-0249) — run it on the
           // worker (like the TUI) unless the operator blocked it via `webBlockedCommands`.
@@ -916,6 +917,7 @@ export class WsClient {
               dispatch.aiOneShot ?? false,
               dispatch.images,
               dispatch.aiConfig,
+              dispatch.aiReadOnly ?? false,
             );
           }
           break;
@@ -1523,6 +1525,9 @@ export class WsClient {
     // Per-run AI execution overrides (ADR-0261) — model/thinking/temperature from the web modal,
     // layered over the profile config by planAiRun/buildRunArgs. Absent for local TUI prompts.
     aiConfig?: CommandDispatchPayload["aiConfig"],
+    // Read-only agent run (ADR-0265): keep the read/inspect tools but block writes + run under
+    // `--permission-mode plan` (template "Analyze impact"). Mutually exclusive with `oneShot`.
+    readOnly = false,
   ): Promise<void> {
     const config = readProfileConfig(this.context.profileDir);
     // AI-run wall-clock ceiling (ADR-0243): the serving project's override wins over the
@@ -1638,7 +1643,7 @@ export class WsClient {
     // (it already carries the context — no re-inject), else seed a fresh session with the compacted
     // memory. Probe the plan once to learn the first attempt's credential/provider, then decide.
     const memCfg = resolveMemoryConfig(config);
-    const firstAttempt = planAiRun(guardedPrompt, config, hint, new Map(), oneShot, aiConfig).attempts[0];
+    const firstAttempt = planAiRun(guardedPrompt, config, hint, new Map(), oneShot, aiConfig, readOnly).attempts[0];
     const resumeId =
       memCfg.enabled && firstAttempt?.key && firstAttempt.cmd === "claude"
         ? this.sessionIdByKey.get(firstAttempt.key)
@@ -1652,7 +1657,7 @@ export class WsClient {
       // Native session reset (new/failed-over profile, or memory cleared) → seed with the memory.
       effectivePrompt = `${MEMORY_SEED_HEADER}\n${this.aiMemory}\n\n${guardedPrompt}`;
     }
-    const plan = planAiRun(effectivePrompt, config, hint, resume, oneShot, aiConfig);
+    const plan = planAiRun(effectivePrompt, config, hint, resume, oneShot, aiConfig, readOnly);
     // Representative argv for the announce/history markers (args are now per-profile —
     // the first attempt's are used; failover may run a different profile's args).
     const markerArgs = plan.attempts[0]?.args ?? [];

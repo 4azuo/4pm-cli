@@ -598,35 +598,8 @@ export const putMemoRequestSchema = z.object({
 });
 export type PutMemoRequest = z.infer<typeof putMemoRequestSchema>;
 
-/** Max length of one memo checklist item. */
-export const MEMO_ITEM_MAX_LENGTH = 2_000;
-
-/** One item of a user's per-project memo checklist (project-0026…0029). */
-export interface MemoItemResponse {
-  id: string;
-  content: string;
-  done: boolean;
-  sortOrder: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
-/** Body POST /projects/:id/memo-items — add a checklist item. */
-export const createMemoItemSchema = z.object({
-  content: z.string().trim().min(1).max(MEMO_ITEM_MAX_LENGTH),
-});
-export type CreateMemoItemRequest = z.infer<typeof createMemoItemSchema>;
-
-/** Body PATCH /projects/:id/memo-items/:itemId — edit text and/or toggle done. */
-export const updateMemoItemSchema = z
-  .object({
-    content: z.string().trim().min(1).max(MEMO_ITEM_MAX_LENGTH).optional(),
-    done: z.boolean().optional(),
-  })
-  .refine((v) => v.content !== undefined || v.done !== undefined, {
-    message: "content or done required",
-  });
-export type UpdateMemoItemRequest = z.infer<typeof updateMemoItemSchema>;
+// The item-based memo checklist (`MemoItemResponse`, create/update schemas) moved to
+// `./memo` when it became multi-level (user/team/project) — ADR-0264.
 
 /** Current PMSpec schema version (bump when the field catalog changes — spec-schema.md). */
 export const SPEC_VERSION = 5;
