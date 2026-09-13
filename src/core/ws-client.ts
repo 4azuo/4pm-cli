@@ -260,6 +260,8 @@ function toDtoEntry(e: BusTranscriptEntry): DtoTranscriptEntry {
     resultKind: e.resultKind,
     // Processing time on a terminal `exit` entry (ADR-0249) — the web renders it inline.
     ...(e.durationMs != null ? { durationMs: e.durationMs } : {}),
+    // AI-run metadata on an `aireq` marker — powers the web's clickable CLI name → details modal.
+    ...(e.aiMeta ? { aiMeta: e.aiMeta } : {}),
   };
 }
 
@@ -1666,7 +1668,14 @@ export class WsClient {
     // processing the prompt. The TUI + web dim the stamp and color the CLI name (see AiMarkerLine /
     // colorAiLine). This is the same instant `aiStartedMs` measures the run duration from.
     const startStamp = formatTimestampInZone(new Date(), this.orgTimezone);
-    this.bus.push({ source: origin, kind: "aireq", text: `${startStamp} ${plan.cmd} ‹ ${prompt}` });
+    this.bus.push({
+      source: origin,
+      kind: "aireq",
+      text: `${startStamp} ${plan.cmd} ‹ ${prompt}`,
+      // Carry the run's prompt + resolved flags so the web Console's clickable CLI name can open a
+      // details modal (the representative first-attempt argv; failover may run a different profile's).
+      aiMeta: { cmd: plan.cmd, args: markerArgs, prompt },
+    });
     logger.info("command.ai", { commandId, origin, cmd: plan.cmd, profiles: plan.attempts.length });
     // A local prompt has no server record yet ⇒ announce it (ADR-0057); a server-dispatched
     // AI prompt already has a tracking record from command-0001.
@@ -1740,12 +1749,17 @@ export class WsClient {
         this.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: `${text}\n`, log: true });
       },
       onAttemptFail: (label, reason) => {
+        // Distinct reason per branch (ADR-0240): only a genuine `auth` classification says "failed to
+        // authenticate" — a catch-all `other` (non-zero exit, hit turn cap, crash, unrecognized error)
+        // must NOT be mislabeled as an auth problem, or a working credential looks broken.
         const text =
           reason === "limit"
             ? `profile "${label}" hit its session limit — trying next`
             : reason === "credits"
               ? `profile "${label}" is out of usage credits — trying next`
-              : `profile "${label}" failed to authenticate — trying next`;
+              : reason === "auth"
+                ? `profile "${label}" failed to authenticate — trying next`
+                : `profile "${label}" run failed — trying next`;
         this.bus.push({ source: origin, kind: "log", text, level: "warn" });
         this.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: `${text}\n`, log: true });
       },

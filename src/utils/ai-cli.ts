@@ -42,17 +42,30 @@ const ONE_SHOT_DISALLOWED_CLAUDE_TOOLS = [
 ].join(",");
 
 /**
- * Extra pre-prompt args that make a claude run one-shot (ADR-0249): `--max-turns=1` (equals form so
- * an older claude that doesn't know the flag treats it as an ignored unknown option, NOT a stray
- * positional) caps the agentic loop; `--disallowedTools` blocks the tools; and `--permission-mode
- * default` is a NON-variadic terminator placed last so the variadic `--disallowedTools` consumes only
- * its tool token. The prompt no longer follows on argv (it rides stdin — ADR-0251), so the
- * terminator's "shield the prompt" role is moot but the flag is still a valid setting. Claude only —
- * codex `exec` is already single-shot. Empty for a non-claude cmd.
+ * Fixed agentic turn cap for a one-shot AI run (AI suggest/review/compose). A small budget (>1) lets
+ * the model take a couple of internal reasoning turns to produce a better single answer while still
+ * bounding the loop; the run stays text-in → text-out because every agentic tool is disallowed.
+ */
+const ONE_SHOT_MAX_TURNS = 4;
+
+/**
+ * Extra pre-prompt args that make a claude run one-shot (ADR-0249): a fixed `--max-turns`
+ * ({@link ONE_SHOT_MAX_TURNS}, equals form so an older claude that doesn't know the flag treats it as
+ * an ignored unknown option, NOT a stray positional) bounds the agentic loop; `--disallowedTools`
+ * blocks the tools; and `--permission-mode default` is a NON-variadic terminator placed last so the
+ * variadic `--disallowedTools` consumes only its tool token. The prompt no longer follows on argv (it
+ * rides stdin — ADR-0251), so the terminator's "shield the prompt" role is moot but the flag is still
+ * a valid setting. Claude only — codex `exec` is already single-shot. Empty for a non-claude cmd.
  */
 function oneShotArgs(cmd: string): string[] {
   if (!cmd.includes("claude")) return [];
-  return ["--max-turns=1", "--disallowedTools", ONE_SHOT_DISALLOWED_CLAUDE_TOOLS, "--permission-mode", "default"];
+  return [
+    `--max-turns=${ONE_SHOT_MAX_TURNS}`,
+    "--disallowedTools",
+    ONE_SHOT_DISALLOWED_CLAUDE_TOOLS,
+    "--permission-mode",
+    "default",
+  ];
 }
 
 /**
@@ -69,25 +82,26 @@ const READ_ONLY_DISALLOWED_CLAUDE_TOOLS = [
   "RemoteTrigger", "ScheduleWakeup", "SendMessage", "PushNotification",
 ].join(",");
 
-/** Default agentic turn cap for a read-only run (ADR-0265) — a profile's own `maxTurns` overrides it. */
+/**
+ * Fixed agentic turn cap for a read-only run (ADR-0265) — a whole-repo analysis (e.g. the template
+ * "Analyze impact" report) must read many files over several turns before it can write the report, so
+ * this is generous and NOT operator-tunable: a tiny per-profile cap would starve the run before it
+ * ever produces output.
+ */
 const READ_ONLY_MAX_TURNS = 40;
 
 /**
- * Extra pre-prompt args that make a claude run a **read-only agent** (ADR-0265): a real `--max-turns`
- * (the profile's cap when set, else {@link READ_ONLY_MAX_TURNS} — NOT 1, it must read many files over
- * several turns); `--disallowedTools` blocking only write/orchestration tools; and `--permission-mode
- * plan` as the NON-variadic terminator placed last (plan mode is read-only: the agent may Read/Glob/
- * Grep and run read-only Bash to explore but cannot edit files). For codex a read-only sandbox
- * (`--sandbox read-only`) denies writes. Empty for a non-claude/non-codex cmd.
+ * Extra pre-prompt args that make a claude run a **read-only agent** (ADR-0265): a fixed `--max-turns`
+ * ({@link READ_ONLY_MAX_TURNS} — NOT 1, it must read many files over several turns); `--disallowedTools`
+ * blocking only write/orchestration tools; and `--permission-mode plan` as the NON-variadic terminator
+ * placed last (plan mode is read-only: the agent may Read/Glob/Grep and run read-only Bash to explore
+ * but cannot edit files). For codex a read-only sandbox (`--sandbox read-only`) denies writes. Empty
+ * for a non-claude/non-codex cmd.
  */
-function readOnlyArgs(cmd: string, profileMaxTurns?: number): string[] {
+function readOnlyArgs(cmd: string): string[] {
   if (cmd.includes("claude")) {
-    const turns =
-      typeof profileMaxTurns === "number" && profileMaxTurns > 0
-        ? Math.floor(profileMaxTurns)
-        : READ_ONLY_MAX_TURNS;
     return [
-      `--max-turns=${turns}`,
+      `--max-turns=${READ_ONLY_MAX_TURNS}`,
       "--disallowedTools",
       READ_ONLY_DISALLOWED_CLAUDE_TOOLS,
       "--permission-mode",
@@ -123,13 +137,6 @@ export interface AiProfile {
   args?: string[];
   model?: string;
   enabled?: boolean;
-  /**
-   * Per-profile agentic turn cap for claude (ADR-0249) — passed as `--max-turns=<n>` on a normal
-   * (non-one-shot) run so an operator can bound a profile's agentic loop. Unset/0 ⇒ no cap. Ignored
-   * for a one-shot spec-assist run (that always forces `--max-turns=1` + disallowed tools) and for
-   * non-claude providers.
-   */
-  maxTurns?: number;
 }
 
 /** The AI providers a credential can target — each maps to a CLI command + config-dir env var. */
@@ -368,20 +375,11 @@ function buildRunArgs(
   // Native session resume (ADR-0245) — claude only; resumes the prior conversation on the SAME
   // profile so the shared memory need not be re-injected. Non-claude / no id ⇒ a fresh session.
   const resumeArgs = resumeId && cmd.includes("claude") ? ["--resume", resumeId] : [];
-  // One-shot forces `--max-turns=1` + disallowed tools (ADR-0249); a normal run uses the profile's
-  // own `maxTurns` cap when set (claude only, equals-form so an older claude ignores it safely).
-  const turns = profile.maxTurns;
-  const perProfileTurns =
-    !oneShot && !readOnly && cmd.includes("claude") && typeof turns === "number" && turns > 0
-      ? [`--max-turns=${Math.floor(turns)}`]
-      : [];
-  // Mode caps (mutually exclusive — ADR-0249/0265): one-shot (no tools, 1 turn) ⇒ read-only agent
-  // (read tools kept, plan mode, real turn cap) ⇒ else a normal run with the optional per-profile cap.
-  const modeExtra = oneShot
-    ? oneShotArgs(cmd)
-    : readOnly
-      ? readOnlyArgs(cmd, turns)
-      : perProfileTurns;
+  // Mode caps (mutually exclusive — ADR-0249/0265) each carry their OWN fixed `--max-turns`: one-shot
+  // (no tools, a small fixed budget) ⇒ read-only agent (read tools kept, plan mode, a generous fixed
+  // cap) ⇒ else a normal run with no turn cap. The turn budget is no longer per-profile configurable
+  // (a tiny cap silently starved read-only analysis runs before they could produce a report).
+  const modeExtra = oneShot ? oneShotArgs(cmd) : readOnly ? readOnlyArgs(cmd) : [];
   return [
     ...requiredArgs(cmd),
     ...resumeArgs,

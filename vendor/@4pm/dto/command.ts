@@ -259,6 +259,19 @@ export interface CommandActivityEvent {
 export type TranscriptSource = "server" | "local" | "system";
 export type TranscriptKind = "log" | "cmd" | "out" | "exit" | "aireq" | "aires" | "result";
 
+/**
+ * Structured metadata of an AI run, carried on its `aireq` marker entry (ADR-0265) so the web Console
+ * can show the exact prompt + resolved CLI flags in a details modal when the CLI name is clicked.
+ * `args` is the representative resolved argv (metering + mode flags — `--max-turns`, `--permission-mode`,
+ * …), `cmd` the provider command, `prompt` the verbatim prompt, `model` the effective model if pinned.
+ */
+export interface AiRunMeta {
+  cmd: string;
+  args: string[];
+  prompt: string;
+  model?: string;
+}
+
 /** One line/block of the cli transcript, streamed over `console.sync` / command-0007. */
 export interface TranscriptEntry {
   /** Stable entry id (uuid) — the render key; a `console.sync` `update` targets it. */
@@ -276,6 +289,11 @@ export interface TranscriptEntry {
    * command/AI prompt took. Absent on non-terminal entries and on entries the cli can't time.
    */
   durationMs?: number;
+  /**
+   * For an `aireq` marker (ADR-0265) — the run's prompt + resolved flags, so the web can open a
+   * details modal from the clickable CLI name. Absent on every other entry (and on a pre-ADR-0265 cli).
+   */
+  aiMeta?: AiRunMeta;
 }
 
 /**

@@ -22,6 +22,19 @@ export type TranscriptSource = "server" | "local" | "system";
 // `result` is a whole AI-result block detected as json/code and auto-collapsed (ADR-0108).
 export type TranscriptKind = "log" | "cmd" | "out" | "exit" | "aireq" | "aires" | "result";
 
+/**
+ * Structured metadata of an AI run, carried on its `aireq` marker entry so the web Console can show
+ * the exact prompt + resolved CLI flags in a modal when the CLI name is clicked. `args` are the
+ * representative resolved argv (the metering + mode flags: `--max-turns`, `--permission-mode`, …),
+ * `cmd` the provider command, `prompt` the verbatim prompt, `model` the effective model (if pinned).
+ */
+export interface AiRunMeta {
+  cmd: string;
+  args: string[];
+  prompt: string;
+  model?: string;
+}
+
 /** One line/block in the scrollable transcript. */
 export interface TranscriptEntry {
   id: string;
@@ -35,6 +48,9 @@ export interface TranscriptEntry {
   /** Processing time (ms) of the finished run (ADR-0249) — set on the terminal `exit` entry so the
    *  TUI + web Console show how long each command/AI prompt took. Absent on other entries. */
   durationMs?: number;
+  /** For an `aireq` marker — the run's prompt + resolved flags, so the web can open a details modal
+   *  from the clickable CLI name. Absent on every other entry. */
+  aiMeta?: AiRunMeta;
 }
 
 /** Fields a producer supplies; id/ts/level default when omitted. */
@@ -46,6 +62,8 @@ export interface TranscriptInput {
   resultKind?: "json" | "code";
   /** Processing time (ms) — set on a terminal `exit` entry (ADR-0249). */
   durationMs?: number;
+  /** Run metadata — set on an `aireq` marker (see {@link AiRunMeta}). */
+  aiMeta?: AiRunMeta;
 }
 
 /**
