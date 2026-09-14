@@ -160,6 +160,15 @@ export const dispatchCommandRequestSchema = z
      */
     aiReadOnly: z.boolean().optional(),
     /**
+     * Write-capable agent AI mode (ADR-0271): a full agent that must run file + git/`gh`/`glab`
+     * writes **headless without approval prompts** (the project-template "Update", which creates a
+     * branch and opens a PR). The cli runs claude under `--permission-mode bypassPermissions` (codex
+     * full-auto) so the run doesn't stall on an interactive approval it can't answer. Still bounded by
+     * the folder-scope guard (ADR-0181). Only meaningful with `ai:true`; **mutually exclusive with
+     * `aiOneShot`/`aiReadOnly`** (a run is one-shot | read-only | full-agent [| write-capable]).
+     */
+    aiBypass: z.boolean().optional(),
+    /**
      * Per-run AI execution overrides (ADR-0261): model/thinking/temperature chosen in the web
      * "AI settings" modal (per-user localStorage), layered over the profile default by the cli.
      * Only meaningful with `ai:true`.
@@ -176,12 +185,19 @@ export const dispatchCommandRequestSchema = z
         message: "Provide exactly one of machineLinkId or pick.",
       });
     }
-    // A run is one-shot | read-only | full-agent — never one-shot AND read-only (ADR-0265).
+    // A run is one-shot | read-only | full-agent | write-capable — the mode flags are exclusive.
     if (v.aiOneShot && v.aiReadOnly) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["aiReadOnly"],
         message: "aiOneShot and aiReadOnly are mutually exclusive.",
+      });
+    }
+    if (v.aiBypass && (v.aiOneShot || v.aiReadOnly)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["aiBypass"],
+        message: "aiBypass is mutually exclusive with aiOneShot and aiReadOnly.",
       });
     }
     if (!v.ai && v.command.length > COMMAND_MAX_LEN) {

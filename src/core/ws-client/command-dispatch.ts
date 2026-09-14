@@ -107,6 +107,7 @@ export function handleCommandChannels(
         dispatch.images,
         dispatch.aiConfig,
         dispatch.aiReadOnly ?? false,
+        dispatch.aiBypass ?? false,
       );
     }
     return true;
@@ -199,6 +200,10 @@ export async function runAiPrompt(
   // Read-only agent run (ADR-0265): keep the read/inspect tools but block writes + run under
   // `--permission-mode plan` (template "Analyze impact"). Mutually exclusive with `oneShot`.
   readOnly = false,
+  // Write-capable agent run (ADR-0271): a full agent under `--permission-mode bypassPermissions`
+  // (codex full-auto) so file + git/gh/glab writes run headless without an approval prompt
+  // (template "Update" → branch + PR). Mutually exclusive with `oneShot`/`readOnly`.
+  bypass = false,
 ): Promise<void> {
   const config = readProfileConfig(ctx.profileDir);
   // AI-run wall-clock ceiling (ADR-0243): the serving project's override wins over the
@@ -314,7 +319,7 @@ export async function runAiPrompt(
   // (it already carries the context — no re-inject), else seed a fresh session with the compacted
   // memory. Probe the plan once to learn the first attempt's credential/provider, then decide.
   const memCfg = resolveMemoryConfig(config);
-  const firstAttempt = planAiRun(guardedPrompt, config, hint, new Map(), oneShot, aiConfig, readOnly).attempts[0];
+  const firstAttempt = planAiRun(guardedPrompt, config, hint, new Map(), oneShot, aiConfig, readOnly, bypass).attempts[0];
   const resumeId =
     memCfg.enabled && firstAttempt?.key && firstAttempt.cmd === "claude"
       ? ctx.sessionIdByKey.get(firstAttempt.key)
@@ -328,7 +333,7 @@ export async function runAiPrompt(
     // Native session reset (new/failed-over profile, or memory cleared) → seed with the memory.
     effectivePrompt = `${MEMORY_SEED_HEADER}\n${ctx.aiMemory}\n\n${guardedPrompt}`;
   }
-  const plan = planAiRun(effectivePrompt, config, hint, resume, oneShot, aiConfig, readOnly);
+  const plan = planAiRun(effectivePrompt, config, hint, resume, oneShot, aiConfig, readOnly, bypass);
   // Representative argv for the announce/history markers (args are now per-profile —
   // the first attempt's are used; failover may run a different profile's args).
   const markerArgs = plan.attempts[0]?.args ?? [];

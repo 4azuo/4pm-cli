@@ -112,6 +112,21 @@ function readOnlyArgs(cmd: string): string[] {
   return [];
 }
 
+/**
+ * Extra pre-prompt args that make a claude run a **write-capable agent** (ADR-0271): a full agent
+ * that must run file + git/`gh`/`glab` writes **headless without an approval prompt** (the project-
+ * template "Update" → branch + PR). `--permission-mode bypassPermissions` auto-approves every tool for
+ * this run so it never stalls on an interactive approval a headless `-p` can't answer; it keeps ALL
+ * tools (no `--disallowedTools`) and no turn cap (an update may take many turns). Still bounded by the
+ * folder-scope guard (ADR-0181) + the wall-clock timeout (ADR-0243). For codex a full-access run
+ * (`--dangerously-bypass-approvals-and-sandbox`, best-effort). Empty for a non-claude/non-codex cmd.
+ */
+function bypassArgs(cmd: string): string[] {
+  if (cmd.includes("claude")) return ["--permission-mode", "bypassPermissions"];
+  if (cmd.includes("codex")) return ["--dangerously-bypass-approvals-and-sandbox"];
+  return [];
+}
+
 /** The hardcoded required args for a command (substring match — `cmd` may be a path). */
 function requiredArgs(cmd: string): string[] {
   if (cmd.includes("claude")) return REQUIRED_AI_ARGS.claude;
@@ -368,6 +383,7 @@ function buildRunArgs(
   oneShot = false,
   override?: AiRunOverride,
   readOnly = false,
+  bypass = false,
 ): string[] {
   const extras = profile.args ?? [];
   const model = override?.model?.trim() || profile.model?.trim();
@@ -379,7 +395,13 @@ function buildRunArgs(
   // (no tools, a small fixed budget) ⇒ read-only agent (read tools kept, plan mode, a generous fixed
   // cap) ⇒ else a normal run with no turn cap. The turn budget is no longer per-profile configurable
   // (a tiny cap silently starved read-only analysis runs before they could produce a report).
-  const modeExtra = oneShot ? oneShotArgs(cmd) : readOnly ? readOnlyArgs(cmd) : [];
+  const modeExtra = oneShot
+    ? oneShotArgs(cmd)
+    : readOnly
+      ? readOnlyArgs(cmd)
+      : bypass
+        ? bypassArgs(cmd)
+        : [];
   return [
     ...requiredArgs(cmd),
     ...resumeArgs,
@@ -498,10 +520,11 @@ export function planAiRun(
   oneShot = false,
   override?: AiRunOverride,
   readOnly = false,
+  bypass = false,
 ): AiPlan {
   return isUnifiedConfig(config)
-    ? planUnifiedRun(prompt, config, hint.credential ?? null, resume, oneShot, override, readOnly)
-    : planLegacyRun(prompt, config, hint.dir ?? null, resume, oneShot, override, readOnly);
+    ? planUnifiedRun(prompt, config, hint.credential ?? null, resume, oneShot, override, readOnly, bypass)
+    : planLegacyRun(prompt, config, hint.dir ?? null, resume, oneShot, override, readOnly, bypass);
 }
 
 /**
@@ -518,6 +541,7 @@ function planUnifiedRun(
   oneShot: boolean,
   override?: AiRunOverride,
   readOnly = false,
+  bypass = false,
 ): AiPlan {
   const baseEnv = config.aiEnv ?? {};
   // Scope to the pinned provider unless "—" (mixed) is selected (ADR-0197).
@@ -530,7 +554,7 @@ function planUnifiedRun(
     return {
       cmd: active,
       attempts: [
-        { cmd: active, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, active, undefined, oneShot, override, readOnly), stdin: prompt, env: { ...baseEnv, ...overrideEnv(active, override) } },
+        { cmd: active, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, active, undefined, oneShot, override, readOnly, bypass), stdin: prompt, env: { ...baseEnv, ...overrideEnv(active, override) } },
       ],
     };
   }
@@ -552,7 +576,7 @@ function planUnifiedRun(
     label: cred.label?.trim() || profileDisplayLabel(dir),
     dir,
     key,
-    args: buildRunArgs(cred, cmd, resume.get(key), oneShot, override, readOnly),
+    args: buildRunArgs(cred, cmd, resume.get(key), oneShot, override, readOnly, bypass),
     stdin: prompt,
     env: envVar
       ? { ...baseEnv, [envVar]: dir, ...overrideEnv(cmd, override) }
@@ -570,6 +594,7 @@ function planLegacyRun(
   oneShot: boolean,
   override?: AiRunOverride,
   readOnly = false,
+  bypass = false,
 ): AiPlan {
   // `||` (not `??`): a blank aiCli ("mixed"/none — ADR-0182) falls back to claude here.
   const cmd = config.aiCli || DEFAULT_AI_CLI;
@@ -578,7 +603,7 @@ function planLegacyRun(
   const defaultPlan: AiPlan = {
     cmd,
     attempts: [
-      { cmd, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, cmd, undefined, oneShot, override, readOnly), stdin: prompt, env: { ...baseEnv, ...overrideEnv(cmd, override) } },
+      { cmd, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, cmd, undefined, oneShot, override, readOnly, bypass), stdin: prompt, env: { ...baseEnv, ...overrideEnv(cmd, override) } },
     ],
   };
   if (!envVar) return defaultPlan;
@@ -604,7 +629,7 @@ function planLegacyRun(
       label: profileDisplayLabel(dir),
       dir,
       key,
-      args: buildRunArgs(profile, cmd, resume.get(key), oneShot, override, readOnly),
+      args: buildRunArgs(profile, cmd, resume.get(key), oneShot, override, readOnly, bypass),
       stdin: prompt,
       env: { ...baseEnv, [envVar]: dir, ...overrideEnv(cmd, override) },
     };

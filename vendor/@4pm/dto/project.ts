@@ -646,6 +646,89 @@ export const putProjectSpecRequestSchema = z.object({
 });
 export type PutProjectSpecRequest = z.infer<typeof putProjectSpecRequestSchema>;
 
+/** Max size (bytes) of a persisted template "Analyze impact" report (project-0058 — ADR-0269). */
+export const TEMPLATE_ANALYSIS_MAX_BYTES = 512 * 1024;
+
+/** Max size (bytes) of a persisted template "Update" run output (project-0060 — ADR-0270). */
+export const TEMPLATE_UPDATE_MAX_BYTES = 512 * 1024;
+
+/**
+ * The saved template "Analyze impact" report for a project (ADR-0269, ADR-0270). Latest-only;
+ * overwritten on each analyze. `fromVersion` is the project's local template version at analyze
+ * time (null = "unknown"), `toVersion` the latest template it was analyzed against, `instruction`
+ * the optional custom prompt the user ran it with (null = none).
+ */
+export interface TemplateAnalysis {
+  report: string;
+  instruction: string | null;
+  fromVersion: string | null;
+  toVersion: string;
+  savedAt: string;
+  savedBy: string | null;
+}
+
+/**
+ * Resolved outcome of a template "Update" run (ADR-0271): `success` only when the agent actually
+ * finished the prompt AND opened a pull request (a PR id is present); `warning` when it ran but did
+ * not complete (blocked on approval, no PR tooling, unparseable result…); `failed` when the agent
+ * reported an outright failure. The panel shows "Update complete" ONLY for `success`.
+ */
+export type TemplateUpdateStatus = "success" | "warning" | "failed";
+
+/**
+ * The saved template "Update" run output for a project (ADR-0270, ADR-0271). Latest-only; overwritten
+ * on each update run. `output` is the agent's raw summary; `status`/`pullRequestId`/`pullRequestUrl`/
+ * `branch`/`message` are parsed from the agent's structured result so the panel reports completion
+ * truthfully (success only with a PR id, else warning/failure). `instruction` is the optional custom
+ * prompt used.
+ */
+export interface TemplateUpdateResult {
+  output: string;
+  status: TemplateUpdateStatus;
+  pullRequestId: string | null;
+  pullRequestUrl: string | null;
+  branch: string | null;
+  message: string | null;
+  instruction: string | null;
+  fromVersion: string | null;
+  toVersion: string;
+  savedAt: string;
+  savedBy: string | null;
+}
+
+/** Data GET /projects/:id/template/analysis (project-0057) — the saved report, or null when none. */
+export interface ProjectTemplateAnalysisResponse {
+  analysis: TemplateAnalysis | null;
+}
+
+/** Data GET /projects/:id/template/update (project-0059) — the saved update output, or null when none. */
+export interface ProjectTemplateUpdateResultResponse {
+  update: TemplateUpdateResult | null;
+}
+
+/** Body PUT /projects/:id/template/analysis (project-0058) — save the report (savedAt/By stamped server-side). */
+export const putTemplateAnalysisRequestSchema = z.object({
+  report: z.string().min(1),
+  instruction: z.string().nullable(),
+  fromVersion: z.string().nullable(),
+  toVersion: z.string().min(1),
+});
+export type PutTemplateAnalysisRequest = z.infer<typeof putTemplateAnalysisRequestSchema>;
+
+/** Body PUT /projects/:id/template/update (project-0060) — save the update output (savedAt/By stamped server-side). */
+export const putTemplateUpdateRequestSchema = z.object({
+  output: z.string().min(1),
+  status: z.enum(["success", "warning", "failed"]),
+  pullRequestId: z.string().nullable(),
+  pullRequestUrl: z.string().nullable(),
+  branch: z.string().nullable(),
+  message: z.string().nullable(),
+  instruction: z.string().nullable(),
+  fromVersion: z.string().nullable(),
+  toVersion: z.string().min(1),
+});
+export type PutTemplateUpdateRequest = z.infer<typeof putTemplateUpdateRequestSchema>;
+
 /** Max serialized size (bytes) of a generated artifact's markdown (ADR-0114). */
 export const ARTIFACT_MAX_BYTES = 512 * 1024;
 

@@ -162,6 +162,14 @@ export interface CommandDispatchPayload {
    */
   aiReadOnly?: boolean;
   /**
+   * Write-capable agent AI run (ADR-0271): a full agent that must run file + git/`gh`/`glab` writes
+   * **headless without approval prompts** (project-template "Update" → branch + PR). The cli runs
+   * claude under `--permission-mode bypassPermissions` (codex full-auto) so it never stalls on an
+   * interactive approval. Still folder-scoped (ADR-0181). Only meaningful with `ai:true`; **mutually
+   * exclusive with `aiOneShot`/`aiReadOnly`**; absent ⇒ the normal full-agent permission behavior.
+   */
+  aiBypass?: boolean;
+  /**
    * Per-run AI execution overrides (ADR-0261): model/thinking/temperature chosen in the web
    * "AI settings" modal (per-user localStorage), layered over the cli profile default by the
    * worker (`buildRunArgs`). Only present on an `ai:true` dispatch; absent ⇒ the profile default.
