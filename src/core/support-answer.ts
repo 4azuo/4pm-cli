@@ -11,10 +11,12 @@
 import { spawn } from "node:child_process";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type {
+  SupportAnswerImage,
   SupportAnswerModeration,
   SupportAnswerReply,
   SupportAnswerRequest,
@@ -168,6 +170,43 @@ function buildPrompt(docs: string, question: string, askerRole: "admin" | "user"
   ].join("\n");
 }
 
+/** File extension for a materialized help image's MIME. */
+function imageExt(mime: string): string {
+  switch (mime) {
+    case "image/png":
+      return "png";
+    case "image/jpeg":
+      return "jpg";
+    case "image/webp":
+      return "webp";
+    case "image/gif":
+      return "gif";
+    default:
+      return "png";
+  }
+}
+
+/**
+ * Materialize the pasted help images (ADR-0273) into a throwaway folder and rewrite each `[Image#N]`
+ * placeholder in the question to the on-disk path so the agent can `Read` the screenshot (mirrors the
+ * Console command-image pipeline, ADR-0257). Returns the folder to clean up + the rewritten question.
+ */
+function materializeImages(
+  profileDir: string,
+  images: SupportAnswerImage[],
+  question: string,
+): { dir: string; question: string } {
+  const dir = join(profileDir, "help-images", randomUUID());
+  mkdirSync(dir, { recursive: true });
+  let rewritten = question;
+  images.forEach((img, i) => {
+    const file = join(dir, `image-${i + 1}.${imageExt(img.mime)}`);
+    writeFileSync(file, Buffer.from(img.dataBase64, "base64"));
+    if (img.placeholder) rewritten = rewritten.split(img.placeholder).join(file);
+  });
+  return { dir, question: rewritten };
+}
+
 /** The parsed structured answer: the reply body + an optional moderation verdict (ADR-0237). */
 interface ParsedAnswer {
   body: string;
@@ -214,6 +253,7 @@ function runClaudeOnce(
   profile: ResolvedClaudeProfile | null,
   prompt: string,
   extraEnv: Record<string, string> | undefined,
+  imageDir?: string,
 ): Promise<{ code: number; out: string; err: string; usage: AiUsage }> {
   return new Promise((resolve, reject) => {
     // Ask claude for `--output-format stream-json --verbose` so the run's real token usage is
@@ -224,6 +264,9 @@ function runClaudeOnce(
       "-p",
       ...(profile?.model ? ["--model", profile.model] : []),
       ...(isClaude ? ["--output-format", "stream-json", "--verbose"] : []),
+      // When the question references pasted images (ADR-0273), allow the agent to Read them from the
+      // materialized folder (the question already carries their absolute paths).
+      ...(isClaude && imageDir ? ["--add-dir", imageDir, "--allowedTools", "Read"] : []),
     ];
     // Select the signed-in account (the fix — ADR-0170): without CLAUDE_CONFIG_DIR claude falls
     // back to its default config, whose token is unrelated to the operator's configured profiles.
@@ -266,12 +309,13 @@ function runClaudeOnce(
 async function runClaudeWithFailover(
   prompt: string,
   ai: SupportAnswerAi,
+  imageDir?: string,
 ): Promise<{ text: string; usage: AiUsage }> {
   // No profile configured ⇒ a single default-env attempt (matches the pre-profile behavior).
   const attempts: (ResolvedClaudeProfile | null)[] = ai.profiles.length > 0 ? ai.profiles : [null];
   let lastReason = "no attempt";
   for (let i = 0; i < attempts.length; i++) {
-    const { code, out, err, usage } = await runClaudeOnce(ai.cmd, attempts[i]!, prompt, ai.env);
+    const { code, out, err, usage } = await runClaudeOnce(ai.cmd, attempts[i]!, prompt, ai.env, imageDir);
     if (code === 0 && out.trim()) return { text: out.trim(), usage };
     // claude may report the failure on stdout rather than stderr (empty stderr + exit 1).
     const combined = err || out;
@@ -291,13 +335,23 @@ export async function runSupportAnswer(
   ai: SupportAnswerAi,
   profileDir: string,
 ): Promise<SupportAnswerReply> {
+  // Materialize any pasted images (ADR-0273) into a throwaway folder + rewrite the question's
+  // `[Image#N]` placeholders to their on-disk paths so the agent can Read them; cleaned up after.
+  let imageDir: string | undefined;
+  let question = req.question;
+  if (req.images?.length) {
+    const m = materializeImages(profileDir, req.images, req.question);
+    imageDir = m.dir;
+    question = m.question;
+  }
   try {
     const dir = await ensureRepo(profileDir, req.repo);
     const docs = collectDocs(dir);
     if (!docs.trim()) return { body: "", error: "KB repo has no documentation" };
     const { text, usage } = await runClaudeWithFailover(
-      buildPrompt(docs, req.question, req.askerRole),
+      buildPrompt(docs, question, req.askerRole),
       ai,
+      imageDir,
     );
     if (!text) return { body: "", error: "empty answer" };
     // Split the structured output into the answer body + inline moderation verdict (ADR-0237);
@@ -326,5 +380,13 @@ export async function runSupportAnswer(
   } catch (err) {
     logger.warn("support.answer.failed", { error: String(err) });
     return { body: "", error: String(err) };
+  } finally {
+    if (imageDir) {
+      try {
+        rmSync(imageDir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup — a leftover throwaway image folder is harmless
+      }
+    }
   }
 }

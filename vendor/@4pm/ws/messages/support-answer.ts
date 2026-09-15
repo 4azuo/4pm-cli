@@ -4,6 +4,21 @@
  * the shared docs/FAQ repo, runs `claude` grounded in it, and returns the composed answer.
  */
 
+/**
+ * One image attachment on a support-answer request (ADR-0273) — the bytes are embedded (base64) since
+ * the system-scoped support path has no image-fetch channel. The cli materializes the image into the
+ * run folder and rewrites its `[Image#N]` placeholder in the question to the on-disk path before
+ * `claude -p`, so the agent can `Read` it (mirrors the Console command-image pipeline, ADR-0257).
+ */
+export interface SupportAnswerImage {
+  /** The `[Image#N]` token in the question this image sits behind. */
+  placeholder: string;
+  /** MIME (drives the on-disk extension). */
+  mime: string;
+  /** The image bytes, base64-encoded. */
+  dataBase64: string;
+}
+
 /** Server → cli: the question to answer + the shared docs/FAQ repo to read. */
 export interface SupportAnswerRequest {
   /** The user's question. */
@@ -17,6 +32,8 @@ export interface SupportAnswerRequest {
     /** Optional read-only token / deploy key for a private repo (null = public / worker creds). */
     token: string | null;
   };
+  /** Pasted images the agent should read (ADR-0273); the cli materializes + rewrites placeholders. */
+  images?: SupportAnswerImage[];
 }
 
 /** The claude run's token split for a support answer (ADR-0224). */
