@@ -1,13 +1,15 @@
 /**
- * Worker filesystem channel handlers (machine-0007/0027/0059): browse/read/write/mutate files
- * inside the served physic project root for the dashboard Files + Git tabs. Every op is clamped
- * to `ctx.physicRoot` so the web can only go inward, never out.
+ * Worker filesystem channel handlers (machine-0007/0027/0059/0061/0062): browse/read/write/mutate
+ * files + binary upload/download inside the served physic project root for the dashboard Files + Git
+ * tabs. Every op is clamped to `ctx.physicRoot` so the web can only go inward, never out.
  */
 import {
   WsChannels,
+  type FsDownloadRequest,
   type FsListRequest,
   type FsMutateRequest,
   type FsReadRequest,
+  type FsUploadRequest,
   type FsWriteRequest,
   type WsEnvelope,
 } from "@4pm/ws";
@@ -15,6 +17,7 @@ import { listDir } from "../../fs-browse";
 import { readWorkerFile } from "../../fs-read";
 import { writeWorkerFile } from "../../fs-write";
 import { mutateFs } from "../../fs-mutate";
+import { downloadBinaryFile, uploadBinaryFile } from "../../fs-transfer";
 import type { WsHandlerCtx } from "../context";
 
 /** Route the fs.* channels; returns true when the message was handled. */
@@ -52,6 +55,24 @@ export function handleFsChannels(
       const req = payload as unknown as FsMutateRequest;
       void mutateFs(ctx.physicRoot, req).then((reply) =>
         ctx.send(WsChannels.FS_MUTATE, reply, message.id),
+      );
+      return true;
+    }
+    case WsChannels.FS_UPLOAD: {
+      // Request/reply (machine-0061, ADR-0278): write an uploaded/pasted file's base64 bytes into
+      // the tree, clamped to the physic root + size-capped (`project.files_write`).
+      const req = payload as unknown as FsUploadRequest;
+      void uploadBinaryFile(ctx.physicRoot, req.path, req.contentBase64).then((reply) =>
+        ctx.send(WsChannels.FS_UPLOAD, reply, message.id),
+      );
+      return true;
+    }
+    case WsChannels.FS_DOWNLOAD: {
+      // Request/reply (machine-0062, ADR-0278): read a file's raw bytes (base64) for the browser to
+      // save, clamped to the physic root + size-capped (`project.read`).
+      const req = payload as unknown as FsDownloadRequest;
+      void downloadBinaryFile(ctx.physicRoot, req.path).then((reply) =>
+        ctx.send(WsChannels.FS_DOWNLOAD, reply, message.id),
       );
       return true;
     }

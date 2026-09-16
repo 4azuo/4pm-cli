@@ -16,6 +16,12 @@ export const WsChannels = {
   // server → cli (reply): create/rename/move/delete a file or folder in the project tree,
   // each op path-clamped to the physic root (machine-0059, ADR-0260, `project.files_write`).
   FS_MUTATE: "fs.mutate",
+  // server → cli (reply): move file bytes between browser and worker as base64, root-clamped +
+  // size-capped (machine-0061/0062, ADR-0278). `fs.upload` writes an uploaded/pasted file into the
+  // tree (`project.files_write`); `fs.download` reads a file's raw bytes for the browser to save
+  // (`project.read`). Binary transfer the text-only fs.read/fs.write can't carry.
+  FS_UPLOAD: "fs.upload",
+  FS_DOWNLOAD: "fs.download",
   GIT_DIFF: "git.diff",
   GIT_ENV: "git.env",
   // server → cli (reply): read/write the paired profile's config.json (machine-0025/0026,

@@ -788,6 +788,51 @@ export interface FsMutateResponse {
 }
 
 /**
+ * Max raw bytes accepted for a single upload/download transfer (machine-0061/0062, ADR-0278).
+ * Enforced on both ends (server rejects an over-cap upload; the cli refuses an over-cap download)
+ * and pre-checked in the browser. Bounds the WS-frame size + base64 memory blow-up on both hops.
+ */
+export const FS_TRANSFER_MAX_BYTES = 10 * 1024 * 1024;
+
+/** Max base64 characters for a transfer (raw cap × 4/3, rounded up + padding slack). */
+const FS_TRANSFER_MAX_BASE64 = Math.ceil((FS_TRANSFER_MAX_BYTES * 4) / 3) + 16;
+
+/**
+ * Body POST /machines/:id/fs/upload — write an uploaded/pasted file into the project tree, physic-
+ * root-clamped (machine-0061, ADR-0278, `project.files_write`). Bytes ride as base64 (binary the
+ * text-only fs.write can't carry).
+ */
+export const fsUploadRequestSchema = z.object({
+  /** Destination path relative to the physic-project root; a `..` escaping the root is rejected on the cli. */
+  path: z.string().min(1).max(1024),
+  /** File bytes, base64-encoded (capped to the transfer limit). */
+  contentBase64: z.string().min(1).max(FS_TRANSFER_MAX_BASE64),
+  /** Optional MIME type from the browser (informational). */
+  contentType: z.string().max(255).optional(),
+});
+export type FsUploadRequestBody = z.infer<typeof fsUploadRequestSchema>;
+
+/** Data POST /machines/:id/fs/upload — result of the worker upload (machine-0061). */
+export interface FsUploadResponse {
+  /** The resolved (clamped) path written. */
+  path: string;
+  /** Bytes written. */
+  bytes: number;
+}
+
+/** Data GET /machines/:id/fs/download — a file's raw bytes for the browser to save (machine-0062). */
+export interface FsDownloadResponse {
+  /** File bytes, base64-encoded. */
+  contentBase64: string;
+  /** Best-effort MIME type guessed from the extension. */
+  contentType: string;
+  /** The file's basename (for the save dialog). */
+  name: string;
+  /** Raw byte size. */
+  size: number;
+}
+
+/**
  * Body POST /machines/:id/tasks/approve — approve/unapprove one AI Todo task (machine-0060,
  * ADR-0259 #3). Writes `.autonomous.approvals.json` with the approver (server-filled trace); gated by
  * `project.task_approve`. Reuses the autonomous `approvals` write on the cli.

@@ -465,6 +465,51 @@ export interface FsMutateReply {
 }
 
 /**
+ * fs.upload request/reply (machine-0061, ADR-0278) — write an uploaded/pasted file's bytes into the
+ * project tree, clamped to the physic-project root (`project.files_write`). The bytes ride as base64
+ * (binary the text-only fs.write can't carry); a path escaping the root is refused outright.
+ */
+export interface FsUploadRequest {
+  /** Destination path relative to the physic-project root; anything escaping the root is refused. */
+  path: string;
+  /** File bytes, base64-encoded. */
+  contentBase64: string;
+  /** Optional MIME type from the browser (informational; not trusted for the write). */
+  contentType?: string;
+}
+export interface FsUploadReply {
+  /** True when written; false with `error` on a bad path / oversize / write failure. */
+  ok: boolean;
+  /** The resolved (clamped) path actually written. */
+  path: string;
+  /** Bytes written (0 when `ok` is false). */
+  bytes: number;
+  error?: string;
+}
+
+/**
+ * fs.download request/reply (machine-0062, ADR-0278) — read a file's raw bytes for the browser to
+ * save. `contentBase64` carries the bytes; a file over the transfer cap (or unreadable) replies with
+ * `error` and no payload (never a silent truncation, unlike fs.read).
+ */
+export interface FsDownloadRequest {
+  /** File path relative to the physic-project root; anything escaping the root is refused. */
+  path: string;
+}
+export interface FsDownloadReply {
+  /** File bytes, base64-encoded (absent on error). */
+  contentBase64?: string;
+  /** Best-effort MIME type guessed from the extension. */
+  contentType?: string;
+  /** The file's basename (for the browser's save dialog). */
+  name?: string;
+  /** Raw byte size. */
+  size?: number;
+  /** Set when the file is unreadable / over the transfer cap / path escapes the root. */
+  error?: string;
+}
+
+/**
  * Autonomous mode (ADR-0152) — the dashboard controls the worker's headless autonomous engine
  * (`.claude/.autonomous.settings.json` + `auto-cycle`), reached over these channels via the cli.
  */
