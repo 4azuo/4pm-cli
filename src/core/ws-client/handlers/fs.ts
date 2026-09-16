@@ -35,8 +35,9 @@ export function handleFsChannels(
       );
       return true;
     case WsChannels.FS_READ:
-      // Request/reply — read a file for the dashboard files tab.
-      void readWorkerFile((payload as unknown as FsReadRequest).path).then((reply) =>
+      // Request/reply — read a file for the dashboard files tab. Clamped to the physic root
+      // (ADR-0281): the browser addresses files project-root-relative, never out of the root.
+      void readWorkerFile(ctx.physicRoot, (payload as unknown as FsReadRequest).path).then((reply) =>
         ctx.send(WsChannels.FS_READ, reply, message.id),
       );
       return true;

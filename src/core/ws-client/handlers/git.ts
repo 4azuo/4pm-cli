@@ -26,8 +26,9 @@ export function handleGitChannels(
 ): boolean {
   switch (message.channel) {
     case WsChannels.GIT_DIFF:
-      // Request/reply — HEAD vs working-tree content for Monaco diff.
-      void gitDiff((payload as unknown as GitDiffRequest).path).then((reply) =>
+      // Request/reply — HEAD vs working-tree content for Monaco diff. Clamped to the physic
+      // root (ADR-0281): the path is project-root-relative, never out of the served root.
+      void gitDiff(ctx.physicRoot, (payload as unknown as GitDiffRequest).path).then((reply) =>
         ctx.send(WsChannels.GIT_DIFF, reply, message.id),
       );
       return true;
