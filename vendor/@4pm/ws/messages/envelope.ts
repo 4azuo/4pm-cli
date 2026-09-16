@@ -893,10 +893,21 @@ export interface GitDiffRequest {
 }
 export interface GitDiffReply {
   path: string;
-  /** File content at HEAD (empty if untracked/new). */
+  /** File content at HEAD (empty if untracked/new). Text files only; empty when `isBinary`. */
   oldContent: string;
-  /** Current working-tree content. */
+  /** Current working-tree content. Text files only; empty when `isBinary`. */
   newContent: string;
+  /**
+   * True when the file is binary (e.g. an image): the text fields are empty and the bytes ride in
+   * the `*Base64` fields instead so the dashboard can render an image before/after (ADR-0282).
+   */
+  isBinary?: boolean;
+  /** Best-effort MIME type (binary only), for the `data:` URL the dashboard builds. */
+  contentType?: string;
+  /** HEAD bytes, base64 (binary only; empty for an untracked/new or over-cap file). */
+  oldContentBase64?: string;
+  /** Working-tree bytes, base64 (binary only; empty for a deleted/unreadable or over-cap file). */
+  newContentBase64?: string;
 }
 
 /**

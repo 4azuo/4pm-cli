@@ -944,11 +944,23 @@ export const agentToolsWriteRequestSchema = z.object({
 });
 export type AgentToolsWriteBody = z.infer<typeof agentToolsWriteRequestSchema>;
 
-/** Data GET /machines/:id/diff — old (HEAD) vs current content of a file (Monaco diff). */
+/**
+ * Data GET /machines/:id/diff — old (HEAD) vs current content of a file. Text files ride in
+ * `oldContent`/`newContent` (Monaco diff); binary files (images) set `isBinary` and ride as base64
+ * so the dashboard can render an image before/after (ADR-0282). Mirrors the cli `GitDiffReply`.
+ */
 export interface GitDiffResponse {
   path: string;
   oldContent: string;
   newContent: string;
+  /** True when the file is binary: the text fields are empty and the bytes ride in `*Base64`. */
+  isBinary?: boolean;
+  /** Best-effort MIME type (binary only), for the `data:` URL the dashboard builds. */
+  contentType?: string;
+  /** HEAD bytes, base64 (binary only; empty for an untracked/new or over-cap file). */
+  oldContentBase64?: string;
+  /** Working-tree bytes, base64 (binary only; empty for a deleted/unreadable or over-cap file). */
+  newContentBase64?: string;
 }
 
 /** Data GET /machines/:id/git/repos — a git repo found under the physic project (machine-0021). */

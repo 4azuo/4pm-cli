@@ -42,7 +42,7 @@ const MIME_BY_EXT: Record<string, string> = {
 };
 
 /** Best-effort content type for a file path. */
-function guessMime(path: string): string {
+export function guessMime(path: string): string {
   return MIME_BY_EXT[extname(path).toLowerCase()] ?? "application/octet-stream";
 }
 
