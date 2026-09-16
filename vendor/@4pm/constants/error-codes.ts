@@ -231,6 +231,8 @@ export const ErrorCode = {
   // support tickets (ADR-0167) + AI help agent (ADR-0168)
   SUPPORT_TICKET_NOT_FOUND: "SUPPORT_TICKET_NOT_FOUND",
   SUPPORT_TICKET_CLOSED: "SUPPORT_TICKET_CLOSED",
+  // public (guest) support create (ADR-0279): the self-hosted captcha answer was wrong/expired.
+  CAPTCHA_INVALID: "CAPTCHA_INVALID",
   HELP_POOL_UNAVAILABLE: "HELP_POOL_UNAVAILABLE",
   HELP_RATE_LIMITED: "HELP_RATE_LIMITED",
   // AI Help admin moderation (ADR-0237): the user/org is blocked from the channel, or the whole

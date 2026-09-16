@@ -38,8 +38,22 @@ export interface ProjectTemplate {
 
 /** The authoritative scaffold-template version + changelog (ADR-0262). */
 export const PROJECT_TEMPLATE: ProjectTemplate = {
-  version: "1.0.1",
+  version: "1.0.2",
   changelog: [
+    {
+      version: "1.0.2",
+      date: "2026-09-16",
+      summary: "AI_DONE.md changed to a Markdown table — catch-up entry for projects scaffolded before the conversion.",
+      notes: [
+        "AI_DONE.md's Done and Incidents sections are Markdown tables (| Timestamp | ID | Task description | Files | Notes | and | Timestamp | Note |), matching the other autonomous books.",
+        "The conversion itself shipped with the baseline scaffold, but was never recorded as a template version, so the 1.0.1 changelog assumed AI_DONE was already tabular. Projects scaffolded before it still carry the old two-section prose layout even at 1.0.1; this entry lets them detect the drift and convert AI_DONE on the next Update.",
+      ],
+      files: [
+        "AI_DONE.md",
+        ".claude/templates/AI_DONE.empty.md",
+        ".claude/templates/AI_DONE.sample.md",
+      ],
+    },
     {
       version: "1.0.1",
       date: "2026-09-13",
