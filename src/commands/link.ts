@@ -16,6 +16,7 @@ import { collectFingerprint } from "../core/fingerprint";
 import { confirmPairing, pairWithToken } from "../services/api";
 import { ensureProfileConfig, profileDir, writeDefaultProfile } from "../config/profile";
 import { assertSecureRemoteUrl } from "../utils/secure-url";
+import { initI18n, t } from "../i18n";
 
 /**
  * A filesystem-safe profile name derived from the account username (ADR-0063): readable
@@ -38,20 +39,22 @@ export async function runLink(
   // a non-local host (ADR-0194 Phase-0 finding #1) — the hashcodes/token below would travel
   // in the clear to an unauthenticated server. Opt out only on a trusted private network.
   assertSecureRemoteUrl(serverUrl);
+  // Pairing runs before any config.json exists, so localize from the environment (ADR-0276).
+  initI18n();
   // Headless pairing (ADR-0192 §6): a provisioning token (`--token` / FOURPM_PAIR_TOKEN) exchanges
   // for hashcode (3) with no interactive hashcode dance — the container/pool boot path.
   let result;
   if (token) {
-    console.log(`── 4PM cli headless pairing (profile: ${explicitProfile ?? "default"}) ──`);
+    console.log(t("link.headlessHeader", { profile: explicitProfile ?? "default" }));
     result = await pairWithToken(serverUrl, token, collectFingerprint());
   } else {
     const hashcode1 = randomBytes(32).toString("hex");
-    console.log(`── 4PM cli pairing (profile: ${explicitProfile ?? "default"}) ─────────────`);
-    console.log("1. Open the 4PM web → /machines, enter the pairing code:");
+    console.log(t("link.header", { profile: explicitProfile ?? "default" }));
+    console.log(t("link.step1"));
     console.log(`\n   ${hashcode1}\n`);
-    console.log("2. The web will show a confirmation code — paste it here.");
+    console.log(t("link.step2"));
     const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const hashcode2 = (await rl.question("Confirmation code: ")).trim();
+    const hashcode2 = (await rl.question(t("link.confirmPrompt"))).trim();
     rl.close();
     result = await confirmPairing(serverUrl, hashcode2, collectFingerprint());
   }
@@ -77,20 +80,15 @@ export async function runLink(
   if (projectName && scope === "project") {
     const folder = join(dir, projectName);
     mkdirSync(folder, { recursive: true });
-    console.log(`✔ Created physic project folder: ${folder}`);
+    console.log(t("link.createdFolder", { folder }));
   }
   // Point the `default` at this profile (fallback for version/update when not picking).
   writeDefaultProfile(profileName);
   // Show scope so it is obvious WHICH account was paired: "orchestrator" = the admin
   // (the web wizard's default), "project" = the selected MACHINE user (worker).
-  const verb = existed ? "Renewed" : "Added";
-  console.log(
-    `✔ ${verb} profile "${profileName}" as "${username}" · scope: ${scope} — saved .cre. Run \`4pm start\` to connect.`,
-  );
+  const verb = existed ? t("link.verbRenewed") : t("link.verbAdded");
+  console.log(t("link.saved", { verb, profile: profileName, username, scope }));
   if (scope === "orchestrator") {
-    console.log(
-      "  (This is the orchestrator/admin link. To pair a worker instead, pick the " +
-        "MACHINE user in the web pairing wizard before entering the pairing code.)",
-    );
+    console.log(t("link.orchestratorNote"));
   }
 }

@@ -9,6 +9,7 @@ import { Box, Text } from "ink";
 import type { MachineUsagePayload } from "@4pm/ws";
 import type { SessionStatus } from "../core/session-bus";
 import type { SessionInfo } from "./session-info";
+import { t } from "../i18n";
 
 /** Status dot color. */
 function dotColor(status: SessionStatus): string {
@@ -17,10 +18,15 @@ function dotColor(status: SessionStatus): string {
   return "yellow";
 }
 
+/** Localized connection-status word. */
+function statusLabel(status: SessionStatus): string {
+  return t(`status.${status}` as Parameters<typeof t>[0]);
+}
+
 /** Human label for the link scope (role-based to avoid repeating "project"). */
 function scopeLabel(scope: string): string {
   if (scope === "project") return "MACHINE";
-  if (scope === "orchestrator") return "orchestrator (root)";
+  if (scope === "orchestrator") return t("banner.scopeOrchestrator");
   return scope;
 }
 
@@ -67,19 +73,22 @@ export function Banner({
           4PM CLI <Text color="cyan">v{info.version}</Text>
         </Text>
         <Text dimColor>
-          scope: {scopeLabel(scope)} · profile: {info.profile}
-          {worker ? ` · worker: ${worker}` : ""}
+          {t("banner.line1", { scope: scopeLabel(scope), profile: info.profile })}
+          {worker ? t("banner.workerSuffix", { worker }) : ""}
         </Text>
         {scope === "orchestrator" ? (
-          <Text dimColor>server: {info.serverUrl} · mode: orchestrator (short-lived AI)</Text>
+          <Text dimColor>{t("banner.lineOrchestrator", { server: info.serverUrl })}</Text>
         ) : (
           <Text dimColor>
-            server: {info.serverUrl} · serving: {project ?? info.physicPath ?? "(no project attached)"}
+            {t("banner.lineServing", {
+              server: info.serverUrl,
+              serving: project ?? info.physicPath ?? t("banner.noProject"),
+            })}
           </Text>
         )}
         {/* Status + active AI profile + subscription usage — one line (3-row header). */}
         <Text>
-          <Text color={dotColor(status)}>●</Text> {status} · using{" "}
+          <Text color={dotColor(status)}>●</Text> {statusLabel(status)} · {t("banner.using")}{" "}
           <Text color="cyan">{info.aiCli}</Text>
           {activeProfile ? (
             <Text>

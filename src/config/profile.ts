@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { Locale } from "@4pm/constants";
 import { ensureDir } from "../common/io/ensure-dir";
 import type { AiCredential, AiProfile } from "../utils/ai-cli";
 
@@ -58,6 +59,12 @@ export function clearDefaultProfileIf(name: string): void {
 
 /** Per-profile config (config.json inside the profile directory). */
 export interface ProfileConfig {
+  /**
+   * UI language for the cli's own operator-facing error messages (ADR-0276), set from the
+   * Worker configs form. Operator-editable (not server-managed). Absent ⇒ the cli falls back
+   * to `FOURPM_LOCALE`/`LANG`/`LC_ALL`, then English.
+   */
+  locale?: Locale;
   /** Auto-update on startup (ADR-0015) — defaults to true. */
   autoUpdate?: boolean;
   /**

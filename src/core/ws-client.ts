@@ -48,6 +48,7 @@ import { UpdateScheduler } from "./update-scheduler";
 import { CliApiError, requestWsToken } from "../services/api";
 import { getWorkingProfile } from "./ai-profile-state";
 import { INSECURE_URL_BLOCKED, insecureTransportAllowed, isInsecureRemoteUrl } from "../utils/secure-url";
+import { t } from "../i18n";
 import { claudeHomeDirs } from "../utils/ai-cli";
 import { checkClaudeUsage } from "./claude-usage";
 import { pruneCommandHistoryByAge } from "./command-history";
@@ -383,10 +384,10 @@ export class WsClient {
    */
   reconnectNow(): void {
     if (this.stopped) {
-      this.bus.log("Session stopped — restart 4pm to reconnect.", "warn");
+      this.bus.log(t("session.stoppedReconnect"), "warn");
       return;
     }
-    this.bus.log("Reconnecting now…");
+    this.bus.log(t("session.reconnectingNow"));
     this.forceReconnect = true;
     if (this.wakeReconnect) this.wakeReconnect();
     else this.socket?.close();
@@ -637,7 +638,7 @@ export class WsClient {
           try {
             this.handleMessage(JSON.parse(String(raw)));
           } catch (err) {
-            this.bus.log(`Message error: ${err}`, "error");
+            this.bus.log(t("error.messageError", { error: String(err) }), "error");
           }
         });
 
@@ -648,7 +649,7 @@ export class WsClient {
           logger.debug("ws.close", { code });
           if (code === CLOSE_DRAINING) {
             // Server draining (rolling deploy) — reconnect to another instance
-            this.bus.log("Server draining — will reconnect (backoff + jitter).");
+            this.bus.log(t("error.serverDraining"));
           }
           resolve(); // let the run() loop reconnect (redo the ECDH handshake)
         });
@@ -717,7 +718,7 @@ export class WsClient {
           this.stopped = true;
           this.updateScheduler.stop();
           this.bus.setStatus("stopped");
-          this.bus.log(`Server rejected the cli version (${message.message}) — please update.`, "error");
+          this.bus.log(t("error.versionRejected", { version: message.message ?? "" }), "error");
           this.socket?.close();
           return;
         }
@@ -727,22 +728,18 @@ export class WsClient {
           this.stopped = true;
           this.updateScheduler.stop();
           this.bus.setStatus("stopped");
-          this.bus.log(
-            "Another session for this profile took over — this instance is stopping. " +
-              "(Are you running `4pm start` twice for the same profile?)",
-            "error",
-          );
+          this.bus.log(t("error.sessionReplaced"), "error");
           this.socket?.close();
           return;
         }
         if (message.errorCode === "USER_PAUSED") {
           // Paused account (ADR-0093) — reversible; keep `.cre`, reconnect with backoff.
-          this.bus.log("This account is paused — retrying until it is resumed.", "warn");
+          this.bus.log(t("error.accountPaused"), "warn");
           this.socket?.close();
           return;
         }
         // WS_TOKEN_INVALID ⇒ close; the run() loop requests a new token then reconnects
-        this.bus.log(`Server reported an error: ${message.errorCode}`, "warn");
+        this.bus.log(t("error.serverError", { code: message.errorCode }), "warn");
         this.socket?.close();
         return;
       }
@@ -775,7 +772,7 @@ export class WsClient {
     if (handleGitChannels(this.hctx, message, payload)) return;
     if (handleSupportChannels(this.hctx, message, payload)) return;
     if (handleMiscChannels(this.hctx, message, payload)) return;
-    this.bus.log(`Unsupported channel: ${message.channel}`, "warn");
+    this.bus.log(t("error.unsupportedChannel", { channel: message.channel }), "warn");
   }
 
   /**
@@ -888,10 +885,10 @@ export class WsClient {
     try {
       if (!existsSync(folder)) {
         mkdirSync(folder, { recursive: true });
-        this.bus.log(`Created physic project folder: ${folder}`);
+        this.bus.log(t("project.createdFolder", { folder }));
       }
     } catch (err) {
-      this.bus.log(`Could not create physic folder: ${err}`, "warn");
+      this.bus.log(t("error.folderCreateFailed", { error: String(err) }), "warn");
     }
   }
 
@@ -1210,9 +1207,6 @@ export class WsClient {
     this.bus.setStatus("stopped");
     logger.warn("ws.logout", { reason });
     deleteCredential(this.context.profileDir);
-    this.bus.log(
-      `Link is no longer valid (${reason}) — deleted .cre. Run \`4pm link\` to pair again.`,
-      "error",
-    );
+    this.bus.log(t("error.linkInvalid", { reason }), "error");
   }
 }

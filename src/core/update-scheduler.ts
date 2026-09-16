@@ -13,6 +13,7 @@ import { readProfileConfig } from "../config/profile";
 import { updateToLatest } from "./update";
 import { autoUpdateFlaggedTools, resolveInstallTimeoutMs } from "./worker-tools";
 import type { SessionBus } from "./session-bus";
+import { t } from "../i18n";
 
 /** How often the scheduler re-evaluates whether the daily update is due (ms). */
 const TICK_MS = 60_000;
@@ -122,7 +123,7 @@ export class UpdateScheduler {
       // process on success, which would otherwise skip the flagged tools. Best-effort; a failed tool
       // never blocks the cli update. Shares this org-gated, idle-only window (ADR-0074).
       await this.updateFlaggedTools();
-      this.bus.log("Scheduled auto-update: checking for a new version…");
+      this.bus.log(t("update.scheduledChecking"));
       const result = await updateToLatest(this.serverUrl);
       if (result.action === "already-latest") {
         logger.info("update.scheduled.latest", { version: result.version });
@@ -130,13 +131,13 @@ export class UpdateScheduler {
       }
       if (result.action === "failed") {
         logger.warn("update.scheduled.failed", { error: result.error });
-        this.bus.log(`Scheduled auto-update failed: ${result.error}`, "warn");
+        this.bus.log(t("update.scheduledFailed", { error: result.error ?? "" }), "warn");
         return;
       }
       // Updated ⇒ re-exec into the new binary — same as `4pm start`'s auto-update branch
       // (FOURPM_NO_UPDATE=1 skips the redundant startup check on the child).
       logger.info("update.scheduled.updated", { version: result.version });
-      this.bus.log(`Updated to ${result.version} — restarting to apply…`);
+      this.bus.log(t("update.scheduledUpdated", { version: result.version ?? "" }));
       const child = spawn(process.execPath, process.argv.slice(1), {
         stdio: "inherit",
         env: { ...process.env, FOURPM_NO_UPDATE: "1" },
@@ -154,7 +155,7 @@ export class UpdateScheduler {
     const config = readProfileConfig(this.profileDir);
     const tools = config.autoUpdateTools ?? [];
     if (tools.length === 0) return;
-    this.bus.log(`Scheduled tool auto-update: ${tools.join(", ")}…`);
+    this.bus.log(t("update.scheduledTools", { tools: tools.join(", ") }));
     const timeoutMs = resolveInstallTimeoutMs(config.toolInstallTimeoutSec);
     await autoUpdateFlaggedTools(tools, (line) => logger.info("update.tool.line", { line }), timeoutMs).catch(
       (err: unknown) => logger.warn("update.tool.error", { error: String(err) }),

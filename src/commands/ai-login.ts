@@ -12,6 +12,7 @@ import { basename } from "node:path";
 import { readProfileConfig } from "../config/profile";
 import { isUsableCredential, profileEnvVar, resolveHomePath } from "../utils/ai-cli";
 import type { AiCredential } from "../utils/ai-cli";
+import { initI18n, t } from "../i18n";
 
 /** Spawn one provider CLI interactively with its config-dir env var set; resolve on exit. */
 function runProviderLogin(cmd: string, envVar: string, dir: string): Promise<number> {
@@ -21,7 +22,7 @@ function runProviderLogin(cmd: string, envVar: string, dir: string): Promise<num
       env: { ...process.env, [envVar]: dir },
     });
     child.on("error", (err) => {
-      console.error(`  ✖ Could not launch \`${cmd}\` — is it installed? (${(err as Error).message})`);
+      console.error(t("aiLogin.launchFailed", { cmd, message: (err as Error).message }));
       resolve(1);
     });
     child.on("exit", (code) => resolve(code ?? 0));
@@ -38,11 +39,11 @@ export async function runAiLogin(
   aiFilter: string | null,
 ): Promise<void> {
   const config = readProfileConfig(profileDir);
+  // Localize the cli's operator-facing messages per the worker config (ADR-0276).
+  initI18n(config.locale);
   const credentials: AiCredential[] = (config.aiProfiles ?? []).filter(isUsableCredential);
   if (credentials.length === 0) {
-    console.log(
-      `Profile "${profileName}" has no usable AI profiles configured — add one in the web Worker configs or config.json.`,
-    );
+    console.log(t("aiLogin.noProfiles", { profile: profileName }));
     return;
   }
   // Narrow to a single credential when `--ai` is given (match the profile dir name or a 1-based index).
@@ -52,24 +53,26 @@ export async function runAiLogin(
       )
     : credentials;
   if (selected.length === 0) {
-    console.log(`No AI profile matches --ai "${aiFilter}". Available: ${credentials.map((c) => c.profile).join(", ")}`);
+    console.log(t("aiLogin.noMatch", { filter: aiFilter ?? "", list: credentials.map((c) => c.profile).join(", ") }));
     return;
   }
 
   for (const cred of selected) {
     const envVar = profileEnvVar(cred.provider);
     if (!envVar) {
-      console.log(`- Skipping ${cred.provider} "${cred.profile}" — no known credential dir for this provider.`);
+      console.log(t("aiLogin.skipping", { provider: cred.provider, profile: cred.profile }));
       continue;
     }
     const dir = resolveHomePath(cred.profile);
     mkdirSync(dir, { recursive: true });
-    console.log(`\n▶ Logging in ${cred.provider} · ${cred.profile} (${envVar}=${dir})`);
-    console.log(`  Complete the provider's own sign-in (claude: type \`/login\`; codex: follow its prompt), then exit.`);
+    console.log(t("aiLogin.loggingIn", { provider: cred.provider, profile: cred.profile, envVar, dir }));
+    console.log(t("aiLogin.completeSignIn"));
     const code = await runProviderLogin(cred.provider, envVar, dir);
-    console.log(code === 0 ? `  ✔ ${cred.provider} "${cred.profile}" session updated.` : `  ⚠ ${cred.provider} exited with code ${code}.`);
+    console.log(
+      code === 0
+        ? t("aiLogin.sessionUpdated", { provider: cred.provider, profile: cred.profile })
+        : t("aiLogin.exited", { provider: cred.provider, code }),
+    );
   }
-  console.log(
-    `\nTip: for the credentials to survive \`docker rm\`/recreate, keep each profile path under the mounted volume (e.g. \`~/.4pm/ai/<name>\`) — ADR-0199.`,
-  );
+  console.log(t("aiLogin.tip"));
 }

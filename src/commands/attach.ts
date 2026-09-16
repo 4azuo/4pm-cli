@@ -12,14 +12,18 @@ import { connectControl } from "../core/control-client";
 import { CONTROL_SOCKET_FILE } from "../core/control-protocol";
 import { runTui } from "../ui/run-tui";
 import type { SessionInfo } from "../ui/session-info";
+import { readProfileConfig } from "../config/profile";
+import { initI18n, t } from "../i18n";
 
 /**
  * Attach the TUI to the daemon serving `profileName`. Requires a TTY (the TUI); a non-running
  * daemon (no/closed socket) exits with a hint to `4pm start` it first.
  */
 export async function runAttach(profileDir: string, profileName: string): Promise<void> {
+  // Localize the cli's operator-facing messages per the worker config (ADR-0276).
+  initI18n(readProfileConfig(profileDir).locale);
   if (!process.stdout.isTTY) {
-    console.error("`4pm attach` needs an interactive terminal (TTY).");
+    console.error(t("attach.needsTty"));
     process.exitCode = 1;
     return;
   }
@@ -30,9 +34,7 @@ export async function runAttach(profileDir: string, profileName: string): Promis
   try {
     conn = await connectControl(socketPath, bus);
   } catch {
-    console.error(
-      `No running daemon for profile "${profileName}". Start it first: 4pm start --profile ${profileName}`,
-    );
+    console.error(t("attach.noDaemon", { profile: profileName }));
     process.exitCode = 1;
     return;
   }
@@ -53,7 +55,7 @@ export async function runAttach(profileDir: string, profileName: string): Promis
         : Promise.resolve(null),
   };
 
-  bus.log(`Attached to profile "${profileName}" — the worker runs headless; input is forwarded.`);
+  bus.log(t("attach.attached", { profile: profileName }));
   try {
     await runTui(bus, info);
   } finally {

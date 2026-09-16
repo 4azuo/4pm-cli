@@ -11,6 +11,7 @@ import {
   type ControlServerFrame,
   type ControlSessionInfo,
 } from "./control-protocol";
+import { t } from "../i18n";
 
 /** A live attach connection. */
 export interface ControlConnection {
@@ -61,7 +62,7 @@ export function connectControl(socketPath: string, bus: SessionBus): Promise<Con
     socket.on("close", () => {
       if (ready) {
         bus.setStatus("stopped");
-        bus.log("Daemon disconnected — the worker process closed the control channel.", "warn");
+        bus.log(t("session.daemonDisconnected"), "warn");
       }
     });
 

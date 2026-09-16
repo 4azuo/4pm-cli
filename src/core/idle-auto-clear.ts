@@ -7,6 +7,7 @@
  * (and not mid-response), it wipes the session transcript so an idle session's buffer stays bounded.
  */
 import type { SessionBus } from "./session-bus";
+import { t } from "../i18n";
 
 /**
  * Start the headless idle auto-clear loop; returns a stop function. `idleMinutes` is a **getter**
@@ -27,7 +28,7 @@ export function startIdleAutoClear(bus: SessionBus, idleMinutes: () => number): 
     if (bus.busy !== null || bus.snapshot().length === 0) return;
     if (Date.now() - lastActivity < idleMs) return;
     bus.clear();
-    bus.log(`Transcript auto-cleared after ${Math.round(idleMs / 60_000)} min idle.`);
+    bus.log(t("session.autoCleared", { min: Math.round(idleMs / 60_000) }));
     lastActivity = Date.now();
   }, 60_000);
   // Don't hold the event loop open just for this timer.

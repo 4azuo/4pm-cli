@@ -4,6 +4,7 @@
 export * from "./billing";
 export * from "./error-codes";
 export * from "./machine";
+export * from "./preferences";
 export * from "./project-template";
 export * from "./project";
 export * from "./quota";

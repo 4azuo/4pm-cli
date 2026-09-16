@@ -6,6 +6,7 @@
  */
 import React, { useState } from "react";
 import { Box, render, Text, useApp, useInput } from "ink";
+import { t } from "../i18n";
 
 /** One selectable item. */
 export interface PickItem {
@@ -47,7 +48,7 @@ function Picker({
           {item.label}
         </Text>
       ))}
-      <Text dimColor>↑↓ move · Enter select · Esc cancel</Text>
+      <Text dimColor>{t("picker.hint")}</Text>
     </Box>
   );
 }

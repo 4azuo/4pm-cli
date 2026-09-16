@@ -21,6 +21,7 @@ import {
 } from "./config/profile";
 import { selectFromList } from "./ui/select-profile";
 import { logger } from "./common/logger/logger";
+import { initI18n, t } from "./i18n";
 
 // Process-wide safety net (ADR-0075): the WS lifecycle runs detached (`void run()` under
 // the TUI), so a stray async error must NEVER kill the cli — it has to keep reconnecting
@@ -55,19 +56,17 @@ async function pickLinkedProfile(
   if (explicit) return explicit;
   const linked = listProfiles().filter((p) => p.linked);
   if (linked.length === 0) {
-    console.error("No linked profile — run `4pm link` first.");
+    console.error(t("error.noLinkedProfile"));
     return null;
   }
   if (linked.length === 1) return linked[0]!.name;
   if (!process.stdout.isTTY) {
-    console.error(
-      `Multiple profiles — pass --profile <name> (or run \`4pm ${action}\` in a terminal to pick).`,
-    );
+    console.error(t("error.multipleProfiles", { action }));
     return null;
   }
   return selectFromList(
     linked.map((p) => ({ label: p.name, value: p.name })),
-    `Select a profile to ${action}:`,
+    t("picker.selectTitle", { action }),
   );
 }
 
@@ -75,6 +74,9 @@ async function pickLinkedProfile(
  * Parse args and dispatch to the matching command.
  */
 async function main(): Promise<void> {
+  // Localize pre-command text (profile picker / errors) from the environment; each command
+  // re-inits from its own config.json `locale` once resolved (ADR-0276).
+  initI18n();
   const [explicitProfile, args] = resolveProfileArg(process.argv.slice(2));
   const [command, ...rest] = args;
   // `link` resolves its profile after pairing (default = userId); every other command

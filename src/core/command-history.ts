@@ -7,6 +7,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { t } from "../i18n";
 
 /** One command history record. */
 export interface CommandHistoryEntry {
@@ -117,7 +118,7 @@ async function uploadHistory(cfg: StorageConfig): Promise<void> {
       }),
     );
   } catch (err) {
-    console.warn(`Command history upload failed: ${err instanceof Error ? err.message : String(err)}`);
+    console.warn(t("history.uploadFailed", { error: err instanceof Error ? err.message : String(err) }));
   }
 }
 
@@ -137,7 +138,7 @@ export function initCommandHistory(
   }
   const cfg = storageConfig(profileName);
   if (!cfg) {
-    console.log("Command history: no storage provider (HISTORY_STORAGE) — stored locally only.");
+    console.log(t("history.noStorage"));
     return;
   }
   const intervalMs = Math.max(1, uploadMinutes) * 60_000;

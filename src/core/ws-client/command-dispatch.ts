@@ -59,6 +59,7 @@ import { setCommitAuthor } from "../git-commit-identity";
 import { logger } from "../../common/logger/logger";
 import { CLI_VERSION } from "../../version";
 import type { WsHandlerCtx } from "./context";
+import { t } from "../../i18n";
 
 /** Preamble prepended before the shared AI memory when seeding a fresh native session (ADR-0245). */
 const MEMORY_SEED_HEADER =
@@ -139,7 +140,7 @@ export function handleCommandChannels(
       ctx.bus.push({
         source: "server",
         kind: "exit",
-        text: code === 0 ? "✓ done" : `✗ failed (exit ${code})`,
+        text: code === 0 ? t("run.done") : t("run.failed", { code }),
         level: code === 0 ? "info" : "error",
         durationMs: Date.now() - cmdStartMs,
       });
@@ -160,7 +161,7 @@ export async function runLocalCommand(ctx: WsHandlerCtx, input: string): Promise
   const prompt = input.trim();
   if (!prompt) return;
   if (ctx.isStopped) {
-    ctx.bus.log("Session stopped — restart 4pm to run prompts.", "warn");
+    ctx.bus.log(t("session.stoppedPrompts"), "warn");
     return;
   }
   // Correct order (ADR-0064): make the session + physic project ready BEFORE spawning
@@ -168,11 +169,11 @@ export async function runLocalCommand(ctx: WsHandlerCtx, input: string): Promise
   // connected, project changes already arrive live via PHYSIC_SYNC/PHYSIC_DELETE, so
   // `physicRoot` is current without a reconnect.
   if (!ctx.isReady) {
-    ctx.bus.log("Not connected — reconnecting before running the prompt…");
+    ctx.bus.log(t("session.reconnectingPrompt"));
     ctx.reconnectNow();
     const ready = await ctx.awaitConnected(10_000);
     if (!ready) {
-      ctx.bus.log("Still not connected — run /reconnect then try again.", "warn");
+      ctx.bus.log(t("session.stillNotConnected"), "warn");
       return;
     }
   }
@@ -251,7 +252,7 @@ export async function runAiPrompt(
     // runs (ADR-0097); push uses the worker's logged-in gh/glab account. Best-effort.
     await setCommitAuthor(cwd, ctx.machineUsername);
   } else {
-    ctx.bus.log("No project attached — running in the current directory.", "warn");
+    ctx.bus.log(t("session.noProjectDir"), "warn");
   }
   // `||` (not `??`): a blank aiCli ("mixed"/none — ADR-0182) falls back to claude. In unified
   // mode `cmd` is only used by the legacy-only branches below, so this is just a safe default.

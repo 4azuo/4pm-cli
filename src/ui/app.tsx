@@ -17,6 +17,7 @@ import { flattenEntries, TranscriptLine } from "./transcript";
 import { CommandInput, Hint } from "./command-input";
 import { Spinner } from "./spinner";
 import { runSlashCommand } from "./slash-commands";
+import { t } from "../i18n";
 
 /** Rows the fixed chrome takes (header + 3 rules + processing + suggestion + input + hint). */
 const CHROME_ROWS = 12;
@@ -177,7 +178,7 @@ export function App({
       bus.push({
         source: "system",
         kind: "log",
-        text: `Transcript auto-cleared after ${Math.round(idleMs / 60_000)} min idle.`,
+        text: t("session.autoCleared", { min: Math.round(idleMs / 60_000) }),
       });
       lastActivityRef.current = Date.now();
     }, 60_000);
@@ -233,7 +234,7 @@ export function App({
       setPendingConfirm(null);
       bus.push({ source: "local", kind: "cmd", text: trimmed });
       if (/^y(es)?$/i.test(trimmed)) onYes();
-      else bus.push({ source: "local", kind: "log", text: "cancelled." });
+      else bus.push({ source: "local", kind: "log", text: t("tui.cancelled") });
       return;
     }
     setHistory((prev) => appendInputHistory(info.profileDir, input, prev));

@@ -24,6 +24,7 @@ import {
   resolveIdleAutoClearMinutes,
 } from "../config/profile";
 import { logger, type LogLevel } from "../common/logger/logger";
+import { initI18n, t } from "../i18n";
 import { SessionBus } from "../core/session-bus";
 import { startControlServer } from "../core/control-server";
 import { startIdleAutoClear } from "../core/idle-auto-clear";
@@ -54,9 +55,7 @@ export async function runStart(
 ): Promise<void> {
   const credential = readCredential(profileDir, profileName);
   if (!credential) {
-    console.error(
-      `Profile "${profileName}" is not linked — run \`4pm link --server <URL>\` first.`,
-    );
+    console.error(t("start.notLinked", { profile: profileName }));
     process.exitCode = 1;
     return;
   }
@@ -81,21 +80,22 @@ export async function runStart(
 
   // Auto-update before connecting (ADR-0015) — keeps profile/.cre intact
   const config = readProfileConfig(profileDir);
+  // Localize the cli's operator-facing messages per the worker config (ADR-0276);
+  // absent `locale` falls back to FOURPM_LOCALE/LANG, then English.
+  initI18n(config.locale);
   const autoUpdate =
     config.autoUpdate !== false && process.env.FOURPM_NO_UPDATE !== "1";
   const result = await checkAndUpdate(credential.serverUrl, autoUpdate);
   if (result.action === "blocked") {
     logger.error("update.blocked", { minSupported: result.minSupported });
-    console.error(
-      `CLI is older than minSupported (${result.minSupported}) and the update failed — cannot connect.`,
-    );
+    console.error(t("start.updateBlocked", { minSupported: result.minSupported }));
     process.exitCode = 1;
     return;
   }
   if (result.action === "updated") {
     // Re-exec the new binary with the same original args (keeps the profile)
     logger.info("update.updated", { version: result.version });
-    console.log("Restarting with the new version…");
+    console.log(t("start.restarting"));
     const child = spawn(process.execPath, process.argv.slice(1), {
       stdio: "inherit",
       env: { ...process.env, FOURPM_NO_UPDATE: "1" },
@@ -109,8 +109,7 @@ export async function runStart(
   // auto-update re-exec branch so the restarted child takes the lock, not the parent.
   if (!acquireInstanceLock(profileDir)) {
     console.error(
-      `Profile "${profileName}" is already running (pid ${lockHolder(profileDir)}). ` +
-        "Only one `4pm start` per profile is allowed.",
+      t("start.alreadyRunning", { profile: profileName, pid: lockHolder(profileDir) ?? "" }),
     );
     process.exitCode = 1;
     return;
@@ -162,7 +161,7 @@ export async function runStart(
           const e = err instanceof Error ? err : new Error(String(err));
           logger.error("ws.run.crash", { message: e.message, stack: e.stack });
           if (client.isStopped) return;
-          bus.log(`Recovered from an internal error — reconnecting: ${e.message}`, "error");
+          bus.log(t("start.recovered", { message: e.message }), "error");
           await new Promise((resolve) => setTimeout(resolve, 1_000));
         }
       }
@@ -187,7 +186,7 @@ export async function runStart(
       const labels = profileLabels(config);
       bus.setActiveProfile(workingDir ? profileDisplayLabel(workingDir) : (labels[0] ?? null));
       const tui = runTui(bus, info);
-      bus.log(`Connecting to ${credential.serverUrl} (profile: ${profileName})…`);
+      bus.log(t("start.connecting", { server: credential.serverUrl, profile: profileName }));
       // The WS loop runs concurrently, feeding the bus; the TUI resolves on quit.
       void runResilient();
       await tui;
@@ -199,7 +198,7 @@ export async function runStart(
       stopIdleClear = startIdleAutoClear(bus, () =>
         resolveIdleAutoClearMinutes(readProfileConfig(profileDir)),
       );
-      bus.log(`Connecting to ${credential.serverUrl} (profile: ${profileName})…`);
+      bus.log(t("start.connecting", { server: credential.serverUrl, profile: profileName }));
       await runResilient();
     }
   } finally {

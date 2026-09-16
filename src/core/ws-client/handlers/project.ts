@@ -22,6 +22,7 @@ import { addProject, scaffoldProject } from "../../scaffold";
 import { writeProfileConfig } from "../../../config/profile";
 import { logger } from "../../../common/logger/logger";
 import type { WsHandlerCtx } from "../context";
+import { t } from "../../../i18n";
 
 /** Route the project-lifecycle channels; returns true when the message was handled. */
 export function handleProjectChannels(
@@ -44,7 +45,7 @@ export function handleProjectChannels(
       mkdirSync(join(ctx.profileDir, sync.newName), { recursive: true });
       ctx.physicRoot = ctx.physicFolderPath(sync.newName); // browse root follows the rename
       ctx.bus.setProject(sync.newName); // header updates live — now serving this project
-      ctx.bus.log(`Physic project folder synced → ${sync.newName}`);
+      ctx.bus.log(t("project.folderSynced", { name: sync.newName }));
       return true;
     }
     case WsChannels.PHYSIC_DELETE: {
@@ -57,7 +58,7 @@ export function handleProjectChannels(
         // Uninstall the physic project's cron first (ADR-0152) — no orphan tick after delete.
         if (delRoot) void uninstallCron(delRoot).catch(() => undefined);
         rmSync(join(ctx.profileDir, del.name), { recursive: true, force: true });
-        ctx.bus.log(`Physic project folder deleted (project removed) → ${del.name}`);
+        ctx.bus.log(t("project.folderDeleted", { name: del.name }));
       }
       // Scrub the ssh deploy key whenever the worker leaves a project — the key granted
       // access to the OLD project's repos, so a rented worker switching projects (or going

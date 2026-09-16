@@ -12,6 +12,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { t } from "../i18n";
 import { CLI_SIGNING_PUBLIC_KEY } from "../config/signing";
 import { CLI_VERSION } from "../version";
 import { fetchCliVersion } from "../services/api";
@@ -152,7 +153,7 @@ export async function updateToLatest(serverUrl: string): Promise<ManualUpdateRes
   if (compareSemver(CLI_VERSION, meta.latest) >= 0) {
     return { action: "already-latest", version: CLI_VERSION };
   }
-  console.log(`Updating ${CLI_VERSION} → ${meta.latest}…`);
+  console.log(t("update.updating", { from: CLI_VERSION, to: meta.latest }));
   try {
     if (installedViaNpm()) {
       updateViaNpm(meta.latest);
@@ -199,7 +200,7 @@ export async function checkAndUpdate(
     meta = await fetchCliVersion(serverUrl);
   } catch (err) {
     // Server did not return a version ⇒ skip (do not block startup)
-    console.warn(`Could not check cli version: ${err}`);
+    console.warn(t("update.checkVersionFailed", { error: String(err) }));
     return { action: "none" };
   }
 
@@ -207,14 +208,16 @@ export async function checkAndUpdate(
   const outdated = compareSemver(CLI_VERSION, meta.latest) < 0;
   if (!outdated) return { action: "none" };
   if (!mandatory && !autoUpdate) {
-    console.warn(
-      `A new version ${meta.latest} is available (running ${CLI_VERSION}) — autoUpdate is off.`,
-    );
+    console.warn(t("update.newVersionAutoUpdateOff", { latest: meta.latest, current: CLI_VERSION }));
     return { action: "none" };
   }
 
   console.log(
-    `${mandatory ? "Mandatory" : "Automatic"} cli update ${CLI_VERSION} → ${meta.latest}…`,
+    t("update.applying", {
+      kind: mandatory ? t("update.kindMandatory") : t("update.kindAutomatic"),
+      from: CLI_VERSION,
+      to: meta.latest,
+    }),
   );
   try {
     if (installedViaNpm()) {
@@ -228,10 +231,10 @@ export async function checkAndUpdate(
     }
   } catch (err) {
     if (mandatory) {
-      console.error(`Update failed: ${err}`);
+      console.error(t("update.failed", { error: String(err) }));
       return { action: "blocked", minSupported: meta.minSupported };
     }
-    console.warn(`Update failed (skipping — not mandatory): ${err}`);
+    console.warn(t("update.failedSkipping", { error: String(err) }));
     return { action: "none" };
   }
 
@@ -241,15 +244,12 @@ export async function checkAndUpdate(
   // claim "updated" when the installed version actually advanced.
   const installed = readInstalledVersion();
   if (compareSemver(installed, meta.latest) < 0) {
-    const msg =
-      `Update reported success but the installed version is still ${installed} ` +
-      `(expected ${meta.latest}) — it did not apply to the running install ` +
-      `(check the global npm prefix vs the running binary).`;
+    const msg = t("update.notApplied", { installed, expected: meta.latest });
     if (mandatory) {
       console.error(msg);
       return { action: "blocked", minSupported: meta.minSupported };
     }
-    console.warn(`${msg} Skipping restart.`);
+    console.warn(`${msg} ${t("update.skippingRestart")}`);
     return { action: "none" };
   }
   return { action: "updated", version: meta.latest };

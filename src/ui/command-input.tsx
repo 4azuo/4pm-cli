@@ -9,10 +9,11 @@ import React, { useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import type { SessionStatus } from "../core/session-bus";
 import { SLASH_COMMANDS } from "./slash-commands";
+import { t, type CliMessageKey } from "../i18n";
 
 /** The bottom hint line — shortcuts only (connection status lives in the header). */
 export function Hint(): React.ReactElement {
-  return <Text dimColor>{"  /help · Tab complete · ↑↓ history · PgUp/PgDn scroll · Ctrl+C quit"}</Text>;
+  return <Text dimColor>{t("tui.inputHint")}</Text>;
 }
 
 /** The command write field (2 rows: a suggestion line + the input line). */
@@ -114,7 +115,7 @@ export function CommandInput({
                 /{c.name}{" "}
               </Text>
             ))}
-            {selected ? <Text dimColor>  — {selected.description} (Tab)</Text> : null}
+            {selected ? <Text dimColor>  — {t(selected.description as CliMessageKey)} (Tab)</Text> : null}
           </Text>
         ) : (
           <Text> </Text>

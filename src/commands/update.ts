@@ -5,6 +5,8 @@
  */
 import { readCredential } from "../core/credential";
 import { updateToLatest } from "../core/update";
+import { readProfileConfig } from "../config/profile";
+import { initI18n, t } from "../i18n";
 
 /**
  * True when an error is a connection-level fetch failure (server unreachable) rather
@@ -23,6 +25,8 @@ export async function runUpdate(
   profileName: string,
   serverUrlFlag?: string,
 ): Promise<void> {
+  // Localize the cli's operator-facing messages per the worker config (ADR-0276).
+  initI18n(readProfileConfig(profileDir).locale);
   // `||` not `??`: an empty flag / stored value / FOURPM_SERVER="" means "not set", and
   // `??` would keep the empty string and dial nowhere.
   const serverUrl = (
@@ -40,12 +44,9 @@ export async function runUpdate(
     // its own. Point at the URL we dialed and the likely cause (server down / wrong URL)
     // rather than echoing the raw error.
     if (isConnectionError(err)) {
-      console.error(
-        `Could not reach the server at ${serverUrl} — is it running? ` +
-          `Set the server with \`--server <url>\` or the FOURPM_SERVER env var.`,
-      );
+      console.error(t("update.cannotReach", { url: serverUrl }));
     } else {
-      console.error(`Could not check for updates: ${err}`);
+      console.error(t("update.checkFailed", { error: String(err) }));
     }
     process.exitCode = 1;
     return;
@@ -53,19 +54,16 @@ export async function runUpdate(
 
   switch (result.action) {
     case "dev-build":
-      console.log(
-        `Running a local dev build (${result.version}) — update it by rebuilding the repo ` +
-          `(\`pnpm --filter @4pm/cli build\`), not \`4pm update\`.`,
-      );
+      console.log(t("update.devBuild", { version: result.version }));
       break;
     case "already-latest":
-      console.log(`Already up to date (${result.version}).`);
+      console.log(t("update.alreadyLatest", { version: result.version }));
       break;
     case "updated":
-      console.log(`✔ Updated to ${result.version}. Run \`4pm start\` to reconnect.`);
+      console.log(t("update.updated", { version: result.version }));
       break;
     case "failed":
-      console.error(`Update failed: ${result.error}`);
+      console.error(t("update.failed", { error: result.error ?? "" }));
       process.exitCode = 1;
       break;
   }

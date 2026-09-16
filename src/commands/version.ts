@@ -7,6 +7,8 @@ import { readCredential } from "../core/credential";
 import { compareSemver } from "../core/update";
 import { fetchCliVersion } from "../services/api";
 import { CLI_VERSION } from "../version";
+import { readProfileConfig } from "../config/profile";
+import { initI18n, t } from "../i18n";
 
 /**
  * Print the local version and, if the server is reachable, latest/minSupported.
@@ -16,6 +18,8 @@ export async function runVersion(
   profileName: string,
   serverUrlFlag?: string,
 ): Promise<void> {
+  // Localize per the worker config (ADR-0276).
+  initI18n(readProfileConfig(profileDir).locale);
   console.log(`4pm cli ${CLI_VERSION}`);
 
   const serverUrl =
@@ -27,13 +31,11 @@ export async function runVersion(
   try {
     const meta = await fetchCliVersion(serverUrl.replace(/\/$/, ""));
     const outdated = compareSemver(CLI_VERSION, meta.latest) < 0;
-    const hint = outdated
-      ? "  (update available — run `4pm update`)"
-      : "  (up to date)";
-    console.log(`latest:  ${meta.latest}${hint}`);
-    console.log(`minSupported: ${meta.minSupported}`);
+    const hint = outdated ? t("version.updateAvailable") : t("version.upToDate");
+    console.log(t("version.latest", { latest: meta.latest, hint }));
+    console.log(t("version.minSupported", { min: meta.minSupported }));
   } catch (err) {
     // Offline / server down ⇒ the local version above is still useful.
-    console.warn(`Could not reach the server for the latest version: ${err}`);
+    console.warn(t("version.fetchFailed", { error: String(err) }));
   }
 }
