@@ -33,6 +33,8 @@ export interface ProjectResponse {
   messengerRetentionDays: number;
   /** Typed token settings (ADR-0081) — read via `readProjectSettings`. */
   settings: ProjectSettings;
+  /** Nested display group path (ADR-0277) — root→leaf labels; `[]` = ungrouped. */
+  groupPath: string[];
   /** Whether the current user has pinned this project (ADR-0027). */
   pinned: boolean;
   /** The project manager (project_managers) — one PM per project (null if none). */
@@ -567,6 +569,9 @@ export const updateProjectRequestSchema = z.object({
   ipAllowlist: ipAllowlistSchema.optional(),
   // Messenger retention in days (0 = keep forever) — manager only (ADR-0078).
   messengerRetentionDays: z.number().int().min(0).max(3650).optional(),
+  // Nested display group path (ADR-0277) — root→leaf free-text labels (each ≤60 chars,
+  // ≤6 levels); an empty array clears the group. Segments are trimmed server-side.
+  groupPath: z.array(z.string().trim().min(1).max(60)).max(6).optional(),
   // Project settings (ADR-0081) — key-level shallow-merge; `tokens` clamped on read.
   settings: z.record(z.unknown()).optional(),
   // Identity ↔ spec sync (ADR-0148): the Settings tab edits the spec basic group
