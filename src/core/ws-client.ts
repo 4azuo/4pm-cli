@@ -20,7 +20,9 @@ import {
   type ConsoleSyncEvent,
   type TranscriptEntry as DtoTranscriptEntry,
   type MachineMetricsPayload,
+  type WsTokenRepo,
 } from "@4pm/dto";
+import { ensureReposCloned } from "./scaffold";
 import { createWorkerMetricsSampler } from "./worker-metrics";
 import {
   createEcdhSession,
@@ -195,6 +197,9 @@ export class WsClient {
   /** The physic project folder root this cli serves (null = no project) — fs.list is
    *  scoped to it so the web FsPicker can only browse inward, never out. */
   private physicRoot: string | null = null;
+  /** Declared repos of the served project (ADR-0289), from each ws_token — cloned into the physic
+   *  root on connect (and after a PHYSIC_SYNC creates the folder) when any is missing its `.git`. */
+  private servingRepos: WsTokenRepo[] = [];
   /** This machine-user's username — the git commit author for this project (ADR-0097).
    *  Push uses the account already logged in with gh/glab on the worker. */
   private machineUsername = "";
@@ -349,7 +354,23 @@ export class WsClient {
       setMetricsWatching: (on) => self.setMetricsWatching(on),
       ensurePhysicFolderPath: (folder) => self.ensurePhysicFolderPath(folder),
       physicFolderPath: (projectName) => self.physicFolderPath(projectName),
+      cloneServingRepos: () => self.ensureServingReposCloned(),
+      updateCliNow: () => self.updateScheduler.updateNow(),
     };
+  }
+
+  /**
+   * Clone any declared repo missing from the served physic root (ADR-0289) — idempotent (skips a
+   * repo that already has `.git`). Best-effort: a clone failure never disrupts the session (the web
+   * still surfaces "not provisioned"). No-op when idle (no physic root) or no repos declared.
+   */
+  private async ensureServingReposCloned(): Promise<void> {
+    if (!this.physicRoot || this.servingRepos.length === 0) return;
+    try {
+      await ensureReposCloned(this.physicRoot, this.servingRepos, (_step, message) => this.bus.log(message));
+    } catch (err) {
+      logger.warn("repos.clone.failed", { error: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   /**
@@ -581,6 +602,11 @@ export class WsClient {
         // The machine username is the git commit author for this project (ADR-0097); push
         // uses the account already logged in with gh/glab on the worker.
         this.machineUsername = token.machineUsername ?? "";
+        // Declared repos of the served project (ADR-0289): remember them, then clone any missing into
+        // the physic root now (the folder already exists on a reconnect); a fresh attach re-runs this
+        // from the PHYSIC_SYNC handler once the folder is created.
+        this.servingRepos = token.repos ?? [];
+        void this.ensureServingReposCloned();
 
         // Heal the link scope from the server (older `.cre` stored "unknown" — ADR-0057):
         // persist it + update the header so orchestrator hides "serving", etc.

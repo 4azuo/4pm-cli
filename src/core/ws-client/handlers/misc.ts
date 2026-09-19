@@ -30,6 +30,11 @@ export function handleMiscChannels(
   payload: Record<string, unknown>,
 ): boolean {
   switch (message.channel) {
+    case WsChannels.CLI_UPDATE: {
+      // server → cli (ADR-0289): update to latest now (idle-aware self-update + re-exec). No reply.
+      ctx.updateCliNow();
+      return true;
+    }
     case WsChannels.LOG_READ: {
       // Request/reply (machine-0019): tail this cli's own JSONL logs (ADR-0072).
       const limit = Math.min(Math.max((payload as LogReadRequest).limit ?? 200, 1), 2000);

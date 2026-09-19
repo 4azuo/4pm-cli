@@ -100,6 +100,20 @@ async function provisionRepos(
 }
 
 /**
+ * Clone any of the declared repos missing from an already-known physic root (ADR-0289) — the
+ * clone-on-connect path. Idempotent: `provisionRepos` skips a repo whose target already has `.git`,
+ * so this only fills in what's absent (the primary into the root, sub-repos into their subfolders).
+ */
+export async function ensureReposCloned(
+  physicRoot: string,
+  repos: { primary?: boolean; url?: string; subdir?: string }[],
+  emit?: (step: string, message: string) => void,
+): Promise<void> {
+  if (repos.length === 0) return;
+  await provisionRepos(physicRoot, repos as RepoDecl[], emit ?? (() => undefined), { clonePrimary: true });
+}
+
+/**
  * Locate the sample-project template (override via SCAFFOLD_SAMPLE_DIR). Robust to both
  * layouts: the dev source tree (this file at `src/core/` ⇒ template two levels up) and the
  * tsup bundle (`dist/index.js` ⇒ template copied alongside as `dist/project-sample`, see

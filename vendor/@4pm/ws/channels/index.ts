@@ -109,6 +109,10 @@ export const WsChannels = {
   // serving cli so a change (e.g. aiRunTimeoutSec) applies on the next run, not only after a
   // reconnect. `ws_token` seeds these on connect; this channel only carries updates.
   PROJECT_TOKENS: "project.tokens",
+  // server → cli (ADR-0289): update the cli to the latest version now (idle-aware self-update +
+  // re-exec). Sent by the manual operator "Update" action and the update-on-connect hook when the
+  // connecting cli is outdated. No payload; honours the machine's local autoUpdate opt-out.
+  CLI_UPDATE: "cli.update",
   // command lifecycle
   COMMAND_ANNOUNCE: "command.announce",
   // console transcript sync (ADR-0150): the cli streams its authoritative SessionBus

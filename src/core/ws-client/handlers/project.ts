@@ -57,6 +57,8 @@ export function handleProjectChannels(
       ctx.physicRoot = ctx.physicFolderPath(sync.newName); // browse root follows the rename
       ctx.bus.setProject(sync.newName); // header updates live — now serving this project
       ctx.bus.log(t("project.folderSynced", { name: sync.newName }));
+      // A fresh/renamed folder may be empty — clone any missing declared repo into it (ADR-0289).
+      void ctx.cloneServingRepos().catch(() => undefined);
       return true;
     }
     case WsChannels.PHYSIC_DELETE: {

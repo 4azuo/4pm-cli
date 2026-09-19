@@ -177,6 +177,23 @@ export interface WsTokenResponse {
    * gateway), so both gateways run in parallel during the migration.
    */
   wsUrl?: string;
+  /**
+   * Declared repos of the project this link serves (ADR-0289) — the CLI clones any of these whose
+   * `.git` is missing from the physic folder on connect (idempotent; a present repo is skipped), so
+   * a reconnect always sets up what's missing regardless of the server-side physic status. Empty for
+   * orchestrator/idle links or a project with no declared repos.
+   */
+  repos: WsTokenRepo[];
+}
+
+/** One declared repo pushed to the cli via ws_token for clone-on-connect (ADR-0289). */
+export interface WsTokenRepo {
+  /** The primary repo clones into the folder root; a sub-repo into its `subdir`. */
+  primary: boolean;
+  /** Clone URL (https/ssh); absent ⇒ nothing to clone (an init-only repo). */
+  url?: string;
+  /** Sub-repo subfolder under the physic root (empty/undefined for the primary). */
+  subdir?: string;
 }
 
 /** Outbound-review policy delivered to a cli via ws_token (ADR-0082). */

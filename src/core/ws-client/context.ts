@@ -83,4 +83,8 @@ export interface WsHandlerCtx {
   ensurePhysicFolderPath(folder: string): void;
   /** Absolute path of the physic project folder (`<profile>/<name>`, ADR-0064); null for empty. */
   physicFolderPath(projectName: string): string | null;
+  /** Clone any declared repo of the served project missing from the physic root (ADR-0289). */
+  cloneServingRepos(): Promise<void>;
+  /** Self-update the cli to latest now (idle-aware + re-exec), from a server push (ADR-0289). */
+  updateCliNow(): void;
 }

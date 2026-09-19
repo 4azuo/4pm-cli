@@ -32,6 +32,9 @@ export class UpdateScheduler {
   private lastDoneDateKey: string | null = null;
   /** Date key marked due but deferred because the cli was busy (stays set past the hour). */
   private pendingDateKey: string | null = null;
+  /** A push/connect-triggered update requested now (ADR-0289) — runs when idle, independent of the
+   *  daily policy; cleared once it runs. */
+  private forcedPending = false;
   /** Guards against a second update while one is in flight. */
   private updating = false;
 
@@ -50,6 +53,26 @@ export class UpdateScheduler {
       this.timer = setInterval(() => void this.tick(), TICK_MS);
       this.timer.unref?.(); // don't keep the process alive just for the scheduler
     }
+  }
+
+  /**
+   * Request an update to latest NOW (ADR-0289) — the server's `cli.update` push or the
+   * update-on-connect hook. Idle-aware like the daily tick (defers while a command runs) and
+   * honours the local `autoUpdate:false` opt-out, but is independent of the daily org policy. Also
+   * ensures the tick timer is running so the request is served even before the first ws_token.
+   */
+  updateNow(): void {
+    if (this.optedOutLocally()) {
+      logger.info("update.push.optedOut");
+      return;
+    }
+    if (CLI_VERSION.startsWith("0.0.0")) return; // dev build never self-updates (ADR-0052)
+    this.forcedPending = true;
+    if (!this.timer) {
+      this.timer = setInterval(() => void this.tick(), TICK_MS);
+      this.timer.unref?.();
+    }
+    void this.tick();
   }
 
   /** Stop the scheduler when the session ends (logout / replaced / stopped). */
@@ -87,13 +110,24 @@ export class UpdateScheduler {
     }
   }
 
-  /** One evaluation: mark the update due at the target hour, then update once idle. */
+  /** One evaluation: run a forced (push/connect) update if pending, else the daily-scheduled one. */
   private async tick(): Promise<void> {
-    const p = this.policy;
-    if (!p || !p.autoUpdateDaily || this.updating) return;
+    if (this.updating) return;
     // Dev build (unstamped 0.0.0 — ADR-0052) never self-updates.
     if (CLI_VERSION.startsWith("0.0.0")) return;
     if (this.optedOutLocally()) return;
+
+    // A pushed / connect-triggered update (ADR-0289) runs as soon as the cli is idle, independent of
+    // the daily policy — so a manual "Update" or an outdated reconnect updates promptly.
+    if (this.forcedPending) {
+      if (this.bus.busy !== null) return; // defer until the running command finishes
+      this.forcedPending = false;
+      await this.runUpdate();
+      return;
+    }
+
+    const p = this.policy;
+    if (!p || !p.autoUpdateDaily) return;
 
     const clock = this.orgClock();
     if (!clock) return;
