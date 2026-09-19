@@ -5,7 +5,7 @@
  * ADR-0256), and scaffold (PROJECT_CREATE, ADR-0080) or register an existing (PROJECT_ADD,
  * ADR-0117) project with streamed progress.
  */
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   WsChannels,
@@ -32,17 +32,28 @@ export function handleProjectChannels(
 ): boolean {
   switch (message.channel) {
     case WsChannels.PHYSIC_SYNC: {
-      // Project renamed ⇒ delete the old physic folder + (re)create the new one
-      // inside the profile (folder = project name — ADR-0064).
+      // Attach / rename ⇒ (re)create the physic folder inside the profile (folder = project
+      // name — ADR-0064). A rename PRESERVES the folder's cloned repos by moving it, instead
+      // of deleting + recreating empty (ADR-0288); the repos are re-provisioned separately.
       const sync = payload as unknown as PhysicSyncPayload;
-      // Clean up the old physic project's cron before dropping its folder (ADR-0152) — a
+      const oldName = sync.oldName;
+      const oldPath = oldName ? join(ctx.profileDir, oldName) : null;
+      const newPath = join(ctx.profileDir, sync.newName);
+      // Clean up the old physic project's cron before moving/dropping its folder (ADR-0152) — a
       // renamed/rebound project must not leave an orphan tick firing at the old path.
-      if (sync.oldName) {
-        const oldRoot = ctx.physicFolderPath(sync.oldName);
+      if (oldName) {
+        const oldRoot = ctx.physicFolderPath(oldName);
         if (oldRoot) void uninstallCron(oldRoot).catch(() => undefined);
       }
-      if (sync.oldName) rmSync(join(ctx.profileDir, sync.oldName), { recursive: true, force: true });
-      mkdirSync(join(ctx.profileDir, sync.newName), { recursive: true });
+      if (oldPath && oldName !== sync.newName && existsSync(oldPath) && !existsSync(newPath)) {
+        // Rename in place — keep the cloned repos + local work (ADR-0288).
+        renameSync(oldPath, newPath);
+      } else {
+        // No old folder to move (fresh attach), or the target already exists: drop a stale old
+        // folder and ensure the new one exists (empty until provisioning clones the repos).
+        if (oldPath && oldName !== sync.newName && existsSync(oldPath)) rmSync(oldPath, { recursive: true, force: true });
+        mkdirSync(newPath, { recursive: true });
+      }
       ctx.physicRoot = ctx.physicFolderPath(sync.newName); // browse root follows the rename
       ctx.bus.setProject(sync.newName); // header updates live — now serving this project
       ctx.bus.log(t("project.folderSynced", { name: sync.newName }));

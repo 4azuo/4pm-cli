@@ -62,6 +62,12 @@ async function provisionRepos(
   for (const repo of repos) {
     if (repo.primary) {
       if (opts.clonePrimary && repo.url) {
+        // Idempotent (ADR-0288): a re-provision of an already-populated folder (reconnect / a
+        // worker attached via routing that was cloned before) must not re-clone or clobber local work.
+        if (existsSync(join(target, ".git"))) {
+          emit("git", `Primary repo already present — skipping clone.`);
+          continue;
+        }
         emit("git", `Cloning ${repo.url}…`);
         await run("git", ["clone", repo.url, target], { timeout: 120_000 });
         continue;
@@ -78,6 +84,11 @@ async function provisionRepos(
     }
     const dir = join(target, subDirName(repo));
     if (repo.url) {
+      // Idempotent (ADR-0288): skip a sub-repo already cloned into its subfolder.
+      if (existsSync(join(dir, ".git"))) {
+        emit("git", `Sub-repo ${subDirName(repo)} already present — skipping clone.`);
+        continue;
+      }
       emit("git", `Cloning sub-repo ${repo.url}…`);
       await run("git", ["clone", repo.url, dir], { timeout: 120_000 });
     } else {

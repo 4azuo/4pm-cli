@@ -3,7 +3,7 @@
  * attach/detach + memo; create-from-spec/add/spec-assist included).
  */
 import { z } from "zod";
-import { UsageMetric, type ProjectStatus } from "@4pm/constants";
+import { UsageMetric, type PhysicProjectStatus, type ProjectStatus } from "@4pm/constants";
 import { ipAllowlistSchema } from "@4pm/validation";
 import { baseRequestSchema, deletedFilterSchema, pinnedFilterSchema } from "./base";
 import type { UserResponse } from "./user";
@@ -80,6 +80,12 @@ export interface ProjectCliInfo {
   machineLinkId: string;
   /** Scaffolded project root on the worker (null while pending). */
   path: string | null;
+  /**
+   * Physic-project status of the serving folder (ADR-0288). `needs_provision` = the folder was
+   * auto-synced on attach but its repos could not be cloned ⇒ the web shows "not provisioned —
+   * update required" instead of reading a missing template marker as "version unknown".
+   */
+  status: PhysicProjectStatus;
   /** The paired MACHINE user id (link target for its Settings tab) — null if unknown. */
   userId: string | null;
   /** The serving MACHINE user is a rented (4PM pool) worker (ADR-0132/0173). */
