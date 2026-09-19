@@ -214,6 +214,11 @@ export interface OutboundReviewSettings {
   aiReview: boolean;
   /** Machine-link ids (project machine-users) that act as reviewers (round-robin pool). */
   outboundLinkIds: string[];
+  /**
+   * Worker-pool ids whose members act as reviewers (ADR-0284) — expanded server-side to the pool
+   * members' project-serving links and merged with `outboundLinkIds` (round-robin). Empty by default.
+   */
+  outboundPoolIds: string[];
   /** Repos commits are allowed to target (host/owner/name); empty = derive from git. */
   allowedRepos: string[];
   /**
@@ -400,6 +405,7 @@ export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
     ruleCheck: false,
     aiReview: false,
     outboundLinkIds: [],
+    outboundPoolIds: [],
     allowedRepos: [],
     blockImages: false,
     rules: DEFAULT_OUTBOUND_RULES,
@@ -552,6 +558,7 @@ export function readProjectSettings(
       aiReview: typeof review.aiReview === "boolean" ? review.aiReview : d.aiReview,
       blockImages: typeof review.blockImages === "boolean" ? review.blockImages : d.blockImages,
       outboundLinkIds: strList(review.outboundLinkIds),
+      outboundPoolIds: strList(review.outboundPoolIds),
       allowedRepos: strList(review.allowedRepos),
       rules: {
         secret: ruleList(rules.secret, DEFAULT_OUTBOUND_RULES.secret),

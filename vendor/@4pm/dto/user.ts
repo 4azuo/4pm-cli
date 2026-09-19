@@ -336,6 +336,10 @@ export interface UserStatsResponse {
   commandCount: number;
   /** AI tokens attributed to the user (Σ `command_history.tokens`). */
   tokenCount: number;
+  /** Activity-log rows the user performed as actor (ADR-0283). */
+  activityCount: number;
+  /** Σ command runtime (ms) attributed to the user — "processing time" (ADR-0283). */
+  processingMs: number;
 }
 
 /**
@@ -351,4 +355,8 @@ export interface TeamStatsResponse {
   commandCount: number;
   /** AI tokens attributed to the team's members (Σ `command_history.tokens`). */
   tokenCount: number;
+  /** Activity-log rows performed by the team's members as actors (ADR-0283). */
+  activityCount: number;
+  /** Σ command runtime (ms) over the team's members — "processing time" (ADR-0283). */
+  processingMs: number;
 }

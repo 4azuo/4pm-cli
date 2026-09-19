@@ -9,5 +9,6 @@ export * from "./project-template";
 export * from "./project";
 export * from "./quota";
 export * from "./roles";
+export * from "./worker-pool";
 export * from "./worker-tools";
 export * from "./ws";

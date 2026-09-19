@@ -129,6 +129,13 @@ export const ErrorCode = {
   WORKER_OFFLINE: "WORKER_OFFLINE",
   // command-0001 pick:"idle" (ADR-0171) — no idle cli in the project's pool
   ALL_CLIS_BUSY: "ALL_CLIS_BUSY",
+  // worker pools (ADR-0284)
+  WORKER_POOL_NOT_FOUND: "WORKER_POOL_NOT_FOUND",
+  WORKER_POOL_NAME_TAKEN: "WORKER_POOL_NAME_TAKEN",
+  WORKER_POOL_ATTACHED: "WORKER_POOL_ATTACHED",
+  WORKER_POOL_ALREADY_ATTACHED: "WORKER_POOL_ALREADY_ATTACHED",
+  MACHINE_ALREADY_IN_POOL: "MACHINE_ALREADY_IN_POOL",
+  NOT_MACHINE_USER: "NOT_MACHINE_USER",
   // worker · physic project
   WORKER_NOT_FOUND: "WORKER_NOT_FOUND",
   PHYSIC_PROJECT_NOT_FOUND: "PHYSIC_PROJECT_NOT_FOUND",
@@ -234,6 +241,8 @@ export const ErrorCode = {
   // public (guest) support create (ADR-0279): the self-hosted captcha answer was wrong/expired.
   CAPTCHA_INVALID: "CAPTCHA_INVALID",
   HELP_POOL_UNAVAILABLE: "HELP_POOL_UNAVAILABLE",
+  // AI Help daily cap reached (ADR-0286): the asker (or their org) exceeded the per-day question
+  // cap; meta carries { scope, limit, used, resetAt }. Thrown before any dispatch (0 token cost).
   HELP_RATE_LIMITED: "HELP_RATE_LIMITED",
   // AI Help admin moderation (ADR-0237): the user/org is blocked from the channel, or the whole
   // AI support service is toggled off platform-wide.

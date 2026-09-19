@@ -4,6 +4,7 @@
  * in these responses.
  */
 import { z } from "zod";
+import { AI_JOBS, type AiJob } from "@4pm/constants";
 import { baseRequestSchema } from "./base";
 
 /**
@@ -174,6 +175,14 @@ export const dispatchCommandRequestSchema = z
      * Only meaningful with `ai:true`.
      */
     aiConfig: aiRunConfigSchema.optional(),
+    /**
+     * AI job (ADR-0284): which of the 13 AI functions this dispatch is — the caller stamps it (the
+     * end user never picks). With `pick:"idle"` it drives the job-aware routing over the project's
+     * worker-routing table (pools before lone machines → job priority → member index, with
+     * exhaustion failover). Absent ⇒ the flat idle pool (backward compatible). Ignored with an
+     * explicit `machineLinkId`.
+     */
+    job: z.enum(AI_JOBS as [AiJob, ...AiJob[]]).optional(),
   })
   // A plain executable command stays tightly capped; only AI prompts may be large.
   .superRefine((v, ctx) => {
