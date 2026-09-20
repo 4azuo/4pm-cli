@@ -36,11 +36,20 @@ function gitDescribeVersion(cwd: string): string | null {
 }
 
 /**
- * Read the `version` field from the sibling package.json (dist/../package.json when
- * bundled, src/../package.json under tsx). A `0.0.0` (dev marker) falls back to the CLI's git
- * tag so a source run reports a real version (ADR-0052 dev fallback). Returns the marker if unreadable.
+ * Resolve the running CLI version, in priority order:
+ *  1. `FOURPM_CLI_VERSION` env — an explicit override, so a **container built from source** (no real
+ *     package.json version, no `.git`) can inject the built version at build/run time (e.g.
+ *     `-e FOURPM_CLI_VERSION=$(git -C <cli> describe --tags --match 'cli-v*')`). The `cli-v` prefix is
+ *     stripped if present.
+ *  2. The sibling package.json `version` (dist/../ when bundled, src/../ under tsx) — an npm/global
+ *     install carries the CI-stamped release here, so a container that `npm i -g @4pm/cli@X` needs
+ *     nothing extra.
+ *  3. For a `0.0.0` workspace marker (a source/dev run), the CLI's own git tag (`gitDescribeVersion`).
+ * Returns the `0.0.0` marker only when none of the above yields a version.
  */
 function readCliVersion(): string {
+  const envVersion = process.env.FOURPM_CLI_VERSION?.trim();
+  if (envVersion) return envVersion.replace(/^cli-v/, "");
   let version = "0.0.0";
   try {
     const here = dirname(fileURLToPath(import.meta.url));
