@@ -338,6 +338,10 @@ export async function addProject(
     onProgress?.({ projectId: payload.projectId, step: "done", message: "Project added.", done: true });
     return { ok: true, path: target };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err), step: lastStep };
+    // Emit a terminal error frame (ADR-0292) so the web's live progress modal always ends (with a
+    // failure), rather than spinning forever when a clone/pull can't complete.
+    const message = err instanceof Error ? err.message : String(err);
+    onProgress?.({ projectId: payload.projectId, step: "error", message: `Failed: ${message}`, done: true });
+    return { ok: false, error: message, step: lastStep };
   }
 }
