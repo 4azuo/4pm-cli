@@ -95,6 +95,29 @@ export const issueProvisioningTokenRequestSchema = z.object({
 });
 export type IssueProvisioningTokenRequest = z.infer<typeof issueProvisioningTokenRequestSchema>;
 
+/**
+ * Body POST /machines/:id/provision (machine-0065, ADR-0292) — how to (re)provision the
+ * serving worker's repos. `sync` (default): clone any missing repo, else fetch + check out the
+ * configured branch + fast-forward pull an existing one (never clobbers local work). `force`:
+ * delete each repo folder and re-clone it fresh (destructive — discards local changes).
+ */
+export const provisionRequestSchema = z.object({
+  mode: z.enum(["sync", "force"]).optional().default("sync"),
+});
+export type ProvisionRequest = z.infer<typeof provisionRequestSchema>;
+
+/**
+ * Body POST /machines/provision-for-user (ADR-0292) — (re)provision the repos of `projectId` on the
+ * worker of `userId` (a routing entry). The server resolves that user's serving link for the project
+ * and applies the same `mode` (sync/force) as `provision`.
+ */
+export const provisionForUserRequestSchema = z.object({
+  userId: z.string().uuid(),
+  projectId: z.string().uuid(),
+  mode: z.enum(["sync", "force"]).optional().default("sync"),
+});
+export type ProvisionForUserRequest = z.infer<typeof provisionForUserRequestSchema>;
+
 /** Data POST /machine-links/provisioning-token — the plaintext token (shown once) + expiry. */
 export interface IssueProvisioningTokenResponse {
   token: string;
@@ -194,6 +217,8 @@ export interface WsTokenRepo {
   url?: string;
   /** Sub-repo subfolder under the physic root (empty/undefined for the primary). */
   subdir?: string;
+  /** Primary branch to clone / check out (ADR-0292); empty/undefined ⇒ the repo's default branch. */
+  branch?: string;
 }
 
 /** Outbound-review policy delivered to a cli via ws_token (ADR-0082). */

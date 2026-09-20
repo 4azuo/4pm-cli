@@ -1235,6 +1235,8 @@ export interface ProjectAddRepo {
   url?: string;
   /** Sub-repo subfolder under the target root. */
   subdir?: string;
+  /** Primary branch to clone / check out (ADR-0292); empty/undefined ⇒ the repo's default branch. */
+  branch?: string;
   defaultBranch?: string;
   gitignore?: string;
   commitConvention?: string;
@@ -1251,6 +1253,13 @@ export interface ProjectAddPayload {
   projectName: string;
   /** Multi-repo declaration (ADR-0073): ≥1 repo, exactly one primary. */
   repos: ProjectAddRepo[];
+  /**
+   * On-demand repo (re)provisioning mode (ADR-0292) — used by the "update repos" action. `sync`
+   * (default, and the clone-on-connect / retry behaviour): clone a missing repo, else fetch +
+   * check out the configured branch + fast-forward pull an existing one. `force`: delete each
+   * repo folder and re-clone it fresh (destructive).
+   */
+  mode?: "sync" | "force";
 }
 
 /** The cli's reply for project.create / project.add (cli-ws 0002). */

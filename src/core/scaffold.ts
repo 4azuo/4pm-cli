@@ -4,7 +4,7 @@
  * write the spec + provision repos + AI init (create — ADR-0080), or clone/link the
  * declared repos of an existing project with no scaffold/AI-init (add — ADR-0117).
  */
-import { cp, mkdir, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
@@ -31,7 +31,17 @@ interface RepoDecl {
   primary?: boolean;
   url?: string;
   subdir?: string;
+  /** Primary branch to clone / check out (ADR-0292); empty ⇒ the repo's default branch. */
+  branch?: string;
 }
+
+/**
+ * How to provision a repo whose folder already exists (ADR-0292):
+ *  - `clone`  — clone only when missing; a present repo is left untouched (clone-on-connect / add).
+ *  - `sync`   — clone when missing, else fetch + check out the configured branch + fast-forward pull.
+ *  - `force`  — delete the repo folder and clone it fresh (destructive; discards local changes).
+ */
+type ProvisionMode = "clone" | "sync" | "force";
 
 /** Read the declared repos from a spec (empty when absent). */
 function reposOf(spec: Record<string, unknown> | undefined): RepoDecl[] {
@@ -45,6 +55,30 @@ function subDirName(repo: RepoDecl): string {
   return raw.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "") || "repo";
 }
 
+/** Build `git clone` args honoring an optional primary branch (ADR-0292). */
+function cloneArgs(url: string, dest: string, branch?: string): string[] {
+  const b = (branch ?? "").trim();
+  return b ? ["clone", "-b", b, url, dest] : ["clone", url, dest];
+}
+
+/**
+ * Update an already-cloned repo in place (ADR-0292, `sync` mode): fetch the remote, check out the
+ * configured branch (when set), then fast-forward pull. Never clobbers local work — a pull that
+ * cannot fast-forward fails (and is surfaced as a provision error) rather than merging/resetting.
+ */
+async function updateRepo(
+  dir: string,
+  label: string,
+  branch: string | undefined,
+  emit: (step: string, message: string) => void,
+): Promise<void> {
+  const b = (branch ?? "").trim();
+  emit("git", `Updating ${label} (fetch + ${b ? `checkout ${b} + ` : ""}fast-forward pull)…`);
+  await run("git", ["fetch", "origin", "--prune"], { cwd: dir, timeout: 120_000 });
+  if (b) await run("git", ["checkout", b], { cwd: dir, timeout: 60_000 });
+  await run("git", ["pull", "--ff-only"], { cwd: dir, timeout: 120_000 });
+}
+
 /**
  * Provision the declared repos on the worker (ADR-0172: 4PM never creates repos — every repo
  * is an existing one the user owns, given by `url`). Sub-repos always **clone** into their
@@ -52,24 +86,50 @@ function subDirName(repo: RepoDecl): string {
  *  - **add mode** (`clonePrimary`, ADR-0117): the root is empty ⇒ **clone into the root**.
  *  - **create mode**: the root already holds the copied `project-sample` template ⇒ `git init`
  *    in place + `remote add origin <url>` (the user's empty repo) so the scaffold can be pushed.
+ *
+ * `mode` (ADR-0292) controls what happens to a repo whose folder already exists: `clone` skips it
+ * (idempotent clone-on-connect / add), `sync` fetch + check out the branch + fast-forward pulls it,
+ * `force` deletes the folder and re-clones it fresh (destructive).
  */
 async function provisionRepos(
   target: string,
   repos: RepoDecl[],
   emit: (step: string, message: string) => void,
-  opts: { clonePrimary?: boolean } = {},
+  opts: { clonePrimary?: boolean; mode?: ProvisionMode } = {},
 ): Promise<void> {
+  const mode: ProvisionMode = opts.mode ?? "clone";
+  // Sub-repo folder names to preserve when force-recloning the primary (they live INSIDE the root).
+  const subDirsToKeep = new Set(repos.filter((r) => !r.primary && r.url).map((r) => subDirName(r)));
   for (const repo of repos) {
     if (repo.primary) {
       if (opts.clonePrimary && repo.url) {
-        // Idempotent (ADR-0288): a re-provision of an already-populated folder (reconnect / a
-        // worker attached via routing that was cloned before) must not re-clone or clobber local work.
+        // The folder already holds the primary repo — apply the requested mode (ADR-0288/0292).
         if (existsSync(join(target, ".git"))) {
-          emit("git", `Primary repo already present — skipping clone.`);
+          if (mode === "sync") {
+            await updateRepo(target, "primary repo", repo.branch, emit);
+          } else if (mode === "force") {
+            // Re-clone the primary WITHOUT nuking the sub-repos nested under the root: clone into a
+            // temp dir, then replace the root's own entries (keeping the sub-repo subfolders) with it.
+            emit("git", `Re-cloning ${repo.url} (force)…`);
+            const tmp = `${target}.4pm-reclone`;
+            await rm(tmp, { recursive: true, force: true });
+            await run("git", cloneArgs(repo.url, tmp, repo.branch), { timeout: 120_000 });
+            for (const entry of await readdir(target)) {
+              if (subDirsToKeep.has(entry)) continue; // preserve a sub-repo's folder
+              await rm(join(target, entry), { recursive: true, force: true });
+            }
+            for (const entry of await readdir(tmp)) {
+              if (subDirsToKeep.has(entry)) continue; // never overwrite a preserved sub-repo folder
+              await rename(join(tmp, entry), join(target, entry));
+            }
+            await rm(tmp, { recursive: true, force: true });
+          } else {
+            emit("git", `Primary repo already present — skipping clone.`);
+          }
           continue;
         }
         emit("git", `Cloning ${repo.url}…`);
-        await run("git", ["clone", repo.url, target], { timeout: 120_000 });
+        await run("git", cloneArgs(repo.url, target, repo.branch), { timeout: 120_000 });
         continue;
       }
       emit("git", "Initializing the primary repo…");
@@ -84,13 +144,21 @@ async function provisionRepos(
     }
     const dir = join(target, subDirName(repo));
     if (repo.url) {
-      // Idempotent (ADR-0288): skip a sub-repo already cloned into its subfolder.
+      // The sub-repo folder already holds a clone — apply the requested mode (ADR-0288/0292).
       if (existsSync(join(dir, ".git"))) {
-        emit("git", `Sub-repo ${subDirName(repo)} already present — skipping clone.`);
+        if (mode === "sync") {
+          await updateRepo(dir, `sub-repo ${subDirName(repo)}`, repo.branch, emit);
+        } else if (mode === "force") {
+          emit("git", `Re-cloning sub-repo ${repo.url} (force)…`);
+          await rm(dir, { recursive: true, force: true });
+          await run("git", cloneArgs(repo.url, dir, repo.branch), { timeout: 120_000 });
+        } else {
+          emit("git", `Sub-repo ${subDirName(repo)} already present — skipping clone.`);
+        }
         continue;
       }
       emit("git", `Cloning sub-repo ${repo.url}…`);
-      await run("git", ["clone", repo.url, dir], { timeout: 120_000 });
+      await run("git", cloneArgs(repo.url, dir, repo.branch), { timeout: 120_000 });
     } else {
       emit("git", `Initializing sub-repo ${subDirName(repo)}…`);
       await mkdir(dir, { recursive: true });
@@ -106,7 +174,7 @@ async function provisionRepos(
  */
 export async function ensureReposCloned(
   physicRoot: string,
-  repos: { primary?: boolean; url?: string; subdir?: string }[],
+  repos: { primary?: boolean; url?: string; subdir?: string; branch?: string }[],
   emit?: (step: string, message: string) => void,
 ): Promise<void> {
   if (repos.length === 0) return;
@@ -263,7 +331,10 @@ export async function addProject(
     const target = join(root, payload.projectName);
     await mkdir(target, { recursive: true });
     const repos = (payload.repos ?? []) as RepoDecl[];
-    if (repos.length > 0) await provisionRepos(target, repos, emit, { clonePrimary: true });
+    // `mode` (ADR-0292): the provision job sends "sync"/"force" for the on-demand "update repos"
+    // action; a plain add (project-0011) omits it ⇒ "clone" (idempotent clone-of-missing).
+    const mode: ProvisionMode = payload.mode ?? "clone";
+    if (repos.length > 0) await provisionRepos(target, repos, emit, { clonePrimary: true, mode });
     onProgress?.({ projectId: payload.projectId, step: "done", message: "Project added.", done: true });
     return { ok: true, path: target };
   } catch (err) {

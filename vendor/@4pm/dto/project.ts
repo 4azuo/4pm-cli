@@ -796,6 +796,12 @@ export const repoSpecSchema = z.object({
   url: z.string().max(500).regex(GIT_URL_RE, "must be an https or ssh git url"),
   /** Sub-repo subfolder under the target root (empty ⇒ derived from role/name). */
   subdir: z.string().max(120).optional().default(""),
+  /**
+   * Primary branch to clone / check out (ADR-0292). Empty ⇒ the repo's default branch. The
+   * worker clones with `-b <branch>` and the on-demand "update repos" action checks it out +
+   * fast-forward pulls it.
+   */
+  branch: z.string().max(200).optional().default(""),
 });
 export type RepoSpec = z.infer<typeof repoSpecSchema>;
 
