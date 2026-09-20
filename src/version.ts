@@ -13,13 +13,15 @@ import { fileURLToPath } from "node:url";
 /**
  * Derive a real version from the CLI's own git tags (`cli-vX.Y.Z`) for a source/dev run whose
  * package.json still carries the `0.0.0` workspace marker — so the dashboard shows a meaningful
- * version instead of the placeholder. `git describe --tags` yields `cli-v1.9.0` on a tagged commit
- * or `cli-v1.9.0-3-gabc123` when ahead of it; we strip the `cli-v` prefix. Best-effort: any failure
- * (no git, no tags, not a repo — e.g. a bundled/global install) leaves the marker untouched.
+ * version instead of the placeholder. This is a **local** read of the checkout's own tags — no network
+ * or remote access. `--match cli-v*` (and no `--always`) means it only ever reports against a real CLI
+ * release tag: `cli-v1.9.0` on a tagged commit or `cli-v1.9.0-3-gabc123` when ahead of it (we strip the
+ * `cli-v` prefix). Best-effort: any failure (no git, no `cli-v*` tag, not the cli repo — e.g. a
+ * bundled/global install, or the dir nested in an unrelated repo) leaves the marker untouched.
  */
 function gitDescribeVersion(cwd: string): string | null {
   try {
-    const out = execFileSync("git", ["describe", "--tags", "--always"], {
+    const out = execFileSync("git", ["describe", "--tags", "--match", "cli-v*"], {
       cwd,
       timeout: 3000,
       stdio: ["ignore", "pipe", "ignore"],
