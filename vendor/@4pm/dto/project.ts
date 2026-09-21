@@ -928,6 +928,24 @@ export const addRepoRequestSchema = z
   });
 export type AddRepoRequest = z.infer<typeof addRepoRequestSchema>;
 
+/**
+ * Body POST /projects/:id/repos — add ONE repo to a READY project from the Git subtab
+ * (project-0069, ADR-0299 §4). The repo is cloned into a new sibling folder and, unless
+ * `scaffold` is false (Skip), scaffolded like create (template + spec + AI-init). 4PM never
+ * creates repos — the `url` must be an existing repo (https or ssh — ADR-0172).
+ */
+export const addProjectRepoRequestSchema = z.object({
+  /** Clone url — `https` or `ssh` (required; ADR-0172). */
+  url: z.string().max(500).regex(GIT_URL_RE, "must be an https or ssh git url"),
+  /** Primary branch to clone / check out (ADR-0292); empty ⇒ the repo's default branch. */
+  branch: z.string().max(200).optional().default(""),
+  /** Role label / folder hint (e.g. "docs" / "web"); empty ⇒ derived from the url basename. */
+  role: z.string().max(60).optional().default(""),
+  /** true = Confirm (clone + scaffold); false = Skip (clone as-is, no template/AI-init). */
+  scaffold: z.boolean(),
+});
+export type AddProjectRepoRequest = z.infer<typeof addProjectRepoRequestSchema>;
+
 /** Data 202 of POST /projects/create|add — the enqueued job + the draft project. */
 export interface ProjectJobAcceptedResponse {
   jobId: string;

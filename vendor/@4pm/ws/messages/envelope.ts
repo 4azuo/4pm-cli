@@ -1260,6 +1260,14 @@ export interface ProjectAddPayload {
    * repo folder and re-clone it fresh (destructive).
    */
   mode?: "sync" | "force";
+  /**
+   * Subdirs to **scaffold** after cloning (ADR-0299 §4) — the add-one-repo-from-Git-subtab flow:
+   * for each listed sibling folder the cli applies the `project-sample` template + writes the spec +
+   * runs AI-init (needs `spec`). Empty/absent ⇒ clone only (Skip, or a plain re-provision).
+   */
+  scaffoldRepos?: string[];
+  /** The project spec used to scaffold the `scaffoldRepos` folders (ADR-0299 §4). */
+  spec?: Record<string, unknown>;
 }
 
 /** The cli's reply for project.create / project.add (cli-ws 0002). */
