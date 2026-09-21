@@ -374,6 +374,11 @@ export async function addProject(
     // action; a plain add (project-0011) omits it ⇒ "clone" (idempotent clone-of-missing).
     const mode: ProvisionMode = payload.mode ?? "clone";
     if (repos.length > 0) await provisionRepos(target, repos, emit, { mode });
+    // Add-one-repo from the Git subtab (ADR-0299 §4): scaffold the just-cloned folder(s) unless the
+    // user Skipped (then `scaffoldRepos` is empty ⇒ the repo stays a plain clone).
+    for (const sub of payload.scaffoldRepos ?? []) {
+      await scaffoldRepo(join(target, sub), sub, payload.spec, emit);
+    }
     onProgress?.({ projectId: payload.projectId, step: "done", message: "Project added.", done: true });
     return { ok: true, path: target };
   } catch (err) {
