@@ -55,6 +55,16 @@ export const GitProvider = {
 /** Union type of git providers. */
 export type GitProvider = (typeof GitProvider)[keyof typeof GitProvider];
 
+/**
+ * The single agent-guide file a project uses (ADR-0309), stored under `settings.aiGuideFile`.
+ * A project uses **one** file — `CLAUDE.md` (Claude Code) or `AGENT.md` (other AI CLIs) — never
+ * both at once: the scaffold writes only this file and the Content AI-Guide reads/generates it.
+ */
+export const AI_GUIDE_FILES = ["CLAUDE.md", "AGENT.md"] as const;
+
+/** Union type of AI-guide files. */
+export type AiGuideFile = (typeof AI_GUIDE_FILES)[number];
+
 /** Machine-link scope (ADR-0010). */
 export const MachineLinkScope = {
   PROJECT: "project",

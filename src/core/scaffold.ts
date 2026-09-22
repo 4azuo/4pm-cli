@@ -18,7 +18,7 @@ import type {
   ProjectProgressPayload,
 } from "@4pm/ws";
 import { repoName } from "@4pm/dto";
-import { PROJECT_TEMPLATE } from "@4pm/constants";
+import { PROJECT_TEMPLATE, type AiGuideFile } from "@4pm/constants";
 import { aiGenerate } from "./ai-assist";
 
 const run = promisify(execFile);
@@ -264,7 +264,8 @@ export async function scaffoldProject(
 /**
  * Scaffold one repo folder (ADR-0299 §2): copy the `project-sample` template **without clobbering**
  * files the clone already tracks (`force:false`), write `project.spec.json`, then run AI init
- * (README/CLAUDE/subagents). Best-effort AI init — a missing AI CLI must not fail the scaffold.
+ * (README + the project's guide file + subagents). Best-effort AI init — a missing AI CLI must not
+ * fail the scaffold.
  */
 async function scaffoldRepo(
   dir: string,
@@ -279,7 +280,7 @@ async function scaffoldRepo(
   if (spec) {
     emit("spec", `Writing project.spec.json into ${label}…`);
     await writeFile(join(dir, "project.spec.json"), JSON.stringify(spec, null, 2), "utf8");
-    // AI init (ADR-0080): subagent files + README + CLAUDE from the spec (best-effort).
+    // AI init (ADR-0080): subagent files + README + the project's guide file from the spec.
     await aiInit(dir, spec, emit);
   }
 }
@@ -303,16 +304,37 @@ interface SubagentDecl {
 }
 
 /**
- * AI init (ADR-0080) — write `.claude/agents/<name>.md` for each declared subagent, then
- * ask the AI CLI to author `README.md` and `CLAUDE.md` from the spec. Best-effort: a
- * missing/failed AI CLI must not fail the scaffold.
+ * Read a scalar spec field from either the self-describing envelope (`fields[].id/value` —
+ * `features/spec/envelope.ts`) or the legacy flat shape. Empty when absent/non-string.
+ */
+function readSpecField(spec: Record<string, unknown>, key: string): string {
+  const fields = (spec as { fields?: unknown }).fields;
+  if (Array.isArray(fields)) {
+    const f = fields.find(
+      (x): x is { id: string; value: unknown } =>
+        !!x && typeof (x as { id?: unknown }).id === "string" && (x as { id: string }).id === key,
+    );
+    if (f && typeof f.value === "string") return f.value;
+  }
+  return typeof spec[key] === "string" ? (spec[key] as string) : "";
+}
+
+/**
+ * AI init (ADR-0080) — write `.claude/agents/<name>.md` for each declared subagent, then ask the
+ * AI CLI to author `README.md` and the project's single guide file (`CLAUDE.md` **or** `AGENT.md`,
+ * from `spec.ai_guide_file` — ADR-0309) from the spec. The guide's `ai_guide_instructions` field is
+ * folded into the prompt as extra guidance. Best-effort: a missing/failed AI CLI must not fail the
+ * scaffold.
  */
 async function aiInit(
   target: string,
   spec: Record<string, unknown>,
   emit: (step: string, message: string) => void,
 ): Promise<void> {
-  emit("ai-init", "AI init: subagents, README, CLAUDE.md…");
+  // The single agent-guide file the project uses (ADR-0309); default CLAUDE.md when unset/unknown.
+  const guideFile: AiGuideFile = readSpecField(spec, "ai_guide_file") === "AGENT.md" ? "AGENT.md" : "CLAUDE.md";
+  const guideInstructions = readSpecField(spec, "ai_guide_instructions").trim();
+  emit("ai-init", `AI init: subagents, README, ${guideFile}…`);
   // Subagents come straight from the spec (name + description) — no AI call needed.
   const subagents = Array.isArray(spec.subagents) ? (spec.subagents as SubagentDecl[]) : [];
   if (subagents.length > 0) {
@@ -324,23 +346,20 @@ async function aiInit(
       await writeFile(join(target, ".claude", "agents", `${name}.md`), body, "utf8");
     }
   }
-  // README + CLAUDE.md via the AI CLI (best-effort — skip on failure).
+  // README + the guide file via the AI CLI (best-effort — skip on failure).
   const specJson = JSON.stringify(spec);
   await generateFile(
     join(target, "README.md"),
     `Write a concise README.md (Markdown only, no preamble) for this project from its spec ` +
       `JSON:\n${specJson}`,
   );
+  // The project's single guide file (ADR-0309) — CLAUDE.md or AGENT.md, never both. Other AI CLIs
+  // read AGENT.md; Claude Code reads CLAUDE.md. The choice comes from the spec (`ai_guide_file`).
   await generateFile(
-    join(target, "CLAUDE.md"),
-    `Write a CLAUDE.md (Markdown only, no preamble) with guidance/conventions for AI agents ` +
-      `working in this project, derived from its spec JSON:\n${specJson}`,
-  );
-  // AGENT.md — the agent-guide file other AI CLIs read (ADR-0302); same spec-driven content.
-  await generateFile(
-    join(target, "AGENT.md"),
-    `Write an AGENT.md (Markdown only, no preamble) with guidance/conventions for AI agents ` +
-      `working in this project, derived from its spec JSON:\n${specJson}`,
+    join(target, guideFile),
+    `Write a ${guideFile} (Markdown only, no preamble) with guidance/conventions for AI agents ` +
+      `working in this project, derived from its spec JSON:\n${specJson}` +
+      (guideInstructions ? `\nAlso incorporate these additional instructions/content:\n${guideInstructions}\n` : ""),
   );
 }
 
