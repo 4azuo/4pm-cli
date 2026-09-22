@@ -268,6 +268,9 @@ export interface MachineLinkResponse {
   /** Tools whose last run failed (ADR-0223) — surfaced to the tenant web (Machines / Members) so a
    *  user sees the cli's last tool/connect error, like the admin pools. Empty/omitted = all healthy. */
   failingTools?: WorkerFailingTool[];
+  /** Last failed cli self-update (ADR-0305) — surfaced only while the cli is still outdated, so the
+   *  web "Update" modal shows why an update didn't land. Null/omitted = no recent failure. */
+  cliUpdateError?: WorkerCliUpdateError | null;
   createdAt: string;
 }
 
@@ -301,6 +304,36 @@ export function readFailingTools(usageSnapshot: unknown): WorkerFailingTool[] {
     .filter(([, v]) => v && typeof v === "object" && v.ok === false)
     .map(([tool, v]) => ({ tool, message: v.message ?? "", at: v.at }))
     .sort((a, b) => (a.at < b.at ? 1 : -1));
+}
+
+/**
+ * Last cli self-update failure (ADR-0305) — stored under `MachineLink.usageSnapshot.cliUpdate`,
+ * written by the `cli.update-result` write-back and preserved across `machine.usage` snapshot
+ * overwrites. Carries only a short reason (never stdout/secrets).
+ */
+export interface WorkerCliUpdateEntry {
+  ok: boolean;
+  message: string | null;
+  fromVersion: string;
+  toVersion: string | null;
+  at: string;
+}
+
+/** A failed cli self-update projected for the web — reason + when it happened. */
+export interface WorkerCliUpdateError {
+  message: string;
+  at: string;
+}
+
+/**
+ * Project the last cli self-update FAILURE from a machine link's `usageSnapshot` JSON (ADR-0305).
+ * Returns null when there is none. Callers gate on `cliOutdated` so a stale failure disappears once
+ * the worker eventually comes back on the latest version. Tolerant of null / old snapshots.
+ */
+export function readCliUpdateError(usageSnapshot: unknown): WorkerCliUpdateError | null {
+  const cu = (usageSnapshot as { cliUpdate?: WorkerCliUpdateEntry } | null | undefined)?.cliUpdate;
+  if (!cu || typeof cu !== "object" || cu.ok !== false) return null;
+  return { message: cu.message ?? "", at: cu.at };
 }
 
 /** Physic project — a project folder on the worker served by one cli. */
@@ -477,6 +510,9 @@ export interface MachineUsageStatus {
   /** The minimum cli version the server still accepts (for the "unsupported" red hint); null if
    *  not resolved. */
   minSupportedCliVersion?: string | null;
+  /** Last failed cli self-update (ADR-0305) — surfaced only while the cli is still outdated, so the
+   *  web "Update" modal shows why an update didn't land instead of spinning forever. */
+  cliUpdateError?: WorkerCliUpdateError | null;
 }
 
 /** Per-project usage of one machine-link (history — ADR-0072). */

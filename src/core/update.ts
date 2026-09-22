@@ -12,6 +12,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { extract } from "tar";
 import { t } from "../i18n";
 import { CLI_SIGNING_PUBLIC_KEY } from "../config/signing";
 import { CLI_VERSION } from "../version";
@@ -126,9 +127,15 @@ async function updateViaDownload(
   // Extract over the RUNNING install root (parent of dist/ — resolved from
   // import.meta.url so it matches where CLI_VERSION is read, not a symlinked bin path).
   const installRoot = runningInstallRoot();
-  execSync(`tar -xzf "${tmp}" -C "${installRoot}" --strip-components=1`, {
-    stdio: "inherit",
-  });
+  // Extract in-process with the bundled `tar` library (ADR-0305) instead of shelling out to the
+  // system `tar` — a minimal worker container may have busybox `tar` (no `--strip-components`) or
+  // none at all, which failed with an opaque "Command failed" that hid the real cause. The library
+  // handles gunzip + strip itself and throws a real error message on failure.
+  try {
+    await extract({ file: tmp, cwd: installRoot, strip: 1 });
+  } catch (err) {
+    throw new Error(`Failed to extract the update tarball into ${installRoot}: ${String(err)}`);
+  }
 }
 
 /** Result of a manual `4pm update` (distinguishes failure from already-latest). */
@@ -136,7 +143,9 @@ export type ManualUpdateResult =
   | { action: "dev-build"; version: string }
   | { action: "already-latest"; version: string }
   | { action: "updated"; version: string }
-  | { action: "failed"; error: string };
+  // `toVersion` (the resolved latest we tried to reach) is carried so the caller can report the
+  // failed attempt back to the server (ADR-0305); null when the version wasn't resolved.
+  | { action: "failed"; error: string; toVersion: string | null };
 
 /**
  * Manual update (`4pm update`): always update to the latest version when newer,
@@ -165,7 +174,7 @@ export async function updateToLatest(serverUrl: string): Promise<ManualUpdateRes
       );
     }
   } catch (err) {
-    return { action: "failed", error: String(err) };
+    return { action: "failed", error: String(err), toVersion: meta.latest };
   }
   // Verify the update actually landed on the running install (ADR-0053) — the same
   // check startup does. Prevents `4pm update` from claiming success while the running
@@ -177,6 +186,7 @@ export async function updateToLatest(serverUrl: string): Promise<ManualUpdateRes
       error:
         `update ran but the installed version is still ${installed} (expected ${meta.latest}) — ` +
         `it did not apply to the running install at ${runningInstallRoot()}.`,
+      toVersion: meta.latest,
     };
   }
   return { action: "updated", version: meta.latest };

@@ -269,6 +269,9 @@ export class WsClient {
       // After the idle daily tick updates flagged tools, report the fresh snapshot (ADR-0254). The
       // `daily` trigger lets the server re-drive a still-failing restore on this spaced tick (ADR-0258).
       () => void this.reportWorkerTools("daily"),
+      // Report a self-update FAILURE to the server (ADR-0305) so the web "Update" modal shows why
+      // (the cli is still connected on the old version, so this send reaches the server).
+      (result) => this.send(WsChannels.CLI_UPDATE_RESULT, result, null),
     );
     this.hctx = this.buildHandlerCtx();
     // The operator's local commands (TUI input box) run through the same executor.

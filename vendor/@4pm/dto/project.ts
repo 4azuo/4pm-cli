@@ -816,6 +816,22 @@ export function repoName(url: string): string {
 }
 
 /**
+ * Derive the `owner/repo` slug from a clone url (ADR-0302): the last two path segments minus a
+ * `.git` suffix — e.g. `https://github.com/4azuo/RestaurantApplication.git` and
+ * `git@github.com:4azuo/RestaurantApplication.git` ⇒ `4azuo/RestaurantApplication`. Used for
+ * `gh pr list -R <slug>` / `glab mr list -R <slug>`. Empty when it can't be read.
+ */
+export function repoSlug(url: string): string {
+  const cleaned = (url || "").trim().replace(/\.git$/i, "").replace(/\/+$/, "");
+  // scp-style `git@host:owner/repo` → take the part after ':'; otherwise the path after the host.
+  const afterHost = cleaned.includes("@") && cleaned.includes(":") && !cleaned.includes("://")
+    ? cleaned.split(":").pop() ?? ""
+    : cleaned.replace(/^[a-z]+:\/\//i, "").replace(/^[^/]+\//, "");
+  const parts = afterHost.split("/").filter(Boolean);
+  return parts.length >= 2 ? `${parts[parts.length - 2]}/${parts[parts.length - 1]}` : "";
+}
+
+/**
  * Derive the provider of a repo from its clone url host (ADR-0172): a `gitlab` host ⇒
  * `glab`, otherwise `gh` (GitHub is the default for any other host). Used for the `gh`/`glab`
  * provider ops in the Git tab.
@@ -941,6 +957,8 @@ export const addProjectRepoRequestSchema = z.object({
   branch: z.string().max(200).optional().default(""),
   /** Role label / folder hint (e.g. "docs" / "web"); empty ⇒ derived from the url basename. */
   role: z.string().max(60).optional().default(""),
+  /** Free-form description of what this repo holds (optional) — stored on the declared spec repo. */
+  desc: z.string().max(500).optional().default(""),
   /** true = Confirm (clone + scaffold); false = Skip (clone as-is, no template/AI-init). */
   scaffold: z.boolean(),
 });

@@ -113,6 +113,11 @@ export const WsChannels = {
   // re-exec). Sent by the manual operator "Update" action and the update-on-connect hook when the
   // connecting cli is outdated. No payload; honours the machine's local autoUpdate opt-out.
   CLI_UPDATE: "cli.update",
+  // cli → server (ADR-0305): result of a cli self-update attempt. On SUCCESS the cli re-execs and
+  // reconnects on the new version (the version report is the "done" signal), so this channel carries
+  // FAILURES — the server persists the reason on `MachineLink.usageSnapshot.cliUpdate` so the web
+  // "Update" modal shows why instead of waiting forever. One-way, no reply.
+  CLI_UPDATE_RESULT: "cli.update-result",
   // command lifecycle
   COMMAND_ANNOUNCE: "command.announce",
   // console transcript sync (ADR-0150): the cli streams its authoritative SessionBus

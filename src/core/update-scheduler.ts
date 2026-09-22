@@ -44,6 +44,15 @@ export class UpdateScheduler {
     private readonly bus: SessionBus,
     /** Called after the idle tick reconciles the flagged tools, so the cli reports its new snapshot (ADR-0254). */
     private readonly onToolsChanged?: () => void,
+    /** Report a self-update outcome to the server (ADR-0305) — used for FAILURES, so the web
+     *  "Update" modal surfaces why instead of waiting forever (a success re-execs + reconnects). */
+    private readonly onUpdateResult?: (result: {
+      ok: boolean;
+      message: string | null;
+      fromVersion: string;
+      toVersion: string | null;
+      at: string;
+    }) => void,
   ) {}
 
   /** Apply the latest policy (called on each ws_token) and start the tick timer once. */
@@ -166,6 +175,15 @@ export class UpdateScheduler {
       if (result.action === "failed") {
         logger.warn("update.scheduled.failed", { error: result.error });
         this.bus.log(t("update.scheduledFailed", { error: result.error ?? "" }), "warn");
+        // Report the failure to the server (ADR-0305) so the web "Update" modal shows the reason
+        // instead of spinning forever (the cli stays connected on the old version, so this sends).
+        this.onUpdateResult?.({
+          ok: false,
+          message: result.error ?? null,
+          fromVersion: CLI_VERSION,
+          toVersion: result.toVersion,
+          at: new Date().toISOString(),
+        });
         return;
       }
       // Updated ⇒ re-exec into the new binary — same as `4pm start`'s auto-update branch
@@ -179,6 +197,15 @@ export class UpdateScheduler {
       child.on("exit", (code) => process.exit(code ?? 0));
     } catch (err) {
       logger.warn("update.scheduled.error", { error: String(err) });
+      // Also surface an unexpected failure (e.g. server unreachable while updating) to the web
+      // modal (ADR-0305) — best-effort; harmless if the WS is down (the report just won't send).
+      this.onUpdateResult?.({
+        ok: false,
+        message: String(err),
+        fromVersion: CLI_VERSION,
+        toVersion: null,
+        at: new Date().toISOString(),
+      });
     } finally {
       this.updating = false;
     }

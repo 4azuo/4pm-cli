@@ -1079,6 +1079,26 @@ export interface ToolHealthReport {
   at: string;
 }
 
+/**
+ * cli.update-result report (cli → server — ADR-0305): the outcome of a cli self-update attempt
+ * (idle-aware update + re-exec). A SUCCESS re-execs the process, so it is signalled by the worker
+ * reconnecting on the new version — this report carries a FAILURE (`ok:false`) so the server can
+ * persist the reason on `MachineLink.usageSnapshot.cliUpdate` and the web "Update" modal shows it
+ * instead of spinning forever. Carries only a short human reason — never stdout/secrets.
+ */
+export interface CliUpdateResultReport {
+  /** Did the self-update succeed? Practically always false on the wire (success re-execs). */
+  ok: boolean;
+  /** Short human reason when `ok` is false (e.g. the tar/download error); null on success. */
+  message: string | null;
+  /** Version the cli was running when it attempted the update. */
+  fromVersion: string;
+  /** Version it tried to update to (the resolved latest); null when unknown. */
+  toVersion: string | null;
+  /** ISO timestamp of the attempt. */
+  at: string;
+}
+
 /** log.read request/reply (server → cli — ADR-0072): tail the cli's own JSONL logs. */
 export interface LogReadRequest {
   /** Max lines from the newest log file (default 200). */

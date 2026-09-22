@@ -47,7 +47,10 @@ export default defineConfig({
   // its wasm as base64, so the single ESM output needs no extra assets.
   // NOTE: `@aws-sdk/client-s3` is intentionally left external — it is loaded via a
   // lazy `await import(...)` only on the S3 code path (see core), not at load time.
-  noExternal: [/^@4pm\//, "ws", "zod", "ink", "react", "react/jsx-runtime"],
+  // `tar` (self-update extraction, ADR-0305) is bundled too so the self-download tarball stays
+  // self-contained — the old code shelled out to the system `tar`, which is absent/inconsistent
+  // (busybox) in minimal worker containers.
+  noExternal: [/^@4pm\//, "ws", "zod", "ink", "react", "react/jsx-runtime", "tar"],
   // ink's reconciler only `await import('./devtools.js')` when process.env['DEV'] ===
   // 'true' (ADR-0057), and that module top-level `import`s the optional `react-devtools-core`
   // we don't install. With splitting off esbuild inlines the dynamic-import target and would
