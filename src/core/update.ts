@@ -158,18 +158,21 @@ export type ManualUpdateResult =
   | { action: "failed"; error: string; toVersion: string | null };
 
 /**
- * Manual update (`4pm update`): always update to the latest version when newer,
- * regardless of the profile's autoUpdate config. Reuses the same npm/self-download
- * path as startup auto-update. Throws only when the server is unreachable.
+ * Manual update (`4pm update`) / operator "Update" push: install the server's latest version. Reuses
+ * the same npm/self-download path as startup auto-update. Throws only when the server is unreachable.
+ * `force` (the operator "Update" action — ADR-0289/0308) installs the server's latest **unconditionally**,
+ * even when the running version compares equal — so a build the version compare can't tell apart (e.g. a
+ * `-suffix`/`+build` an OLDER cli's compareSemver ignores) still applies on an explicit command, instead
+ * of no-op'ing as "already latest" and leaving the web modal to time out.
  */
-export async function updateToLatest(serverUrl: string): Promise<ManualUpdateResult> {
+export async function updateToLatest(serverUrl: string, force = false): Promise<ManualUpdateResult> {
   // Dev build (unstamped, "0.0.0" — ADR-0052): never self-update, and don't even dial
   // the server. A local build is updated by rebuilding the repo, not from a release
   // tarball — the same exemption startup's checkAndUpdate() applies.
   if (CLI_VERSION.startsWith("0.0.0")) return { action: "dev-build", version: CLI_VERSION };
 
   const meta = await fetchCliVersion(serverUrl);
-  if (!shouldUpdateTo(CLI_VERSION, meta.latest)) {
+  if (!force && !shouldUpdateTo(CLI_VERSION, meta.latest)) {
     return { action: "already-latest", version: CLI_VERSION };
   }
   console.log(t("update.updating", { from: CLI_VERSION, to: meta.latest }));

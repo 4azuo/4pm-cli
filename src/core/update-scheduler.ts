@@ -131,7 +131,9 @@ export class UpdateScheduler {
     if (this.forcedPending) {
       if (this.bus.busy !== null) return; // defer until the running command finishes
       this.forcedPending = false;
-      await this.runUpdate();
+      // An explicit operator "Update" (ADR-0289) installs the server's latest unconditionally — see
+      // updateToLatest(force) — so it never no-ops as "already latest" on a version compare quirk.
+      await this.runUpdate(true);
       return;
     }
 
@@ -155,11 +157,12 @@ export class UpdateScheduler {
 
     this.lastDoneDateKey = clock.dateKey;
     this.pendingDateKey = null;
-    await this.runUpdate();
+    await this.runUpdate(false);
   }
 
-  /** Check + update, then re-exec the new binary on success (keeps `.cre`/profile). */
-  private async runUpdate(): Promise<void> {
+  /** Check + update, then re-exec the new binary on success (keeps `.cre`/profile). `force` installs the
+   *  server's latest unconditionally (an operator push) vs. the conditional daily-scheduled update. */
+  private async runUpdate(force: boolean): Promise<void> {
     this.updating = true;
     try {
       // Per-tool worker auto-update (ADR-0253) runs FIRST — the cli self-update below re-execs the
@@ -167,7 +170,7 @@ export class UpdateScheduler {
       // never blocks the cli update. Shares this org-gated, idle-only window (ADR-0074).
       await this.updateFlaggedTools();
       this.bus.log(t("update.scheduledChecking"));
-      const result = await updateToLatest(this.serverUrl);
+      const result = await updateToLatest(this.serverUrl, force);
       if (result.action === "already-latest") {
         logger.info("update.scheduled.latest", { version: result.version });
         return;
