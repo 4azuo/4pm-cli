@@ -42,6 +42,22 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Pull the meaningful failure detail out of an npm/pnpm run's captured output (ADR-0306) so a failed
+ * op's done-frame `error` shows the *real* cause (e.g. an engine/404 error) instead of a bare exit code.
+ * Drops npm's noisy `npm warn` lines (EBADENGINE etc.), prefers explicit error lines, and caps length.
+ * Streamed only — never persisted into the snapshot's `restoreFailed`, so no stdout/secret is stored.
+ */
+function extractToolError(out: string): string {
+  const lines = out
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !/^npm warn\b/i.test(l));
+  const errLines = lines.filter((l) => /npm error|npm err!|ERR_|ELIFECYCLE|unsupported engine|e404|etarget/i.test(l));
+  const msg = (errLines.length ? errLines : lines).slice(-3).join(" · ");
+  return msg.length > 500 ? `${msg.slice(0, 500)}…` : msg;
+}
+
+/**
  * Classify an install failure (ADR-0258) — a **retryable** transient cause (our 180s→300s timeout kill
  * exit 124, or a network/registry signature in the output) is worth a backoff retry; a **permanent** one
  * (missing package, no matching version, engine refusal) fails fast so it never burns the retry window.
@@ -238,8 +254,10 @@ export async function runWorkerToolOp(
     return { ok: false, exitCode: 1, error: resolved.error ?? "Invalid package." };
   }
   onLine(`$ ${manager} ${opArgs(op, manager, resolved.pkg).join(" ")}`);
-  const { code } = await run(manager, opArgs(op, manager, resolved.pkg), onLine, timeoutMs);
-  return { ok: code === 0, exitCode: code, error: code === 0 ? undefined : `${manager} exited ${code}` };
+  const { code, out } = await run(manager, opArgs(op, manager, resolved.pkg), onLine, timeoutMs);
+  if (code === 0) return { ok: true, exitCode: code };
+  const detail = extractToolError(out);
+  return { ok: false, exitCode: code, error: detail ? `${manager} exited ${code}: ${detail}` : `${manager} exited ${code}` };
 }
 
 /**
@@ -302,9 +320,10 @@ async function installPinned(
     const { code, out } = await run(manager, args, onLine, timeoutMs);
     if (code === 0) return { ok: true };
     const { reason, retryable } = classifyToolFailure(code, out);
-    // Fail fast on a permanent cause, or once the attempts are spent.
+    // Fail fast on a permanent cause, or once the attempts are spent — attach the real npm/pnpm error.
     if (!retryable || attempt === TOOL_INSTALL_MAX_ATTEMPTS) {
-      return { ok: false, error: `${manager} exited ${code}`, reason, retryable };
+      const detail = extractToolError(out);
+      return { ok: false, error: detail ? `${manager} exited ${code}: ${detail}` : `${manager} exited ${code}`, reason, retryable };
     }
     // Exponential backoff (5s → 15s → 45s) with ±20% jitter so retries don't thundering-herd.
     const base = TOOL_RETRY_BASE_MS * 3 ** (attempt - 1);

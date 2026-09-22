@@ -119,6 +119,12 @@ export function handleToolsChannels(
               opId,
               ok: restoreFailed.length === 0,
               exitCode: restoreFailed.length === 0 ? 0 : 1,
+              // Name the tools that failed + their classified reason so the web card shows more than a
+              // bare "failed" (the real per-tool npm/pnpm error already streamed in the log above).
+              error:
+                restoreFailed.length === 0
+                  ? undefined
+                  : restoreFailed.map((f) => `${f.name} (${f.reason})`).join(", "),
             } satisfies ToolsDonePayload);
             await ctx.reportWorkerTools(restoreTrigger, restoreFailed);
           })
