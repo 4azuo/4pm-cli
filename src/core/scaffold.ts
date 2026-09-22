@@ -336,6 +336,12 @@ async function aiInit(
     `Write a CLAUDE.md (Markdown only, no preamble) with guidance/conventions for AI agents ` +
       `working in this project, derived from its spec JSON:\n${specJson}`,
   );
+  // AGENT.md — the agent-guide file other AI CLIs read (ADR-0302); same spec-driven content.
+  await generateFile(
+    join(target, "AGENT.md"),
+    `Write an AGENT.md (Markdown only, no preamble) with guidance/conventions for AI agents ` +
+      `working in this project, derived from its spec JSON:\n${specJson}`,
+  );
 }
 
 /** Generate one file's content via the AI CLI; ignore failures (best-effort). */
