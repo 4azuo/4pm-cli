@@ -85,6 +85,17 @@ function readInstalledVersion(): string {
 /**
  * Update via npm global — a shared binary, applies to every instance (ADR-0014).
  */
+/** Max wall-clock for the global npm install before we treat it as a hang (ADR-0305/0308). */
+const NPM_INSTALL_TIMEOUT_MS = 180_000;
+/** Max wall-clock for the tarball self-download before we treat it as a hang. */
+const DOWNLOAD_TIMEOUT_MS = 60_000;
+
+/** Keep only the last ~800 chars of a captured npm log so the reported reason stays readable. */
+function tailReason(raw: string): string {
+  const s = raw.trim();
+  return s.length > 800 ? `…${s.slice(-800)}` : s;
+}
+
 function updateViaNpm(version: string): void {
   // `version` comes from the server's update manifest and is interpolated into a shell
   // command — require a plain semver before exec so a malformed/hostile value can't inject
@@ -92,7 +103,24 @@ function updateViaNpm(version: string): void {
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
     throw new Error(`Refusing to update: invalid version string "${version}".`);
   }
-  execSync(`npm i -g @4pm/cli@${version}`, { stdio: "inherit" });
+  // Capture stderr/stdout (not `inherit`) + a wall-clock timeout so a real npm failure surfaces the
+  // actual reason (E404/ENOTEMPTY/EACCES…) — like the tool-install path (ADR-0308) — and a hung
+  // install becomes a reported failure instead of blocking the self-update forever (ADR-0305).
+  try {
+    execSync(`npm i -g @4pm/cli@${version}`, {
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf8",
+      timeout: NPM_INSTALL_TIMEOUT_MS,
+    });
+  } catch (err) {
+    const e = err as { stderr?: string | Buffer | null; stdout?: string | Buffer | null; killed?: boolean; message?: string };
+    if (e.killed) {
+      throw new Error(`npm install timed out after ${NPM_INSTALL_TIMEOUT_MS / 1000}s (\`npm i -g @4pm/cli@${version}\`).`);
+    }
+    const out = `${e.stderr?.toString() ?? ""}\n${e.stdout?.toString() ?? ""}`;
+    const reason = tailReason(out) || e.message || "npm install failed";
+    throw new Error(`npm install failed: ${reason}`);
+  }
 }
 
 /**
@@ -104,9 +132,24 @@ async function updateViaDownload(
   checksum: string,
   signature?: string,
 ): Promise<void> {
-  const res = await fetch(tarballUrl);
-  if (!res.ok) throw new Error(`Failed to download tarball: HTTP ${res.status}`);
-  const buf = Buffer.from(await res.arrayBuffer());
+  // Bound the download (connect + body read) with an abort timeout so a stalled transfer becomes a
+  // reported failure instead of hanging the self-update forever (ADR-0305).
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT_MS);
+  let buf: Buffer;
+  try {
+    const res = await fetch(tarballUrl, { signal: controller.signal });
+    if (!res.ok) throw new Error(`Failed to download tarball: HTTP ${res.status}`);
+    buf = Buffer.from(await res.arrayBuffer());
+  } catch (err) {
+    throw new Error(
+      controller.signal.aborted
+        ? `Downloading the update tarball timed out after ${DOWNLOAD_TIMEOUT_MS / 1000}s.`
+        : `Failed to download tarball: ${String(err)}`,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
   const actual = createHash("sha256").update(buf).digest("hex");
   if (actual !== checksum) {
     throw new Error("Tarball checksum mismatch — aborting update (ADR-0015).");
