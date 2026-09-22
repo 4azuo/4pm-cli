@@ -764,12 +764,19 @@ export const workerToolCopySchema = z.object({
 });
 export type WorkerToolCopyRequest = z.infer<typeof workerToolCopySchema>;
 
-/** Data POST /machines/tools/copy — how many targets were queued (ADR-0254). */
+/** Per-target outcome of a tools copy (ADR-0254): the manifest is queued on the target, and the web
+ * then drives a streamed restore for the online ones so progress streams per target (machine-0053). */
+export type WorkerToolCopyTargetStatus =
+  /** Manifest queued + target online — the web drives a streamed restore now (progress streams). */
+  | "online"
+  /** Manifest queued but the target is offline — it applies on its next connect (no live stream). */
+  | "queued"
+  /** Target skipped (no host-tooling access, rented/pool, or the source itself). */
+  | "skipped";
+
+/** Data POST /machines/tools/copy — the per-target outcome so the web can render a progress board. */
 export interface WorkerToolCopyResponse {
-  /** Number of target links a pending manifest was written to. */
-  queued: number;
-  /** Number of those targets currently online (they apply immediately; the rest on next connect). */
-  online: number;
+  results: { targetLinkId: string; status: WorkerToolCopyTargetStatus }[];
 }
 
 /** Body POST /machines/:id/tools/install — install a tool (machine-0051, ADR-0206). */
