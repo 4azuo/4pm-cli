@@ -779,6 +779,20 @@ export interface WorkerToolCopyResponse {
   results: { targetLinkId: string; status: WorkerToolCopyTargetStatus }[];
 }
 
+/** Body POST /admin/pool-users/tools/copy (ADR-0307) — copy one pool machine's tool set onto other
+ * pool machines of the **same role** (rented↔rented / support↔support). Keyed by pool-user id. */
+export const adminPoolToolsCopySchema = z.object({
+  sourceUserId: z.string().uuid(),
+  targetUserIds: z.array(z.string().uuid()).min(1).max(200),
+});
+export type AdminPoolToolsCopyRequest = z.infer<typeof adminPoolToolsCopySchema>;
+
+/** Data POST /admin/pool-users/tools/copy — per-target outcome (keyed by pool-user id), same statuses
+ * as the org copy: `online` (admin then drives a buffered restore), `queued` (offline), `skipped`. */
+export interface AdminPoolToolsCopyResponse {
+  results: { targetUserId: string; status: WorkerToolCopyTargetStatus }[];
+}
+
 /** Body POST /machines/:id/tools/install — install a tool (machine-0051, ADR-0206). */
 export const workerToolInstallSchema = z.object({
   /** Catalog id or npm package name (validated npm-name shape on the cli). */
