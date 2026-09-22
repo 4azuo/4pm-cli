@@ -38,6 +38,16 @@ export function compareSemver(a: string, b: string): number {
 }
 
 /**
+ * Should `current` update to `latest`? True when older, OR the same numeric x.y.z but a DIFFERENT build
+ * string (compareSemver ignores the `-suffix`/`+build`, so "1.10.2" vs a "1.10.2-b" build reads equal —
+ * treat the differing build as an available update). Never true when `current` is numerically newer than
+ * `latest`, so a real newer release is never "downgraded" (ADR-0015). Mirrors the server's cliOutdated.
+ */
+export function shouldUpdateTo(current: string, latest: string): boolean {
+  return current !== latest && compareSemver(current, latest) <= 0;
+}
+
+/**
  * The install root of the RUNNING code = parent of dist/ (which holds package.json +
  * dist/). Derived from `import.meta.url` — the SAME basis version.ts uses (ADR-0052) —
  * NOT `process.argv[1]`, which for a symlinked global bin points at the bin/prefix dir,
@@ -159,7 +169,7 @@ export async function updateToLatest(serverUrl: string): Promise<ManualUpdateRes
   if (CLI_VERSION.startsWith("0.0.0")) return { action: "dev-build", version: CLI_VERSION };
 
   const meta = await fetchCliVersion(serverUrl);
-  if (compareSemver(CLI_VERSION, meta.latest) >= 0) {
+  if (!shouldUpdateTo(CLI_VERSION, meta.latest)) {
     return { action: "already-latest", version: CLI_VERSION };
   }
   console.log(t("update.updating", { from: CLI_VERSION, to: meta.latest }));
@@ -180,7 +190,7 @@ export async function updateToLatest(serverUrl: string): Promise<ManualUpdateRes
   // check startup does. Prevents `4pm update` from claiming success while the running
   // version stays old (e.g. extracted into the wrong directory).
   const installed = readInstalledVersion();
-  if (compareSemver(installed, meta.latest) < 0) {
+  if (shouldUpdateTo(installed, meta.latest)) {
     return {
       action: "failed",
       error:
@@ -215,7 +225,7 @@ export async function checkAndUpdate(
   }
 
   const mandatory = compareSemver(CLI_VERSION, meta.minSupported) < 0;
-  const outdated = compareSemver(CLI_VERSION, meta.latest) < 0;
+  const outdated = shouldUpdateTo(CLI_VERSION, meta.latest);
   if (!outdated) return { action: "none" };
   if (!mandatory && !autoUpdate) {
     console.warn(t("update.newVersionAutoUpdateOff", { latest: meta.latest, current: CLI_VERSION }));
@@ -253,7 +263,7 @@ export async function checkAndUpdate(
   // a different global prefix). Restarting into the old binary would loop — so only
   // claim "updated" when the installed version actually advanced.
   const installed = readInstalledVersion();
-  if (compareSemver(installed, meta.latest) < 0) {
+  if (shouldUpdateTo(installed, meta.latest)) {
     const msg = t("update.notApplied", { installed, expected: meta.latest });
     if (mandatory) {
       console.error(msg);

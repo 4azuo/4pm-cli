@@ -109,9 +109,16 @@ export function selfUnlink(serverUrl: string, hashcode3: string): Promise<null> 
 }
 
 /**
- * meta-0001: the latest / minimum cli version (auto-update — ADR-0015).
+ * meta-0001: the latest / minimum cli version (auto-update — ADR-0015). Bounded by a 20s timeout so a
+ * stalled server never leaves the auto-update stuck on "checking for a new version…" forever (ADR-0074).
  */
 export async function fetchCliVersion(serverUrl: string): Promise<CliVersionResponse> {
-  const res = await fetch(`${serverUrl}/meta/cli-version`);
-  return unwrap<CliVersionResponse>(res);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20_000);
+  try {
+    const res = await fetch(`${serverUrl}/meta/cli-version`, { signal: ctrl.signal });
+    return unwrap<CliVersionResponse>(res);
+  } finally {
+    clearTimeout(timer);
+  }
 }
