@@ -154,6 +154,17 @@ export interface UserListItemResponse extends UserResponse {
    * keeps deriving those from the org's links). A rented user is always paired.
    */
   machineConnected: boolean | null;
+  /**
+   * For a **rented** (4PM-hosted pool) user (`isRented`), the running cli version its pool-owned
+   * worker last reported and whether it is older than the latest release (`machineCliOutdated`) or
+   * the minimum supported version (`machineCliUnsupported`) — ADR-0015/0160. The org's own
+   * `machines.list` never returns the pool link, so the Machines panel can't derive these from the
+   * org's links. All three are `null` for non-rented users (the UI keeps deriving those from the
+   * org's own links).
+   */
+  machineCliVersion: string | null;
+  machineCliOutdated: boolean | null;
+  machineCliUnsupported: boolean | null;
 }
 
 /**
