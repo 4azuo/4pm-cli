@@ -196,6 +196,15 @@ export async function writeAutonomous(
         await writeFile(join(root, APPROVALS_REL), JSON.stringify(map, null, 2) + "\n", "utf8");
         break;
       }
+      case "approvalsBatch": {
+        // Commit many approve/unapprove ids in ONE write (ADR-0311) so a Save's coupled batch is atomic.
+        const map = parseJson(await readText(join(root, APPROVALS_REL), "{}")) ?? {};
+        const at = new Date().toISOString();
+        for (const taskId of req.approve) map[taskId] = { approved: true, by, at };
+        for (const taskId of req.unapprove) delete map[taskId];
+        await writeFile(join(root, APPROVALS_REL), JSON.stringify(map, null, 2) + "\n", "utf8");
+        break;
+      }
       case "userTodo": {
         // USER_TODO is a `| # | Request | Notes |` table (project-template ≥ 1.0.1); append the
         // posted request as one row, keeping the provenance (who/when) in the Notes column.

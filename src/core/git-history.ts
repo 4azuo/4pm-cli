@@ -6,7 +6,6 @@
  * the cli's serving physic-project root; a `repo` subdir escaping the root is clamped back.
  * Never throws — failures map to empty results.
  */
-import { readdir } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -47,45 +46,31 @@ async function git(cwd: string, args: string[]): Promise<string> {
 }
 
 /**
- * Discover git repos under the physic project root: the root itself (if a repo) plus any
- * immediate/nested subfolder that is a repo (sub-repos of a multi-repo project — ADR-0073).
- * Scans up to 2 levels deep to keep it cheap; each repo reports its `origin` remote.
+ * The physic project's repos (ADR-0314, single-repo): the project **root itself** (the one repo)
+ * plus each of its **git submodules** (`git submodule status`) — multi-repo is the user's own
+ * submodules, not a 4PM-managed repo set. The root reports `subdir: ""`; each submodule reports its
+ * path as `subdir`. Each repo reports its `origin` remote. Empty when the root isn't a git repo yet.
  */
 export async function gitRepos(root: string | null): Promise<GitReposReply> {
   if (!root) return { repos: [] };
   const base = resolve(root);
-  const found = new Set<string>();
+  // The root must itself be a git repo (it IS the project repo — ADR-0314).
+  const top = (await git(base, ["rev-parse", "--show-toplevel"])).trim();
+  if (!top || !(top === base || top.startsWith(base + sep))) return { repos: [] };
   const repos: GitReposReply["repos"] = [];
-  const add = async (dir: string): Promise<void> => {
-    const inside = await git(dir, ["rev-parse", "--show-toplevel"]);
-    const top = inside.trim();
-    if (!top || found.has(top) || !(top === base || top.startsWith(base + sep))) return;
-    found.add(top);
-    const subdir = top === base ? "" : top.slice(base.length + 1);
-    const remote = (await git(top, ["remote", "get-url", "origin"])).trim();
-    repos.push({ subdir, name: subdir || "", remote: remote || null });
-  };
-  await add(base);
-  try {
-    const lvl1 = await readdir(base, { withFileTypes: true });
-    for (const d of lvl1) {
-      if (!d.isDirectory() || d.name === ".git" || d.name === "node_modules") continue;
-      const p1 = resolve(base, d.name);
-      await add(p1);
-      try {
-        const lvl2 = await readdir(p1, { withFileTypes: true });
-        for (const d2 of lvl2) {
-          if (!d2.isDirectory() || d2.name === ".git" || d2.name === "node_modules") continue;
-          await add(resolve(p1, d2.name));
-        }
-      } catch {
-        // unreadable subdir ⇒ skip
-      }
-    }
-  } catch {
-    // unreadable root ⇒ only the root repo (if any)
+  const rootRemote = (await git(base, ["remote", "get-url", "origin"])).trim();
+  repos.push({ subdir: "", name: "", remote: rootRemote || null });
+  // Git submodules of the root — `git submodule status` lists each as "<flag><sha> <path> (<ref>)".
+  const subOut = await git(base, ["submodule", "status"]);
+  for (const line of subOut.split("\n")) {
+    const m = line.trim().match(/^[-+U ]?[0-9a-f]{7,40}\s+(\S+)/);
+    const subPath = m?.[1];
+    if (!subPath) continue;
+    const abs = resolve(base, subPath);
+    if (!(abs === base || abs.startsWith(base + sep))) continue; // clamp to the physic root
+    const remote = (await git(abs, ["remote", "get-url", "origin"])).trim();
+    repos.push({ subdir: subPath, name: subPath, remote: remote || null });
   }
-  repos.sort((a, b) => a.subdir.localeCompare(b.subdir));
   return { repos };
 }
 

@@ -65,6 +65,24 @@ export const AI_GUIDE_FILES = ["CLAUDE.md", "AGENT.md"] as const;
 /** Union type of AI-guide files. */
 export type AiGuideFile = (typeof AI_GUIDE_FILES)[number];
 
+/**
+ * AI Todo task tags (ADR-0311) — a **closed** catalog of tags a task may carry in the `AI_TODO.md`
+ * `Tag` column. Each tag maps to a **server-side action run down to the project** when the task is
+ * approved (approval is committed on Save). The only member now is `UpdateSpecFromDB`: the server
+ * loads the DB `Project.spec` and writes it into the worker's `project.spec.json`. Tags are chosen
+ * from this catalog only (multi-select, no free text) so every tag resolves to a known handler; the
+ * per-tag human description is an i18n string on the web, not here (this package stays i18n-free).
+ */
+export const AI_TASK_TAGS = ["UpdateSpecFromDB"] as const;
+
+/** Union type of AI Todo task tags. */
+export type AiTaskTag = (typeof AI_TASK_TAGS)[number];
+
+/** True when a raw cell token is a known task tag (drops unknown/legacy text). */
+export function isAiTaskTag(value: string): value is AiTaskTag {
+  return (AI_TASK_TAGS as readonly string[]).includes(value);
+}
+
 /** Machine-link scope (ADR-0010). */
 export const MachineLinkScope = {
   PROJECT: "project",

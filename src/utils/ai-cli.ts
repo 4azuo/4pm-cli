@@ -36,7 +36,7 @@ const REQUIRED_AI_ARGS: { claude: string[]; codex: string[]; antigravity: string
  */
 const ONE_SHOT_DISALLOWED_CLAUDE_TOOLS = [
   "Bash", "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit", "Task", "WebSearch", "WebFetch",
-  "Skill", "SlashCommand", "ToolSearch", "TaskCreate", "TaskGet", "TaskList", "TaskOutput",
+  "Skill", "ToolSearch", "TaskCreate", "TaskGet", "TaskList", "TaskOutput",
   "TaskStop", "TaskUpdate", "Monitor", "DesignSync", "CronCreate", "CronDelete", "CronList",
   "EnterWorktree", "ExitWorktree", "RemoteTrigger", "ScheduleWakeup", "SendMessage", "PushNotification",
 ].join(",");

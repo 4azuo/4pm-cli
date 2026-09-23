@@ -872,8 +872,9 @@ export type SubagentSpec = z.infer<typeof subagentSpecSchema>;
  * PMSpec wizard payload (project-0010), SPEC_VERSION 5: the **self-describing envelope**
  * (see the web's `features/spec/envelope.ts`). Stored as jsonb. `fields` carries every
  * catalog field with its schema + value; the `id` and `name` fields must hold a non-empty
- * value. `repos` (ADR-0073) stay top-level and are validated when present: exactly one
- * primary. `meta` holds internal AI metadata for draft round-trips (stripped on create).
+ * value. `repos` (ADR-0073) stay top-level and are validated: **exactly one** repo (ADR-0314 —
+ * the project root IS the repo; multi-repo is the user's own submodules). `meta` holds internal
+ * AI metadata for draft round-trips (stripped on create).
  */
 export const projectSpecSchema = z
   .object({
@@ -896,15 +897,14 @@ export const projectSpecSchema = z
         });
       }
     }
-    if (v.repos && v.repos.length > 0) {
-      const primaries = v.repos.filter((r) => r.primary).length;
-      if (primaries !== 1) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["repos"],
-          message: "exactly one primary repo is required",
-        });
-      }
+    // Single-repo (ADR-0314): a project has exactly one repo — the root IS the repo. Multi-repo is
+    // the user's own git submodules, not extra declared repos.
+    if (!v.repos || v.repos.length !== 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["repos"],
+        message: "a project must declare exactly one repo",
+      });
     }
   });
 export type ProjectSpec = z.infer<typeof projectSpecSchema>;

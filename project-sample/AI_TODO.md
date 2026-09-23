@@ -3,12 +3,14 @@
 > Tasks are generated from `USER_TODO.md`. ID format `TSK-{groupid:0000}-{taskid:0000}`
 > (group = one request/batch, task = a small sub-task doable in ~1 cycle).
 > **Priority** = High / Medium / Low.
-> **Approved**: the source of truth is `.claude/.autonomous.approvals.json` (the user ticks it in the
-> web VERIFY tab — ADR-0152); the Approved column here is display-only, not where the decision is made.
+> **Tag** = optional catalog tag(s) (e.g. `UpdateSpecFromDB`) whose action runs from the server down to
+> the project when the task is approved (approval is committed on Save — ADR-0311).
+> **Approval** is NOT a table column — it lives in `.claude/.autonomous.approvals.json` (ADR-0152), set
+> from the web AI Todo grid; `/auto-cycle` reads that file, never the table.
 > **Depends** = the `TSK-…` ids that must be DONE (present in `AI_DONE.md`) first.
 > `/auto-cycle` only takes tasks that are approved AND have their dependencies met → moves them to
 > `AI_PROGRESS.md`; runs group by group, within a group High → Medium → Low.
 
-| ID | Priority | Approved | Depends | Group | Task description | Notes |
-|----|----------|----------|---------|-------|------------------|-------|
+| ID | Priority | Tag | Depends | Group | Task description | Notes |
+|----|----------|-----|---------|-------|------------------|-------|
 | | | | | | | |

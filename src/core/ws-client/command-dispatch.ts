@@ -125,9 +125,15 @@ export function handleCommandChannels(
     text: `$ ${dispatch.cmd} ${dispatch.args.join(" ")}`.trimEnd(),
   });
   ctx.bus.startBusy(dispatch.cmd);
+  // Run a raw command (git/gh/glab from the Git tab — ADR-0151) inside the live serving-project
+  // root, not the cli's launch dir. Without this the spawn cwd is `dispatch.path` (unset by the
+  // web/server), so `git` runs outside the repo and fails `fatal: not a git repository`. The project
+  // root IS the repo (ADR-0314), so it is the correct cwd; a submodule op still scopes via `git -C`.
+  const cwd = dispatch.path ?? ctx.physicRoot ?? readProfileConfig(ctx.profileDir).physicPath ?? process.cwd();
+  const dispatchInRoot: CommandDispatchPayload = { ...dispatch, path: cwd };
   // Wall-clock start for the processing-time badge on the `exit` entry (ADR-0249).
   const cmdStartMs = Date.now();
-  void runCommand(dispatch, (out) => {
+  void runCommand(dispatchInRoot, (out) => {
     if (out.chunk) {
       ctx.bus.push({ source: "server", kind: "out", text: out.chunk });
       appendCommandOutput(out.commandId, out.chunk);

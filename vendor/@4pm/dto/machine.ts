@@ -943,6 +943,42 @@ export const taskApproveRequestSchema = z.object({
 export type TaskApproveRequestBody = z.infer<typeof taskApproveRequestSchema>;
 
 /**
+ * One task in a batch approve (ADR-0311): its id plus the catalog tags it carries (read by the web
+ * from the `AI_TODO.md` `Tag` column). Tags are validated as free strings here and filtered to the
+ * known `AiTaskTag` catalog server-side (an unknown/legacy token maps to no handler and is dropped).
+ */
+export const taskApproveEntrySchema = z.object({
+  taskId: z.string().min(1).max(64),
+  tags: z.array(z.string().min(1).max(64)).max(16).default([]),
+});
+export type TaskApproveEntry = z.infer<typeof taskApproveEntrySchema>;
+
+/**
+ * Body POST /machines/:id/tasks/approve-batch — commit a Save's pending approvals atomically
+ * (machine-0063, ADR-0311). `approvals` are the tasks to approve (with their tags), `unapprovals` the
+ * ids to drop, `repo` the project-root-relative base of the repo this `AI_TODO.md` belongs to (".",
+ * "./web") — a tag action (e.g. `UpdateSpecFromDB` → `<repo>/project.spec.json`) targets that repo.
+ * The server runs every tag action first and, only on full success, writes the approvals batch; any
+ * action failure ⇒ nothing is written (the user re-approves). Gated by `project.task_approve`.
+ */
+export const taskApproveBatchRequestSchema = z.object({
+  approvals: z.array(taskApproveEntrySchema).max(500).default([]),
+  unapprovals: z.array(z.string().min(1).max(64)).max(500).default([]),
+  repo: z.string().max(255).default("."),
+});
+export type TaskApproveBatchRequestBody = z.infer<typeof taskApproveBatchRequestSchema>;
+
+/** Data POST /machines/:id/tasks/approve-batch — the batch outcome (machine-0063, ADR-0311). */
+export interface TaskApproveBatchResponse {
+  /** True when every tag action ran and the approvals were committed. */
+  ok: boolean;
+  /** When `!ok` and a tag action failed: the offending task id (nothing was written). */
+  failedTaskId?: string;
+  /** When `!ok`: a short reason (English; the web maps its own message). */
+  reason?: string;
+}
+
+/**
  * Body PUT /machines/:id/autonomous — a discriminated write to the autonomous engine
  * (machine-0029, ADR-0152). The **author** (`by`) is filled by the server from the
  * authenticated user (trace, not client-supplied) before forwarding to the cli.
@@ -950,6 +986,13 @@ export type TaskApproveRequestBody = z.infer<typeof taskApproveRequestSchema>;
 export const autonomousWriteRequestSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("settings"), settings: z.string().max(64 * 1024) }),
   z.object({ kind: z.literal("approvals"), taskId: z.string().min(1).max(64), approved: z.boolean() }),
+  // Batched approvals (ADR-0311): commit many approve/unapprove ids in ONE approvals-file write, so a
+  // Save's coupled batch lands atomically. Constructed by the server after its tag actions succeed.
+  z.object({
+    kind: z.literal("approvalsBatch"),
+    approve: z.array(z.string().min(1).max(64)).max(500),
+    unapprove: z.array(z.string().min(1).max(64)).max(500),
+  }),
   z.object({ kind: z.literal("userTodo"), content: z.string().min(1).max(16 * 1024) }),
   z.object({ kind: z.literal("cron"), action: z.enum(["install", "uninstall"]) }),
 ]);

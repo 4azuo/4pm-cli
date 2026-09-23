@@ -568,6 +568,8 @@ export interface AutonomousLogsReply {
 export type AutonomousWriteRequest =
   | { kind: "settings"; settings: string }
   | { kind: "approvals"; taskId: string; approved: boolean; by: string }
+  // Batched approvals (ADR-0311): commit many approve/unapprove ids in one approvals-file write.
+  | { kind: "approvalsBatch"; approve: string[]; unapprove: string[]; by: string }
   | { kind: "userTodo"; content: string; by: string }
   | { kind: "cron"; action: "install" | "uninstall" };
 export interface AutonomousWriteReply {
