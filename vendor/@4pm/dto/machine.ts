@@ -993,6 +993,13 @@ export const autonomousWriteRequestSchema = z.discriminatedUnion("kind", [
     unapprove: z.array(z.string().min(1).max(64)).max(500),
   }),
   z.object({ kind: z.literal("userTodo"), content: z.string().min(1).max(16 * 1024) }),
+  // Traced book save (ADR-0320): the cli diffs rows by id + stamps `.autonomous.authors.json` so
+  // authorship is server-filled, not a spoofable `.md` cell. `by`/author are added server-side.
+  z.object({
+    kind: z.literal("bookSave"),
+    book: z.enum(["userTodo", "userQa", "aiTodo"]),
+    content: z.string().max(256 * 1024),
+  }),
   z.object({ kind: z.literal("cron"), action: z.enum(["install", "uninstall"]) }),
 ]);
 export type AutonomousWriteBody = z.infer<typeof autonomousWriteRequestSchema>;

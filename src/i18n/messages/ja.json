@@ -172,5 +172,9 @@
   "slash.claudeCmd.usage": "使い方: /claude-cmd /context  (AI CLI に転送)",
   "start.connecting": "{server} に接続中（プロファイル: {profile}）…",
   "start.recovered": "内部エラーから回復しました — 再接続中: {message}",
-  "attach.attached": "プロファイル「{profile}」にアタッチしました — worker はヘッドレスで動作し、入力は転送されます。"
+  "attach.attached": "プロファイル「{profile}」にアタッチしました — worker はヘッドレスで動作し、入力は転送されます。",
+  "autoRun.done": "自律サイクルが完了しました。",
+  "autoRun.failed": "自律サイクルのディスパッチに失敗しました: {note}",
+  "autoRun.noDaemon": "プロファイル \"{profile}\" のデーモンが実行されていません — 先に起動してください: 4pm start --profile {profile}",
+  "autoRun.timeout": "自律サイクルが制限時間を超えました — 中止します。"
 }

@@ -550,8 +550,10 @@ export interface AutonomousReadReply {
   settings: string;
   status: AutonomousStatus;
   books: AutonomousBooks;
-  /** `.autonomous.approvals.json` text (`{}` when absent). */
+  /** `.autonomous.approvals.json` text (`{}` when absent) — who/when approved, per row id. */
   approvals: string;
+  /** `.autonomous.authors.json` text (`{}` when absent) — who/when wrote each row (ADR-0320). */
+  authors: string;
 }
 
 /** autonomous.logs — tail one day's tick log. */
@@ -565,16 +567,29 @@ export interface AutonomousLogsReply {
 }
 
 /** autonomous.write — a discriminated write to the engine (ADR-0152). */
+// Identity carried on every identity-writing autonomous write (ADR-0320): `by` is the **stable userId**
+// (the separation-of-duties match key, immune to an email change) and `byLabel` is the human-readable
+// display (email, else username). Both are server-filled — never the client body.
 export type AutonomousWriteRequest =
   | { kind: "settings"; settings: string }
-  | { kind: "approvals"; taskId: string; approved: boolean; by: string }
+  // Approvals also carry `byIsAdmin` (server-filled from the approver's role) so the cli can enforce
+  // separation of duties — a non-ADMIN can't approve a row they wrote (ADR-0320).
+  | { kind: "approvals"; taskId: string; approved: boolean; by: string; byLabel?: string; byIsAdmin?: boolean }
   // Batched approvals (ADR-0311): commit many approve/unapprove ids in one approvals-file write.
-  | { kind: "approvalsBatch"; approve: string[]; unapprove: string[]; by: string }
-  | { kind: "userTodo"; content: string; by: string }
+  | { kind: "approvalsBatch"; approve: string[]; unapprove: string[]; by: string; byLabel?: string; byIsAdmin?: boolean }
+  | { kind: "userTodo"; content: string; by: string; byLabel?: string }
+  // Traced book save (ADR-0320): the cli diffs rows by id against the current book and stamps
+  // `.autonomous.authors.json` (author = `by`/`byLabel`) for added/edited rows, so authorship can't be
+  // forged in a client-written `.md` cell. `book` selects which of the three approval books is saved.
+  | { kind: "bookSave"; book: "userTodo" | "userQa" | "aiTodo"; content: string; by: string; byLabel?: string }
   | { kind: "cron"; action: "install" | "uninstall" };
 export interface AutonomousWriteReply {
   ok: boolean;
   error?: string;
+  /** A machine-readable failure code — e.g. `APPROVAL_SELF` when SoD blocked a self-approval (ADR-0320). */
+  code?: string;
+  /** The row id that failed (e.g. the self-approved id), for the UI to point at (ADR-0320). */
+  failedId?: string;
   /** The refreshed status after the write (so the web updates the badge without a re-read). */
   status?: AutonomousStatus;
 }

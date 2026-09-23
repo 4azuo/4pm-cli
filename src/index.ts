@@ -9,6 +9,7 @@
 import { runLink } from "./commands/link";
 import { runStart } from "./commands/start";
 import { runAttach } from "./commands/attach";
+import { runAutoRun } from "./commands/auto-run";
 import { runAiLogin } from "./commands/ai-login";
 import { runUnlink } from "./commands/unlink";
 import { runUpdate } from "./commands/update";
@@ -120,6 +121,16 @@ async function main(): Promise<void> {
       await runAttach(profileDir(name), name);
       break;
     }
+    case "auto-run": {
+      // Autonomous cycle (ADR-0319): the cron tick runs ONE cycle through the running daemon.
+      const name = await pickLinkedProfile(explicitProfile, "auto-run");
+      if (!name) {
+        process.exitCode = 1;
+        break;
+      }
+      await runAutoRun(profileDir(name), name);
+      break;
+    }
     case "ai-login": {
       // Authenticate a profile's AI-CLI credential dir in place (ADR-0199, in-container posture).
       const name = await pickLinkedProfile(explicitProfile, "ai-login");
@@ -161,6 +172,7 @@ async function main(): Promise<void> {
           "  4pm link      Pair with the server (pairing → confirmation code)",
           "  4pm start     Connect WS, receive commands from the server",
           "  4pm attach    Open the TUI against a running headless daemon (ADR-0192)",
+          "  4pm auto-run  Run one autonomous cycle via the running daemon (cron — ADR-0319)",
           "  4pm ai-login  Log into a profile's AI CLI (claude/codex) in place (ADR-0199)",
           "  4pm unlink    Delete a link (pick a profile if several)",
           "  4pm version   Show the installed version (+ latest from the server)",

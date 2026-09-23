@@ -172,5 +172,9 @@
   "slash.claudeCmd.usage": "usage: /claude-cmd /context  (forwards to the AI CLI)",
   "start.connecting": "Connecting to {server} (profile: {profile})…",
   "start.recovered": "Recovered from an internal error — reconnecting: {message}",
-  "attach.attached": "Attached to profile \"{profile}\" — the worker runs headless; input is forwarded."
+  "attach.attached": "Attached to profile \"{profile}\" — the worker runs headless; input is forwarded.",
+  "autoRun.done": "Autonomous cycle complete.",
+  "autoRun.failed": "Autonomous cycle failed to dispatch: {note}",
+  "autoRun.noDaemon": "No running daemon for profile \"{profile}\" — start it first: 4pm start --profile {profile}",
+  "autoRun.timeout": "Autonomous cycle exceeded the time limit — aborting."
 }

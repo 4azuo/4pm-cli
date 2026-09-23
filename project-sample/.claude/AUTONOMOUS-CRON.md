@@ -1,9 +1,9 @@
 # Set up a 10-minute cron for `autonomous-tick.sh`
 
 How to install the **autonomous cycle** on **WSL (Ubuntu)**: cron calls
-[`autonomous-tick.sh`](autonomous-tick.sh) every **10 minutes**; each run does one `claude -p /auto-cycle`
-cycle then exits. A file lock (`.claude/.autonomous.lock`) ensures **no two runs overlap** (a later tick
-that sees the lock skips).
+[`autonomous-tick.sh`](autonomous-tick.sh) every **10 minutes**; each run does one **`4pm auto-run`**
+cycle (the running `4pm start` daemon executes it — ADR-0319) then exits. A file lock
+(`.claude/.autonomous.lock`) ensures **no two runs overlap** (a later tick that sees the lock skips).
 
 > All commands below run in a **WSL shell** (Ubuntu) unless noted as PowerShell/Windows. Call the project
 > root `$PROJECT` (e.g. `~/projects/<your-project>`).
@@ -18,9 +18,10 @@ cd "$PROJECT"
 Every line must print a path/version (not "not found"):
 ```bash
 command -v cron   || echo "missing cron"
-command -v claude || echo "missing claude (install natively in WSL)"
+command -v 4pm    || echo "missing 4pm cli (install natively in WSL; a '4pm start' daemon must be running)"
 command -v git    || echo "missing git"
 command -v python3 || echo "missing python3"
+command -v gh     || command -v glab || echo "missing gh/glab (needed for the PR step)"
 ```
 
 ## 2. Make the tick executable + install the cron line

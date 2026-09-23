@@ -45,12 +45,16 @@ export type ControlServerFrame =
   | { t: "worker"; worker: string }
   | { t: "project"; project: string | null }
   | { t: "usage"; usage: MachineUsagePayload }
-  | { t: "tokens"; total: number };
+  | { t: "tokens"; total: number }
+  // The autonomous cycle triggered over this socket (ADR-0319) settled — `ok` false carries a `note`.
+  | { t: "autonomousDone"; ok: boolean; note?: string };
 
 /** client → daemon frames. */
 export type ControlClientFrame =
   | { t: "submit"; input: string }
-  | { t: "reconnect" };
+  | { t: "reconnect" }
+  // `4pm auto-run` asks the daemon to run ONE autonomous cycle through its live session (ADR-0319).
+  | { t: "autonomousRun" };
 
 /** Encode one frame as a JSONL line. */
 export function encodeFrame(frame: ControlServerFrame | ControlClientFrame): string {

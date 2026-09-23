@@ -144,6 +144,9 @@ export const ErrorCode = {
   // A disruptive worker op (repo (re)provision / CLI update) was refused because the target
   // worker's autonomous mode is armed (installed && !paused) — stop it first (ADR-0317).
   AUTONOMOUS_ACTIVE: "AUTONOMOUS_ACTIVE",
+  // Separation of duties (ADR-0320): a non-ADMIN tried to approve a row they wrote — the writer can't
+  // be the approver of their own row (ADMIN may self-approve).
+  APPROVAL_SELF: "APPROVAL_SELF",
   CLI_VERSION_UNSUPPORTED: "CLI_VERSION_UNSUPPORTED",
   ORCHESTRATOR_OFFLINE: "ORCHESTRATOR_OFFLINE",
   WS_TOKEN_INVALID: "WS_TOKEN_INVALID",

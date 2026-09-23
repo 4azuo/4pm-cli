@@ -58,6 +58,8 @@ export function startControlServer(
     bus.onProject((project) => broadcast({ t: "project", project })),
     bus.onUsage((usage) => broadcast({ t: "usage", usage })),
     bus.onTokens((total) => broadcast({ t: "tokens", total })),
+    // Report an autonomous cycle's completion back to the `4pm auto-run` client (ADR-0319).
+    bus.onAutonomousDone((ok, note) => broadcast({ t: "autonomousDone", ok, note })),
   ];
 
   const server: Server = createServer((sock) => {
@@ -82,6 +84,7 @@ export function startControlServer(
       for (const frame of parse(chunk)) {
         if (frame.t === "submit") bus.submitLocal(frame.input);
         else if (frame.t === "reconnect") bus.requestReconnect();
+        else if (frame.t === "autonomousRun") bus.submitAutonomous();
       }
     });
     const drop = (): void => {

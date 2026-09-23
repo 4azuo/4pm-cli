@@ -9,9 +9,7 @@
     "defaultMode": "bypassPermissions",
     "allow": [],
     "ask": [],
-    "deny": [
-      "Read(./project.secrets.json)"
-    ]
+    "deny": []
   },
   "enableAllProjectMcpServers": true
 }

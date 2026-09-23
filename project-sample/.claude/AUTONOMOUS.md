@@ -1,34 +1,36 @@
 # Autonomous mode — how it's assembled
 
 > **Sample project — defines the workflow only, does NOT run on its own.** The files below describe an
-> unattended work loop, intended to run on **WSL** (an isolated environment where the AI can be given
-> full permissions).
+> unattended work loop (ADR-0152 + **ADR-0319**), intended to run on **WSL** (an isolated environment
+> where the AI can be given full permissions). Under ADR-0319 the cycle runs **through the 4PM cli**,
+> not a raw `claude -p`.
 
 ## The pieces
 | File | Role |
 |------|------|
-| `.claude/hooks/autonomous-tick.sh` | Cron tick (every ~10 min); a lock so **busy ⇒ skip, idle ⇒ run**; calls `claude -p /auto-cycle`. |
-| `.claude/commands/auto-cycle.md` | Defines **one cycle**: token gate → sync `${ai_dev_branch}$` → generate tasks → do one task → test → merge into `${ai_dev_branch}$`. |
-| `.claude/skills/check-usage/check_usage.py` | The `check-usage` skill: prints token % and writes `output/last-usage-check.json` (deleted + recreated each run) for the token gate to read. |
-| `.claude/.autonomous.approvals.json` | Approval source of truth (ADR-0152): `{ "<TSK-id>": {approved, by, at} }` — the web VERIFY tab writes it; `/auto-cycle` reads it. |
-| `USER_TODO.md` | The user writes requests here; the cycle reads then clears it. |
+| `.claude/hooks/autonomous-tick.sh` | Cron tick (every ~5–10 min): a run lock + the CHEAP local gates (pause / quiet-hours / max-ticks / **has-work**), then runs **`4pm auto-run`**. No token spend when there's no approved work. |
+| `4pm auto-run` (cli) | Asks the running **`4pm start`** daemon to run **one** cycle over the control socket; the cycle rides the daemon's live WS session (failover ADR-0182, metering ADR-0072, folder-scope ADR-0181, timeout ADR-0243). |
+| cli `buildAutonomousCyclePrompt` | The cli-owned cycle instructions (was `.claude/commands/auto-cycle.md`, now retired): sync branch → analyse **approved** USER_TODO → fold **approved** USER_QA → do ONE approved task → **PR** into the base branch. |
+| `.claude/.autonomous.approvals.json` | Approval source of truth (ADR-0152): `{ "<REQ/QA/TSK-id>": {approved, by, at} }` — the web AI-content grids write it; the cycle reads it. |
+| `USER_TODO.md` / `USER_QA.md` | User requests / the AI's questions back — each row approved before the cycle acts on it (ADR-0319). |
 | `AI_TODO.md` / `AI_PROGRESS.md` / `AI_DONE.md` | The task books: queue → in progress → done (ID `TSK-{group:0000}-{task:0000}`). |
-| `.claude/templates/<NAME>.{empty,sample}.md` | Canonical templates for the 5 books. The "has work" gate + `/auto-cycle` **compare against `*.empty.md`** to tell empty/has-work and reset correctly (see `README.md` in that folder). |
+| `.claude/templates/<NAME>.{empty,sample}.md` | Canonical templates for the books. The has-work gate + the cycle **compare against `*.empty.md`** to tell empty/has-work and reset correctly. |
 | `.claude/settings.json` | The "bypass all" permission profile for autonomous mode (see the note below). |
 
 ## Lifecycle (1 tick)
 ```
-cron ~10min → autonomous-tick.sh
-  ├─ locked?  → log "skip", exit (wait for the next tick)
-  └─ idle → claude -p /auto-cycle
-       0. usage: session<80% & weekly<90%?  (no → stop)
-       1. checkout/fetch/pull the `${ai_dev_branch}$` branch
-       2. USER_TODO.md → generate tasks into AI_TODO.md (with IDs) → clear USER_TODO.md
-       3. pick one APPROVED task (approvals + dependencies) → AI_PROGRESS.md, remove from AI_TODO.md, commit
-       4. task/TSK-… branch → implement → commit → run the project's tests
-       5. back to `${ai_dev_branch}$` → merge task (resolve conflicts if any) → AI_DONE.md, remove from AI_PROGRESS.md, commit
-       6. report on the `conversation` branch (CONVERSATION.md, ≤50 entries) for later agents
-       7. recheck usage → stop
+cron ~5–10min → autonomous-tick.sh
+  ├─ locked? / paused? / quiet-hours? / max-ticks? → log "skip", exit
+  ├─ has-work? (approved USER_TODO/USER_QA/AI_TODO, or AI_PROGRESS non-empty) — no → skip (daemon NOT woken)
+  └─ 4pm auto-run → the running daemon runs ONE cycle:
+       1. sync the primary repo's current branch (base branch — ADR-0292)
+       2. analyse APPROVED USER_TODO requests → AI_TODO tasks (unclear ⇒ ask via USER_QA)
+       3. fold APPROVED USER_QA answers back into AI_TODO
+       4. take ONE approved task (deps met) → AI_PROGRESS, commit
+       5. implement + test on task/TSK-… branch
+       6. rebase + push + open a PULL REQUEST into the base branch (no direct merge)
+       7. update the books (AI_DONE), commit + push the base branch
+  └─ record success/failure (N consecutive failures → pause); the EXIT trap releases the lock
 ```
 
 ## Install on WSL
@@ -40,13 +42,11 @@ crontab -e
 # watch:
 tail -f .claude/logs/autonomous-tick-$(date +%F).log
 ```
-Requirements: `claude` logged in (has `~/.claude/.credentials.json`), plus `git` and `python3`, and the
-project's test tooling (per `CLAUDE.md`).
+Requirements: the **`4pm`** cli on PATH with a **running `4pm start` daemon** serving this project (it
+holds the AI credentials + WS session), plus `git`, `python3`, and `gh`/`glab` for the PR step.
 
 ## Note on permissions (important)
-- Claude Code only auto-loads `.claude/settings.json` and `.claude/settings.local.json`. To make a
-  full-permission profile take effect, one of:
-  1. The tick already passes `--permission-mode bypassPermissions --dangerously-skip-permissions` (in use).
-  2. Or copy the profile into `.claude/settings.local.json`.
-  3. Or point `CLAUDE_CONFIG_DIR` at the profile dir when running headless.
+- The daemon runs the cycle as a **write-capable agent** (`--permission-mode bypassPermissions`,
+  ADR-0271) so file + git/`gh`/`glab` writes run headless. It stays bounded by the folder-scope guard
+  (ADR-0181) + the AI-run timeout (ADR-0243).
 - Only enable full permissions in an isolated environment (WSL/CI). Never on a machine with sensitive data.

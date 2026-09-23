@@ -377,4 +377,30 @@ export class SessionBus {
     this.emitter.on("reconnect", fn);
     return () => this.emitter.off("reconnect", fn);
   }
+
+  /**
+   * Trigger → session: run ONE autonomous cycle (ADR-0319). Sent by `4pm auto-run` over the control
+   * socket so the cron tick runs the cycle through THIS daemon's live WS session — reusing its
+   * profile-failover, token metering (ADR-0072) and folder-scope (ADR-0181) — instead of a raw `claude -p`.
+   */
+  submitAutonomous(): void {
+    this.emitter.emit("autonomous-run");
+  }
+
+  /** Subscribe to autonomous-cycle triggers. */
+  onAutonomousRun(fn: () => void): () => void {
+    this.emitter.on("autonomous-run", fn);
+    return () => this.emitter.off("autonomous-run", fn);
+  }
+
+  /** Session → trigger: the autonomous cycle settled (ok + an optional note). */
+  autonomousDone(ok: boolean, note?: string): void {
+    this.emitter.emit("autonomous-done", ok, note);
+  }
+
+  /** Subscribe to autonomous-cycle completion. */
+  onAutonomousDone(fn: (ok: boolean, note?: string) => void): () => void {
+    this.emitter.on("autonomous-done", fn);
+    return () => this.emitter.off("autonomous-done", fn);
+  }
 }

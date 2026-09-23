@@ -68,6 +68,7 @@ import { CLI_VERSION } from "../version";
 import { envReconnectMaxSec, toDtoEntry } from "./ws-client/transcript";
 import type { WsHandlerCtx } from "./ws-client/context";
 import { handleCommandChannels, resetMemorySession, runLocalCommand } from "./ws-client/command-dispatch";
+import { runAutonomousCycle } from "./autonomous-cycle";
 import { handleFsChannels } from "./ws-client/handlers/fs";
 import { handleGitChannels } from "./ws-client/handlers/git";
 import { handleMiscChannels } from "./ws-client/handlers/misc";
@@ -276,6 +277,9 @@ export class WsClient {
     this.hctx = this.buildHandlerCtx();
     // The operator's local commands (TUI input box) run through the same executor.
     context.bus.onLocalSubmit((input) => void runLocalCommand(this.hctx, input));
+    // Autonomous cycle (ADR-0319): `4pm auto-run` (cron tick) triggers ONE cycle through this live
+    // session over the control socket, so it reuses failover + metering instead of a raw `claude -p`.
+    context.bus.onAutonomousRun(() => void runAutonomousCycle(this.hctx));
     // /reconnect ⇒ drop the socket / wake the backoff so the loop reconnects now.
     context.bus.onReconnect(() => this.reconnectNow());
     // Console sync (ADR-0150): mirror the authoritative transcript to the server while a web
