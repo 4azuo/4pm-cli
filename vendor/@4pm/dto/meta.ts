@@ -26,3 +26,14 @@ export interface MetaConfigResponse {
    *  `FOURPM_SERVER` (dev: http://localhost:42001; prod: the deployment's API origin). */
   serverUrl: string;
 }
+
+/** Data 200 GET /meta/public-stats (meta-0003, ADR-0315) — public platform aggregates
+ *  for the /login announcement modal (aggregates only, no per-account data). */
+export interface PublicStatsResponse {
+  /** Registered organizations (excludes the platform-pool org). */
+  orgCount: number;
+  /** Users currently logged in — open web-presence sessions (`UserSession.endedAt IS NULL`). */
+  onlineUsers: number;
+  /** Workers connected right now (live WS presence — ADR-0133). */
+  workersRunning: number;
+}
