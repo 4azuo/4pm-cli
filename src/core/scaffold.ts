@@ -3,8 +3,9 @@
  * ADR-0314 (single-repo): a project has **one** repo cloned/scaffolded directly at the physic-project
  * root — the root **is** the repo (`.git` at the root, ADR-0080). **create** clones + fully scaffolds
  * it (template + spec + AI init); **add** clones it with no scaffold/AI-init (ADR-0117). 4PM never
- * creates repos — the repo is an existing one by `url` (ADR-0172). Multi-repo ⇒ the user's own git
- * submodules inside the repo.
+ * creates repos — the repo is an existing one by `url` (ADR-0172). ADR-0316: any declared **git
+ * submodules** are attached under the root (`git submodule add` + commit + push) after the primary —
+ * submodules are attach-only (no scaffold); only the primary is scaffolded.
  */
 import { cp, mkdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -26,11 +27,13 @@ const run = promisify(execFile);
 /** Emit a progress step to the server (project.progress channel). */
 export type ProgressEmitter = (p: ProjectProgressPayload) => void;
 
-/** The project's single declared repo (ADR-0172/0314) — read loosely from the spec jsonb. */
+/** A declared repo of the project (ADR-0172/0314/0316) — read loosely from the spec jsonb. */
 interface RepoDecl {
   role?: string;
   primary?: boolean;
   url?: string;
+  /** Submodule folder under the root (empty ⇒ the primary/root — ADR-0316). */
+  subdir?: string;
   /** Branch to clone / check out (ADR-0292); empty ⇒ the repo's default branch. */
   branch?: string;
 }
@@ -52,6 +55,98 @@ function reposOf(spec: Record<string, unknown> | undefined): RepoDecl[] {
 /** The single project repo (ADR-0314) — the primary, else the first; null when none declared. */
 function singleRepo(repos: RepoDecl[]): RepoDecl | null {
   return repos.find((r) => r.primary) ?? repos[0] ?? null;
+}
+
+/** The git submodules to attach (ADR-0316) — every non-primary repo that has a url + a folder. */
+function submodulesOf(repos: RepoDecl[]): RepoDecl[] {
+  const primary = singleRepo(repos);
+  return repos.filter((r) => r !== primary && !!r.url && !!(r.subdir ?? "").trim());
+}
+
+/**
+ * Attach the project's git submodules under the primary root (ADR-0316): `git submodule add
+ * [-b <branch>] <url> <subdir>` for each declared submodule, **idempotent** (an already-registered
+ * one is `git submodule update --init` instead), then commit `.gitmodules` + the gitlinks and push to
+ * the primary's remote. Push is **best-effort** — a failure is surfaced but keeps the local commit for
+ * retry. 4PM never creates the repo (ADR-0172) — an empty/unreachable submodule surfaces its git error.
+ */
+async function attachSubmodules(
+  root: string,
+  submodules: RepoDecl[],
+  emit: (step: string, message: string) => void,
+): Promise<void> {
+  if (submodules.length === 0) return;
+  // The root must be a git repo (the primary) before a submodule can be added.
+  if (!existsSync(join(root, ".git"))) return;
+  let added = 0;
+  for (const sub of submodules) {
+    const dir = (sub.subdir ?? "").trim();
+    if (!dir || !sub.url) continue;
+    // Already registered (working tree or a stored gitdir) ⇒ just (re)initialize it (idempotent).
+    if (existsSync(join(root, dir, ".git")) || existsSync(join(root, ".git", "modules", dir))) {
+      emit("submodule", `Submodule ${dir} already present — updating…`);
+      try {
+        await run("git", ["submodule", "update", "--init", "--", dir], { cwd: root, timeout: 120_000 });
+      } catch {
+        // A missing/unreachable submodule remote must not fail the whole scaffold.
+      }
+      continue;
+    }
+    emit("submodule", `Adding submodule ${sub.url} → ${dir}…`);
+    const b = (sub.branch ?? "").trim();
+    try {
+      await run("git", ["submodule", "add", ...(b ? ["-b", b] : []), sub.url, dir], { cwd: root, timeout: 120_000 });
+      added++;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Already in the index/.gitmodules (e.g. after a force re-clone) ⇒ initialize instead of add.
+      if (/already exists|already registered|in the index/i.test(msg)) {
+        try {
+          await run("git", ["submodule", "update", "--init", "--", dir], { cwd: root, timeout: 120_000 });
+          added++;
+        } catch {
+          // best-effort
+        }
+      } else {
+        throw new Error(`git submodule add ${dir} failed: ${msg}`);
+      }
+    }
+  }
+  if (added > 0) await commitAndPushSubmodules(root, submodules, emit);
+}
+
+/**
+ * Commit `.gitmodules` + the added gitlinks and push to the primary's remote (ADR-0316). Commits with
+ * the repo's configured identity, falling back to a generic 4PM identity so a worker with no git
+ * user.* never blocks (ADR-0097 sets the real author on AI runs). Push reuses the worker's git-auth
+ * (ADR-0192) and is best-effort — a push failure is surfaced but the local commit is kept for retry.
+ */
+async function commitAndPushSubmodules(
+  root: string,
+  submodules: RepoDecl[],
+  emit: (step: string, message: string) => void,
+): Promise<void> {
+  const dirs = submodules.map((s) => (s.subdir ?? "").trim()).filter(Boolean);
+  emit("submodule", "Committing .gitmodules…");
+  await run("git", ["add", ".gitmodules", ...dirs], { cwd: root, timeout: 60_000 });
+  // Nothing staged (everything already committed) ⇒ no commit, no push.
+  const staged = (await run("git", ["diff", "--cached", "--name-only"], { cwd: root, timeout: 30_000 })).stdout.trim();
+  if (!staged) return;
+  const commitArgs = ["commit", "-m", "chore: add git submodules (4PM)"];
+  try {
+    await run("git", commitArgs, { cwd: root, timeout: 60_000 });
+  } catch {
+    // No user.name/user.email configured — retry with a 4PM fallback identity so the commit lands.
+    await run("git", ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", ...commitArgs], { cwd: root, timeout: 60_000 });
+  }
+  emit("submodule", "Pushing .gitmodules to the primary remote…");
+  try {
+    await run("git", ["push"], { cwd: root, timeout: 120_000 });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // Best-effort (ADR-0316): keep the local commit; surface the reason so the user can push later.
+    emit("submodule-push-failed", `Submodules committed locally but the push failed: ${msg}`);
+  }
 }
 
 /** Build `git clone` args honoring an optional branch (ADR-0292). */
@@ -122,12 +217,17 @@ async function provisionRepo(
  */
 export async function ensureReposCloned(
   physicRoot: string,
-  repos: { primary?: boolean; url?: string; branch?: string }[],
+  repos: { primary?: boolean; url?: string; subdir?: string; branch?: string }[],
   emit?: (step: string, message: string) => void,
 ): Promise<void> {
-  const repo = singleRepo(repos as RepoDecl[]);
+  const list = repos as RepoDecl[];
+  const repo = singleRepo(list);
   if (!repo) return;
-  await provisionRepo(physicRoot, repo, emit ?? (() => undefined));
+  const step = emit ?? (() => undefined);
+  await provisionRepo(physicRoot, repo, step);
+  // Attach/init the declared submodules (ADR-0316): self-heals a project whose submodules were never
+  // committed (a prior push failure) and initializes those already registered after a fresh clone.
+  await attachSubmodules(physicRoot, submodulesOf(list), step);
 }
 
 /**
@@ -175,6 +275,8 @@ export async function scaffoldProject(
     await provisionRepo(target, repo, emit);
     // Scaffold the repo at the root (template + spec + AI init).
     await scaffoldRepo(target, payload.projectName, payload.spec, emit);
+    // Attach the declared git submodules under the root (ADR-0316) — only the primary is scaffolded.
+    await attachSubmodules(target, submodulesOf(reposOf(payload.spec)), emit);
     // Stamp the template-version marker (ADR-0262) at the root so the web can later detect drift.
     emit("version", "Writing .4pm/.4pm.json…");
     await writeTemplateMarker(target);
@@ -326,6 +428,8 @@ export async function addProject(
     if (payload.scaffoldRepos && payload.scaffoldRepos.length > 0) {
       await scaffoldRepo(target, payload.projectName, payload.spec, emit);
     }
+    // Attach the declared git submodules under the root (ADR-0316); idempotent on a re-provision.
+    await attachSubmodules(target, submodulesOf((payload.repos ?? []) as RepoDecl[]), emit);
     onProgress?.({ projectId: payload.projectId, step: "done", message: "Project added.", done: true });
     return { ok: true, path: target };
   } catch (err) {

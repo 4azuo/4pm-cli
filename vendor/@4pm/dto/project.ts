@@ -780,21 +780,25 @@ export type CreateArtifactRequest = z.infer<typeof createArtifactRequestSchema>;
 export const GIT_URL_RE = /^(https?:\/\/|git@[^\s:]+:|ssh:\/\/).+/i;
 
 /**
- * One declared git repo of a multi-repo project (ADR-0073, simplified by ADR-0172): a
- * project has ≥1 repo, exactly one `primary` (cloned at the target folder root); sub-repos
- * clone into a subfolder. 4PM only ever **clones** an existing repo — the provider and the
- * display name are derived from the `url` (see `repoProvider`/`repoName`), not stored.
+ * One declared git repo of a project (ADR-0073, simplified by ADR-0172, submodules by ADR-0316):
+ * a project has ≥1 repo, exactly one `primary` (cloned/scaffolded at the target folder **root**);
+ * every other repo is a **git submodule** attached into its own `subdir`. 4PM only ever **clones**
+ * an existing repo — the provider and the display name are derived from the `url` (see
+ * `repoProvider`/`repoName`), not stored.
  */
 export const repoSpecSchema = z.object({
   /** Role label (e.g. "docs" / "web" / "server") — descriptive, not constrained. */
   role: z.string().max(60).optional().default(""),
   /** Free-form description of what this repo holds (optional). */
   desc: z.string().max(500).optional().default(""),
-  /** Exactly one repo of the project is the primary. */
+  /** Exactly one repo of the project is the primary (the root); the rest are submodules. */
   primary: z.boolean().optional().default(false),
   /** Clone url — `https` or `ssh` (required; ADR-0172). */
   url: z.string().max(500).regex(GIT_URL_RE, "must be an https or ssh git url"),
-  /** Sub-repo subfolder under the target root (empty ⇒ derived from role/name). */
+  /**
+   * Folder under the root: **empty for the primary** (the root itself), **non-empty and unique for a
+   * submodule** — the path `git submodule add` attaches it at (ADR-0316).
+   */
   subdir: z.string().max(120).optional().default(""),
   /**
    * Primary branch to clone / check out (ADR-0292). Empty ⇒ the repo's default branch. The
@@ -846,6 +850,53 @@ export function repoProvider(url: string): "gh" | "glab" {
 }
 
 /**
+ * Validate a project's declared repos (ADR-0316): **≥1 repo, exactly one `primary`** (the root); the
+ * primary's `subdir` must be **empty**; every **submodule** (non-primary) needs a **non-empty** `subdir`;
+ * and both `subdir` and `url` must be **unique** across the set (case-insensitively, url trimmed). Adds a
+ * zod issue on `path` per violation so both `projectSpecSchema` (create) and `addRepoRequestSchema` (add)
+ * share one rule. Shared by the server (input validation) and the web (client pre-check).
+ */
+export function validateProjectRepos(
+  repos: readonly RepoSpec[] | undefined,
+  ctx: z.RefinementCtx,
+  path: (string | number)[] = ["repos"],
+): void {
+  const list = repos ?? [];
+  const issue = (message: string): void => ctx.addIssue({ code: z.ZodIssueCode.custom, path, message });
+  if (list.length < 1) {
+    issue("a project must declare at least one repo");
+    return;
+  }
+  const primaries = list.filter((r) => r.primary);
+  if (primaries.length !== 1) {
+    issue("exactly one repo must be primary");
+  }
+  // The primary is the root (empty subdir); each submodule needs its own non-empty folder.
+  for (const r of list) {
+    if (r.primary) {
+      if ((r.subdir ?? "").trim() !== "") issue("the primary repo must be at the root (no subfolder)");
+    } else if ((r.subdir ?? "").trim() === "") {
+      issue("each submodule needs a folder path");
+    }
+  }
+  // Folder paths must not collide (only the submodules carry one) and urls must be unique across all.
+  const seenDir = new Set<string>();
+  for (const r of list) {
+    const dir = (r.subdir ?? "").trim().toLowerCase();
+    if (!dir) continue;
+    if (seenDir.has(dir)) issue("submodule folder paths must be unique");
+    seenDir.add(dir);
+  }
+  const seenUrl = new Set<string>();
+  for (const r of list) {
+    const url = (r.url ?? "").trim().toLowerCase();
+    if (!url) continue;
+    if (seenUrl.has(url)) issue("repo URLs must be unique");
+    seenUrl.add(url);
+  }
+}
+
+/**
  * One field of the self-describing spec envelope (SPEC_VERSION 5): the field's schema
  * (id/name/description/type/allowed options) plus its current value — entered or empty
  * (`value` is a string, or a string[] for multiselect fields). The wizard catalog on the
@@ -872,9 +923,10 @@ export type SubagentSpec = z.infer<typeof subagentSpecSchema>;
  * PMSpec wizard payload (project-0010), SPEC_VERSION 5: the **self-describing envelope**
  * (see the web's `features/spec/envelope.ts`). Stored as jsonb. `fields` carries every
  * catalog field with its schema + value; the `id` and `name` fields must hold a non-empty
- * value. `repos` (ADR-0073) stay top-level and are validated: **exactly one** repo (ADR-0314 —
- * the project root IS the repo; multi-repo is the user's own submodules). `meta` holds internal
- * AI metadata for draft round-trips (stripped on create).
+ * value. `repos` (ADR-0073) stay top-level and are validated (ADR-0316): **≥1 repo, exactly one
+ * `primary`** at the root (the only scaffolded repo), the rest **git submodules** with a unique
+ * non-empty `subdir`; all urls unique. `meta` holds internal AI metadata for draft round-trips
+ * (stripped on create).
  */
 export const projectSpecSchema = z
   .object({
@@ -897,15 +949,9 @@ export const projectSpecSchema = z
         });
       }
     }
-    // Single-repo (ADR-0314): a project has exactly one repo — the root IS the repo. Multi-repo is
-    // the user's own git submodules, not extra declared repos.
-    if (!v.repos || v.repos.length !== 1) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["repos"],
-        message: "a project must declare exactly one repo",
-      });
-    }
+    // Repos (ADR-0316): ≥1 repo, exactly one primary (the root); the rest are submodules with a
+    // unique non-empty subdir; all urls unique. The primary is the only scaffolded repo.
+    validateProjectRepos(v.repos, ctx);
   });
 export type ProjectSpec = z.infer<typeof projectSpecSchema>;
 
@@ -933,14 +979,8 @@ export const addRepoRequestSchema = z
     repos: z.array(repoSpecSchema).min(1),
   })
   .superRefine((v, ctx) => {
-    const primaries = v.repos.filter((r) => r.primary).length;
-    if (primaries !== 1) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["repos"],
-        message: "Exactly one repo must be primary",
-      });
-    }
+    // Same repo rules as create (ADR-0316): ≥1 repo, one primary at the root, unique submodule subdir + url.
+    validateProjectRepos(v.repos, ctx);
   });
 export type AddRepoRequest = z.infer<typeof addRepoRequestSchema>;
 

@@ -141,6 +141,9 @@ export const ErrorCode = {
   PHYSIC_PROJECT_NOT_FOUND: "PHYSIC_PROJECT_NOT_FOUND",
   PHYSIC_PATH_OCCUPIED: "PHYSIC_PATH_OCCUPIED",
   AUTONOMOUS_CONFLICT: "AUTONOMOUS_CONFLICT",
+  // A disruptive worker op (repo (re)provision / CLI update) was refused because the target
+  // worker's autonomous mode is armed (installed && !paused) — stop it first (ADR-0317).
+  AUTONOMOUS_ACTIVE: "AUTONOMOUS_ACTIVE",
   CLI_VERSION_UNSUPPORTED: "CLI_VERSION_UNSUPPORTED",
   ORCHESTRATOR_OFFLINE: "ORCHESTRATOR_OFFLINE",
   WS_TOKEN_INVALID: "WS_TOKEN_INVALID",
