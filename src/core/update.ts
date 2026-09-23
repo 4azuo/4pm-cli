@@ -38,13 +38,28 @@ export function compareSemver(a: string, b: string): number {
 }
 
 /**
+ * Canonical form for equality: strip a leading `v`, lower-case, and normalize the separator before a
+ * pre-release/build suffix to a single `-`, so the same release written as `1.12.1b`, `1.12.1-b` or
+ * `1.12.1+b` all compare equal (ADR-0015). Mirrors the server's `canonVersion` — a GitHub tag
+ * `cli-v1.12.1b` and a build `1.12.1-b` are the same version and must not read as an available update.
+ */
+export function canonVersion(v: string): string {
+  const s = v.trim().replace(/^v/i, "").toLowerCase();
+  const m = /^(\d+\.\d+\.\d+)(.*)$/.exec(s);
+  if (!m) return s;
+  const suffix = m[2]!.replace(/^[-+]/, "");
+  return suffix ? `${m[1]}-${suffix}` : m[1]!;
+}
+
+/**
  * Should `current` update to `latest`? True when older, OR the same numeric x.y.z but a DIFFERENT build
- * string (compareSemver ignores the `-suffix`/`+build`, so "1.10.2" vs a "1.10.2-b" build reads equal —
- * treat the differing build as an available update). Never true when `current` is numerically newer than
- * `latest`, so a real newer release is never "downgraded" (ADR-0015). Mirrors the server's cliOutdated.
+ * suffix (compareSemver ignores the `-suffix`/`+build`, so "1.10.2" vs a "1.10.2-b" build reads equal —
+ * treat the differing build as an available update). `canonVersion` first normalizes the suffix form
+ * (`1.12.1b` == `1.12.1-b`) so the same release written two ways is NOT re-installed. Never true when
+ * `current` is numerically newer than `latest` (ADR-0015). Mirrors the server's cliOutdated.
  */
 export function shouldUpdateTo(current: string, latest: string): boolean {
-  return current !== latest && compareSemver(current, latest) <= 0;
+  return canonVersion(current) !== canonVersion(latest) && compareSemver(current, latest) <= 0;
 }
 
 /**
