@@ -13,11 +13,14 @@ import type { WsHandlerCtx } from "./ws-client/context";
 import { runAiPrompt } from "./ws-client/command-dispatch";
 import {
   isInQuietHours,
-  quotaExceeded,
   readAutonomousConfig,
   writeAutonomousConfig,
+  type AutonomousConfig,
 } from "./autonomous-config";
 import { pushRecord, readHistories, todayTickCount, writeHistories, type Histories } from "./autonomous-history";
+import { readProfileConfig } from "../config/profile";
+import { activeProvider, claudeHomeDirs } from "../utils/ai-cli";
+import { checkClaudeUsage } from "./claude-usage";
 
 /**
  * The cli-owned autonomous cycle instructions (ADR-0319) — replaces the scaffold's
@@ -137,7 +140,14 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     await pruneLogs(root, cfg.logRetentionDays);
     const today = new Date().toISOString().slice(0, 10);
 
-    // --- Cheap gates (no token spend) ----------------------------------------------------------
+    // --- Preconditions + cheap gates (no token spend) ------------------------------------------
+    // A live cli-server WS connection is REQUIRED (ADR-0321): the cycle reports + meters over the
+    // session, so an offline cli does not run autonomous. Reported as a STATUS, not a technical error.
+    if (!ctx.isReady) {
+      await log("[skip] cli offline (no WS connection)");
+      ctx.bus.autonomousDone(false, "cli offline");
+      return;
+    }
     if (cfg.paused) {
       await log("[skip] paused");
       ctx.bus.autonomousDone(false, "paused");
@@ -159,13 +169,14 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       ctx.bus.autonomousDone(false, "no work");
       return;
     }
-    // Quota gate (ADR-0321): back off near the subscription limit — soft skip, retry next tick.
-    if (quotaExceeded(ctx.usageSnapshot, cfg)) {
-      const s = ctx.usageSnapshot?.session.utilizationPct ?? 0;
-      const w = ctx.usageSnapshot?.weekly.utilizationPct ?? 0;
-      await log(`[skip] quota high (session ${s}% / weekly ${w}% ≥ ${cfg.maxSessionPct}/${cfg.maxWeeklyPct})`);
-      await recordRun(root, hist, "skip", "quota high", today);
-      ctx.bus.autonomousDone(false, "quota high");
+    // Quota gate (ADR-0321): the session/weekly caps are checked **per AI profile** — only skip when
+    // EVERY profile is over a cap (if at least one profile is still under, the run's failover uses it).
+    // Running out of session/weekly tokens is NOT a technical error — it's a status + a notification to
+    // the web (recorded as a "skip"), so the badge shows a back-off, not a red error.
+    if (await allAiProfilesExhausted(ctx, cfg)) {
+      await log(`[skip] all AI profiles over usage limit (≥ ${cfg.maxSessionPct}%/${cfg.maxWeeklyPct}%)`);
+      await recordRun(root, hist, "skip", "all AI profiles over usage limit", today);
+      ctx.bus.autonomousDone(false, "usage limit");
       return;
     }
 
@@ -279,4 +290,39 @@ async function hasWork(root: string): Promise<boolean> {
     anyApproved("TSK-", aiTodo) ||
     /TSK-\d{4}-\d{4}/.test(aiProgress)
   );
+}
+
+/** True when the config has a usable (enabled, non-blank) codex profile — mixed list or legacy list. */
+function hasUsableCodex(config: ReturnType<typeof readProfileConfig>): boolean {
+  const mixed = config.aiProfiles?.some(
+    (c) => c.provider === "codex" && c.enabled !== false && Boolean(c.profile?.trim()),
+  );
+  const legacy = (config.codexHome ?? []).some((p) => p.enabled !== false && Boolean(p.profile?.trim()));
+  return Boolean(mixed || legacy);
+}
+
+/**
+ * True when EVERY usable AI profile is over the session/weekly caps (ADR-0321) — the quota gate is
+ * checked **per profile**, so autonomous only backs off when there is no profile left to run. Each
+ * Claude profile is checked against its own usage snapshot; a profile whose usage can't be read is
+ * treated as available (fail-open, so a transient fetch error never halts autonomous). Codex/antigravity
+ * have no session/weekly limit, so an active/available one means the gate does not apply.
+ */
+async function allAiProfilesExhausted(ctx: WsHandlerCtx, cfg: AutonomousConfig): Promise<boolean> {
+  const config = readProfileConfig(ctx.profileDir);
+  const active = activeProvider(config);
+  if (active === "codex" || active === "antigravity") return false;
+  if (active === null && hasUsableCodex(config)) return false; // mixed with a codex fallback
+  const dirs = claudeHomeDirs(config);
+  if (dirs.length === 0) return false;
+  const usages = await Promise.all(dirs.map((d) => checkClaudeUsage([d]).catch(() => null)));
+  let readAny = false;
+  for (const u of usages) {
+    if (!u) continue; // unreadable ⇒ treat as available (fail-open)
+    readAny = true;
+    if (u.session.utilizationPct < cfg.maxSessionPct && u.weekly.utilizationPct < cfg.maxWeeklyPct) {
+      return false; // this profile is still under the caps ⇒ available
+    }
+  }
+  return readAny; // skip only when ≥1 profile was read and none were under the caps
 }

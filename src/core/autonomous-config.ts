@@ -8,7 +8,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { MachineUsagePayload } from "@4pm/ws";
 
 /** The autonomous knobs (parameters only — no logic). */
 export interface AutonomousConfig {
@@ -111,10 +110,4 @@ export function isInQuietHours(quietHours: string, now: Date = new Date()): bool
   const end = toMin(m[3]!, m[4]!);
   const cur = now.getHours() * 60 + now.getMinutes();
   return start <= end ? cur >= start && cur < end : cur >= start || cur < end;
-}
-
-/** True when the AI usage is at/over the configured session/weekly caps (ADR-0321 quota gate). */
-export function quotaExceeded(usage: MachineUsagePayload | null, cfg: AutonomousConfig): boolean {
-  if (!usage) return false; // no snapshot ⇒ don't block (the run will meter + fail over as usual)
-  return usage.session.utilizationPct >= cfg.maxSessionPct || usage.weekly.utilizationPct >= cfg.maxWeeklyPct;
 }
