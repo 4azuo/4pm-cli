@@ -15,6 +15,7 @@ import {
   encodeFrame,
   type ControlServerFrame,
 } from "../core/control-protocol";
+import { readControlToken } from "../core/control-token";
 import { initI18n, t } from "../i18n";
 
 /** Hard ceiling so a stuck cycle can't hang the cron tick forever (the daemon's own ADR-0243 timeout
@@ -28,6 +29,7 @@ const AUTO_RUN_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 export async function runAutoRun(profileDir: string, profileName: string): Promise<void> {
   initI18n(readProfileConfig(profileDir).locale);
   const socketPath = join(profileDir, CONTROL_SOCKET_FILE);
+  const token = readControlToken(profileDir);
 
   const code = await new Promise<number>((resolve) => {
     let settled = false;
@@ -53,8 +55,10 @@ export async function runAutoRun(profileDir: string, profileName: string): Promi
     timer.unref?.();
 
     socket.on("connect", () => {
-      // Trigger exactly one cycle; the daemon reports back with an `autonomousDone` frame.
+      // Authenticate first (ADR-0320), then trigger exactly one cycle; the daemon reports back with an
+      // `autonomousDone` frame. The token must be the FIRST frame or the daemon drops the connection.
       try {
+        socket.write(encodeFrame({ t: "auth", token: token ?? "" }));
         socket.write(encodeFrame({ t: "autonomousRun" }));
       } catch {
         done(1);
@@ -72,6 +76,10 @@ export async function runAutoRun(profileDir: string, profileName: string): Promi
           if (frame.ok) console.log(t("autoRun.done"));
           else console.error(t("autoRun.failed", { note: frame.note ?? "" }));
           done(frame.ok ? 0 : 1);
+        } else if (frame.t === "authError") {
+          // The daemon rejected our token (ADR-0320) — treat as a failed tick.
+          console.error(t("autoRun.authFailed"));
+          done(1);
         }
       }
     });

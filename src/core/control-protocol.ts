@@ -10,6 +10,15 @@ import type { SessionStatus, TranscriptEntry } from "./session-bus";
 /** The unix socket a daemon listens on, under its profile dir. */
 export const CONTROL_SOCKET_FILE = "control.sock";
 
+/**
+ * The control-channel token file, under the profile dir (ADR-0320 hardening). The daemon writes a
+ * fresh random secret here (mode 0600) at startup; a client must present it as its first frame
+ * (`{ t: "auth" }`) before the daemon accepts any other frame. This is defense-in-depth on top of the
+ * OS boundary (a same-OS-user client can still read this 0600 file — the real isolation is the OS user
+ * + the container); it blocks other users and stray/non-4pm local connections.
+ */
+export const CONTROL_TOKEN_FILE = "control.token";
+
 /** Serializable header info a daemon shares on attach (subset of the TUI's SessionInfo). */
 export interface ControlSessionInfo {
   version: string;
@@ -47,10 +56,15 @@ export type ControlServerFrame =
   | { t: "usage"; usage: MachineUsagePayload }
   | { t: "tokens"; total: number }
   // The autonomous cycle triggered over this socket (ADR-0319) settled — `ok` false carries a `note`.
-  | { t: "autonomousDone"; ok: boolean; note?: string };
+  | { t: "autonomousDone"; ok: boolean; note?: string }
+  // The client's `auth` frame was missing/wrong — the daemon rejects the connection (ADR-0320).
+  | { t: "authError" };
 
 /** client → daemon frames. */
 export type ControlClientFrame =
+  // MUST be the first frame on a connection (ADR-0320): the control-channel token; the daemon accepts
+  // no other frame until it matches.
+  | { t: "auth"; token: string }
   | { t: "submit"; input: string }
   | { t: "reconnect" }
   // `4pm auto-run` asks the daemon to run ONE autonomous cycle through its live session (ADR-0319).

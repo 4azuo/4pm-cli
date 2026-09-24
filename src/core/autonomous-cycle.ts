@@ -7,8 +7,17 @@
  * PR), then reports completion back over the socket so the cron tick can settle the tick.
  */
 import { randomUUID } from "node:crypto";
+import { appendFile, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
+import { join } from "node:path";
 import type { WsHandlerCtx } from "./ws-client/context";
 import { runAiPrompt } from "./ws-client/command-dispatch";
+import {
+  isInQuietHours,
+  quotaExceeded,
+  readAutonomousConfig,
+  writeAutonomousConfig,
+} from "./autonomous-config";
+import { pushRecord, readHistories, todayTickCount, writeHistories, type Histories } from "./autonomous-history";
 
 /**
  * The cli-owned autonomous cycle instructions (ADR-0319) — replaces the scaffold's
@@ -97,22 +106,177 @@ non-fast-forward ⇒ \`git pull --rebase origin "$BASE"\` then push again).
 
 ## Step 8 — Stop
 Print a one-line summary (task id + PR link or incident). STOP — the next cron tick runs the next cycle.
-The cron tick owns the run lock; you do NOT manage \`.claude/.autonomous.lock\`.`;
+The 4PM cli serializes cycles (one at a time); you do NOT manage any run lock.`;
+}
+
+// Serialize cycles: at most one per served project at a time (replaces the old shell file-lock — ADR-0321).
+const running = new Set<string>();
+
+/**
+ * Run one autonomous cycle for the daemon's served project (ADR-0321): the daemon — not the shell tick —
+ * owns ALL the logic. It reads the profile-dir config, applies the cheap gates (paused / quiet-hours /
+ * max-ticks / has-work) + the quota gate (session/weekly vs the config caps, via the live usage
+ * snapshot), serializes, records histories (+ auto-pause), then runs the write-capable-agent cycle
+ * (bypass — ADR-0271). Completion is reported over the control socket so `4pm auto-run` can settle.
+ */
+export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
+  const root = ctx.physicRoot;
+  const profileDir = ctx.profileDir;
+  if (!root) {
+    ctx.bus.autonomousDone(false, "no served project");
+    return;
+  }
+  if (running.has(root)) {
+    ctx.bus.autonomousDone(false, "a cycle is already running");
+    return;
+  }
+  running.add(root);
+  const log = (line: string): Promise<void> => dayLog(root, line);
+  try {
+    const cfg = await readAutonomousConfig(profileDir);
+    await pruneLogs(root, cfg.logRetentionDays);
+    const today = new Date().toISOString().slice(0, 10);
+
+    // --- Cheap gates (no token spend) ----------------------------------------------------------
+    if (cfg.paused) {
+      await log("[skip] paused");
+      ctx.bus.autonomousDone(false, "paused");
+      return;
+    }
+    if (isInQuietHours(cfg.quietHours)) {
+      await log("[skip] within quiet hours");
+      ctx.bus.autonomousDone(false, "quiet hours");
+      return;
+    }
+    let hist = await readHistories(root);
+    if (cfg.maxTicksPerDay > 0 && todayTickCount(hist, today) >= cfg.maxTicksPerDay) {
+      await log(`[skip] reached max ticks/day (${cfg.maxTicksPerDay})`);
+      ctx.bus.autonomousDone(false, "max ticks reached");
+      return;
+    }
+    if (!(await hasWork(root))) {
+      await log("[skip] no approved USER_TODO/USER_QA/AI_TODO work, AI_PROGRESS empty");
+      ctx.bus.autonomousDone(false, "no work");
+      return;
+    }
+    // Quota gate (ADR-0321): back off near the subscription limit — soft skip, retry next tick.
+    if (quotaExceeded(ctx.usageSnapshot, cfg)) {
+      const s = ctx.usageSnapshot?.session.utilizationPct ?? 0;
+      const w = ctx.usageSnapshot?.weekly.utilizationPct ?? 0;
+      await log(`[skip] quota high (session ${s}% / weekly ${w}% ≥ ${cfg.maxSessionPct}/${cfg.maxWeeklyPct})`);
+      await recordRun(root, hist, "skip", "quota high", today);
+      ctx.bus.autonomousDone(false, "quota high");
+      return;
+    }
+
+    // --- Count a tick that actually runs, then run the cycle -----------------------------------
+    hist.ticks = { day: today, count: todayTickCount(hist, today) + 1 };
+    await writeHistories(root, hist);
+    await log(`[run] cycle (tick ${hist.ticks.count}/${today})`);
+
+    const commandId = randomUUID();
+    const override = cfg.model ? { model: cfg.model } : undefined;
+    try {
+      // Write-capable agent (bypass — ADR-0271): all tools, folder-scoped; metering + failover from runAiPrompt.
+      await runAiPrompt(ctx, buildAutonomousCyclePrompt(), commandId, "local", false, undefined, override, false, true);
+      hist = await readHistories(root);
+      hist.consecutiveFails = 0;
+      await recordRun(root, hist, "success", "cycle complete", today);
+      await log("[done] cycle complete");
+      ctx.bus.autonomousDone(true);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      hist = await readHistories(root);
+      hist.consecutiveFails += 1;
+      await recordRun(root, hist, "failure", msg, today);
+      await log(`[warn] cycle failed: ${msg}`);
+      // Auto-pause after N consecutive failures (ADR-0321) — write paused=true to the profile config.
+      if (cfg.stopOnConsecutiveFailures > 0 && hist.consecutiveFails >= cfg.stopOnConsecutiveFailures) {
+        await writeAutonomousConfig(profileDir, { ...cfg, paused: true });
+        await log(`[stop] ${hist.consecutiveFails} consecutive failures → paused`);
+      }
+      ctx.bus.autonomousDone(false, msg);
+    }
+  } catch (err) {
+    ctx.bus.autonomousDone(false, err instanceof Error ? err.message : String(err));
+  } finally {
+    running.delete(root);
+  }
+}
+
+/** Append a line to the per-day tick log (`<root>/.claude/logs/autonomous-tick-<day>.log`). Best-effort. */
+async function dayLog(root: string, line: string): Promise<void> {
+  try {
+    const dir = join(root, ".claude", "logs");
+    await mkdir(dir, { recursive: true });
+    const day = new Date().toISOString().slice(0, 10);
+    const ts = new Date().toISOString().slice(0, 19).replace("T", " ");
+    await appendFile(join(dir, `autonomous-tick-${day}.log`), `${ts} ${line}\n`, "utf8");
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** Delete per-day tick logs older than `retentionDays` (0/negative = keep forever). Best-effort. */
+async function pruneLogs(root: string, retentionDays: number): Promise<void> {
+  if (!(retentionDays > 0)) return;
+  try {
+    const dir = join(root, ".claude", "logs");
+    const cutoff = Date.now() - retentionDays * 86_400_000;
+    for (const f of await readdir(dir)) {
+      if (!/^autonomous-tick-.*\.log$/.test(f)) continue;
+      const st = await stat(join(dir, f)).catch(() => null);
+      if (st && st.mtimeMs < cutoff) await rm(join(dir, f), { force: true }).catch(() => undefined);
+    }
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** Append a run record + persist histories. */
+async function recordRun(
+  root: string,
+  hist: Histories,
+  status: "success" | "failure" | "skip",
+  note: string,
+  today: string,
+): Promise<void> {
+  const ts = new Date().toISOString().slice(0, 19).replace("T", " ");
+  pushRecord(hist, { ts, status, note, tick: `${today} #${hist.ticks.count}` });
+  await writeHistories(root, hist);
+}
+
+/** Read a JSON object (`{}` on any error). */
+async function readJsonObject(path: string): Promise<Record<string, unknown>> {
+  try {
+    return JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
 }
 
 /**
- * Run one autonomous cycle for the daemon's served project, then report completion over the control
- * socket. Reports `ok:false` only when the dispatch itself throws — the agent records finer-grained
- * per-run failures in the \`AI_DONE.md\` Incidents table.
+ * "Has work" (ADR-0319/0321): at least one APPROVED row present in a book — an approved `REQ-` in
+ * USER_TODO, an approved `QA-` in USER_QA, an approved `TSK-` in AI_TODO — or AI_PROGRESS carries a task.
  */
-export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
-  const commandId = randomUUID();
-  try {
-    // Write-capable agent (bypass = ADR-0271): all tools, folder-scoped to the project root, so the
-    // cycle can run git/gh/glab + file writes headless. Metering + failover come from runAiPrompt.
-    await runAiPrompt(ctx, buildAutonomousCyclePrompt(), commandId, "local", false, undefined, undefined, false, true);
-    ctx.bus.autonomousDone(true);
-  } catch (err) {
-    ctx.bus.autonomousDone(false, err instanceof Error ? err.message : String(err));
-  }
+async function hasWork(root: string): Promise<boolean> {
+  const approvals = await readJsonObject(join(root, ".claude/.autonomous.approvals.json"));
+  const approved = Object.entries(approvals)
+    .filter(([, v]) => v && typeof v === "object" && (v as { approved?: boolean }).approved === true)
+    .map(([k]) => k);
+  const read = (f: string): Promise<string> => readFile(join(root, f), "utf8").catch(() => "");
+  const [userTodo, userQa, aiTodo, aiProgress] = await Promise.all([
+    read("USER_TODO.md"),
+    read("USER_QA.md"),
+    read("AI_TODO.md"),
+    read("AI_PROGRESS.md"),
+  ]);
+  const anyApproved = (prefix: string, text: string): boolean =>
+    approved.some((id) => id.startsWith(prefix) && text.includes(id));
+  return (
+    anyApproved("REQ-", userTodo) ||
+    anyApproved("QA-", userQa) ||
+    anyApproved("TSK-", aiTodo) ||
+    /TSK-\d{4}-\d{4}/.test(aiProgress)
+  );
 }

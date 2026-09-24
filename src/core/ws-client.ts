@@ -957,7 +957,7 @@ export class WsClient {
       physicPath,
       physicPathExists: physicPath ? existsSync(physicPath) : undefined,
       // Real coarse state (ADR-0152): !paused and a recent tick (was hard-coded false).
-      autonomousRunning: physicPath ? isAutonomousRunning(physicPath) : false,
+      autonomousRunning: physicPath ? isAutonomousRunning(physicPath, this.context.profileDir) : false,
       // The machine-user AI-run limit (0 = unlimited) + profile count so a dispatch can resolve the
       // effective timeout and derive the SSE reply windows server-side (ADR-0256).
       aiRunTimeoutSec: config.aiRunTimeoutSec ?? 0,

@@ -176,5 +176,6 @@
   "autoRun.done": "自律サイクルが完了しました。",
   "autoRun.failed": "自律サイクルのディスパッチに失敗しました: {note}",
   "autoRun.noDaemon": "プロファイル \"{profile}\" のデーモンが実行されていません — 先に起動してください: 4pm start --profile {profile}",
-  "autoRun.timeout": "自律サイクルが制限時間を超えました — 中止します。"
+  "autoRun.timeout": "自律サイクルが制限時間を超えました — 中止します。",
+  "autoRun.authFailed": "コントロールチャネルの認証に失敗しました — デーモンがトークンを拒否しました。"
 }

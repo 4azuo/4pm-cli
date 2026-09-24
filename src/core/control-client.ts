@@ -26,11 +26,24 @@ export interface ControlConnection {
  * mount the TUI). Rejects if the socket can't connect. After connect, every frame is applied to
  * `bus`; a daemon disconnect flips the bus to `stopped` and logs it.
  */
-export function connectControl(socketPath: string, bus: SessionBus): Promise<ControlConnection> {
+export function connectControl(
+  socketPath: string,
+  bus: SessionBus,
+  token: string | null,
+): Promise<ControlConnection> {
   return new Promise<ControlConnection>((resolve, reject) => {
     const socket: Socket = connect(socketPath);
     socket.setEncoding("utf8");
     let ready = false;
+
+    // The token (ADR-0320) MUST be the first frame — the daemon accepts nothing else until it matches.
+    socket.on("connect", () => {
+      try {
+        socket.write(encodeFrame({ t: "auth", token: token ?? "" }));
+      } catch {
+        /* dropped on close */
+      }
+    });
 
     const forwardSubmit = bus.onLocalSubmit((input) => {
       try {
@@ -114,6 +127,10 @@ export function connectControl(socketPath: string, bus: SessionBus): Promise<Con
           break;
         case "tokens":
           bus.setTokens(frame.total);
+          break;
+        case "authError":
+          // The daemon rejected our token (ADR-0320) — fail the connect with a clear reason.
+          if (!ready) reject(new Error("control-channel auth failed"));
           break;
       }
     }

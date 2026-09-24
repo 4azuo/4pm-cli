@@ -10,6 +10,7 @@ import { fetchWhoami } from "../services/api";
 import { SessionBus } from "../core/session-bus";
 import { connectControl } from "../core/control-client";
 import { CONTROL_SOCKET_FILE } from "../core/control-protocol";
+import { readControlToken } from "../core/control-token";
 import { runTui } from "../ui/run-tui";
 import type { SessionInfo } from "../ui/session-info";
 import { readProfileConfig } from "../config/profile";
@@ -32,7 +33,7 @@ export async function runAttach(profileDir: string, profileName: string): Promis
 
   let conn;
   try {
-    conn = await connectControl(socketPath, bus);
+    conn = await connectControl(socketPath, bus, readControlToken(profileDir));
   } catch {
     console.error(t("attach.noDaemon", { profile: profileName }));
     process.exitCode = 1;

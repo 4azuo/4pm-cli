@@ -176,5 +176,6 @@
   "autoRun.done": "自主循环已完成。",
   "autoRun.failed": "自主循环调度失败：{note}",
   "autoRun.noDaemon": "配置文件 “{profile}” 没有正在运行的守护进程 — 请先启动：4pm start --profile {profile}",
-  "autoRun.timeout": "自主循环超过时间限制 — 正在中止。"
+  "autoRun.timeout": "自主循环超过时间限制 — 正在中止。",
+  "autoRun.authFailed": "控制通道认证失败 — 守护进程拒绝了令牌。"
 }

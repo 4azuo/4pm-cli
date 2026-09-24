@@ -25,5 +25,3 @@ project.secrets.json
 tests/IT/evidence/*
 !tests/IT/evidence/README.md
 
-# Usage check generated each run
-.claude/skills/check-usage/output/*

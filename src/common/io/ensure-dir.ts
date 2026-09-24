@@ -4,7 +4,7 @@
  * root-owned Docker volume or a host bind-mount shadows the image's node-owned home, so a
  * raw `EACCES: mkdir` is opaque. We rethrow with the one-time chown fix instead.
  */
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 
 /** GHCR image used in the fix hint — kept in sync with the docs / web container tab. */
 const CLI_IMAGE = "ghcr.io/4azuo/4pm-cli:full";
@@ -12,10 +12,22 @@ const CLI_IMAGE = "ghcr.io/4azuo/4pm-cli:full";
 /**
  * Create `dir` recursively; on EACCES/EPERM rethrow a clear message telling the operator to
  * chown the mount to uid 1000 once (the cli stays fully non-root). Other errors pass through.
+ * When `mode` is given, the created dirs use it AND the leaf is chmod'd to it (best-effort) so an
+ * already-existing dir is hardened too — e.g. `0o700` on the profile dir, which holds the `.cre`,
+ * AI credentials, the control socket + token (ADR-0320 hardening).
  */
-export function ensureDir(dir: string): void {
+export function ensureDir(dir: string, mode?: number): void {
   try {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, ...(mode !== undefined ? { mode } : {}) });
+    // mkdir's `mode` only applies to newly-created dirs (and is masked by umask); chmod the leaf so
+    // an existing dir is tightened to the intended perms. Best-effort — a read-only mount can't chmod.
+    if (mode !== undefined) {
+      try {
+        chmodSync(dir, mode);
+      } catch {
+        /* best-effort: keep going if the fs won't allow chmod (e.g. a read-only bind-mount) */
+      }
+    }
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "EACCES" || code === "EPERM") {

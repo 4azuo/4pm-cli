@@ -42,7 +42,7 @@ export function defaultProfileName(): string {
 
 /** Point the default profile at a MACHINE userId (written on `4pm link` sans --profile). */
 export function writeDefaultProfile(userId: string): void {
-  ensureDir(join(homedir(), ".4pm"));
+  ensureDir(join(homedir(), ".4pm"), 0o700);
   writeFileSync(defaultPointerPath(), userId, "utf8");
 }
 
@@ -230,7 +230,9 @@ export function listProfiles(): ProfileEntry[] {
  */
 export function profileDir(name: string): string {
   const dir = join(homedir(), ".4pm", "profiles", name);
-  ensureDir(dir);
+  // 0o700 (owner-only): the profile dir holds the `.cre`, AI credentials, the control socket + its
+  // token — no other OS user should traverse or read it (ADR-0320 hardening).
+  ensureDir(dir, 0o700);
   return dir;
 }
 

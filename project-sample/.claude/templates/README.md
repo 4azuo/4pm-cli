@@ -2,7 +2,7 @@
 
 Canonical templates for the 5 "book" files used by the autonomous loop. Each book has two templates:
 
-- `<NAME>.empty.md` — the EMPTY state. The tick's "has work" gate + `/auto-cycle` compare a live book
+- `<NAME>.empty.md` — the EMPTY state. The cli's "has-work" gate + the autonomous cli compare a live book
   against this (equal ⇒ empty). When clearing/resetting a book, overwrite it with **exactly** this file
   (`cp .claude/templates/<NAME>.empty.md <NAME>`).
 - `<NAME>.sample.md` — an example WITH DATA, showing the expected format when adding entries.

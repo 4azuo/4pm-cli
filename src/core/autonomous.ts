@@ -20,11 +20,16 @@ import type {
   AutonomousWriteReply,
   AutonomousWriteRequest,
 } from "@4pm/ws";
+import {
+  readAutonomousConfig,
+  readAutonomousConfigSync,
+  readAutonomousConfigText,
+  writeAutonomousConfig,
+} from "./autonomous-config";
+import { readHistories } from "./autonomous-history";
 
 const run = promisify(execFile);
 
-const SETTINGS_REL = ".claude/.autonomous.settings.json";
-const HISTORIES_REL = ".claude/.autonomous.histories.json";
 const APPROVALS_REL = ".claude/.autonomous.approvals.json";
 // Authorship sidecar (ADR-0320): `{ "<id>": { by, at } }` — the last human who wrote (created/edited)
 // a row, server-stamped on a `bookSave`. Used to enforce separation of duties on approval.
@@ -38,7 +43,6 @@ const BOOK_FILES: Record<keyof AutonomousBooks, string> = {
   aiDone: "AI_DONE.md",
   userQa: "USER_QA.md",
 };
-const DEFAULT_CRON = "*/10 * * * *";
 
 /** Read a file as UTF-8; a fallback string when it is missing/unreadable. */
 async function readText(path: string, fallback = ""): Promise<string> {
@@ -136,31 +140,35 @@ async function cronInstalled(root: string): Promise<boolean> {
   return (await crontabList()).split("\n").some((l) => l.includes(script) && !l.trim().startsWith("#"));
 }
 
-/** Compute the engine status from crontab + settings + histories (ADR-0152). */
-export async function getAutonomousStatus(root: string): Promise<AutonomousStatus> {
-  const settings = parseJson(await readText(join(root, SETTINGS_REL))) ?? {};
-  const hist = parseJson(await readText(join(root, HISTORIES_REL))) ?? {};
-  const records = Array.isArray(hist.records) ? (hist.records as Record<string, unknown>[]) : [];
-  const last = records[records.length - 1];
-  const ticks = (hist.ticks as { day?: string; count?: number } | undefined) ?? {};
+/**
+ * Compute the engine status from crontab + the profile-dir config + the project's histories (ADR-0152,
+ * config relocated by ADR-0321). `root` = the served physic project; `profileDir` = where
+ * `autonomous.config.json` lives.
+ */
+export async function getAutonomousStatus(root: string, profileDir: string): Promise<AutonomousStatus> {
+  const [cfg, hist, installed] = await Promise.all([
+    readAutonomousConfig(profileDir),
+    readHistories(root),
+    cronInstalled(root),
+  ]);
+  const last = hist.records[hist.records.length - 1];
   const today = new Date().toISOString().slice(0, 10);
   return {
-    installed: await cronInstalled(root),
-    paused: settings.paused === true,
-    cronSchedule: typeof settings.cron_schedule === "string" ? settings.cron_schedule : DEFAULT_CRON,
-    lastTickAt: last && typeof last.ts === "string" ? last.ts : null,
-    lastResult: last && typeof last.status === "string" ? last.status : null,
-    consecutiveFails: typeof hist.consecutive_fails === "number" ? hist.consecutive_fails : 0,
-    todayTicks: ticks.day === today && typeof ticks.count === "number" ? ticks.count : 0,
+    installed,
+    paused: cfg.paused,
+    cronSchedule: cfg.cronSchedule,
+    lastTickAt: last?.ts ?? null,
+    lastResult: last?.status ?? null,
+    consecutiveFails: hist.consecutiveFails,
+    todayTicks: hist.ticks.day === today ? hist.ticks.count : 0,
   };
 }
 
-/** Coarse, synchronous "is it running?" for machine.status — !paused and a recent tick. */
-export function isAutonomousRunning(root: string): boolean {
+/** Coarse, synchronous "is it running?" for machine.status — !paused (profile config) and a recent tick. */
+export function isAutonomousRunning(root: string, profileDir: string): boolean {
   try {
-    const s = JSON.parse(readFileSync(join(root, SETTINGS_REL), "utf8")) as { paused?: boolean };
-    if (s.paused === true) return false;
-    const h = JSON.parse(readFileSync(join(root, HISTORIES_REL), "utf8")) as {
+    if (readAutonomousConfigSync(profileDir).paused) return false;
+    const h = JSON.parse(readFileSync(join(root, ".claude/.autonomous.histories.json"), "utf8")) as {
       records?: { ts?: string }[];
     };
     const ts = h.records?.[h.records.length - 1]?.ts;
@@ -172,13 +180,13 @@ export function isAutonomousRunning(root: string): boolean {
   }
 }
 
-/** autonomous.read — the whole autonomous surface in one reply. */
-export async function readAutonomous(root: string): Promise<AutonomousReadReply> {
+/** autonomous.read — the whole autonomous surface in one reply (config from the profile dir — ADR-0321). */
+export async function readAutonomous(root: string, profileDir: string): Promise<AutonomousReadReply> {
   const [settings, approvals, authors, status, ...books] = await Promise.all([
-    readText(join(root, SETTINGS_REL)),
+    readAutonomousConfigText(profileDir),
     readText(join(root, APPROVALS_REL), "{}"),
     readText(join(root, AUTHORS_REL), "{}"),
-    getAutonomousStatus(root),
+    getAutonomousStatus(root, profileDir),
     ...Object.values(BOOK_FILES).map((f) => readText(join(root, f))),
   ]);
   const keys = Object.keys(BOOK_FILES) as (keyof AutonomousBooks)[];
@@ -196,13 +204,19 @@ export async function readAutonomousLogs(root: string, date?: string): Promise<A
 }
 
 /** Install the cron line for this physic project (idempotent — replaces any existing line). */
-async function installCron(root: string): Promise<void> {
+async function installCron(root: string, profileDir: string): Promise<void> {
   const script = tickScript(root);
-  const status = await getAutonomousStatus(root);
+  const cfg = await readAutonomousConfig(profileDir);
   await chmod(script, 0o755).catch(() => undefined);
   const kept = (await crontabList()).split("\n").filter((l) => l.trim() && !l.includes(script));
-  kept.push(`${status.cronSchedule} ${script}`);
+  kept.push(`${cfg.cronSchedule} ${script}`);
   await crontabSet(kept.join("\n"));
+}
+
+/** Sync the crontab line to the current `cronSchedule` (idempotent) — called by the daemon when the
+ *  config changes or when a cycle runs, so a schedule edit takes effect without a manual reinstall. */
+export async function syncCron(root: string, profileDir: string): Promise<void> {
+  if (await cronInstalled(root)) await installCron(root, profileDir);
 }
 
 /** Remove this physic project's cron line (idempotent). Exposed for lifecycle cleanup. */
@@ -215,23 +229,29 @@ export async function uninstallCron(root: string): Promise<void> {
 }
 
 /** Re-point the cron from an old root to a new root when the physic folder is renamed. */
-export async function repointCron(oldRoot: string, newRoot: string): Promise<void> {
+export async function repointCron(oldRoot: string, newRoot: string, profileDir: string): Promise<void> {
   if (!(await cronInstalled(oldRoot))) return;
   await uninstallCron(oldRoot);
-  await installCron(newRoot);
+  await installCron(newRoot, profileDir);
 }
 
-/** autonomous.write — a discriminated write (settings/approvals/userTodo/cron). Never throws. */
+/** autonomous.write — a discriminated write (settings/approvals/userTodo/bookSave/cron). Never throws.
+ *  `profileDir` holds the config (settings); `root` holds the books/approvals/authors + the cron. */
 export async function writeAutonomous(
   root: string,
+  profileDir: string,
   req: AutonomousWriteRequest,
   by: string,
 ): Promise<AutonomousWriteReply> {
   try {
     switch (req.kind) {
       case "settings": {
-        if (!parseJson(req.settings)) return { ok: false, error: "settings is not valid JSON" };
-        await writeFile(join(root, SETTINGS_REL), req.settings, "utf8");
+        // The config lives in the profile dir (ADR-0321), as clean JSON (coerced — comment keys dropped).
+        const parsed = parseJson(req.settings);
+        if (!parsed) return { ok: false, error: "settings is not valid JSON" };
+        await writeAutonomousConfig(profileDir, parsed);
+        // A schedule change takes effect immediately when the cron is installed.
+        await syncCron(root, profileDir);
         break;
       }
       case "approvals": {
@@ -298,12 +318,12 @@ export async function writeAutonomous(
         break;
       }
       case "cron": {
-        if (req.action === "install") await installCron(root);
+        if (req.action === "install") await installCron(root, profileDir);
         else await uninstallCron(root);
         break;
       }
     }
-    return { ok: true, status: await getAutonomousStatus(root) };
+    return { ok: true, status: await getAutonomousStatus(root, profileDir) };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

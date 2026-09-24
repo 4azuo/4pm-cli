@@ -176,5 +176,6 @@
   "autoRun.done": "Autonomous cycle complete.",
   "autoRun.failed": "Autonomous cycle failed to dispatch: {note}",
   "autoRun.noDaemon": "No running daemon for profile \"{profile}\" — start it first: 4pm start --profile {profile}",
-  "autoRun.timeout": "Autonomous cycle exceeded the time limit — aborting."
+  "autoRun.timeout": "Autonomous cycle exceeded the time limit — aborting.",
+  "autoRun.authFailed": "Control-channel authentication failed — the daemon rejected the token."
 }

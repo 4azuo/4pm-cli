@@ -176,5 +176,6 @@
   "autoRun.done": "Chu kỳ tự động đã hoàn tất.",
   "autoRun.failed": "Không điều phối được chu kỳ tự động: {note}",
   "autoRun.noDaemon": "Không có tiến trình nền nào cho hồ sơ \"{profile}\" — hãy khởi động trước: 4pm start --profile {profile}",
-  "autoRun.timeout": "Chu kỳ tự động vượt quá giới hạn thời gian — đang hủy."
+  "autoRun.timeout": "Chu kỳ tự động vượt quá giới hạn thời gian — đang hủy.",
+  "autoRun.authFailed": "Xác thực kênh điều khiển thất bại — daemon từ chối token."
 }

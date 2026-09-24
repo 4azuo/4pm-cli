@@ -5,7 +5,7 @@
  * frames are fed back into the bus. Best-effort — a control-channel error never takes the cli down.
  */
 import { createServer, type Server, type Socket } from "node:net";
-import { rmSync } from "node:fs";
+import { chmodSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { SessionBus } from "./session-bus";
 import {
@@ -16,6 +16,7 @@ import {
   type ControlServerFrame,
   type ControlSessionInfo,
 } from "./control-protocol";
+import { controlTokenPath, tokenMatches, writeControlToken } from "./control-token";
 
 /** Start the control socket; returns a stop() that closes it + removes the socket file. */
 export function startControlServer(
@@ -62,9 +63,11 @@ export function startControlServer(
     bus.onAutonomousDone((ok, note) => broadcast({ t: "autonomousDone", ok, note })),
   ];
 
-  const server: Server = createServer((sock) => {
-    clients.add(sock);
-    // Snapshot the current state so a late attacher renders immediately (ADR-0192 §2).
+  // A fresh control-channel token per daemon run (ADR-0320): a client must present it as its first
+  // frame before we accept any other frame or add it to the broadcast set.
+  const token = writeControlToken(profileDir);
+  /** Send the current state so a (just-authenticated) attacher renders immediately (ADR-0192 §2). */
+  const sendSnapshot = (sock: Socket): void =>
     send(sock, {
       t: "snapshot",
       info,
@@ -78,10 +81,25 @@ export function startControlServer(
       tokens: bus.sessionTokens,
       transcript: bus.snapshot(),
     });
-    const parse = createFrameParser<ControlClientFrame>();
+
+  const server: Server = createServer((sock) => {
     sock.setEncoding("utf8");
+    let authed = false;
+    const parse = createFrameParser<ControlClientFrame>();
     sock.on("data", (chunk: string) => {
       for (const frame of parse(chunk)) {
+        if (!authed) {
+          // Gate: the first frame MUST be a matching `auth` (ADR-0320) — else reject + drop.
+          if (frame.t === "auth" && tokenMatches(token, frame.token)) {
+            authed = true;
+            clients.add(sock);
+            sendSnapshot(sock);
+          } else {
+            send(sock, { t: "authError" });
+            sock.destroy();
+          }
+          continue;
+        }
         if (frame.t === "submit") bus.submitLocal(frame.input);
         else if (frame.t === "reconnect") bus.requestReconnect();
         else if (frame.t === "autonomousRun") bus.submitAutonomous();
@@ -97,7 +115,15 @@ export function startControlServer(
   server.on("error", () => {
     /* listen error (e.g. perms) — the daemon still runs without an attach channel */
   });
-  server.listen(socketPath);
+  server.listen(socketPath, () => {
+    // Owner-only socket (ADR-0320): connect() needs write on the inode, so 0600 blocks other users
+    // regardless of umask. Best-effort — a fs that rejects chmod still runs (the token gate remains).
+    try {
+      chmodSync(socketPath, 0o600);
+    } catch {
+      /* best-effort */
+    }
+  });
 
   return () => {
     for (const un of unsubs) un();
@@ -106,6 +132,7 @@ export function startControlServer(
     server.close();
     try {
       rmSync(socketPath, { force: true });
+      rmSync(controlTokenPath(profileDir), { force: true });
     } catch {
       /* ignore */
     }

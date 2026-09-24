@@ -1,52 +1,47 @@
 # Autonomous mode — how it's assembled
 
-> **Sample project — defines the workflow only, does NOT run on its own.** The files below describe an
-> unattended work loop (ADR-0152 + **ADR-0319**), intended to run on **WSL** (an isolated environment
-> where the AI can be given full permissions). Under ADR-0319 the cycle runs **through the 4PM cli**,
-> not a raw `claude -p`.
+> **Sample project — describes the workflow only; it does NOT run on its own.** Intended for an isolated
+> environment (WSL / a per-project container) where the AI can be given full permissions.
+>
+> **ADR-0321: the autonomous LOGIC lives in the 4PM cli, not in this repo.** The project repo carries
+> only a **dumb** cron tick and the **data** books — never the algorithm — so the logic can't be read
+> from, or tampered with in, a checkout. The **config** is not in the repo either: it lives in the
+> **profile dir** (`~/.4pm/profiles/<name>/autonomous.config.json`) and is edited from the web
+> **Autonomous → Settings** tab.
 
 ## The pieces
-| File | Role |
-|------|------|
-| `.claude/hooks/autonomous-tick.sh` | Cron tick (every ~5–10 min): a run lock + the CHEAP local gates (pause / quiet-hours / max-ticks / **has-work**), then runs **`4pm auto-run`**. No token spend when there's no approved work. |
-| `4pm auto-run` (cli) | Asks the running **`4pm start`** daemon to run **one** cycle over the control socket; the cycle rides the daemon's live WS session (failover ADR-0182, metering ADR-0072, folder-scope ADR-0181, timeout ADR-0243). |
-| cli `buildAutonomousCyclePrompt` | The cli-owned cycle instructions (was `.claude/commands/auto-cycle.md`, now retired): sync branch → analyse **approved** USER_TODO → fold **approved** USER_QA → do ONE approved task → **PR** into the base branch. |
-| `.claude/.autonomous.approvals.json` | Approval source of truth (ADR-0152): `{ "<REQ/QA/TSK-id>": {approved, by, at} }` — the web AI-content grids write it; the cycle reads it. |
-| `USER_TODO.md` / `USER_QA.md` | User requests / the AI's questions back — each row approved before the cycle acts on it (ADR-0319). |
-| `AI_TODO.md` / `AI_PROGRESS.md` / `AI_DONE.md` | The task books: queue → in progress → done (ID `TSK-{group:0000}-{task:0000}`). |
-| `.claude/templates/<NAME>.{empty,sample}.md` | Canonical templates for the books. The has-work gate + the cycle **compare against `*.empty.md`** to tell empty/has-work and reset correctly. |
-| `.claude/settings.json` | The "bypass all" permission profile for autonomous mode (see the note below). |
+| Where | Role |
+|-------|------|
+| `.claude/hooks/autonomous-tick.sh` | **Dumb** cron tick — its only job is `exec 4pm auto-run`. No gates, no schedule sync, no lock, no settings. |
+| `4pm auto-run` (cli) | Asks the running **`4pm start`** daemon to run **one** cycle over the control socket (token-authenticated — ADR-0320/0321). |
+| cli daemon (`runAutonomousCycle`) | Owns **all** logic: reads `autonomous.config.json`; the gates (paused / quiet-hours / max-ticks / **has-work** / **quota**); cron schedule sync; run histories + auto-pause; serialize one cycle at a time; model; usage via the live snapshot (ADR-0072). Runs the cycle as a write-capable agent (bypass — ADR-0271: branch + PR). |
+| `~/.4pm/profiles/<name>/autonomous.config.json` | The config knobs (paused, cronSchedule, quietHours, maxTicksPerDay, stopOnConsecutiveFailures, logRetentionDays, model, **maxSessionPct**, **maxWeeklyPct**). Clean JSON — the web Settings Form labels + explains each field. **Outside the repo.** |
+| `USER_TODO.md` / `USER_QA.md` / `AI_TODO.md` / `AI_PROGRESS.md` / `AI_DONE.md` | The data books (content-only tables — ADR-0320). |
+| `.claude/.autonomous.approvals.json` · `.autonomous.authors.json` | Per-row approver / writer (ADR-0320) — project data. `.autonomous.histories.json` = runtime state (gitignored). |
 
 ## Lifecycle (1 tick)
 ```
-cron ~5–10min → autonomous-tick.sh
-  ├─ locked? / paused? / quiet-hours? / max-ticks? → log "skip", exit
-  ├─ has-work? (approved USER_TODO/USER_QA/AI_TODO, or AI_PROGRESS non-empty) — no → skip (daemon NOT woken)
-  └─ 4pm auto-run → the running daemon runs ONE cycle:
-       1. sync the primary repo's current branch (base branch — ADR-0292)
-       2. analyse APPROVED USER_TODO requests → AI_TODO tasks (unclear ⇒ ask via USER_QA)
-       3. fold APPROVED USER_QA answers back into AI_TODO
-       4. take ONE approved task (deps met) → AI_PROGRESS, commit
-       5. implement + test on task/TSK-… branch
-       6. rebase + push + open a PULL REQUEST into the base branch (no direct merge)
-       7. update the books (AI_DONE), commit + push the base branch
-  └─ record success/failure (N consecutive failures → pause); the EXIT trap releases the lock
+cron → autonomous-tick.sh → `4pm auto-run` → the running daemon:
+  ├─ paused / quiet-hours / max-ticks / has-work / quota over caps? → log "skip", done
+  └─ run ONE cycle (write-capable agent):
+       sync the primary repo's branch → analyse APPROVED USER_TODO → fold APPROVED USER_QA →
+       one approved task → implement + test → open a PULL REQUEST into the base branch → update books
+  └─ record history (N consecutive failures → auto-pause); serialized (one cycle at a time)
 ```
 
 ## Install on WSL
 ```bash
 chmod +x .claude/hooks/autonomous-tick.sh
 crontab -e
-# add the line (fix /path):
+# add (fix /path):
 */10 * * * * /path/to/project/.claude/hooks/autonomous-tick.sh
-# watch:
-tail -f .claude/logs/autonomous-tick-$(date +%F).log
 ```
-Requirements: the **`4pm`** cli on PATH with a **running `4pm start` daemon** serving this project (it
-holds the AI credentials + WS session), plus `git`, `python3`, and `gh`/`glab` for the PR step.
+Requirements: the **`4pm`** cli on PATH with a **running `4pm start` daemon** serving this project, plus
+`git` and `gh`/`glab` for the PR step. The **schedule** and every other knob are set from the web
+Autonomous → Settings tab; the cli keeps the crontab line in sync with `cronSchedule`.
 
-## Note on permissions (important)
-- The daemon runs the cycle as a **write-capable agent** (`--permission-mode bypassPermissions`,
-  ADR-0271) so file + git/`gh`/`glab` writes run headless. It stays bounded by the folder-scope guard
-  (ADR-0181) + the AI-run timeout (ADR-0243).
-- Only enable full permissions in an isolated environment (WSL/CI). Never on a machine with sensitive data.
+## Permissions
+The daemon runs the cycle as a write-capable agent (`--permission-mode bypassPermissions`, ADR-0271),
+bounded by the folder-scope guard (ADR-0181) + the AI-run timeout (ADR-0243). Only enable full
+permissions in an isolated environment (WSL / a per-project container). Never on a machine with
+sensitive data.

@@ -6,9 +6,9 @@
 > **Tag** = optional catalog tag(s) (e.g. `UpdateSpecFromDB`) whose action runs from the server down to
 > the project when the task is approved (approval is committed on Save — ADR-0311).
 > **Approval** is NOT a table column — it lives in `.claude/.autonomous.approvals.json` (ADR-0152), set
-> from the web AI Todo grid; `/auto-cycle` reads that file, never the table.
+> from the web AI Todo grid; the autonomous cli reads that file, never the table.
 > **Depends** = the `TSK-…` ids that must be DONE (present in `AI_DONE.md`) first.
-> `/auto-cycle` only takes tasks that are approved AND have their dependencies met → moves them to
+> the autonomous cli only takes tasks that are approved AND have their dependencies met → moves them to
 > `AI_PROGRESS.md`; runs group by group, within a group High → Medium → Low.
 
 | ID | Priority | Tag | Depends | Group | Task description | Notes |

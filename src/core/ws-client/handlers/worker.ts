@@ -45,7 +45,7 @@ export function handleWorkerChannels(
     case WsChannels.AUTONOMOUS_READ:
       // Request/reply (machine-0028, ADR-0152): settings + status + books + approvals.
       if (ctx.physicRoot) {
-        void readAutonomous(ctx.physicRoot).then((reply) =>
+        void readAutonomous(ctx.physicRoot, ctx.profileDir).then((reply) =>
           ctx.send(WsChannels.AUTONOMOUS_READ, reply, message.id),
         );
       }
@@ -65,7 +65,7 @@ export function handleWorkerChannels(
       // author, for trace) is filled server-side and rides the payload.
       const req = payload as unknown as AutonomousWriteRequest & { by?: string };
       if (ctx.physicRoot) {
-        void writeAutonomous(ctx.physicRoot, req, req.by ?? "unknown").then((reply) =>
+        void writeAutonomous(ctx.physicRoot, ctx.profileDir, req, req.by ?? "unknown").then((reply) =>
           ctx.send(WsChannels.AUTONOMOUS_WRITE, reply, message.id),
         );
       }
