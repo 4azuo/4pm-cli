@@ -8,6 +8,15 @@ export interface OutputBatcherOptions {
   flushIntervalMs?: number;
   flushSizeKb?: number;
   maxBufferKb?: number;
+  /**
+   * Hard cap (KiB) on the size of a **single** emitted frame (ADR-0322). A large AI output —
+   * `claude -p --output-format json` emits its whole result in one stdout burst — arrives as one
+   * huge `push`, and `flush` would otherwise emit the entire buffer as ONE `command.output` frame.
+   * Bounded by the cli-server WS `maxPayload`, an over-cap frame is rejected (`WS_ERR_UNSUPPORTED_
+   * MESSAGE_LENGTH`, 1009), which — before ADR-0322 — crashed the whole cli-server. `flush` slices
+   * the buffer into frames no larger than this so a single burst can never exceed the transport cap.
+   */
+  maxFrameKb?: number;
   overflow?: "backpressure" | "truncate";
   /** Receive one batch to send. */
   onFlush: (chunk: string, truncated: boolean) => void;
@@ -17,7 +26,7 @@ export interface OutputBatcherOptions {
 
 export class OutputBatcher {
   private readonly opts: Required<
-    Pick<OutputBatcherOptions, "flushIntervalMs" | "flushSizeKb" | "maxBufferKb" | "overflow">
+    Pick<OutputBatcherOptions, "flushIntervalMs" | "flushSizeKb" | "maxBufferKb" | "maxFrameKb" | "overflow">
   > &
     OutputBatcherOptions;
   private buffer = "";
@@ -30,6 +39,9 @@ export class OutputBatcher {
       flushIntervalMs: 200,
       flushSizeKb: 64,
       maxBufferKb: 512,
+      // Well under the cli-server WS maxPayload (8 MiB — ADR-0322) even after the enveloped frame's
+      // AES-256-GCM + base64 + JSON inflation (~1.37×), and small enough to keep SSE replay chunks light.
+      maxFrameKb: 256,
       overflow: "backpressure",
       ...options,
     };
@@ -63,7 +75,9 @@ export class OutputBatcher {
   }
 
   /**
-   * Flush the entire current buffer immediately (one batch).
+   * Flush the current buffer immediately, splitting it into frames no larger than `maxFrameKb`
+   * (ADR-0322) so a single large burst never produces one over-`maxPayload` WS frame. The
+   * `truncated` flag is carried on the last frame only.
    */
   flush(): void {
     if (this.timer) {
@@ -71,7 +85,7 @@ export class OutputBatcher {
       this.timer = null;
     }
     if (this.buffer.length === 0 && !this.truncated) return;
-    const chunk = this.buffer;
+    const buf = this.buffer;
     const truncated = this.truncated;
     this.buffer = "";
     this.truncated = false;
@@ -79,6 +93,17 @@ export class OutputBatcher {
       this.paused = false;
       this.opts.onPressure?.(false);
     }
-    this.opts.onFlush(chunk, truncated);
+    const max = this.opts.maxFrameKb * 1024;
+    if (buf.length <= max) {
+      this.opts.onFlush(buf, truncated);
+      return;
+    }
+    // Slice by JS string length (code units): the receiver concatenates the chunks back, so a
+    // multi-byte char split across a boundary reassembles losslessly (we never send raw bytes).
+    for (let i = 0; i < buf.length; i += max) {
+      const slice = buf.slice(i, i + max);
+      const isLast = i + max >= buf.length;
+      this.opts.onFlush(slice, isLast && truncated);
+    }
   }
 }
