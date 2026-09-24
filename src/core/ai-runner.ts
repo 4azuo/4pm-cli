@@ -12,7 +12,10 @@ import type { AiPlan } from "../utils/ai-cli";
 import { createAiStreamParser, estimateTokens, type AiUsage } from "./ai-stream";
 
 /** Why an attempt was skipped, so the caller can log an accurate reason (ADR-0240: any error fails over). */
-export type AttemptFailReason = "auth" | "limit" | "credits" | "other";
+export type AttemptFailReason = "auth" | "limit" | "credits" | "timeout" | "other";
+
+/** The conventional exit code the executor reports for a wall-clock timeout kill (ADR-0243). */
+const TIMEOUT_EXIT = 124;
 
 /** Detect an auth failure in an attempt's output (to decide whether to try the next). */
 export function isAuthFailure(text: string): boolean {
@@ -162,15 +165,23 @@ export async function runAiFailover(
     // Reflect an exit-0-but-errored run as a non-zero exit so the last-attempt return (and the web)
     // surfaces the streamed error text instead of treating it as success (ADR-0249).
     if (finalExit === 0 && apiErr.isError) finalExit = apiErr.status && apiErr.status > 0 ? apiErr.status : 1;
-    // Fail over on ANY failed attempt (ADR-0240): auth / session-limit / out-of-credits / other —
-    // classify only for an accurate log. Stop once the last profile is reached (all exhausted).
-    const reason: AttemptFailReason = isAuthFailure(captured)
-      ? "auth"
-      : apiErr.status === 429 || isOutOfCredits(captured)
-        ? "credits"
-        : isSessionLimit(captured)
-          ? "limit"
-          : "other";
+    // Fail over on ANY failed attempt (ADR-0240): timeout / auth / session-limit / out-of-credits /
+    // other — classify only for an accurate log. Stop once the last profile is reached (all exhausted).
+    // A wall-clock timeout is classified by its EXIT CODE (124 — ADR-0243), NOT by the text
+    // heuristics: `captured` is the AI's own generated answer (a full project spec on a compose), and
+    // those regexes are loose enough that the spec's own content — e.g. "authentication credentials"
+    // or "OAuth … revoked" — would false-match `isAuthFailure` and mislabel a timeout as
+    // "failed to authenticate". Exit 124 is unambiguous, so it wins.
+    const reason: AttemptFailReason =
+      finalExit === TIMEOUT_EXIT
+        ? "timeout"
+        : isAuthFailure(captured)
+          ? "auth"
+          : apiErr.status === 429 || isOutOfCredits(captured)
+            ? "credits"
+            : isSessionLimit(captured)
+              ? "limit"
+              : "other";
     if (i === total - 1) break;
     handlers.onAttemptFail(attempt.label, reason);
   }

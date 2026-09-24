@@ -239,6 +239,15 @@ export interface CommandOutputPayload {
    * it can't poison mode detection of the AI result that follows (ADR-0108).
    */
   log?: boolean;
+  /**
+   * Discard everything streamed for this command so far (ADR-0322 area): a profile-failover retry
+   * starts a fresh attempt, so the RESULT stream + persisted transcript must drop the previous
+   * (failed/partial) attempt and keep only the attempt that ultimately succeeds. Without it a
+   * compose whose first profile times out mid-spec then succeeds on the next would concatenate two
+   * partial specs into one buffer, which the client then fails to parse as JSON. Carries no chunk;
+   * the live console view is unaffected (it has its own `console.sync` transcript).
+   */
+  reset?: boolean;
 }
 
 /** Status of one worker tool on the machine (worker tools, ADR-0206). */

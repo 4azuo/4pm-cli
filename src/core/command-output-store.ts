@@ -40,6 +40,20 @@ export function appendCommandOutput(commandId: string, text: string): void {
   }
 }
 
+/**
+ * Discard a command's captured output so far (a failover retry starting fresh — ADR-0322 area):
+ * the local `/output` replay + the on-demand `command.output-read` recovery must hold only the
+ * LAST attempt's answer, matching the reset the server/web apply to the live result stream.
+ */
+export function resetCommandOutput(commandId: string): void {
+  if (!dir) return;
+  try {
+    rmSync(join(dir, `${commandId}.log`), { force: true });
+  } catch {
+    // best-effort
+  }
+}
+
 /** Read the full captured output of a command, or null when unavailable. */
 export function readCommandOutput(commandId: string): string | null {
   if (!dir) return null;

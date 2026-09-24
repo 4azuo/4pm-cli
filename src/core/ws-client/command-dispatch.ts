@@ -46,7 +46,7 @@ import {
 import { formatTimestampInZone } from "../../utils/time";
 import { finishCommand, recordCommand } from "../command-history";
 import { materializeImages, rewriteImagePlaceholders, sweepOldAttachments } from "../command-images";
-import { appendCommandOutput } from "../command-output-store";
+import { appendCommandOutput, resetCommandOutput } from "../command-output-store";
 import {
   readProfileConfig,
   resolveMemoryConfig,
@@ -421,6 +421,18 @@ export async function runAiPrompt(
       }
     },
     onAttemptStart: (label, index, total, cmd) => {
+      // A retry (index > 0) starts fresh: tell the result consumer to DISCARD the previous
+      // attempt's partial output so a failover that eventually succeeds returns ONLY the last
+      // attempt's answer. Without this, a compose whose first profile times out mid-spec then
+      // succeeds on the next concatenates two partial specs (+ the timeout note) into one buffer,
+      // which `parseCompose` then slices across (first `{` of attempt 1 → last `}` of attempt 2) —
+      // producing invalid JSON. `reset` only clears the RESULT stream/transcript, not the live
+      // console view (its own `console.sync`). ADR-0322 (WS resilience) area.
+      if (index > 0) {
+        answerText = "";
+        resetCommandOutput(commandId);
+        ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: "", reset: true });
+      }
       // Use the attempt's OWN provider command (ADR-0197): a mixed plan must not label a codex
       // attempt as "claude". `plan.cmd` is only the first attempt's representative command.
       const text = `→ trying ${cmd} profile "${label}" (${index + 1}/${total})…`;
@@ -440,7 +452,9 @@ export async function runAiPrompt(
             ? `profile "${label}" is out of usage credits — trying next`
             : reason === "auth"
               ? `profile "${label}" failed to authenticate — trying next`
-              : `profile "${label}" run failed — trying next`;
+              : reason === "timeout"
+                ? `profile "${label}" timed out — trying next`
+                : `profile "${label}" run failed — trying next`;
       ctx.bus.push({ source: origin, kind: "log", text, level: "warn" });
       ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: `${text}\n`, log: true });
     },
