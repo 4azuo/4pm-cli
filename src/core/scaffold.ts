@@ -94,6 +94,16 @@ async function attachSubmodules(
       }
       continue;
     }
+    // The project template ships placeholder folders (docs/, src/, tests/…) that can collide with a
+    // submodule's subdir; `git submodule add` refuses to clone into an existing working-tree path
+    // ("'<dir>' already exists and is not a valid git repo"), so remove the placeholder first — the
+    // submodule owns that path (ADR-0316). Without this the add fails, falls through to a no-op
+    // `update --init`, and the later `git add .gitmodules` crashes (no .gitmodules was written).
+    const abs = join(root, dir);
+    if (existsSync(abs)) {
+      emit("submodule", `Removing placeholder ${dir} before attaching the submodule…`);
+      await rm(abs, { recursive: true, force: true });
+    }
     emit("submodule", `Adding submodule ${sub.url} → ${dir}…`);
     const b = (sub.branch ?? "").trim();
     // When creating a project (ADR-0326), ensure the declared branch exists on the submodule's remote
@@ -153,8 +163,16 @@ async function commitAndPushSubmodules(
   emit: (step: string, message: string) => void,
 ): Promise<void> {
   const dirs = submodules.map((s) => (s.subdir ?? "").trim()).filter(Boolean);
+  // Only stage paths that actually exist: `.gitmodules` is absent when no submodule was really added
+  // (e.g. every one was already registered), and `git add` throws on a missing pathspec — which would
+  // fail the whole scaffold. Guard so a no-op submodule step never crashes the create (ADR-0316).
+  const addPaths = [
+    ...(existsSync(join(root, ".gitmodules")) ? [".gitmodules"] : []),
+    ...dirs.filter((d) => existsSync(join(root, d))),
+  ];
+  if (addPaths.length === 0) return;
   emit("submodule", "Committing .gitmodules…");
-  await run("git", ["add", ".gitmodules", ...dirs], { cwd: root, timeout: 60_000 });
+  await run("git", ["add", ...addPaths], { cwd: root, timeout: 60_000 });
   // Nothing staged (everything already committed) ⇒ no commit, no push.
   const staged = (await run("git", ["diff", "--cached", "--name-only"], { cwd: root, timeout: 30_000 })).stdout.trim();
   if (!staged) return;
