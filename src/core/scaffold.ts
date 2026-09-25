@@ -7,9 +7,10 @@
  * submodules** are attached under the root (`git submodule add` + commit + push) after the primary —
  * submodules are attach-only (no scaffold); only the primary is scaffolded.
  */
-import { cp, mkdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -74,6 +75,7 @@ async function attachSubmodules(
   root: string,
   submodules: RepoDecl[],
   emit: (step: string, message: string) => void,
+  createMissingBranch = false,
 ): Promise<void> {
   if (submodules.length === 0) return;
   // The root must be a git repo (the primary) before a submodule can be added.
@@ -94,6 +96,30 @@ async function attachSubmodules(
     }
     emit("submodule", `Adding submodule ${sub.url} → ${dir}…`);
     const b = (sub.branch ?? "").trim();
+    // When creating a project (ADR-0326), ensure the declared branch exists on the submodule's remote
+    // so `submodule add -b` can check it out; if it can't be created (no write creds), fall back to
+    // adding the default branch and creating the branch locally (recorded in .gitmodules).
+    if (b && createMissingBranch && !(await ensureRemoteBranch(sub.url, b, emit))) {
+      try {
+        await run("git", ["submodule", "add", sub.url, dir], { cwd: root, timeout: 120_000 });
+        await run("git", ["config", "-f", ".gitmodules", `submodule.${dir}.branch`, b], { cwd: root, timeout: 30_000 });
+        try {
+          await run("git", ["checkout", "-b", b], { cwd: join(root, dir), timeout: 30_000 });
+          await run("git", ["push", "-u", "origin", b], { cwd: join(root, dir), timeout: 120_000 });
+        } catch (pushErr) {
+          const pmsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
+          emit("git-branch-push-failed", `Submodule ${dir}: branch "${b}" created locally but the push failed: ${pmsg}`);
+        }
+        added++;
+        continue;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!/already exists|already registered|in the index/i.test(msg)) {
+          throw new Error(`git submodule add ${dir} failed: ${msg}`);
+        }
+        // fall through to the shared "already registered" handling below
+      }
+    }
     try {
       await run("git", ["submodule", "add", ...(b ? ["-b", b] : []), sub.url, dir], { cwd: root, timeout: 120_000 });
       added++;
@@ -155,6 +181,45 @@ function cloneArgs(url: string, dest: string, branch?: string): string[] {
   return b ? ["clone", "-b", b, url, dest] : ["clone", url, dest];
 }
 
+/** Whether the remote already has the branch (ADR-0326). False on any ls-remote failure. */
+async function remoteHasBranch(url: string, branch: string): Promise<boolean> {
+  try {
+    const { stdout } = await run("git", ["ls-remote", "--heads", url, branch], { timeout: 30_000 });
+    return stdout.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ensure the declared branch exists on the remote when creating a project (ADR-0326): a freshly
+ * created project may name a branch that does not exist on the repo yet. Create it from the repo's
+ * default branch in a throwaway clone and push it. Best-effort — a push that fails for lack of write
+ * credentials is surfaced (not thrown), and the caller falls back to a local-only branch. Returns
+ * true when the branch exists on the remote afterwards. 4PM still never creates the repo (ADR-0172).
+ */
+async function ensureRemoteBranch(
+  url: string,
+  branch: string,
+  emit: (step: string, message: string) => void,
+): Promise<boolean> {
+  if (await remoteHasBranch(url, branch)) return true;
+  const tmp = await mkdtemp(join(tmpdir(), "4pm-branch-"));
+  try {
+    emit("git", `Branch "${branch}" not found on ${url} — creating it from the default branch…`);
+    await run("git", ["clone", "--depth", "1", url, tmp], { timeout: 120_000 });
+    await run("git", ["checkout", "-b", branch], { cwd: tmp, timeout: 30_000 });
+    await run("git", ["push", "-u", "origin", branch], { cwd: tmp, timeout: 120_000 });
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    emit("git-branch-push-failed", `Could not create branch "${branch}" on ${url}: ${msg}`);
+    return false;
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+}
+
 /**
  * Update an already-cloned repo in place (ADR-0292, `sync` mode): fetch the remote, check out the
  * configured branch (when set), then fast-forward pull. Never clobbers local work — a pull that
@@ -182,7 +247,7 @@ async function provisionRepo(
   target: string,
   repo: RepoDecl,
   emit: (step: string, message: string) => void,
-  opts: { mode?: ProvisionMode } = {},
+  opts: { mode?: ProvisionMode; createMissingBranch?: boolean } = {},
 ): Promise<void> {
   const mode: ProvisionMode = opts.mode ?? "clone";
   if (!repo.url) {
@@ -204,6 +269,22 @@ async function provisionRepo(
       await run("git", cloneArgs(repo.url, target, repo.branch), { timeout: 120_000 });
     } else {
       emit("git", "Repository already present — skipping clone.");
+    }
+    return;
+  }
+  const b = (repo.branch ?? "").trim();
+  // Create the declared branch when creating a project and the remote lacks it (ADR-0326): clone the
+  // default branch, then create the branch — pushing it best-effort so it exists for other workers.
+  if (b && opts.createMissingBranch && !(await remoteHasBranch(repo.url, b))) {
+    emit("git", `Cloning ${repo.url} (default branch) to create "${b}"…`);
+    await run("git", ["clone", repo.url, target], { timeout: 120_000 });
+    await run("git", ["checkout", "-b", b], { cwd: target, timeout: 30_000 });
+    try {
+      await run("git", ["push", "-u", "origin", b], { cwd: target, timeout: 120_000 });
+      emit("git", `Created and pushed branch "${b}".`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      emit("git-branch-push-failed", `Branch "${b}" created locally but the push failed: ${msg} — push it when credentials are available.`);
     }
     return;
   }
@@ -272,11 +353,13 @@ export async function scaffoldProject(
     const repo = singleRepo(reposOf(payload.spec));
     if (!repo) throw new Error("A project must declare one repo (ADR-0314).");
     emit("git", "Cloning repository…");
-    await provisionRepo(target, repo, emit);
+    // Create mode (ADR-0326): create the declared branch on the primary + submodules when the remote
+    // doesn't have it yet (a fresh project naming a new branch).
+    await provisionRepo(target, repo, emit, { createMissingBranch: true });
     // Scaffold the repo at the root (template + spec + AI init).
     await scaffoldRepo(target, payload.projectName, payload.spec, emit);
     // Attach the declared git submodules under the root (ADR-0316) — only the primary is scaffolded.
-    await attachSubmodules(target, submodulesOf(reposOf(payload.spec)), emit);
+    await attachSubmodules(target, submodulesOf(reposOf(payload.spec)), emit, true);
     // Stamp the template-version marker (ADR-0262) at the root so the web can later detect drift.
     emit("version", "Writing .4pm/.4pm.json…");
     await writeTemplateMarker(target);
