@@ -7,12 +7,14 @@
  */
 import {
   WsChannels,
+  type FaqComposeRequest,
   type KnowledgeComposeRequest,
   type SupportAnswerRequest,
   type WsEnvelope,
 } from "@4pm/ws";
 import { runSupportAnswer } from "../../support-answer";
 import { runKnowledgeCompose } from "../../knowledge-compose";
+import { runFaqCompose } from "../../faq-compose";
 import { reportToolResult } from "../../tool-health";
 import { getWorkingProfile } from "../../ai-profile-state";
 import { resolveClaudeProfiles } from "../../../utils/ai-cli";
@@ -94,6 +96,33 @@ export function handleSupportChannels(
           ctx.send(WsChannels.KNOWLEDGE_COMPOSE, reply, message.id);
         })
         .finally(() => ctx.bus.endBusy("knowledge-compose"));
+      return true;
+    }
+    case WsChannels.FAQ_COMPOSE: {
+      // Request/reply (ADR-0333): the platform AI pool distils the selected support tickets into FAQ
+      // markdown in the 4pm-faq repo and opens a PR, using the short-lived WRITE token in the request
+      // (never persisted). Write-capable agent — same profile handling as the normal AI dispatch.
+      const freq = payload as unknown as FaqComposeRequest;
+      const fcfg = readProfileConfig(ctx.profileDir);
+      const fcmd = fcfg.aiCli || "claude";
+      const fai = {
+        cmd: fcmd,
+        profiles: resolveClaudeProfiles(fcfg, getWorkingProfile(ctx.profileDir, fcmd)),
+        env: fcfg.aiEnv,
+      };
+      ctx.bus.push({ source: "server", kind: "aireq", text: `${fcmd} ‹ synthesize FAQ (${freq.tickets.length} tickets)` });
+      ctx.bus.startBusy("faq-compose");
+      void runFaqCompose(freq, fai)
+        .then((reply) => {
+          if (reply.error) {
+            ctx.bus.push({ source: "server", kind: "log", text: `faq-compose failed: ${reply.error}`, level: "warn" });
+          } else {
+            ctx.bus.push({ source: "server", kind: "aires", text: `${fcmd} › ${reply.prUrl || "no changes"}` });
+          }
+          reportToolResult(fcmd, !reply.error, reply.error);
+          ctx.send(WsChannels.FAQ_COMPOSE, reply, message.id);
+        })
+        .finally(() => ctx.bus.endBusy("faq-compose"));
       return true;
     }
     default:
