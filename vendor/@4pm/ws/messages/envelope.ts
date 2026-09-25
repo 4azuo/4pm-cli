@@ -692,14 +692,16 @@ export interface SecretsWriteReply {
 /** Which settings file the policy applies to. */
 export type AgentToolsScope = "shared" | "local";
 
-/** Claude Code permission mode for `permissions.defaultMode`. */
+/**
+ * Claude Code permission mode for `permissions.defaultMode`. Headless-only (ADR-0328): 4PM always
+ * emits `bypassPermissions`; the other members stay for tolerance when reading a hand-edited file.
+ */
 export type AgentToolsMode = "default" | "acceptEdits" | "plan" | "bypassPermissions";
 
-/** The `permissions` block of a Claude settings file. */
+/** The `permissions` block of a Claude settings file. Headless-only (ADR-0328): no `ask` list. */
 export interface AgentToolsPermissions {
   defaultMode: AgentToolsMode;
   allow: string[];
-  ask: string[];
   deny: string[];
 }
 
@@ -952,6 +954,8 @@ export interface GitRepoRef {
   name: string;
   /** `origin` remote URL, when set. */
   remote: string | null;
+  /** Current checked-out branch (`git rev-parse --abbrev-ref HEAD`), when resolvable — null otherwise. */
+  branch?: string | null;
 }
 export interface GitReposReply {
   repos: GitRepoRef[];

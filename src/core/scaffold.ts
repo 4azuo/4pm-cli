@@ -193,6 +193,71 @@ async function commitAndPushSubmodules(
   }
 }
 
+/** Derive the PR provider (`gh`/`glab`) + `owner/repo` slug from a git remote URL (ADR-0331). */
+function providerSlug(url: string): { provider: "gh" | "glab" | null; slug: string } {
+  const provider = /github\.com/i.test(url) ? "gh" : /gitlab\.com/i.test(url) ? "glab" : null;
+  const m = /(?:github|gitlab)\.com[/:]+([^/]+\/.+?)(?:\.git)?\/?$/i.exec(url);
+  return { provider, slug: m?.[1] ?? "" };
+}
+
+/**
+ * Commit the scaffolded working tree and open a pull/merge request (ADR-0331): after a create, stage
+ * everything, commit (with a 4PM fallback identity), push the declared branch, then open a PR via
+ * `gh`/`glab` (`--fill` — base = the repo's default branch, head = the pushed branch). Every step is
+ * **best-effort**: nothing to commit, a push without write credentials, a missing/unauthed CLI, or
+ * `branch == default` (no PR to open) is surfaced as a step and never fails the create — the local
+ * commit stays for a later manual push/PR from the Git tab.
+ */
+async function commitAndOpenPr(
+  root: string,
+  repo: RepoDecl,
+  emit: (step: string, message: string) => void,
+): Promise<void> {
+  emit("commit", "Committing the scaffolded project…");
+  await run("git", ["add", "-A"], { cwd: root, timeout: 60_000 });
+  const staged = (await run("git", ["diff", "--cached", "--name-only"], { cwd: root, timeout: 30_000 })).stdout.trim();
+  if (!staged) {
+    emit("commit", "Nothing to commit — skipping the pull request.");
+    return;
+  }
+  const commitArgs = ["commit", "-m", "chore: scaffold project (4PM)"];
+  try {
+    await run("git", commitArgs, { cwd: root, timeout: 60_000 });
+  } catch {
+    // No user.name/user.email configured — retry with a 4PM fallback identity so the commit lands.
+    await run("git", ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", ...commitArgs], { cwd: root, timeout: 60_000 });
+  }
+  const branch = (repo.branch ?? "").trim();
+  emit("push", "Pushing the scaffold branch…");
+  try {
+    await run("git", ["push", "-u", "origin", ...(branch ? [branch] : ["HEAD"])], { cwd: root, timeout: 120_000 });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // No write credentials (or a rejected push) — keep the local commit; a PR needs the branch pushed.
+    emit("push-failed", `Scaffold committed locally but the push failed: ${msg} — push it from the Git tab when credentials are available.`);
+    return;
+  }
+  const { provider, slug } = providerSlug(repo.url ?? "");
+  if (!provider) {
+    emit("pr", "Unknown git host — skipping the pull request.");
+    return;
+  }
+  emit("pr", `Opening a pull request via ${provider}…`);
+  try {
+    const args =
+      provider === "glab"
+        ? ["mr", "create", "--fill", ...(slug ? ["-R", slug] : [])]
+        : ["pr", "create", "--fill", ...(slug ? ["-R", slug] : [])];
+    const { stdout } = await run(provider, args, { cwd: root, timeout: 120_000 });
+    const link = stdout.trim().split(/\s+/).find((s) => /^https?:\/\//.test(s)) ?? stdout.trim().split("\n").pop() ?? "";
+    emit("pr", `Pull request opened${link ? `: ${link}` : "."}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // gh/glab missing/unauthed, or branch == default (no PR to open) — surfaced, not fatal.
+    emit("pr-failed", `Could not open a pull request (${provider}): ${msg}`);
+  }
+}
+
 /** Build `git clone` args honoring an optional branch (ADR-0292). */
 function cloneArgs(url: string, dest: string, branch?: string): string[] {
   const b = (branch ?? "").trim();
@@ -374,13 +439,18 @@ export async function scaffoldProject(
     // Create mode (ADR-0326): create the declared branch on the primary + submodules when the remote
     // doesn't have it yet (a fresh project naming a new branch).
     await provisionRepo(target, repo, emit, { createMissingBranch: true });
-    // Scaffold the repo at the root (template + spec + AI init).
-    await scaffoldRepo(target, payload.projectName, payload.spec, emit);
+    // Scaffold the repo at the root (template + spec + AI init). Create resets the template-managed
+    // `.claude` config first (ADR-0329) so it never inherits a stale committed/leftover one.
+    await scaffoldRepo(target, payload.projectName, payload.spec, emit, { resetClaude: true });
     // Attach the declared git submodules under the root (ADR-0316) — only the primary is scaffolded.
     await attachSubmodules(target, submodulesOf(reposOf(payload.spec)), emit, true);
     // Stamp the template-version marker (ADR-0262) at the root so the web can later detect drift.
     emit("version", "Writing .4pm/.4pm.json…");
     await writeTemplateMarker(target);
+    // Commit the scaffolded working tree and open a PR (ADR-0331) — best-effort: a push/PR that fails
+    // (no write creds, gh/glab not installed/authed, branch == default) is surfaced but never fails
+    // the create (the local commit is kept for a later manual push from the Git tab).
+    await commitAndOpenPr(target, repo, emit);
     onProgress?.({ projectId: payload.projectId, step: "done", message: "Scaffold complete.", done: true });
     return { ok: true, path: target };
   } catch (err) {
@@ -399,8 +469,13 @@ async function scaffoldRepo(
   label: string,
   spec: Record<string, unknown> | undefined,
   emit: (step: string, message: string) => void,
+  opts: { resetClaude?: boolean } = {},
 ): Promise<void> {
   await mkdir(dir, { recursive: true });
+  // On create (ADR-0329), reset the template-managed `.claude` config BEFORE the copy so a create
+  // yields the current template — not a stale one kept alive by `force:false` (a reused worker folder
+  // or a repo that committed the old `.claude`). `add` never resets (opts.resetClaude falsy).
+  if (opts.resetClaude) await resetTemplateManagedClaude(dir, label, emit);
   emit("copy", `Copying the sample template into ${label}…`);
   // force:false ⇒ keep any files the clone already has instead of clobbering them.
   await cp(sampleDir(), dir, { recursive: true, force: false, errorOnExist: false });
@@ -410,6 +485,28 @@ async function scaffoldRepo(
     // AI init (ADR-0080): subagent files + README + the project's guide file from the spec.
     await aiInit(dir, spec, emit);
   }
+}
+
+/**
+ * Reset the template-managed `.claude` config before a create copy (ADR-0329). `cp(force:false)`
+ * never overwrites an existing file nor deletes one no longer in the template, so a committed/leftover
+ * `.claude/settings.json` + `.claude/skills/**` (both are committed — not gitignored) would survive a
+ * create and keep an old `deny`/`defaultMode` or a removed skill (e.g. `check-usage`) alive. Remove
+ * exactly those two drift-prone, template-owned paths so the fresh bundle refills them; everything
+ * else — the gitignored runtime/local files inside `.claude` (`settings.local.json`, `logs/`, `rag/`,
+ * `.autonomous.*`, cron), `.claude/agents` (spec subagents are written by `aiInit` after the copy),
+ * and all non-`.claude` source files — is preserved.
+ */
+async function resetTemplateManagedClaude(
+  dir: string,
+  label: string,
+  emit: (step: string, message: string) => void,
+): Promise<void> {
+  const claude = join(dir, ".claude");
+  if (!existsSync(claude)) return;
+  emit("copy", `Resetting template .claude config in ${label}…`);
+  await rm(join(claude, "settings.json"), { force: true });
+  await rm(join(claude, "skills"), { recursive: true, force: true });
 }
 
 /**
@@ -482,22 +579,33 @@ async function aiInit(
   );
   // The project's single guide file (ADR-0309) — CLAUDE.md or AGENT.md, never both. Other AI CLIs
   // read AGENT.md; Claude Code reads CLAUDE.md. The choice comes from the spec (`ai_guide_file`).
+  // Fallback (ADR-0309): if the AI CLI is missing/produces nothing but the user typed guide
+  // instructions in the wizard, write those verbatim so the guide the user asked for is never lost.
   await generateFile(
     join(target, guideFile),
     `Write a ${guideFile} (Markdown only, no preamble) with guidance/conventions for AI agents ` +
       `working in this project, derived from its spec JSON:\n${specJson}` +
       (guideInstructions ? `\nAlso incorporate these additional instructions/content:\n${guideInstructions}\n` : ""),
+    guideInstructions,
   );
 }
 
-/** Generate one file's content via the AI CLI; ignore failures (best-effort). */
-async function generateFile(path: string, prompt: string): Promise<void> {
+/**
+ * Generate one file's content via the AI CLI (best-effort). If the AI CLI fails/produces nothing and
+ * a `fallback` is given, write the fallback verbatim instead of leaving the (possibly empty) template
+ * file — used for the guide file so the user's typed instructions survive a missing AI CLI (ADR-0309).
+ */
+async function generateFile(path: string, prompt: string, fallback?: string): Promise<void> {
   try {
     const text = await aiGenerate(prompt);
-    if (text.trim()) await writeFile(path, text.trim() + "\n", "utf8");
+    if (text.trim()) {
+      await writeFile(path, text.trim() + "\n", "utf8");
+      return;
+    }
   } catch {
-    // AI CLI missing/unauthenticated — leave the template's file (if any) untouched.
+    // AI CLI missing/unauthenticated — fall through to the fallback (if any).
   }
+  if (fallback && fallback.trim()) await writeFile(path, fallback.trim() + "\n", "utf8");
 }
 
 /**

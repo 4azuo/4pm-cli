@@ -59,7 +59,8 @@ export async function gitRepos(root: string | null): Promise<GitReposReply> {
   if (!top || !(top === base || top.startsWith(base + sep))) return { repos: [] };
   const repos: GitReposReply["repos"] = [];
   const rootRemote = (await git(base, ["remote", "get-url", "origin"])).trim();
-  repos.push({ subdir: "", name: "", remote: rootRemote || null });
+  const rootBranch = (await git(base, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+  repos.push({ subdir: "", name: "", remote: rootRemote || null, branch: rootBranch || null });
   // Git submodules of the root — `git submodule status` lists each as "<flag><sha> <path> (<ref>)".
   const subOut = await git(base, ["submodule", "status"]);
   for (const line of subOut.split("\n")) {
@@ -69,7 +70,8 @@ export async function gitRepos(root: string | null): Promise<GitReposReply> {
     const abs = resolve(base, subPath);
     if (!(abs === base || abs.startsWith(base + sep))) continue; // clamp to the physic root
     const remote = (await git(abs, ["remote", "get-url", "origin"])).trim();
-    repos.push({ subdir: subPath, name: subPath, remote: remote || null });
+    const branch = (await git(abs, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    repos.push({ subdir: subPath, name: subPath, remote: remote || null, branch: branch || null });
   }
   return { repos };
 }

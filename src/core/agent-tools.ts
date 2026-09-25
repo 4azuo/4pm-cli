@@ -8,7 +8,6 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type {
-  AgentToolsMode,
   AgentToolsPermissions,
   AgentToolsReadReply,
   AgentToolsScope,
@@ -19,7 +18,6 @@ const SHARED_REL = ".claude/settings.json";
 const LOCAL_REL = ".claude/settings.local.json";
 /** The ADR-0154 guard kept in the shared `deny` list so the AI can never read secrets. */
 const SECRETS_DENY = "Read(./project.secrets.json)";
-const MODES: readonly AgentToolsMode[] = ["default", "acceptEdits", "plan", "bypassPermissions"];
 
 /** Resolve the settings file path for a scope. */
 function fileFor(root: string, scope: AgentToolsScope): string {
@@ -36,13 +34,16 @@ async function readSettingsObject(path: string): Promise<Record<string, unknown>
   }
 }
 
-/** Coerce an unknown value into a normalized permissions block. */
+/**
+ * Coerce an unknown value into a normalized permissions block. Headless-only (ADR-0328): the mode is
+ * always `bypassPermissions` (there is no TTY/human to answer an interactive prompt) and the legacy
+ * `ask` list is dropped — a hand-edited `ask`/non-bypass mode in the file is normalized away here.
+ */
 function normalizePermissions(raw: unknown): AgentToolsPermissions {
   const p = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-  const mode = MODES.includes(p.defaultMode as AgentToolsMode) ? (p.defaultMode as AgentToolsMode) : "default";
   const list = (v: unknown): string[] =>
     Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-  return { defaultMode: mode, allow: list(p.allow), ask: list(p.ask), deny: list(p.deny) };
+  return { defaultMode: "bypassPermissions", allow: list(p.allow), deny: list(p.deny) };
 }
 
 /** agentTools.read — the permissions block of the scope's settings file. */

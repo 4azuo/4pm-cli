@@ -1071,11 +1071,15 @@ export type AgentWriteBody = z.infer<typeof agentWriteRequestSchema>;
 
 /** A single Claude tool-permission rule (e.g. `Bash(git status)`, `Read(./src/**)`). */
 const toolRuleSchema = z.string().min(1).max(500);
-/** The `permissions` block of a Claude settings file (ADR-0183). */
+/**
+ * The `permissions` block of a Claude settings file (ADR-0183). Headless-only (ADR-0328): `ask` is
+ * gone and `defaultMode` is effectively always `bypassPermissions` — the enum stays tolerant of an
+ * older client's value (the cli coerces to `bypassPermissions` on write); a stray `ask` key is
+ * stripped by the non-strict object.
+ */
 const agentToolsPermissionsSchema = z.object({
   defaultMode: z.enum(["default", "acceptEdits", "plan", "bypassPermissions"]),
   allow: z.array(toolRuleSchema).max(500),
-  ask: z.array(toolRuleSchema).max(500),
   deny: z.array(toolRuleSchema).max(500),
 });
 
@@ -1117,6 +1121,8 @@ export interface GitRepoRef {
   subdir: string;
   name: string;
   remote: string | null;
+  /** Current checked-out branch, when resolvable — null otherwise. */
+  branch?: string | null;
 }
 
 /** One commit in the history (machine-0022). */
