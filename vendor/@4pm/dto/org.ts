@@ -64,6 +64,12 @@ export interface OrgGeneralSettings {
    * {@link WORKER_CONFIG_VERSIONS_BOUNDS}.
    */
   workerConfigVersionsKept: number;
+  /** Max checklists per org (ADR-0332). Clamped to {@link CHECKLIST_MAX_BOUNDS}. */
+  checklistMax: number;
+  /** How many checklist item-versions to keep (ADR-0332). Clamped to {@link WORKER_CONFIG_VERSIONS_BOUNDS}. */
+  checklistVersionsKept: number;
+  /** Max worker-config templates per org (ADR-0332). Clamped to {@link CHECKLIST_MAX_BOUNDS}. */
+  workerConfigTemplatesMax: number;
 }
 
 /** Bounds (rows) for the list page size (ADR-0198) — values outside clamp to the default. */
@@ -82,7 +88,22 @@ export const DEFAULT_IDLE_LOCK_MINUTES = 30;
 export const WORKER_CONFIG_VERSIONS_BOUNDS = { min: 1, max: 100 } as const;
 
 /** Default number of worker-config template versions kept when unset (ADR-0234). */
-export const DEFAULT_WORKER_CONFIG_VERSIONS_KEPT = 5;
+export const DEFAULT_WORKER_CONFIG_VERSIONS_KEPT = 10;
+
+/** An org's resource caps (ADR-0332) — **admin-only** settings (only the platform admin edits them). */
+export interface OrgResourceCaps {
+  checklistMax: number;
+  checklistVersionsKept: number;
+  workerConfigTemplatesMax: number;
+  workerConfigVersionsKept: number;
+}
+
+/** Bounds for the per-org resource caps (checklists / worker-config templates) — ADR-0332. */
+export const CHECKLIST_MAX_BOUNDS = { min: 1, max: 1000 } as const;
+/** Default caps (ADR-0332): 100 checklists / 100 worker-config templates, 10 versions kept each. */
+export const DEFAULT_CHECKLIST_MAX = 100;
+export const DEFAULT_CHECKLIST_VERSIONS_KEPT = 10;
+export const DEFAULT_WORKER_CONFIG_TEMPLATES_MAX = 100;
 
 /** Mail provider identifiers (ADR-0007). */
 export type OrgMailProvider = "console" | "smtp" | "ses" | "resend";
@@ -184,6 +205,9 @@ export const DEFAULT_ORG_SETTINGS: OrgSettings = {
     pageSize: DEFAULT_PAGE_SIZE,
     idleLockMinutes: DEFAULT_IDLE_LOCK_MINUTES,
     workerConfigVersionsKept: DEFAULT_WORKER_CONFIG_VERSIONS_KEPT,
+    checklistMax: DEFAULT_CHECKLIST_MAX,
+    checklistVersionsKept: DEFAULT_CHECKLIST_VERSIONS_KEPT,
+    workerConfigTemplatesMax: DEFAULT_WORKER_CONFIG_TEMPLATES_MAX,
   },
   mail: {
     provider: "console",
@@ -274,6 +298,19 @@ export function readOrgSettings(settings: Record<string, unknown> | null | undef
         d.general.workerConfigVersionsKept,
         WORKER_CONFIG_VERSIONS_BOUNDS.min,
         WORKER_CONFIG_VERSIONS_BOUNDS.max,
+      ),
+      checklistMax: readTtl(general.checklistMax, d.general.checklistMax, CHECKLIST_MAX_BOUNDS.min, CHECKLIST_MAX_BOUNDS.max),
+      checklistVersionsKept: readTtl(
+        general.checklistVersionsKept,
+        d.general.checklistVersionsKept,
+        WORKER_CONFIG_VERSIONS_BOUNDS.min,
+        WORKER_CONFIG_VERSIONS_BOUNDS.max,
+      ),
+      workerConfigTemplatesMax: readTtl(
+        general.workerConfigTemplatesMax,
+        d.general.workerConfigTemplatesMax,
+        CHECKLIST_MAX_BOUNDS.min,
+        CHECKLIST_MAX_BOUNDS.max,
       ),
     },
     mail: {

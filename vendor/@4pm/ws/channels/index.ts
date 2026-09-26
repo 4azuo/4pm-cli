@@ -170,6 +170,12 @@ export const WsChannels = {
   // AI knowledge distill (ADR-0190): server → project cli request–reply. The worker runs the AI CLI
   // in the project's working dir with a distillation prompt and replies with the composed markdown.
   KNOWLEDGE_COMPOSE: "knowledge.compose",
+  // Ticket → FAQ synthesis (ADR-0333): server (platform-pool dispatcher) → platform-pool cli
+  // request–reply. The dispatcher sends the selected support tickets + the 4pm-faq repo with a
+  // short-lived WRITE token; the worker runs an agent-write that distils the tickets into FAQ
+  // entries, commits, pushes a branch, opens a PR, then wipes the token/clone, and replies with the
+  // PR URL. The write token never persists on the worker (leak-safety on release/reassign).
+  FAQ_COMPOSE: "faq.compose",
   // Shared AI memory (ADR-0245): cli → server one-way write-back of the compacted rolling memory for
   // the project it serves (persisted per project × machine-user link). The read direction rides
   // `ws_token` (seeds the cli cache on connect); this channel only carries updates.

@@ -20,14 +20,36 @@ export const TEMPLATE_ALLOWED_MIME = [
   "application/json",
 ] as const;
 
-/** One template file's metadata (blob served separately via download). */
+/** One template file's metadata (blob served separately via download). Versioned by ADR-0332. */
 export interface TemplateFileResponse {
   id: string;
   name: string;
+  /** Optional free-text description (ADR-0332). */
+  description: string | null;
+  mime: string;
+  size: number;
+  /** Current version number (1-based, ADR-0332). */
+  version: number;
+  uploadedBy: string | null;
+  createdAt: string;
+  /** Last update (metadata edit or a new version upload). */
+  updatedAt: string;
+}
+
+/** One immutable version in a template file's history (ADR-0332). */
+export interface TemplateFileVersionResponse {
+  id: string;
+  version: number;
   mime: string;
   size: number;
   uploadedBy: string | null;
   createdAt: string;
+}
+
+/** Body PATCH /templates/:id — edit a file's metadata (name/description) (ADR-0332). */
+export interface UpdateTemplateFileRequest {
+  name?: string;
+  description?: string | null;
 }
 
 /** Data GET /templates — the org's files + storage-quota usage (ADR-0113). */

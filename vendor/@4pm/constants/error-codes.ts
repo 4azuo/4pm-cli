@@ -211,6 +211,9 @@ export const ErrorCode = {
   SLOT_RENTED: "SLOT_RENTED",
   // re-renting a machine whose rental is already `releasing` — too late to undo (ADR-0210)
   RENTED_MACHINE_RELEASING: "RENTED_MACHINE_RELEASING",
+  // reassigning a pool machine into/out of the platform AI pool when it is not eligible (ADR-0333) —
+  // e.g. currently rented, unpaired, not available, or not a platform member on the way back
+  POOL_MACHINE_NOT_ELIGIBLE: "POOL_MACHINE_NOT_ELIGIBLE",
   // credit wallet & coupons (ADR-0118/0119/0120) — served by payment-server
   CREDIT_INSUFFICIENT: "CREDIT_INSUFFICIENT",
   COUPON_NOT_FOUND: "COUPON_NOT_FOUND",
