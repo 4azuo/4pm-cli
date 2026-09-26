@@ -28,6 +28,8 @@ export interface BaseResponse<T = unknown> {
   page?: number;
   size?: number;
   total?: number;
+  /** List endpoints that advertise a per-org creation cap (count/max UI, e.g. ADR-0332). */
+  max?: number;
 }
 
 /**
@@ -55,14 +57,27 @@ export function successResponse<T>(
   return { success: true, errorCode: null, message, data };
 }
 
-/** Build a successful list BaseResponse (page/size/total on the envelope). */
+/**
+ * Build a successful list BaseResponse (page/size/total on the envelope). Pass `max` to advertise
+ * the endpoint's per-org creation cap alongside `total`, for a count/max UI badge (e.g. ADR-0332).
+ */
 export function listResponse<T>(
   items: T[],
   page: number,
   size: number,
   total: number,
+  max?: number,
 ): BaseResponse<T[]> {
-  return { success: true, errorCode: null, message: null, data: items, page, size, total };
+  return {
+    success: true,
+    errorCode: null,
+    message: null,
+    data: items,
+    page,
+    size,
+    total,
+    ...(max !== undefined ? { max } : {}),
+  };
 }
 
 /** Options for an error BaseResponse. */

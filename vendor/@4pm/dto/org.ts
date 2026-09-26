@@ -467,6 +467,27 @@ export interface StorageUsageResponse {
   };
 }
 
+/**
+ * Org overview for the Organization dashboard card (org-0005) — readable by **any** org member
+ * (no permission gate), so every role sees the org's headline counts, this-month AI-token usage
+ * and hosted-storage breakdown. Deliberately excludes billing identity (the plan name) — that
+ * stays ADMIN-only on the subscription card.
+ */
+export interface OrgOverviewResponse {
+  /** Total non-deleted accounts in the org (humans + machines). */
+  userCount: number;
+  /** Rented (4PM-hosted pool) machine accounts currently surfaced into the org (ADR-0132). */
+  rentedCount: number;
+  /** Non-deleted teams. */
+  teamCount: number;
+  /** Non-deleted projects. */
+  projectCount: number;
+  /** This calendar month's org-wide AI-token usage vs the org quota (`limit` null = unlimited). */
+  aiTokens: { used: number; limit: number | null };
+  /** Hosted-storage breakdown vs the plan cap — same shape as `GET /organizations/me/storage-usage`. */
+  storage: StorageUsageResponse;
+}
+
 /** Body PATCH /organizations/me (partial update). */
 export const updateOrgRequestSchema = z.object({
   name: z.string().min(1).max(100).optional(),
