@@ -119,6 +119,13 @@ export interface UserDetailResponse extends UserResponse {
   teams: UserTeamSummary[];
   projects: UserProjectSummary[];
   /**
+   * For a MACHINE (worker) account on its **own** `me()` response: the project(s) it currently
+   * **serves** via AI-routing (`project_worker_entries`, ADR-0284/0288) — this is what the worker
+   * is actually running on, independent of a `project_users` membership (which may be detached).
+   * Populated only on the self `me()` for a MACHINE; omitted otherwise.
+   */
+  machineServedProjects?: UserRelationSummary[];
+  /**
    * Last activity time — the most recent `UserRecentProject.occurredAt` (ADR-0029);
    * null when the user has never interacted with a project.
    */
