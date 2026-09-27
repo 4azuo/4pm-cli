@@ -24,7 +24,7 @@ import {
 } from "@4pm/ws";
 import { runCommand } from "../executor";
 import { runAiFailover, type AiRunHandlers, type AiRunResult } from "../ai-runner";
-import { estimateTokens } from "../ai-stream";
+import { aiProviderOf, estimateTokens } from "../ai-stream";
 import {
   getPinnedCredential,
   getWorkingCredential,
@@ -50,6 +50,7 @@ import { appendCommandOutput, resetCommandOutput } from "../command-output-store
 import {
   readProfileConfig,
   resolveMemoryConfig,
+  resolveResumePolicy,
   resolveWebBlockedCommands,
 } from "../../config/profile";
 import { runSlashCommand } from "../../ui/slash-commands";
@@ -326,6 +327,9 @@ export async function runAiPrompt(
   // (it already carries the context — no re-inject), else seed a fresh session with the compacted
   // memory. Probe the plan once to learn the first attempt's credential/provider, then decide.
   const memCfg = resolveMemoryConfig(config);
+  // Bounded resume (ADR-0339): forget sessions that went cold (prompt cache expired) or grew too
+  // large, so they are re-seeded from the compacted memory instead of re-sending the full history.
+  pruneResumableSessions(ctx, resolveResumePolicy(config), Date.now());
   const firstAttempt = planAiRun(guardedPrompt, config, hint, new Map(), oneShot, aiConfig, readOnly, bypass).attempts[0];
   const resumeId =
     memCfg.enabled && firstAttempt?.key && firstAttempt.cmd === "claude"
@@ -524,6 +528,8 @@ export async function runAiPrompt(
       outputTokens: result.usage.output,
       cacheReadTokens: result.usage.cacheRead,
       cacheCreationTokens: result.usage.cacheCreation,
+      // Provider → the server's per-provider quota-token weights (ADR-0340).
+      provider: aiProviderOf(result.workedCmd ?? plan.cmd),
       // Auth mode for billing split (ADR-0192 §5): subscription (OAuth) vs api-key (API-billed).
       authMode: resolveClaudeAuthMode(config),
     });
@@ -550,8 +556,34 @@ export async function runAiPrompt(
   if (memCfg.enabled && result.exitCode === 0) {
     if (result.workedKey && result.sessionId) {
       ctx.sessionIdByKey.set(result.workedKey, result.sessionId);
+      ctx.sessionMetaByKey.set(result.workedKey, { at: Date.now(), contextTokens: result.usage.contextTokens ?? 0 });
     }
     void updateSharedMemory(ctx, config, prompt, answerText, memCfg.budgetChars).catch(() => {});
+  } else if (result.exitCode !== 0) {
+    // A failed / timed-out run forgets every remembered session (ADR-0339): the next run starts a
+    // fresh one (memory-seeded) instead of resuming a conversation that just failed or hung.
+    ctx.sessionIdByKey.clear();
+    ctx.sessionMetaByKey.clear();
+  }
+}
+
+/**
+ * Drop remembered native sessions that are no longer cheap to resume (ADR-0339): the last run ended
+ * longer ago than the idle window (the prompt cache has expired ⇒ a resume would re-cache the whole
+ * history) or the conversation grew past the context cap. A session without recorded meta is stale.
+ */
+function pruneResumableSessions(
+  ctx: WsHandlerCtx,
+  policy: { maxIdleMs: number; maxContextTokens: number },
+  now: number,
+): void {
+  for (const key of [...ctx.sessionIdByKey.keys()]) {
+    const meta = ctx.sessionMetaByKey.get(key);
+    const stale = !meta || now - meta.at > policy.maxIdleMs || meta.contextTokens > policy.maxContextTokens;
+    if (stale) {
+      ctx.sessionIdByKey.delete(key);
+      ctx.sessionMetaByKey.delete(key);
+    }
   }
 }
 
@@ -688,11 +720,30 @@ async function updateSharedMemory(
   if (!answer.trim()) return;
   const profiles = resolveClaudeProfiles(config, ctx.physicRoot);
   const cwd = ctx.physicRoot ?? process.cwd();
-  const newMemory = await runMemoryCompaction(
+  const { memory: newMemory, usage, dir } = await runMemoryCompaction(
     { cmd: "claude", profiles, env: config.aiEnv },
     cwd,
     { oldMemory: ctx.aiMemory, prompt: userPrompt, answer, budgetChars },
   );
+  // Meter the compaction's tokens like any AI run (ADR-0340) — ai_tokens only, it is not a command.
+  if (usage && usage.tokens > 0) {
+    ctx.reportUsage(
+      [
+        {
+          metric: UsageMetric.AI_TOKENS,
+          amount: usage.tokens,
+          occurredAt: new Date().toISOString(),
+          inputTokens: usage.input,
+          outputTokens: usage.output,
+          cacheReadTokens: usage.cacheRead,
+          cacheCreationTokens: usage.cacheCreation,
+          provider: "claude",
+          authMode: resolveClaudeAuthMode(config),
+        },
+      ],
+      dir ? profileDisplayLabel(dir) : null,
+    );
+  }
   if (!newMemory) return; // compaction failed ⇒ keep the previous memory
   ctx.aiMemory = newMemory;
   ctx.send(WsChannels.MEMORY_UPDATE, { text: newMemory } satisfies MemoryUpdatePayload);
@@ -707,6 +758,7 @@ async function updateSharedMemory(
 export function resetMemorySession(ctx: WsHandlerCtx): void {
   ctx.aiMemory = "";
   ctx.sessionIdByKey.clear();
+  ctx.sessionMetaByKey.clear();
   ctx.send(WsChannels.MEMORY_UPDATE, { text: "" } satisfies MemoryUpdatePayload);
 }
 

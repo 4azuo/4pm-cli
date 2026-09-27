@@ -8,6 +8,7 @@
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { denySettingsArgs } from "../utils/agent-deny";
 
 const run = promisify(execFile);
 
@@ -18,7 +19,8 @@ function aiCli(): string {
 
 /** Non-interactive args per provider (request machine-readable output). */
 function aiArgs(cli: string, prompt: string): string[] {
-  if (cli === "claude") return ["-p", prompt, "--output-format", "json"];
+  // Secret-path deny rules (ADR-0347) — the run's own claude home (if set) + the fixed secret dirs.
+  if (cli === "claude") return ["-p", prompt, "--output-format", "json", ...denySettingsArgs(cli, [process.env.CLAUDE_CONFIG_DIR])];
   if (cli === "codex") return ["exec", "--json", prompt];
   return ["-p", prompt];
 }

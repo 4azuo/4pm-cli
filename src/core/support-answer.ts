@@ -4,26 +4,32 @@
  * support agent's own profile (`<profileDir>/support-kb/`, never a customer project), gathers its
  * markdown as context, and runs `claude` grounded in that context to compose an answer. The clone
  * happens on first dispatch (when the repo URL is first known); `refreshSupportKb` then pulls it
- * daily on a background timer so the KB stays fresh without a per-request fetch. The private repo
- * token (if any) is used only for the initial clone. Returns the answer body, or an `error` the
- * server maps to "unavailable".
+ * daily on a background timer so the KB stays fresh without a per-request fetch. Returns the answer
+ * body, or an `error` the server maps to "unavailable".
+ *
+ * Hardening (ADR-0346) — questions (and, for drafts, ticket text) are untrusted: the private repo token
+ * is never stored in the clone (per-command `http.extraHeader`, kept in memory only), and claude runs
+ * in an empty throwaway directory with an allow-listed environment and no Bash / edit / web tools.
  */
 import { spawn } from "node:child_process";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import type {
   SupportAnswerImage,
   SupportAnswerModeration,
   SupportAnswerReply,
   SupportAnswerRequest,
+  SupportAnswerTask,
 } from "@4pm/ws";
 import { logger } from "../common/logger/logger";
 import { createAiStreamParser, estimateTokens, type AiUsage } from "./ai-stream";
 import type { ResolvedClaudeProfile } from "../utils/ai-cli";
+import { agentEnv, gitAuthArgs } from "./agent-sandbox";
+import { denySettingsArgs } from "../utils/agent-deny";
 
 /** Zero usage — the fallback when a run captured no token counts. */
 const NO_USAGE: AiUsage = { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
@@ -62,26 +68,58 @@ function repoDir(profileDir: string, url: string, branch: string): string {
   return join(kbRoot(profileDir), key);
 }
 
-/** Inject a read token into an https URL so a private repo can be fetched without a prompt. */
-function authedUrl(url: string, token: string | null): string {
-  if (!token) return url;
-  if (url.startsWith("https://")) return url.replace("https://", `https://${token}@`);
-  return url; // ssh / other — rely on the worker's own git creds
+/** Tools denied to every support agent run (ADR-0346): no shell, no edits, no web, no sub-agents. */
+const DENIED_TOOLS = ["Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Task"];
+
+/** A KB pull is due after this long (the daily refresh cadence). */
+const KB_STALE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The last-known read token per KB clone dir — in memory only (never on disk), learned from each
+ * dispatch, so the daily refresh can authenticate a private repo without a token in `.git/config`.
+ */
+const kbTokens = new Map<string, string>();
+
+/** Per-command git auth for a KB read token (`https://<token>@host` semantics — token as the user). */
+function kbAuth(token: string | null | undefined): string[] {
+  return token ? gitAuthArgs(token, "") : [];
+}
+
+/** Fast-forward pull one KB clone with its in-memory token (if any). */
+async function pullKb(dir: string): Promise<void> {
+  const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+  await execFileAsync("git", [...kbAuth(kbTokens.get(dir)), "-C", dir, "pull", "--ff-only"], { env: gitEnv });
 }
 
 /**
  * Ensure the KB repo is cloned into the profile's cache dir; returns the local dir. The clone
  * happens only the first time (when the repo URL is first known from a dispatch) — subsequent
- * freshness is handled out-of-band by `refreshSupportKb` on a daily timer, so a dispatch never
- * blocks on a network fetch.
+ * freshness is handled by `refreshSupportKb` on a daily timer, plus a background pull here when the
+ * clone is stale (e.g. after a restart, before the timer knew the token), so a dispatch never blocks
+ * on a network fetch. An older clone whose remote URL still embeds a token is scrubbed to the plain
+ * URL (ADR-0346).
  */
 async function ensureRepo(profileDir: string, repo: SupportAnswerRequest["repo"]): Promise<string> {
   const dir = repoDir(profileDir, repo.url, repo.branch);
-  if (existsSync(join(dir, ".git"))) return dir;
-  const url = authedUrl(repo.url, repo.token);
   const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+  if (repo.token) kbTokens.set(dir, repo.token);
+  else kbTokens.delete(dir);
+  if (existsSync(join(dir, ".git"))) {
+    // Scrub a token-bearing remote URL left by an older cli (the token must not sit in the clone).
+    const current = await execFileAsync("git", ["-C", dir, "remote", "get-url", "origin"], { env: gitEnv })
+      .then((r) => r.stdout.trim())
+      .catch(() => repo.url);
+    if (current !== repo.url) {
+      await execFileAsync("git", ["-C", dir, "remote", "set-url", "origin", repo.url], { env: gitEnv }).catch(() => undefined);
+    }
+    const marker = existsSync(join(dir, ".git", "FETCH_HEAD")) ? join(dir, ".git", "FETCH_HEAD") : join(dir, ".git", "HEAD");
+    if (Date.now() - statSync(marker).mtimeMs > KB_STALE_MS) {
+      void pullKb(dir).catch((err: unknown) => logger.warn("support.kb.refresh.failed", { dir, error: String(err) }));
+    }
+    return dir;
+  }
   mkdirSync(kbRoot(profileDir), { recursive: true });
-  await execFileAsync("git", ["clone", "--depth", "1", "--branch", repo.branch, url, dir], {
+  await execFileAsync("git", [...kbAuth(repo.token), "clone", "--depth", "1", "--branch", repo.branch, repo.url, dir], {
     env: gitEnv,
   });
   return dir;
@@ -91,18 +129,17 @@ async function ensureRepo(profileDir: string, repo: SupportAnswerRequest["repo"]
  * Refresh every KB clone already present in this profile's cache dir with a fast-forward pull
  * (ADR-0170). Called on a daily background timer so the support agent answers from an up-to-date
  * FAQ without fetching on each request. Best-effort: a no-op when nothing is cloned yet, and a
- * failed pull on one repo is logged and skipped (the stale clone still answers). The remote URL
- * (with its embedded token, if any) is already stored in the clone, so no token is needed here.
+ * failed pull on one repo is logged and skipped (the stale clone still answers). A private repo's
+ * token comes from the in-memory map learned on dispatch (never stored in the clone — ADR-0346).
  */
 export async function refreshSupportKb(profileDir: string): Promise<void> {
   const root = kbRoot(profileDir);
   if (!existsSync(root)) return;
-  const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
   for (const entry of readdirSync(root)) {
     const dir = join(root, entry);
     if (!existsSync(join(dir, ".git"))) continue;
     try {
-      await execFileAsync("git", ["-C", dir, "pull", "--ff-only"], { env: gitEnv });
+      await pullKb(dir);
     } catch (err) {
       logger.warn("support.kb.refresh.failed", { dir, error: String(err) });
     }
@@ -170,6 +207,42 @@ function buildPrompt(docs: string, question: string, askerRole: "admin" | "user"
   ].join("\n");
 }
 
+/**
+ * Build the admin drafting prompt (ADR-0345): the agent writes, as the 4PM support team, either a
+ * reply to a support ticket or an outreach message, grounded in the same docs/FAQ. Unlike the Q&A
+ * prompt there is no refusal policy and no moderation JSON — the whole output is the markdown draft.
+ */
+function buildDraftPrompt(docs: string, context: string, task: SupportAnswerTask): string {
+  const goal =
+    task === "reply_draft"
+      ? [
+          "You are drafting a reply FROM the 4PM support team TO the customer in the support ticket below.",
+          "Address the customer's latest message, using the whole conversation for context. Be accurate,",
+          "friendly and concise. Write in the language the customer uses in the ticket.",
+        ]
+      : [
+          "You are drafting an outreach message FROM the 4PM platform team TO the customer organizations.",
+          "Use the subject and any current draft below as the starting point. Be clear, friendly and concise.",
+          "Write in the language of the subject/draft (or of the admin's instructions when those are empty).",
+        ];
+  return [
+    ...goal,
+    "Use the documentation and FAQ below for any product facts; never invent features, prices or",
+    "commitments that are not in the docs — leave a clear [placeholder] for the admin to fill instead.",
+    "Follow the admin's instructions when given. A human admin reviews and edits your draft before",
+    "sending it.",
+    "",
+    "Output ONLY the message body in markdown — no subject line, no preamble, no explanation, no code",
+    "fences around the whole message.",
+    "",
+    "===== DOCUMENTATION =====",
+    docs,
+    "",
+    "===== CONTEXT =====",
+    context,
+  ].join("\n");
+}
+
 /** File extension for a materialized help image's MIME. */
 function imageExt(mime: string): string {
   switch (mime) {
@@ -191,13 +264,10 @@ function imageExt(mime: string): string {
  * placeholder in the question to the on-disk path so the agent can `Read` the screenshot (mirrors the
  * Console command-image pipeline, ADR-0257). Returns the folder to clean up + the rewritten question.
  */
-function materializeImages(
-  profileDir: string,
-  images: SupportAnswerImage[],
-  question: string,
-): { dir: string; question: string } {
-  const dir = join(profileDir, "help-images", randomUUID());
-  mkdirSync(dir, { recursive: true });
+function materializeImages(images: SupportAnswerImage[], question: string): { dir: string; question: string } {
+  // A throwaway folder under the OS temp dir — NOT under the cli profile (`~/.4pm/`), which the
+  // ADR-0347 deny rules block for every agent read.
+  const dir = mkdtempSync(join(tmpdir(), "4pm-help-images-"));
   let rewritten = question;
   images.forEach((img, i) => {
     const file = join(dir, `image-${i + 1}.${imageExt(img.mime)}`);
@@ -254,6 +324,7 @@ function runClaudeOnce(
   prompt: string,
   extraEnv: Record<string, string> | undefined,
   imageDir?: string,
+  denyDirs: string[] = [],
 ): Promise<{ code: number; out: string; err: string; usage: AiUsage }> {
   return new Promise((resolve, reject) => {
     // Ask claude for `--output-format stream-json --verbose` so the run's real token usage is
@@ -264,18 +335,30 @@ function runClaudeOnce(
       "-p",
       ...(profile?.model ? ["--model", profile.model] : []),
       ...(isClaude ? ["--output-format", "stream-json", "--verbose"] : []),
-      // When the question references pasted images (ADR-0273), allow the agent to Read them from the
-      // materialized folder (the question already carries their absolute paths).
-      ...(isClaude && imageDir ? ["--add-dir", imageDir, "--allowedTools", "Read"] : []),
+      // No shell / edits / web for an untrusted question (ADR-0346). Reads need no grant inside the
+      // (empty) working dir and any added dir; anywhere else they would need an approval a headless
+      // run never gets.
+      // Secret-path deny rules (ADR-0347) — reads are not confined to the working dir.
+      ...denySettingsArgs(cmd, [...denyDirs, profile?.dir]),
+      ...(isClaude ? ["--disallowedTools", ...DENIED_TOOLS] : []),
+      // When the question references pasted images (ADR-0273), add the materialized folder so the
+      // agent can Read them (the question already carries their absolute paths) — scoped to it only.
+      ...(isClaude && imageDir ? ["--add-dir", imageDir] : []),
     ];
     // Select the signed-in account (the fix — ADR-0170): without CLAUDE_CONFIG_DIR claude falls
     // back to its default config, whose token is unrelated to the operator's configured profiles.
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      ...extraEnv,
-      ...(profile ? { CLAUDE_CONFIG_DIR: profile.dir } : {}),
+    // Allow-listed env only — the cli's own secrets never reach the agent (ADR-0346).
+    const env = agentEnv(extraEnv, profile ? { CLAUDE_CONFIG_DIR: profile.dir } : undefined);
+    // Run in an empty throwaway dir (the docs are in the prompt) so there is nothing to read nearby.
+    const cwd = mkdtempSync(join(tmpdir(), "4pm-support-"));
+    const cleanup = (): void => {
+      try {
+        rmSync(cwd, { recursive: true, force: true });
+      } catch {
+        // best-effort — an empty leftover temp dir is harmless
+      }
     };
-    const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], env });
+    const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], env, cwd });
     // Parse claude stream-json → readable text + usage; a non-json cmd passes text through verbatim.
     const parser = createAiStreamParser(cmd);
     let out = "";
@@ -289,10 +372,12 @@ function runClaudeOnce(
     child.stderr.on("data", (d: Buffer) => (err += d.toString()));
     child.on("error", (e) => {
       clearTimeout(timer);
+      cleanup();
       reject(e);
     });
     child.on("close", (code) => {
       clearTimeout(timer);
+      cleanup();
       out += parser.flush();
       resolve({ code: code ?? -1, out, err, usage: parser.usage() });
     });
@@ -315,7 +400,7 @@ async function runClaudeWithFailover(
   const attempts: (ResolvedClaudeProfile | null)[] = ai.profiles.length > 0 ? ai.profiles : [null];
   let lastReason = "no attempt";
   for (let i = 0; i < attempts.length; i++) {
-    const { code, out, err, usage } = await runClaudeOnce(ai.cmd, attempts[i]!, prompt, ai.env, imageDir);
+    const { code, out, err, usage } = await runClaudeOnce(ai.cmd, attempts[i]!, prompt, ai.env, imageDir, ai.profiles.map((p) => p.dir));
     if (code === 0 && out.trim()) return { text: out.trim(), usage };
     // claude may report the failure on stdout rather than stderr (empty stderr + exit 1).
     const combined = err || out;
@@ -340,7 +425,7 @@ export async function runSupportAnswer(
   let imageDir: string | undefined;
   let question = req.question;
   if (req.images?.length) {
-    const m = materializeImages(profileDir, req.images, req.question);
+    const m = materializeImages(req.images, req.question);
     imageDir = m.dir;
     question = m.question;
   }
@@ -348,15 +433,13 @@ export async function runSupportAnswer(
     const dir = await ensureRepo(profileDir, req.repo);
     const docs = collectDocs(dir);
     if (!docs.trim()) return { body: "", error: "KB repo has no documentation" };
-    const { text, usage } = await runClaudeWithFailover(
-      buildPrompt(docs, question, req.askerRole),
-      ai,
-      imageDir,
-    );
+    // A drafting task (ADR-0345) uses its own prompt and returns the text as-is (no moderation).
+    const prompt = req.task ? buildDraftPrompt(docs, question, req.task) : buildPrompt(docs, question, req.askerRole);
+    const { text, usage } = await runClaudeWithFailover(prompt, ai, imageDir);
     if (!text) return { body: "", error: "empty answer" };
     // Split the structured output into the answer body + inline moderation verdict (ADR-0237);
     // a non-JSON run degrades to the whole text as the body with no verdict.
-    const { body, moderation } = parseModeratedAnswer(text);
+    const { body, moderation } = req.task ? { body: text.trim(), moderation: undefined } : parseModeratedAnswer(text);
     if (!body) return { body: "", error: "empty answer" };
     // Report the run's token usage so the server records it against the FAQ project (ADR-0224);
     // fall back to a length estimate when the stream carried no usage (older claude / non-json cli).

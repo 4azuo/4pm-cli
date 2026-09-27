@@ -186,6 +186,19 @@ export interface OrgCommunityRetentionSettings {
   attachments: number;
 }
 
+/**
+ * Per-org community edit/delete windows (ADR-0341), stored under `settings.communityEdit`. Minutes an
+ * author may edit / delete their own 4rum post or Messenger message; `0` = unlimited. Projected to
+ * @4pm/community (OrgRef), which enforces them. Moderators may always delete.
+ */
+export interface OrgCommunityEditSettings {
+  editWindowMinutes: number;
+  deleteWindowMinutes: number;
+}
+
+/** Bounds of the community edit/delete windows in minutes (0 = unlimited; max 30 days). */
+export const COMMUNITY_EDIT_WINDOW_MAX_MINUTES = 43_200;
+
 /** Typed view of `Organization.settings` (ADR-0039, ADR-0045, ADR-0056). */
 export interface OrgSettings {
   security: OrgSecuritySettings;
@@ -193,6 +206,7 @@ export interface OrgSettings {
   mail: OrgMailSettings;
   commandHistory: OrgCommandHistorySettings;
   communityRetention: OrgCommunityRetentionSettings;
+  communityEdit: OrgCommunityEditSettings;
   tokens: OrgTokenSettings;
   cli: OrgCliSettings;
 }
@@ -218,6 +232,7 @@ export const DEFAULT_ORG_SETTINGS: OrgSettings = {
   },
   commandHistory: { store: false, retentionDays: 7 },
   communityRetention: { forumPosts: 0, messages: 0, attachments: 0 },
+  communityEdit: { editWindowMinutes: 60, deleteWindowMinutes: 60 },
   tokens: {
     web: { accessTtlSec: 3_600, refreshTtlSec: 604_800 },
     cli: { wsTokenTtlSec: 86_400, hashcode3TtlSec: 0 },
@@ -228,6 +243,13 @@ export const DEFAULT_ORG_SETTINGS: OrgSettings = {
 /** Read a numeric TTL, clamping out-of-range values back to `def` (ADR-0056). */
 function readTtl(value: unknown, def: number, min: number, max: number): number {
   return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max
+    ? Math.floor(value)
+    : def;
+}
+
+/** Read a community edit/delete window (minutes): 0 (unlimited) … max, else `def` (ADR-0341). */
+function readEditWindow(value: unknown, def: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= COMMUNITY_EDIT_WINDOW_MAX_MINUTES
     ? Math.floor(value)
     : def;
 }
@@ -256,6 +278,7 @@ export function readOrgSettings(settings: Record<string, unknown> | null | undef
   const resend = (mail.resend ?? {}) as Partial<OrgMailSettings["resend"]>;
   const cmd = (settings?.commandHistory ?? {}) as Partial<OrgCommandHistorySettings>;
   const cr = (settings?.communityRetention ?? {}) as Partial<OrgCommunityRetentionSettings>;
+  const ce = (settings?.communityEdit ?? {}) as Partial<OrgCommunityEditSettings>;
   const tokens = (settings?.tokens ?? {}) as {
     web?: Partial<OrgTokenSettings["web"]>;
     cli?: Partial<OrgTokenSettings["cli"]>;
@@ -345,6 +368,10 @@ export function readOrgSettings(settings: Record<string, unknown> | null | undef
       messages: typeof cr.messages === "number" ? cr.messages : d.communityRetention.messages,
       attachments:
         typeof cr.attachments === "number" ? cr.attachments : d.communityRetention.attachments,
+    },
+    communityEdit: {
+      editWindowMinutes: readEditWindow(ce.editWindowMinutes, d.communityEdit.editWindowMinutes),
+      deleteWindowMinutes: readEditWindow(ce.deleteWindowMinutes, d.communityEdit.deleteWindowMinutes),
     },
     tokens: {
       web: {

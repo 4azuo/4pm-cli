@@ -34,7 +34,16 @@ export interface SupportAnswerRequest {
   };
   /** Pasted images the agent should read (ADR-0273); the cli materializes + rewrites placeholders. */
   images?: SupportAnswerImage[];
+  /**
+   * Admin drafting mode (ADR-0345). When set, `question` carries the drafting context + the admin's
+   * instructions and the cli uses a drafting prompt (grounded, no refusal / moderation JSON) whose
+   * whole output is the markdown draft. Absent ⇒ the normal AI-Help Q&A answer.
+   */
+  task?: SupportAnswerTask;
 }
+
+/** The drafting task of a support-answer request (ADR-0345): a ticket reply or an outreach message. */
+export type SupportAnswerTask = "reply_draft" | "outreach_draft";
 
 /** The claude run's token split for a support answer (ADR-0224). */
 export interface SupportAnswerUsage {

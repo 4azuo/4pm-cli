@@ -1047,8 +1047,12 @@ export interface UsageReportPayload {
     /** Claude auth mode this run used (ADR-0192 §5): `subscription` (OAuth) vs `api-key`
      *  (ANTHROPIC_API_KEY, API-billed). Present on ai_tokens events so billing can split them. */
     authMode?: "subscription" | "api-key";
-    /** The `ai_tokens` split (ADR-0145): input + output + cache-read + cache-creation summing
-     *  to `amount`. Present only for `ai_tokens` events; absent for other metrics. */
+    /** The AI provider that produced an `ai_tokens` event (ADR-0340) — picks the server's
+     *  quota-token weights. Absent (an older cli) ⇒ weighted as `claude`. */
+    provider?: "claude" | "codex" | "antigravity";
+    /** The `ai_tokens` split (ADR-0145): input + output + cache-read + cache-creation — four
+     *  DISJOINT components (codex's cached input is not repeated in `inputTokens` — ADR-0340)
+     *  summing to `amount` (the raw total). Present only for `ai_tokens` events. */
     inputTokens?: number;
     outputTokens?: number;
     cacheReadTokens?: number;

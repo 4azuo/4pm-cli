@@ -168,6 +168,14 @@ export interface ProfileConfig {
   aiMemoryEnabled?: boolean;
   aiMemoryBudgetChars?: number;
   /**
+   * Bounded native `--resume` (ADR-0339) — operator-editable. A remembered claude session is resumed
+   * only if its last run ended ≤ `aiResumeMaxIdleMinutes` ago (default 5, the prompt-cache TTL) and
+   * its context is ≤ `aiResumeMaxContextTokens` (default 100 000); otherwise a fresh session seeded
+   * with the shared memory. `0` ⇒ that bound is off.
+   */
+  aiResumeMaxIdleMinutes?: number;
+  aiResumeMaxContextTokens?: number;
+  /**
    * Read-only mirror of the serving project's memory override (ADR-0245), refreshed from each
    * `ws_token`. Server is the source of truth; `mode` `on`/`off` forces enablement (else `inherit`
    * defers to `aiMemoryEnabled`), `projectAiMemoryBudgetChars` `>0` wins over `aiMemoryBudgetChars`.
@@ -271,6 +279,9 @@ export function defaultProfileConfig(): ProfileConfig {
     // Shared AI memory (ADR-0245) — off by default (opt-in; costs a compaction call per turn).
     aiMemoryEnabled: false,
     aiMemoryBudgetChars: 1000,
+    // Bounded native resume (ADR-0339) — resume only a warm (≤5 min), not-too-large session.
+    aiResumeMaxIdleMinutes: 5,
+    aiResumeMaxContextTokens: 100_000,
   };
 }
 
@@ -286,6 +297,20 @@ export function resolveMemoryConfig(config: ProfileConfig): { enabled: boolean; 
   const projectBudget = config.projectAiMemoryBudgetChars ?? 0;
   const budgetChars = projectBudget > 0 ? projectBudget : (config.aiMemoryBudgetChars ?? 1000);
   return { enabled, budgetChars };
+}
+
+/**
+ * Resolve the bounded-resume limits (ADR-0339): the max idle gap (ms) since the session's last run
+ * and the max context tokens it may carry to still be resumed. `0` in config ⇒ that bound is off
+ * (returned as `Infinity`); absent ⇒ the defaults (5 min / 100 000 tokens).
+ */
+export function resolveResumePolicy(config: ProfileConfig): { maxIdleMs: number; maxContextTokens: number } {
+  const idleMin = config.aiResumeMaxIdleMinutes ?? 5;
+  const maxCtx = config.aiResumeMaxContextTokens ?? 100_000;
+  return {
+    maxIdleMs: idleMin > 0 ? idleMin * 60_000 : Number.POSITIVE_INFINITY,
+    maxContextTokens: maxCtx > 0 ? maxCtx : Number.POSITIVE_INFINITY,
+  };
 }
 
 /**

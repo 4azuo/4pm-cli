@@ -42,3 +42,30 @@ export const QuotaOnExceed = {
 
 /** Union type of on-exceed behaviors. */
 export type QuotaOnExceed = (typeof QuotaOnExceed)[keyof typeof QuotaOnExceed];
+
+/** AI providers whose tokens carry separate quota weights (ADR-0340). */
+export const AiTokenProvider = {
+  CLAUDE: "claude",
+  CODEX: "codex",
+  ANTIGRAVITY: "antigravity",
+} as const;
+
+/** Union type of AI token providers. */
+export type AiTokenProvider = (typeof AiTokenProvider)[keyof typeof AiTokenProvider];
+
+/** Every AI token provider, in display order. */
+export const AI_TOKEN_PROVIDERS: readonly AiTokenProvider[] = [
+  AiTokenProvider.CLAUDE,
+  AiTokenProvider.CODEX,
+  AiTokenProvider.ANTIGRAVITY,
+];
+
+/**
+ * Seeded quota-token weights (ADR-0340): how many quota tokens one token of each component counts as.
+ * Anthropic list-price ratios (output ≈ 5× input, cache read ≈ 0.1×, cache write ≈ 1.25×); the
+ * platform admin tunes each provider afterwards.
+ */
+export const DEFAULT_TOKEN_QUOTA_WEIGHTS = { input: 1, output: 5, cacheRead: 0.1, cacheCreation: 1.25 } as const;
+
+/** Upper bound for a single quota-token weight (ADR-0340) — guards against a typo like 1000. */
+export const MAX_TOKEN_QUOTA_WEIGHT = 100;

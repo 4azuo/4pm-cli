@@ -15,6 +15,12 @@ export interface AiUsage {
   cacheRead: number;
   cacheCreation: number;
   costUsd?: number;
+  /**
+   * claude only: the conversation size after the run — the LAST assistant message's
+   * input + cache read + cache creation + output (what a `--resume` would re-send). Bounds resume
+   * (ADR-0339); the `result` totals can't, as they sum every tool turn of the run.
+   */
+  contextTokens?: number;
 }
 
 /** A stateful, chunk-fed parser for one AI run. */
@@ -42,7 +48,16 @@ export interface AiStreamParser {
 interface StreamEvent {
   type?: string;
   /** claude: assistant message content parts. */
-  message?: { content?: Array<{ type?: string; text?: string }> };
+  message?: {
+    content?: Array<{ type?: string; text?: string }>;
+    /** claude assistant message: that single API call's usage (context size — ADR-0339). */
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
+  };
   usage?: {
     // claude `result` usage
     input_tokens?: number;
@@ -106,12 +121,19 @@ export function createAiStreamParser(cli: string): AiStreamParser {
         acc.output = ev.usage.output_tokens ?? 0;
         acc.cacheRead = ev.usage.cache_read_input_tokens ?? 0;
         acc.cacheCreation = ev.usage.cache_creation_input_tokens ?? 0;
-        acc.tokens = acc.input + acc.output;
+        // Raw total = all 4 disjoint components (ADR-0145/0340) — cache tokens included.
+        acc.tokens = acc.input + acc.output + acc.cacheRead + acc.cacheCreation;
         if (typeof ev.total_cost_usd === "number") acc.costUsd = ev.total_cost_usd;
       }
       return ""; // final text already streamed via assistant events
     }
     if (ev.type === "assistant") {
+      // Track the latest call's context size for the bounded resume (ADR-0339).
+      const u = ev.message?.usage;
+      if (u) {
+        acc.contextTokens =
+          (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.output_tokens ?? 0);
+      }
       const text = assistantText(ev);
       return text ? `${text}\n` : "";
     }
@@ -121,15 +143,16 @@ export function createAiStreamParser(cli: string): AiStreamParser {
   /** Handle one codex `exec --json` event; returns the display text to show. */
   function handleCodex(ev: StreamEvent): string {
     // `turn.completed` carries the run's token usage. codex's `input_tokens` already
-    // includes the cached portion (`cached_input_tokens`), so the total is input+output
-    // (cacheRead is surfaced for the breakdown only, not re-added). reasoning tokens are
-    // billed as output, so they fold into `output`.
+    // includes the cached portion (`cached_input_tokens`), so normalise to DISJOINT components
+    // (ADR-0340): input = uncached input, cacheRead = cached; the raw total is then the plain sum.
+    // reasoning tokens are billed as output, so they fold into `output`.
     if (ev.type === "turn.completed" && ev.usage) {
-      acc.input = ev.usage.input_tokens ?? 0;
+      const cached = ev.usage.cached_input_tokens ?? 0;
+      acc.input = Math.max(0, (ev.usage.input_tokens ?? 0) - cached);
       acc.output = (ev.usage.output_tokens ?? 0) + (ev.usage.reasoning_output_tokens ?? 0);
-      acc.cacheRead = ev.usage.cached_input_tokens ?? 0;
+      acc.cacheRead = cached;
       acc.cacheCreation = 0;
-      acc.tokens = acc.input + acc.output;
+      acc.tokens = acc.input + acc.output + acc.cacheRead;
       return "";
     }
     // `item.completed` with an `agent_message` item carries the assistant's text.
@@ -178,6 +201,13 @@ export function createAiStreamParser(cli: string): AiStreamParser {
     sessionId: () => sessionId,
     apiError: () => ({ ...apiError }),
   };
+}
+
+/** The AI provider a spawned command belongs to (ADR-0340) — picks the server's quota weights. */
+export function aiProviderOf(cmd: string): "claude" | "codex" | "antigravity" {
+  if (cmd.includes("codex")) return "codex";
+  if (cmd.includes("antigravity")) return "antigravity";
+  return "claude";
 }
 
 /** Estimate tokens from output length (~4 chars/token) — fallback when usage is absent. */

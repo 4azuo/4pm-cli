@@ -173,6 +173,7 @@ export class WsClient {
    */
   private aiMemory = "";
   private readonly sessionIdByKey = new Map<string, string>();
+  private readonly sessionMetaByKey = new Map<string, { at: number; contextTokens: number }>();
   private stopped = false;
   /** Resolver to wake the backoff sleep early (set while waiting) — for /reconnect. */
   private wakeReconnect: (() => void) | null = null;
@@ -308,6 +309,7 @@ export class WsClient {
       serverUrl: this.context.credential.serverUrl,
       startedAtMs: this.startedAtMs,
       sessionIdByKey: this.sessionIdByKey,
+      sessionMetaByKey: this.sessionMetaByKey,
       get machineUsername() {
         return self.machineUsername;
       },

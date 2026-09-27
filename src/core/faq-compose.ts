@@ -1,11 +1,14 @@
 /**
  * faq-compose — the worker side of the platform AI pool's ticket → FAQ synthesis (ADR-0333). On a
- * `faq.compose` dispatch the cli clones the `4pm-faq` repo into a throwaway folder using a SHORT-LIVED
- * WRITE token injected in the request (a per-job GitHub-App installation token), runs `claude` as a
- * write-capable agent to distil the selected support tickets into FAQ markdown, then commits, pushes a
- * branch, and opens a PR with `gh` (the token also authenticates `gh`). The clone (which holds the
- * token in its remote URL) is DELETED afterwards and the token is never written to any persistent
- * config — so a machine later reassigned to `rental` and rented by an org inherits no write access.
+ * `faq.compose` dispatch (sent to a support agent since ADR-0346) the cli clones the `4pm-faq` repo
+ * into a throwaway folder using a SHORT-LIVED WRITE token injected in the request (a per-job GitHub-App
+ * installation token), runs `claude` with **file-edit tools only** to distil the selected support
+ * tickets into FAQ markdown, then commits, pushes a branch, and opens a PR with `gh` itself.
+ *
+ * Hardening (ADR-0346) — the ticket bodies in the prompt are untrusted (guests can file tickets): the
+ * agent gets no Bash / web tools and an allow-listed environment, and the token is passed per git
+ * command (`http.extraHeader`) and to `gh` only — it is never written into the clone (whose remote URL
+ * stays token-free) nor visible to the agent. The clone is deleted afterwards.
  */
 import { spawn, execFile } from "node:child_process";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
@@ -17,6 +20,8 @@ import type { FaqComposeReply, FaqComposeRequest, FaqTicket, FaqTicketResult } f
 import { logger } from "../common/logger/logger";
 import { createAiStreamParser, estimateTokens, type AiUsage } from "./ai-stream";
 import type { ResolvedClaudeProfile } from "../utils/ai-cli";
+import { agentEnv, gitAuthArgs } from "./agent-sandbox";
+import { denySettingsArgs } from "../utils/agent-deny";
 
 const execFileAsync = promisify(execFile);
 
@@ -33,11 +38,12 @@ export interface FaqComposeAi {
   env?: Record<string, string>;
 }
 
-/** Inject the write token into an https URL so clone/push authenticate without a prompt. */
-function authedUrl(url: string, token: string): string {
-  if (url.startsWith("https://")) return url.replace("https://", `https://x-access-token:${token}@`);
-  return url;
-}
+/**
+ * Tools denied to the synthesis agent (ADR-0346). Nothing is blanket-allowed: under `acceptEdits` the
+ * agent may read and edit only inside its working directory (the throwaway clone) — reads/edits
+ * elsewhere (e.g. the Claude credentials dir) would need an approval that a headless run never gets.
+ */
+const AGENT_DENIED_TOOLS = ["Bash", "WebFetch", "WebSearch", "NotebookEdit", "Task"];
 
 /** Build the agent-write prompt: distil the tickets into FAQ markdown committed to the repo. */
 function buildPrompt(tickets: FaqTicket[], customPrompt?: string): string {
@@ -110,13 +116,14 @@ function parsePerTicket(text: string): FaqTicketResult[] {
   return [];
 }
 
-/** One write-capable `claude` attempt (bypassPermissions) in the repo dir; captures usage. */
+/** One edit-only `claude` attempt (acceptEdits + file tools) in the repo dir; captures usage. */
 function runClaudeOnce(
   cmd: string,
   profile: ResolvedClaudeProfile | null,
   prompt: string,
   cwd: string,
   extraEnv: Record<string, string> | undefined,
+  denyDirs: string[] = [],
 ): Promise<{ code: number; out: string; err: string; usage: AiUsage }> {
   return new Promise((resolve, reject) => {
     const isClaude = cmd.includes("claude");
@@ -124,15 +131,18 @@ function runClaudeOnce(
       "-p",
       ...(profile?.model ? ["--model", profile.model] : []),
       ...(isClaude ? ["--output-format", "stream-json", "--verbose"] : []),
-      // Write-capable headless agent (ADR-0271): auto-approve tools so it never stalls on a prompt.
-      ...(isClaude ? ["--permission-mode", "bypassPermissions"] : []),
-      ...(cmd.includes("codex") ? ["--dangerously-bypass-approvals-and-sandbox"] : []),
+      // Secret-path deny rules (ADR-0347): reads are not confined to the clone, so the credential
+      // dirs / cli profile / ssh / gh / git credentials are explicitly denied.
+      ...denySettingsArgs(cmd, [...denyDirs, profile?.dir]),
+      // Edit-only headless agent (ADR-0346): file edits are auto-accepted, everything else (Bash, web)
+      // is denied, since the prompt carries untrusted ticket text. git/PR are done by this module.
+      ...(isClaude
+        ? ["--permission-mode", "acceptEdits", "--disallowedTools", ...AGENT_DENIED_TOOLS]
+        : []),
+      ...(cmd.includes("codex") ? ["--sandbox", "workspace-write"] : []),
     ];
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      ...extraEnv,
-      ...(profile ? { CLAUDE_CONFIG_DIR: profile.dir } : {}),
-    };
+    // Allow-listed env only — the cli's own secrets never reach the agent (ADR-0346).
+    const env = agentEnv(extraEnv, profile ? { CLAUDE_CONFIG_DIR: profile.dir } : undefined);
     const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], cwd, env });
     const parser = createAiStreamParser(cmd);
     let out = "";
@@ -167,7 +177,7 @@ async function runClaudeWithFailover(
   const attempts: (ResolvedClaudeProfile | null)[] = ai.profiles.length > 0 ? ai.profiles : [null];
   let lastReason = "no attempt";
   for (let i = 0; i < attempts.length; i++) {
-    const { code, out, err, usage } = await runClaudeOnce(ai.cmd, attempts[i]!, prompt, cwd, ai.env);
+    const { code, out, err, usage } = await runClaudeOnce(ai.cmd, attempts[i]!, prompt, cwd, ai.env, ai.profiles.map((p) => p.dir));
     if (code === 0) return { usage, text: out.trim() };
     lastReason = `exited ${code}: ${(err || out).slice(0, 500)}`;
     if (i === attempts.length - 1) break;
@@ -187,10 +197,12 @@ export async function runFaqCompose(req: FaqComposeRequest, ai: FaqComposeAi): P
   if (!req.repo.token) return { prUrl: "", error: "no write token" };
   const workDir = join(tmpdir(), "4pm-faq-sync", randomUUID());
   const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
-  const authed = authedUrl(req.repo.url, req.repo.token);
+  // Per-command auth (ADR-0346): the token rides a header on clone/push only; the clone's remote URL
+  // and config stay token-free, so the agent working in it cannot read the token.
+  const auth = gitAuthArgs("x-access-token", req.repo.token);
   try {
     mkdirSync(workDir, { recursive: true });
-    await execFileAsync("git", ["clone", "--depth", "1", "--branch", req.repo.branch, authed, workDir], { env: gitEnv });
+    await execFileAsync("git", [...auth, "clone", "--depth", "1", "--branch", req.repo.branch, req.repo.url, workDir], { env: gitEnv });
     // A 4PM commit identity (the token authorizes the push; identity is cosmetic).
     await execFileAsync("git", ["-C", workDir, "config", "user.name", "4PM FAQ Bot"], { env: gitEnv });
     await execFileAsync("git", ["-C", workDir, "config", "user.email", "faq-bot@4pm.app"], { env: gitEnv });
@@ -208,7 +220,7 @@ export async function runFaqCompose(req: FaqComposeRequest, ai: FaqComposeAi): P
     }
 
     await execFileAsync("git", ["-C", workDir, "commit", "-m", "docs(faq): synthesize from support tickets (4PM)"], { env: gitEnv });
-    await execFileAsync("git", ["-C", workDir, "push", "-u", "origin", req.headBranch], { env: gitEnv });
+    await execFileAsync("git", [...auth, "-C", workDir, "push", "-u", "origin", req.headBranch], { env: gitEnv });
     // Open the PR with `gh` (the same token authenticates it); best-effort — a failed PR still leaves
     // the pushed branch, so surface the branch even when PR creation fails.
     let prUrl = "";
@@ -238,7 +250,7 @@ export async function runFaqCompose(req: FaqComposeRequest, ai: FaqComposeAi): P
     logger.warn("faq.compose.failed", { error: String(err) });
     return { prUrl: "", error: String(err) };
   } finally {
-    // Wipe the clone (its remote URL embeds the write token) — nothing token-bearing persists.
+    // Wipe the throwaway clone (token-free, but nothing of the job should linger).
     if (existsSync(workDir)) {
       try {
         rmSync(workDir, { recursive: true, force: true });

@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 import type { KnowledgeComposeReply, KnowledgeComposeRequest } from "@4pm/ws";
 import { reportToolResult } from "./tool-health";
 import type { ResolvedClaudeProfile } from "../utils/ai-cli";
+import { denySettingsArgs } from "../utils/agent-deny";
 
 /** How to run the AI CLI for a compose (resolved by the caller from the profile config). */
 export interface KnowledgeComposeAi {
@@ -43,9 +44,11 @@ function runOnce(
   prompt: string,
   cwd: string,
   extraEnv: Record<string, string> | undefined,
+  denyDirs: string[] = [],
 ): Promise<{ code: number; out: string; err: string }> {
   return new Promise((resolve, reject) => {
-    const args = ["-p", ...(profile?.model ? ["--model", profile.model] : [])];
+    // Secret-path deny rules (ADR-0347): the agent reads the project but never the worker's secrets.
+    const args = ["-p", ...(profile?.model ? ["--model", profile.model] : []), ...denySettingsArgs(cmd, [...denyDirs, profile?.dir])];
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       ...extraEnv,
@@ -88,7 +91,7 @@ export async function runKnowledgeCompose(
   let lastReason = "no attempt";
   for (let i = 0; i < attempts.length; i++) {
     try {
-      const { code, out, err } = await runOnce(ai.cmd, attempts[i]!, prompt, physicRoot, ai.env);
+      const { code, out, err } = await runOnce(ai.cmd, attempts[i]!, prompt, physicRoot, ai.env, ai.profiles.map((p) => p.dir));
       if (code === 0 && out.trim()) {
         reportToolResult(ai.cmd, true); // AI CLI ran ok (ADR-0223)
         return { bodyMarkdown: out.trim() };

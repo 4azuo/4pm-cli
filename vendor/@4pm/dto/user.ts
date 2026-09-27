@@ -323,8 +323,35 @@ export interface ContactChangeStatusResponse {
  */
 export const activityHeartbeatSchema = z.object({
   projectId: z.string().uuid().optional(),
+  /** ADR-0342 — the client is idle (5 min no input · tab hidden) ⇒ presence `idle`. */
+  idle: z.boolean().optional(),
 });
 export type ActivityHeartbeatRequest = z.infer<typeof activityHeartbeatSchema>;
+
+/** A user's live presence (ADR-0342): no heartbeat within the TTL ⇒ `offline`. */
+export const PRESENCE_STATUSES = ["online", "idle", "offline"] as const;
+export type PresenceStatus = (typeof PRESENCE_STATUSES)[number];
+
+/** Max ids per user-cards lookup (ADR-0342). */
+export const USER_CARDS_MAX_IDS = 100;
+
+/** Query GET /users/cards — comma-separated user ids (user-0028, ADR-0342). */
+export const userCardsQuerySchema = z.object({
+  ids: z
+    .string()
+    .transform((v) => [...new Set(v.split(",").map((s) => s.trim()).filter(Boolean))])
+    .pipe(z.array(z.string().uuid()).min(1).max(USER_CARDS_MAX_IDS)),
+});
+export type UserCardsQuery = z.infer<typeof userCardsQuerySchema>;
+
+/** One user card (user-0028, ADR-0342) — display name, versioned avatar URL and live presence. */
+export interface UserCardResponse {
+  id: string;
+  username: string;
+  aliasName: string | null;
+  avatarUrl: string | null;
+  status: PresenceStatus;
+}
 
 /** Active time a user accrued on one project (ADR-0201) — `activeMs` = summed session duration. */
 export interface ProjectActivity {

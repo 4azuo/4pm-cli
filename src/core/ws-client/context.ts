@@ -41,6 +41,8 @@ export interface WsHandlerCtx {
   readonly isStopped: boolean;
   /** Last `session_id` per credential key for a same-profile `--resume` (ADR-0245); mutated in place. */
   readonly sessionIdByKey: Map<string, string>;
+  /** When each remembered session last finished a run + its context size (bounded resume — ADR-0339). */
+  readonly sessionMetaByKey: Map<string, { at: number; contextTokens: number }>;
 
   /** The physic project folder root this cli serves (null = idle) — fs.list browse root. */
   physicRoot: string | null;

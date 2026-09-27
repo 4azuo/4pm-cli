@@ -12,6 +12,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
+import { denySettingsArgs } from "./agent-deny";
 
 /**
  * REQUIRED pre-prompt args per known AI CLI (ADR-0158) — **hardcoded in source and always
@@ -34,7 +35,7 @@ const REQUIRED_AI_ARGS: { claude: string[]; codex: string[]; antigravity: string
  * follows so it can't swallow the prompt). A text-in → text-out spec review/compose/suggest has no
  * reason to run these; blocking them stops the run from wandering the repo / editing files / looping.
  */
-const ONE_SHOT_DISALLOWED_CLAUDE_TOOLS = [
+export const ONE_SHOT_DISALLOWED_CLAUDE_TOOLS = [
   "Bash", "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit", "Task", "WebSearch", "WebFetch",
   "Skill", "ToolSearch", "TaskCreate", "TaskGet", "TaskList", "TaskOutput",
   "TaskStop", "TaskUpdate", "Monitor", "DesignSync", "CronCreate", "CronDelete", "CronList",
@@ -306,6 +307,20 @@ function profileDirs(profiles: AiProfile[] | undefined): string[] {
 }
 
 /**
+ * Every configured AI credential dir (all providers, legacy lists + the unified list) — the dirs whose
+ * contents an agent run must never read or edit (ADR-0347 deny rules).
+ */
+export function allAiProfileDirs(config: AiCliConfig): string[] {
+  const dirs = [
+    ...profileDirs(config.claudeHome),
+    ...profileDirs(config.codexHome),
+    ...profileDirs(config.antigravityHome),
+    ...profileDirs(config.aiProfiles),
+  ];
+  return [...new Set(dirs)];
+}
+
+/**
  * Prepend a folder-scope guard to a prompt (project aiScope hardening): instruct the AI to
  * only read/use/modify content inside the served worker project folder, then the operator's
  * original prompt. Returned only to the spawned AI — the transcript/console still echo the
@@ -384,6 +399,7 @@ function buildRunArgs(
   override?: AiRunOverride,
   readOnly = false,
   bypass = false,
+  denyDirs: string[] = [],
 ): string[] {
   const extras = profile.args ?? [];
   const model = override?.model?.trim() || profile.model?.trim();
@@ -408,6 +424,10 @@ function buildRunArgs(
     ...extras,
     ...modelArgs,
     ...overrideArgs(cmd, override),
+    // Secret-path deny rules (ADR-0347) — every configured credential dir + ~/.4pm, ~/.ssh, gh, git
+    // credentials, ~/.claude*. A single-value flag, placed before the mode caps so their non-variadic
+    // terminator still bounds `--disallowedTools`.
+    ...denySettingsArgs(cmd, denyDirs),
     ...modeExtra,
   ];
 }
@@ -554,7 +574,7 @@ function planUnifiedRun(
     return {
       cmd: active,
       attempts: [
-        { cmd: active, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, active, undefined, oneShot, override, readOnly, bypass), stdin: prompt, env: { ...baseEnv, ...overrideEnv(active, override) } },
+        { cmd: active, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, active, undefined, oneShot, override, readOnly, bypass, allAiProfileDirs(config)), stdin: prompt, env: { ...baseEnv, ...overrideEnv(active, override) } },
       ],
     };
   }
@@ -576,7 +596,7 @@ function planUnifiedRun(
     label: cred.label?.trim() || profileDisplayLabel(dir),
     dir,
     key,
-    args: buildRunArgs(cred, cmd, resume.get(key), oneShot, override, readOnly, bypass),
+    args: buildRunArgs(cred, cmd, resume.get(key), oneShot, override, readOnly, bypass, [...allAiProfileDirs(config), dir]),
     stdin: prompt,
     env: envVar
       ? { ...baseEnv, [envVar]: dir, ...overrideEnv(cmd, override) }
@@ -603,7 +623,7 @@ function planLegacyRun(
   const defaultPlan: AiPlan = {
     cmd,
     attempts: [
-      { cmd, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, cmd, undefined, oneShot, override, readOnly, bypass), stdin: prompt, env: { ...baseEnv, ...overrideEnv(cmd, override) } },
+      { cmd, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, cmd, undefined, oneShot, override, readOnly, bypass, allAiProfileDirs(config)), stdin: prompt, env: { ...baseEnv, ...overrideEnv(cmd, override) } },
     ],
   };
   if (!envVar) return defaultPlan;
@@ -629,7 +649,7 @@ function planLegacyRun(
       label: profileDisplayLabel(dir),
       dir,
       key,
-      args: buildRunArgs(profile, cmd, resume.get(key), oneShot, override, readOnly, bypass),
+      args: buildRunArgs(profile, cmd, resume.get(key), oneShot, override, readOnly, bypass, [...allAiProfileDirs(config), dir]),
       stdin: prompt,
       env: { ...baseEnv, [envVar]: dir, ...overrideEnv(cmd, override) },
     };

@@ -1,9 +1,9 @@
 /**
- * FAQ_COMPOSE payloads (ADR-0333) — the platform-pool dispatcher's request to a platform-pool cli
- * and the cli's reply. Request–reply over the `faq.compose` channel: the worker clones the 4pm-faq
- * repo with a short-lived WRITE token (a per-job GitHub-App installation token), distils the selected
- * support tickets into FAQ entries, commits, pushes a branch, opens a PR, then wipes the token +
- * clone. The write token never persists on the worker (leak-safety on release/reassign).
+ * FAQ_COMPOSE payloads (ADR-0333, sent to a support agent since ADR-0346) — the server's ticket → FAQ
+ * synthesis request and the cli's reply. Request–reply over the `faq.compose` channel: the worker
+ * clones the 4pm-faq repo with a short-lived WRITE token (a per-job GitHub-App installation token,
+ * passed per git command — never stored in the clone), distils the selected support tickets into FAQ
+ * entries with an edit-only agent, commits, pushes a branch, opens a PR, then deletes the clone.
  */
 
 /** One message in a ticket transcript sent to the agent (author + text). */
@@ -73,7 +73,7 @@ export interface FaqComposeReply {
   perTicket?: FaqTicketResult[];
   /** Optional error marker when the worker failed (clone/spawn/push/PR/timeout). */
   error?: string;
-  /** Real token usage of the claude run (ADR-0333); recorded against the 4pm-faq-sync project. */
+  /** Real token usage of the claude run (ADR-0333); display-only (ADR-0224). */
   tokens?: number;
   /** The token split behind `tokens`; absent when `tokens` is. */
   tokensBreakdown?: FaqComposeUsage;
