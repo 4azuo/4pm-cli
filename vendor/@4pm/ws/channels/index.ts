@@ -96,6 +96,9 @@ export const WsChannels = {
   // server → cli (reply): manage the rented worker's ssh deploy key (ADR-0173) — generate
   // (ed25519, on the worker) / get / delete. The private key never leaves the worker.
   GIT_SSH_KEY: "git.ssh-key",
+  // cli → server (reply): a short-lived GitHub-App installation token for the served project's repo,
+  // per job scope; also the cli's "scope revoked" report (ADR-0356). The App key stays on the server.
+  GIT_TOKEN: "git.token",
   PROJECT_CREATE: "project.create",
   PROJECT_ADD: "project.add",
   PROJECT_PROGRESS: "project.progress",
@@ -135,6 +138,8 @@ export const WsChannels = {
   // command.dispatch({ ai:true }) → the profile-failover AI path (ADR-0100).
   // quota & usage (ADR-0020)
   QUOTA_CHECK: "quota.check",
+  // cli → server (reply): per-org concurrent AI-run slot — acquire / renew / release (ADR-0359)
+  RUN_SLOT: "run.slot",
   USAGE_REPORT: "usage.report",
   // cli → server: Claude subscription usage snapshot (5h / weekly — ADR-0072)
   MACHINE_USAGE: "machine.usage",

@@ -6,6 +6,8 @@ export * from "./channels/index";
 export * from "./crypto";
 export * from "./messages/envelope";
 export * from "./messages/faq-compose";
+export * from "./messages/git-token";
 export * from "./messages/knowledge-compose";
 export * from "./messages/memory";
+export * from "./messages/run-slot";
 export * from "./messages/support-answer";

@@ -257,6 +257,14 @@ export const ErrorCode = {
   // AI support service is toggled off platform-wide.
   HELP_BLOCKED: "HELP_BLOCKED",
   HELP_DISABLED: "HELP_DISABLED",
+  // Project GitHub-App git-auth (ADR-0356): method set without a credential; a rejected credential
+  // (App ID / PEM / host / CA); an ssh repo URL under the App method; the primary repo's host differs
+  // from the credential host; the server has no SECRETS_ENC_KEY to store/read secrets.
+  GIT_CREDENTIAL_MISSING: "GIT_CREDENTIAL_MISSING",
+  GIT_CREDENTIAL_INVALID: "GIT_CREDENTIAL_INVALID",
+  GIT_AUTH_REQUIRES_HTTPS: "GIT_AUTH_REQUIRES_HTTPS",
+  GIT_HOST_MISMATCH: "GIT_HOST_MISMATCH",
+  SECRETS_KEY_NOT_CONFIGURED: "SECRETS_KEY_NOT_CONFIGURED",
 } as const;
 
 /** Union type of error codes. */

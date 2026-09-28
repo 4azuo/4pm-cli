@@ -60,6 +60,7 @@ import { setCommitAuthor } from "../git-commit-identity";
 import { logger } from "../../common/logger/logger";
 import { CLI_VERSION } from "../../version";
 import type { WsHandlerCtx } from "./context";
+import { acquireRunSlot } from "./run-slot";
 import { t } from "../../i18n";
 
 /** Preamble prepended before the shared AI memory when seeding a fresh native session (ADR-0245). */
@@ -466,8 +467,29 @@ export async function runAiPrompt(
   // endBusy in a `finally` so a thrown/rejected run still releases the busy state — otherwise a
   // stuck `busy` blocks the idle auto-clear indefinitely (it never clears mid-response — ADR-0244).
   let result: AiRunResult;
+  // True when the run never started (queue timeout — ADR-0359): nothing ran, so no usage is reported.
+  let queueTimedOut = false;
   try {
-    result = await runAiFailover(plan, commandId, cwd, handlers, aiRunTimeoutMs);
+    // Per-org concurrent AI-run limit (ADR-0359): wait for a slot (FIFO) before spawning; the queue
+    // position is shown in the transcript + the web Console as a `log` line.
+    const slot = await acquireRunSlot(ctx, ({ position, limit, running }) => {
+      const text = `⏳ queued — ${position} ahead, ${running}/${limit} parallel runs in use (plan limit)`;
+      ctx.bus.push({ source: origin, kind: "log", text });
+      ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: `${text}\n`, log: true });
+    });
+    if (slot.kind === "timeout") {
+      queueTimedOut = true;
+      const text = `RUN_QUEUE_TIMEOUT: waited 30 min for a free run slot (plan limit ${slot.limit} parallel runs) — not run`;
+      ctx.bus.push({ source: origin, kind: "log", text, level: "warn" });
+      ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: `${text}\n`, log: true });
+      result = { exitCode: 1, workedDir: null, workedKey: null, workedCmd: null, usage: { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, sessionId: "" };
+    } else {
+      try {
+        result = await runAiFailover(plan, commandId, cwd, handlers, aiRunTimeoutMs);
+      } finally {
+        slot.handle.release();
+      }
+    }
   } finally {
     ctx.bus.endBusy(plan.cmd);
   }
@@ -535,7 +557,7 @@ export async function runAiPrompt(
     });
     ctx.bus.addTokens?.(result.usage.tokens); // session token counter for the header
   }
-  ctx.reportUsage(events, profileLabel);
+  if (!queueTimedOut) ctx.reportUsage(events, profileLabel);
   // Refresh the usage snapshot after any run (e.g. `/usage` rotates the token — ADR-0072).
   void ctx.pollUsage();
   // Report a friendly completion line instead of a raw exit code: on success prompt

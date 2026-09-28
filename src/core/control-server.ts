@@ -17,6 +17,7 @@ import {
   type ControlSessionInfo,
 } from "./control-protocol";
 import { controlTokenPath, tokenMatches, writeControlToken } from "./control-token";
+import { issueGitToken } from "./git-auth";
 
 /** Start the control socket; returns a stop() that closes it + removes the socket file. */
 export function startControlServer(
@@ -92,8 +93,11 @@ export function startControlServer(
           // Gate: the first frame MUST be a matching `auth` (ADR-0320) — else reject + drop.
           if (frame.t === "auth" && tokenMatches(token, frame.token)) {
             authed = true;
-            clients.add(sock);
-            sendSnapshot(sock);
+            // An rpc client (git helper / gh shim — ADR-0356) only makes one-shot requests.
+            if (!frame.rpc) {
+              clients.add(sock);
+              sendSnapshot(sock);
+            }
           } else {
             send(sock, { t: "authError" });
             sock.destroy();
@@ -103,6 +107,9 @@ export function startControlServer(
         if (frame.t === "submit") bus.submitLocal(frame.input);
         else if (frame.t === "reconnect") bus.requestReconnect();
         else if (frame.t === "autonomousRun") bus.submitAutonomous();
+        else if (frame.t === "gitToken") {
+          void issueGitToken(frame.scope, frame.host, frame.path).then((tok) => send(sock, { t: "gitToken", token: tok }));
+        }
       }
     });
     const drop = (): void => {

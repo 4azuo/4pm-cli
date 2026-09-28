@@ -332,9 +332,10 @@ export interface ProjectAiScopeSettings {
 
 /**
  * Per-project git-auth method for the worker (ADR-0192 §4). `self` = the worker uses its own
- * gh/glab credentials (self-host default); `deploy-key` = a worker-generated ssh deploy key
- * (ADR-0173); `gitlab-group-token` / `github-app` = a token the worker configures for HTTPS git
- * (the token itself is injected out-of-band as a secret / minted server-side — never in settings).
+ * gh/glab credentials (self-host default); `deploy-key` = legacy alias of `self` (ADR-0221);
+ * `github-app` = the server mints per-job GitHub-App installation tokens from the project's App
+ * credential (ADR-0356, stored in its own table — never in settings); `gitlab-group-token` stays
+ * disabled (no mint backend).
  */
 export const GIT_AUTH_METHODS = ["self", "deploy-key", "gitlab-group-token", "github-app"] as const;
 export type GitAuthMethod = (typeof GIT_AUTH_METHODS)[number];
@@ -1015,6 +1016,11 @@ export type AddProjectRepoRequest = z.infer<typeof addProjectRepoRequestSchema>;
 export interface ProjectJobAcceptedResponse {
   jobId: string;
   project: ProjectResponse;
+  /**
+   * project-0069 on a GitHub-App project (ADR-0356): the added repo's coverage status when the App
+   * does not cover it (`not_installed`/`no_access`/`host_mismatch`) — the web warns; absent otherwise.
+   */
+  gitAuthWarning?: string;
 }
 
 // AI spec-assist (suggest/review/compose) moved to the console dispatch path (ADR-0100):

@@ -58,17 +58,24 @@ export type ControlServerFrame =
   // The autonomous cycle triggered over this socket (ADR-0319) settled — `ok` false carries a `note`.
   | { t: "autonomousDone"; ok: boolean; note?: string }
   // The client's `auth` frame was missing/wrong — the daemon rejects the connection (ADR-0320).
-  | { t: "authError" };
+  | { t: "authError" }
+  // Reply to a `gitToken` request (ADR-0356): the token, or null when none applies.
+  | { t: "gitToken"; token: string | null };
 
 /** client → daemon frames. */
 export type ControlClientFrame =
   // MUST be the first frame on a connection (ADR-0320): the control-channel token; the daemon accepts
   // no other frame until it matches.
-  | { t: "auth"; token: string }
+  // `rpc: true` (the git credential helper / gh shim — ADR-0356) authenticates for one-shot requests only:
+  // no snapshot, no broadcast subscription.
+  | { t: "auth"; token: string; rpc?: boolean }
   | { t: "submit"; input: string }
   | { t: "reconnect" }
   // `4pm auto-run` asks the daemon to run ONE autonomous cycle through its live session (ADR-0319).
-  | { t: "autonomousRun" };
+  | { t: "autonomousRun" }
+  // The git credential helper / gh shim asks for a GitHub-App token (ADR-0356) for `host`/`path` under the
+  // job `scope` (its FOURPM_JOB_ID; empty ⇒ the link's default scope).
+  | { t: "gitToken"; scope: string; host: string; path: string };
 
 /** Encode one frame as a JSONL line. */
 export function encodeFrame(frame: ControlServerFrame | ControlClientFrame): string {

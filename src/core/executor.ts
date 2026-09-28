@@ -5,6 +5,7 @@
  */
 import { spawn } from "node:child_process";
 import { OutputBatcher, type CommandDispatchPayload, type CommandOutputPayload } from "@4pm/ws";
+import { endGitScope, JOB_ID_ENV } from "./git-auth";
 
 /** Grace period after SIGTERM before a hard SIGKILL when a run is timed out (ADR-0243). */
 const KILL_GRACE_MS = 5_000;
@@ -30,15 +31,20 @@ export interface RunCommandOptions {
 /**
  * Run a single command and stream its output in batches.
  * @param dispatch payload from the server
- * @param emit     send one command.output message back to the server
+ * @param emitRaw  send one command.output message back to the server
  * @param opts     optional per-run controls (e.g. a wall-clock timeout — ADR-0243)
  */
 export async function runCommand(
   dispatch: CommandDispatchPayload,
-  emit: (output: CommandOutputPayload) => void,
+  emitRaw: (output: CommandOutputPayload) => void,
   opts?: RunCommandOptions,
 ): Promise<void> {
   let seq = 0;
+  // GitHub-App git-auth (ADR-0356): the run is one token scope — revoke its tokens once it settles.
+  const emit = (output: CommandOutputPayload): void => {
+    emitRaw(output);
+    if (output.done) void endGitScope(dispatch.commandId);
+  };
   // Guard the spawn (ADR-0251): `spawn` throws **synchronously** for some failures — notably
   // `E2BIG` when an argv element exceeds `MAX_ARG_STRLEN` (128 KiB) — WITHOUT emitting an async
   // `error` event. Left unguarded, the throw becomes a rejected promise the caller never observes,
@@ -48,7 +54,8 @@ export async function runCommand(
   try {
     child = spawn(dispatch.cmd, dispatch.args ?? [], {
       cwd: dispatch.path,
-      env: { ...process.env, ...dispatch.env },
+      // FOURPM_JOB_ID scopes the git helper / gh shim tokens to this run (ADR-0356).
+      env: { ...process.env, ...dispatch.env, [JOB_ID_ENV]: dispatch.commandId },
       shell: false,
     });
   } catch (err) {

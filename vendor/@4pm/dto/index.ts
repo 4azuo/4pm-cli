@@ -3,6 +3,7 @@
  */
 export * from "./base";
 export * from "./command";
+export * from "./git-credential";
 export * from "./machine";
 export * from "./meta";
 export * from "./org";

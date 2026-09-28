@@ -54,6 +54,8 @@ const execFileAsync = promisify(execFile);
 const MAX_CONTEXT_CHARS = 120_000;
 /** Max time to wait for the `claude` answer (ms). */
 const ANSWER_TIMEOUT_MS = 120_000;
+/** Max time for a legal-document draft (ms) — a whole Terms/Policy body is long to write (ADR-0360). */
+const LEGAL_DRAFT_TIMEOUT_MS = 540_000;
 /** Folders/extensions considered documentation in the KB repo. */
 const DOC_EXTENSIONS = [".md", ".mdx", ".txt"];
 
@@ -213,6 +215,7 @@ function buildPrompt(docs: string, question: string, askerRole: "admin" | "user"
  * prompt there is no refusal policy and no moderation JSON — the whole output is the markdown draft.
  */
 function buildDraftPrompt(docs: string, context: string, task: SupportAnswerTask): string {
+  if (task === "legal_draft") return buildLegalDraftPrompt(docs, context);
   const goal =
     task === "reply_draft"
       ? [
@@ -234,6 +237,38 @@ function buildDraftPrompt(docs: string, context: string, task: SupportAnswerTask
     "",
     "Output ONLY the message body in markdown — no subject line, no preamble, no explanation, no code",
     "fences around the whole message.",
+    "",
+    "===== DOCUMENTATION =====",
+    docs,
+    "",
+    "===== CONTEXT =====",
+    context,
+  ].join("\n");
+}
+
+/**
+ * The legal-document drafting prompt (ADR-0360): write or revise the WHOLE body of one 4PM legal
+ * document in the target locale, grounded ONLY in the server-built facts (live plan catalog + billing
+ * behaviour) and the docs — keeping `{{placeholders}}` verbatim and marking unknowns as `[TODO: …]`.
+ * Output is the markdown body alone; a human admin reviews it (and counsel) before publishing.
+ */
+function buildLegalDraftPrompt(docs: string, context: string): string {
+  return [
+    "You are drafting the body of one of 4PM's legal documents (Terms of Service, Privacy Policy,",
+    "Add-on Terms, Rented Machine Addendum, …) for the platform admin to review and publish.",
+    "Write or revise the WHOLE document body in the target locale given in the context. Keep the",
+    "existing heading structure and numbering unless the admin's instructions say otherwise.",
+    "When the target locale is not English and an English reference is given, follow its meaning closely.",
+    "Rules:",
+    "- Every {{placeholder}} (e.g. {{companyName}}) must be kept verbatim — never fill or rename it.",
+    "- Describe plans, prices, upgrades, downgrades, cancellations, renewals, refunds and add-ons ONLY",
+    "  as stated in the PLAN CATALOG and BILLING FACTS below or the documentation; never invent",
+    "  commitments, prices or legal guarantees. Where something is unknown write `[TODO: …]`.",
+    "- Plain, precise legal English (or the target language); short numbered sections and bullet lists.",
+    "- This is a draft, not legal advice; do not add a disclaimer about that inside the document.",
+    "",
+    "Output ONLY the document body in markdown — no title line, no preamble, no explanation, no code",
+    "fences around the whole document.",
     "",
     "===== DOCUMENTATION =====",
     docs,
@@ -325,6 +360,7 @@ function runClaudeOnce(
   extraEnv: Record<string, string> | undefined,
   imageDir?: string,
   denyDirs: string[] = [],
+  timeoutMs: number = ANSWER_TIMEOUT_MS,
 ): Promise<{ code: number; out: string; err: string; usage: AiUsage }> {
   return new Promise((resolve, reject) => {
     // Ask claude for `--output-format stream-json --verbose` so the run's real token usage is
@@ -366,7 +402,7 @@ function runClaudeOnce(
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
       reject(new Error("claude answer timed out"));
-    }, ANSWER_TIMEOUT_MS);
+    }, timeoutMs);
     timer.unref();
     child.stdout.on("data", (d: Buffer) => (out += parser.push(d.toString())));
     child.stderr.on("data", (d: Buffer) => (err += d.toString()));
@@ -395,12 +431,21 @@ async function runClaudeWithFailover(
   prompt: string,
   ai: SupportAnswerAi,
   imageDir?: string,
+  timeoutMs: number = ANSWER_TIMEOUT_MS,
 ): Promise<{ text: string; usage: AiUsage }> {
   // No profile configured ⇒ a single default-env attempt (matches the pre-profile behavior).
   const attempts: (ResolvedClaudeProfile | null)[] = ai.profiles.length > 0 ? ai.profiles : [null];
   let lastReason = "no attempt";
   for (let i = 0; i < attempts.length; i++) {
-    const { code, out, err, usage } = await runClaudeOnce(ai.cmd, attempts[i]!, prompt, ai.env, imageDir, ai.profiles.map((p) => p.dir));
+    const { code, out, err, usage } = await runClaudeOnce(
+      ai.cmd,
+      attempts[i]!,
+      prompt,
+      ai.env,
+      imageDir,
+      ai.profiles.map((p) => p.dir),
+      timeoutMs,
+    );
     if (code === 0 && out.trim()) return { text: out.trim(), usage };
     // claude may report the failure on stdout rather than stderr (empty stderr + exit 1).
     const combined = err || out;
@@ -435,7 +480,8 @@ export async function runSupportAnswer(
     if (!docs.trim()) return { body: "", error: "KB repo has no documentation" };
     // A drafting task (ADR-0345) uses its own prompt and returns the text as-is (no moderation).
     const prompt = req.task ? buildDraftPrompt(docs, question, req.task) : buildPrompt(docs, question, req.askerRole);
-    const { text, usage } = await runClaudeWithFailover(prompt, ai, imageDir);
+    const timeoutMs = req.task === "legal_draft" ? LEGAL_DRAFT_TIMEOUT_MS : ANSWER_TIMEOUT_MS;
+    const { text, usage } = await runClaudeWithFailover(prompt, ai, imageDir, timeoutMs);
     if (!text) return { body: "", error: "empty answer" };
     // Split the structured output into the answer body + inline moderation verdict (ADR-0237);
     // a non-JSON run degrades to the whole text as the body with no verdict.

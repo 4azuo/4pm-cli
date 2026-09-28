@@ -173,6 +173,12 @@ export interface WsTokenResponse {
    */
   gitAuth: GitAuthMethod | null;
   /**
+   * GitHub host of the project's App credential when `gitAuth` is `github-app` (ADR-0356) — the cli
+   * scopes its credential helper + `gh` shim to it and pulls tokens over `git.token`. Absent otherwise
+   * (and from an older server).
+   */
+  gitAuthHost?: string | null;
+  /**
    * Outbound-review policy of the project this link serves (ADR-0082). Tells the cli to
    * require an outbound review before spawning AI (`enabled`), which engines to run, and
    * whether THIS link is itself an outbound reviewer (`isOutbound`). `null` when the

@@ -31,6 +31,7 @@ import {
   encryptPayload,
   WsChannels,
   type EcdhSession,
+  type GitTokenReply,
   type ImageFetchReply,
   type ImageFetchRequest,
   type MachineLogPayload,
@@ -60,7 +61,7 @@ import { refreshSupportKb } from "./support-answer";
 import { setToolHealthSink } from "./tool-health";
 import { isAutonomousRunning } from "./autonomous";
 import { probeNetwork } from "./network-probe";
-import { applyGitAuth } from "./git-auth";
+import { configureGitAuth } from "./git-auth";
 import { readProfileConfig, writeProfileConfig } from "../config/profile";
 import { detectWorkerTools } from "./worker-tools";
 import { logger, readLogUpload } from "../common/logger/logger";
@@ -605,9 +606,11 @@ export class WsClient {
         // Folder-scope hardening (project aiScope): when on, prepend a guard to every AI
         // prompt so the agent only uses content inside the served project folder.
         this.restrictToFolder = token.aiRestrictToFolder === true;
-        // Git-auth method (ADR-0192 §4): for a token method + an injected `FOURPM_GIT_TOKEN`, write
-        // the HTTPS git credential the store helper uses; `self`/`deploy-key` are a no-op.
-        applyGitAuth(token.gitAuth ?? null);
+        // Git-auth (ADR-0356): for a GitHub-App project, scope the credential helper + gh shim to the
+        // App host (process env only) and pull per-job tokens over git.token; `self` configures nothing.
+        configureGitAuth(token.gitAuth ?? null, token.gitAuthHost ?? null, this.context.profileDir, (req) =>
+          this.request<GitTokenReply>(WsChannels.GIT_TOKEN, req),
+        );
         // The machine username is the git commit author for this project (ADR-0097); push
         // uses the account already logged in with gh/glab on the worker.
         this.machineUsername = token.machineUsername ?? "";

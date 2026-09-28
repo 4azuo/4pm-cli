@@ -42,8 +42,11 @@ export interface SupportAnswerRequest {
   task?: SupportAnswerTask;
 }
 
-/** The drafting task of a support-answer request (ADR-0345): a ticket reply or an outreach message. */
-export type SupportAnswerTask = "reply_draft" | "outreach_draft";
+/**
+ * The drafting task of a support-answer request: a ticket reply or an outreach message (ADR-0345),
+ * or a legal document body (ADR-0360).
+ */
+export type SupportAnswerTask = "reply_draft" | "outreach_draft" | "legal_draft";
 
 /** The claude run's token split for a support answer (ADR-0224). */
 export interface SupportAnswerUsage {

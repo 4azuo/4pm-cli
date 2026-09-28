@@ -10,6 +10,7 @@ import { runLink } from "./commands/link";
 import { runStart } from "./commands/start";
 import { runAttach } from "./commands/attach";
 import { runAutoRun } from "./commands/auto-run";
+import { runGitCredential, runGitToken } from "./commands/git-credential";
 import { runAiLogin } from "./commands/ai-login";
 import { runUnlink } from "./commands/unlink";
 import { runUpdate } from "./commands/update";
@@ -119,6 +120,16 @@ async function main(): Promise<void> {
         break;
       }
       await runAttach(profileDir(name), name);
+      break;
+    }
+    case "git-credential": {
+      // git credential helper for GitHub-App git-auth (ADR-0356) — configured by the daemon, not users.
+      await runGitCredential(rest[0]);
+      break;
+    }
+    case "git-token": {
+      // Token source for the `gh` shim (ADR-0356).
+      await runGitToken();
       break;
     }
     case "auto-run": {

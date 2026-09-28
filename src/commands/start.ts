@@ -27,6 +27,7 @@ import { logger, type LogLevel } from "../common/logger/logger";
 import { initI18n, t } from "../i18n";
 import { SessionBus } from "../core/session-bus";
 import { startControlServer } from "../core/control-server";
+import { revokeAll } from "../core/git-auth";
 import { startIdleAutoClear } from "../core/idle-auto-clear";
 import { getWorkingProfile } from "../core/ai-profile-state";
 import { profileDisplayLabel, profileLabels } from "../utils/ai-cli";
@@ -203,6 +204,8 @@ export async function runStart(
     }
   } finally {
     stopIdleClear?.();
+    // Revoke any GitHub-App tokens this worker still holds (ADR-0356); the server backstop covers a crash.
+    await revokeAll().catch(() => undefined);
     stopControl?.();
     release();
   }
