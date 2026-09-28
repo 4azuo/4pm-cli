@@ -51,7 +51,7 @@ import { CliApiError, requestWsToken } from "../services/api";
 import { getWorkingProfile } from "./ai-profile-state";
 import { INSECURE_URL_BLOCKED, insecureTransportAllowed, isInsecureRemoteUrl } from "../utils/secure-url";
 import { t } from "../i18n";
-import { claudeHomeDirs } from "../utils/ai-cli";
+import { aiAccountLabels, claudeHomeDirs } from "../utils/ai-cli";
 import { checkClaudeUsage } from "./claude-usage";
 import { pruneCommandHistoryByAge } from "./command-history";
 import { sweepOldAttachments } from "./command-images";
@@ -964,6 +964,9 @@ export class WsClient {
       // effective timeout and derive the SSE reply windows server-side (ADR-0256).
       aiRunTimeoutSec: config.aiRunTimeoutSec ?? 0,
       aiProfileCount,
+      // The configured AI accounts (emails when readable) — admin-only visibility of which AI
+      // account a (rented) machine runs on + the shared-account check (ADR-0354).
+      aiAccounts: aiAccountLabels(config),
     });
   }
 

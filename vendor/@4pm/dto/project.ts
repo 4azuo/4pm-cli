@@ -430,6 +430,13 @@ export const OUTBOUND_REVIEW_MAX_LIST = 50;
 export const AI_RUN_TIMEOUT_BOUNDS = { min: 30, max: 3_600 } as const;
 
 /**
+ * Bounded native resume limits (ADR-0339) editable in the worker config: the idle window (minutes) and
+ * the conversation-size cap (tokens) past which the cli starts a fresh, memory-seeded session. `0` = that
+ * bound off; the maxima only guard against a nonsense value (1 day / 1M tokens).
+ */
+export const AI_RESUME_BOUNDS = { maxIdleMinutes: 1_440, maxContextTokens: 1_000_000 } as const;
+
+/**
  * Bounds for the per-attempt tool install/update/restore timeout in seconds (ADR-0258). Source of truth
  * for the machine-user Worker-config field (`@4pm/ui` `config-model`/`ConfigForm`): `0` = the cli default
  * (300s), any other value is clamped into `[min, max]`. Guards a slow container egress without letting a

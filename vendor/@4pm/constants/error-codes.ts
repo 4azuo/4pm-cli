@@ -243,6 +243,9 @@ export const ErrorCode = {
   PAYMENT_FAILED: "PAYMENT_FAILED",
   // support tickets (ADR-0167) + AI help agent (ADR-0168)
   SUPPORT_TICKET_NOT_FOUND: "SUPPORT_TICKET_NOT_FOUND",
+  // managed legal documents (ADR-0350): unknown/disabled document; accepting a version that is not current
+  LEGAL_DOCUMENT_NOT_FOUND: "LEGAL_DOCUMENT_NOT_FOUND",
+  LEGAL_VERSION_OUTDATED: "LEGAL_VERSION_OUTDATED",
   SUPPORT_TICKET_CLOSED: "SUPPORT_TICKET_CLOSED",
   // public (guest) support create (ADR-0279): the self-hosted captcha answer was wrong/expired.
   CAPTCHA_INVALID: "CAPTCHA_INVALID",

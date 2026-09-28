@@ -76,6 +76,10 @@ export interface MachineStatusPayload {
   /** Number of configured AI credentials (the failover profile count) — the floor factor for the
    *  derived re-attach cap (`effective × profileCount × 1.2`, ADR-0256). */
   aiProfileCount?: number;
+  /** Labels of the configured, usable AI credentials (all providers) — the signed-in account email
+   *  when readable, else the credential label / folder name. Persisted on `MachineLink.aiAccounts` so
+   *  platform admins can see which AI account a rented machine uses (ADR-0354). */
+  aiAccounts?: string[];
 }
 
 /** Where a command originated: server-dispatched (web) or cli-local (TUI — ADR-0057). */

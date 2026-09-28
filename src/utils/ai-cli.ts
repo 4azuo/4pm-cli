@@ -448,16 +448,43 @@ export function claudeHomeDirs(config: AiCliConfig): string[] {
  * falls back to the folder name so the header is never blank.
  */
 export function profileDisplayLabel(dir: string): string {
+  return profileAccountEmail(dir) ?? basename(dir);
+}
+
+/**
+ * The signed-in account email of a claude profile dir (`<dir>/.claude.json`
+ * `oauthAccount.emailAddress`), or null when missing/unreadable (or not a claude profile).
+ */
+function profileAccountEmail(dir: string): string | null {
   try {
     const raw = JSON.parse(readFileSync(join(dir, ".claude.json"), "utf8")) as {
       oauthAccount?: { emailAddress?: string };
     };
-    const email = raw.oauthAccount?.emailAddress;
-    if (email && email.trim()) return email;
+    const email = raw.oauthAccount?.emailAddress?.trim();
+    return email ? email : null;
   } catch {
-    // Best-effort — fall through to the folder name.
+    // Best-effort — no readable account.
+    return null;
   }
-  return basename(dir);
+}
+
+/**
+ * The AI accounts this cli is configured with, reported to the server in `machine.status`
+ * (ADR-0354): every usable credential across all providers — the account email when readable,
+ * else the credential's explicit `label`, else the folder name. De-duplicated, config order.
+ */
+export function aiAccountLabels(config: AiCliConfig): string[] {
+  const labels = isUnifiedConfig(config)
+    ? config
+        .aiProfiles!.filter(isUsableCredential)
+        .map((c) => {
+          const dir = resolveHomePath(c.profile);
+          return profileAccountEmail(dir) ?? (c.label?.trim() || basename(dir));
+        })
+    : [...profileDirs(config.claudeHome), ...profileDirs(config.codexHome), ...profileDirs(config.antigravityHome)].map(
+        (dir) => profileDisplayLabel(dir),
+      );
+  return [...new Set(labels)];
 }
 
 /** The env var a given AI CLI reads to pick its profile directory. */
