@@ -181,6 +181,11 @@ export function configureGitAuth(
   }
 }
 
+/** The GitHub-App host the helper is currently scoped to (null = not on the App path) — ADR-0368 guard. */
+export function appliedGitAuthHost(): string | null {
+  return state.host;
+}
+
 /** Arm (or re-arm) the idle revoke of the default scope. */
 function touchDefaultScope(): void {
   if (state.defaultTimer) clearTimeout(state.defaultTimer);

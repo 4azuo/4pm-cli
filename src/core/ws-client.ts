@@ -62,6 +62,7 @@ import { setToolHealthSink } from "./tool-health";
 import { isAutonomousRunning } from "./autonomous";
 import { probeNetwork } from "./network-probe";
 import { configureGitAuth } from "./git-auth";
+import { startGitSnapshots } from "./git-snapshot";
 import { readProfileConfig, writeProfileConfig } from "../config/profile";
 import { detectWorkerTools } from "./worker-tools";
 import { logger, readLogUpload } from "../common/logger/logger";
@@ -738,6 +739,15 @@ export class WsClient {
         this.startUsagePolling();
         this.startLogUpload();
         this.startKbRefresh();
+        // Per-repo git state for the web Git › Repositories home (ADR-0369): now + periodically.
+        const client = this; // the getter reads the live served root on every report
+        startGitSnapshots({
+          get physicRoot() {
+            return client.physicRoot;
+          },
+          profileDir: this.context.profileDir,
+          send: (channel, data) => this.send(channel, data, null),
+        });
         // Route per-tool health reports to the server over the live session (ADR-0223); `send`
         // is a no-op until the session key is set, so this is safe to (re)wire here each connect.
         setToolHealthSink((report) => this.send(WsChannels.TOOL_HEALTH, report));

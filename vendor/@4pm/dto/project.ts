@@ -15,6 +15,41 @@ export interface ProjectManagerSummary {
   username: string;
 }
 
+/**
+ * The scaffold's commit → push → pull-request outcome (ADR-0368). Best-effort: `step` + `error` name the
+ * first failed step; `step = null` means fully published.
+ */
+export interface ScaffoldPublish {
+  /** The worker (machine link) the step ran on. */
+  machineLinkId: string;
+  committed: boolean;
+  pushed: boolean;
+  branch: string | null;
+  prUrl: string | null;
+  step: "commit" | "push" | "pr" | null;
+  error: string | null;
+  /** When this outcome was recorded (ISO). */
+  at: string;
+}
+
+/** Read a stored `projects.scaffold_publish` JSON into a typed value (null when absent/malformed). */
+export function readScaffoldPublish(raw: unknown): ScaffoldPublish | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
+  const step = r.step === "commit" || r.step === "push" || r.step === "pr" ? r.step : null;
+  return {
+    machineLinkId: str(r.machineLinkId) ?? "",
+    committed: r.committed === true,
+    pushed: r.pushed === true,
+    branch: str(r.branch),
+    prUrl: str(r.prUrl),
+    step,
+    error: str(r.error),
+    at: str(r.at) ?? "",
+  };
+}
+
 /** Project returned by the API. */
 export interface ProjectResponse {
   id: string;
@@ -27,6 +62,8 @@ export interface ProjectResponse {
   /** Scaffold failure reason + failing step (ADR-0263) — set when `status=failed`, else null. */
   failReason: string | null;
   failedStep: string | null;
+  /** The scaffold commit → push → PR outcome (ADR-0368, project-0074); null = not recorded. */
+  scaffoldPublish: ScaffoldPublish | null;
   /** Mid-tier IP allowlist (Org > project > user — ADR-0050); empty = no restriction. */
   ipAllowlist: string[];
   /** Messenger conversation retention in days (0 = keep forever) — ADR-0078. */

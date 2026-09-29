@@ -82,6 +82,12 @@ export interface ProfileConfig {
    * 300s default. Detection probes (`--version`, `npm ls -g`) keep their own short timeouts.
    */
   toolInstallTimeoutSec?: number;
+  /**
+   * Minutes between periodic git snapshots of the served project (ADR-0369, arch 0051) — each one runs
+   * `git fetch --prune` first so the server sees origin as of now. Absent/invalid ⇒ 10; `0` disables the
+   * periodic run (event-driven snapshots still go out).
+   */
+  gitSnapshotIntervalMin?: number;
   /** The physic project folder this cli serves (assigned by the server). */
   physicPath?: string | null;
   /** Interval to upload command history to R2 (minutes) — defaults to 10. */

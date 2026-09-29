@@ -99,9 +99,15 @@ export const WsChannels = {
   // cli → server (reply): a short-lived GitHub-App installation token for the served project's repo,
   // per job scope; also the cli's "scope revoked" report (ADR-0356). The App key stays on the server.
   GIT_TOKEN: "git.token",
+  // cli → server (one-way): the worker's per-repo git state of the served project (ADR-0369) — head,
+  // branches + tracking, remote, dirty, worker-only commits, origin window. Latest kept per physic × repo.
+  GIT_SNAPSHOT: "git.snapshot",
   PROJECT_CREATE: "project.create",
   PROJECT_ADD: "project.add",
   PROJECT_PROGRESS: "project.progress",
+  // server → cli (reply): retry the scaffold commit → push → PR in the project folder (ADR-0368,
+  // project-0074); the reply carries the new outcome, stored on `projects.scaffold_publish`.
+  PROJECT_PUBLISH: "project.publish",
   // server → cli: keep the physic folder name in sync with the project (folder =
   // project name — ADR-0064) when the project is renamed.
   PHYSIC_SYNC: "physic.sync",

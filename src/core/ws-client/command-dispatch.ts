@@ -64,6 +64,7 @@ import { CLI_VERSION } from "../../version";
 import type { WsHandlerCtx } from "./context";
 import { acquireRunSlot } from "./run-slot";
 import { t } from "../../i18n";
+import { requestGitSnapshot } from "../git-snapshot";
 
 /** Preamble prepended before the shared AI memory when seeding a fresh native session (ADR-0245). */
 const MEMORY_SEED_HEADER =
@@ -79,6 +80,26 @@ interface ActiveRun {
 
 /** In-flight AI runs on this cli, by command id (ADR-0362). */
 const activeRuns = new Map<string, ActiveRun>();
+
+/** git subcommands (and gh/glab actions) that change the repo state a snapshot reports. */
+const GIT_STATE_SUBCOMMANDS = new Set([
+  "add", "branch", "checkout", "cherry-pick", "commit", "fetch", "merge", "pull", "push", "rebase",
+  "reset", "restore", "revert", "rm", "stash", "switch", "tag", "mv",
+]);
+
+/** Whether a dispatched raw command changes git state (skips `-C <dir>`); reads never trigger a snapshot. */
+function changesGitState(cmd: string, args: string[]): boolean {
+  if (cmd === "gh" || cmd === "glab") return args.includes("create") || args.includes("merge");
+  if (cmd !== "git") return false;
+  let i = 0;
+  while (args[i] === "-C" || args[i] === "-c") i += 2;
+  return GIT_STATE_SUBCOMMANDS.has(args[i] ?? "");
+}
+
+/** How many AI runs are in flight (queued or running) — git snapshots wait while > 0 (ADR-0369). */
+export function activeAiRunCount(): number {
+  return activeRuns.size;
+}
 
 /**
  * Stop an in-flight AI run (ADR-0362): a queued run leaves the run-slot queue, a running one has its AI
@@ -177,6 +198,8 @@ export function handleCommandChannels(
       ctx.bus.endBusy(dispatch.cmd);
       const code = out.exitCode ?? -1;
       finishCommand(out.commandId, code);
+      // A git write from the Git tab changed the repo ⇒ refresh the server's snapshot (ADR-0369).
+      if (changesGitState(dispatch.cmd, dispatch.args)) requestGitSnapshot("git-write");
       ctx.bus.push({
         source: "server",
         kind: "exit",
@@ -247,6 +270,8 @@ export async function runAiPrompt(
     await runAiPromptInner(ctx, prompt, commandId, origin, run, oneShot, images, aiConfig, readOnly, bypass);
   } finally {
     activeRuns.delete(commandId);
+    // An AI run may have committed/edited files ⇒ refresh the server's git snapshot (ADR-0369).
+    if (!readOnly) requestGitSnapshot("ai-run");
   }
 }
 

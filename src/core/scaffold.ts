@@ -7,7 +7,7 @@
  * submodules** are attached under the root (`git submodule add` + commit + push) after the primary —
  * submodules are attach-only (no scaffold); only the primary is scaffolded.
  */
-import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -19,6 +19,7 @@ import type {
   ProjectCreatePayload,
   ProjectJobReply,
   ProjectProgressPayload,
+  ScaffoldPublishResult,
 } from "@4pm/ws";
 import { PROJECT_TEMPLATE, type AiGuideFile } from "@4pm/constants";
 import type { AiTaskRunner } from "./ai-task";
@@ -200,62 +201,135 @@ function providerSlug(url: string): { provider: "gh" | "glab" | null; slug: stri
   return { provider, slug: m?.[1] ?? "" };
 }
 
+/** First line of a failed command's message (git/gh/glab print the reason there), capped. */
+function errText(err: unknown): string {
+  const e = err as { stderr?: string; message?: string };
+  const raw = (e?.stderr || e?.message || String(err)).trim();
+  return raw.split("\n").filter(Boolean).slice(-3).join(" ").slice(0, 500);
+}
+
+/** Run a git command in `cwd`, returning trimmed stdout ("" on failure). */
+async function gitOut(cwd: string, args: string[]): Promise<string> {
+  try {
+    return (await run("git", args, { cwd, timeout: 30_000 })).stdout.trim();
+  } catch {
+    return "";
+  }
+}
+
 /**
- * Commit the scaffolded working tree and open a pull/merge request (ADR-0331): after a create, stage
- * everything, commit (with a 4PM fallback identity), push the declared branch, then open a PR via
- * `gh`/`glab` (`--fill` — base = the repo's default branch, head = the pushed branch). Every step is
- * **best-effort**: nothing to commit, a push without write credentials, a missing/unauthed CLI, or
- * `branch == default` (no PR to open) is surfaced as a step and never fails the create — the local
- * commit stays for a later manual push/PR from the Git tab.
+ * Commit the scaffolded working tree and open a pull/merge request (ADR-0331), returning the outcome
+ * (ADR-0368): stage everything, commit (4PM fallback identity; skipped when clean), push the branch
+ * (`repo.branch`, else HEAD's branch), then open a PR via `gh`/`glab` (`--fill` — base = the repo's
+ * default branch). Every step is **best-effort**: a failure is emitted as a step and recorded in the
+ * result, never thrown. Idempotent, so `project.publish` can re-run it: a clean tree still pushes any
+ * unpushed commit, a pushed branch pushes as a no-op, an already-open PR is reported (its URL parsed
+ * from the "already exists" error), and branch == the remote default needs no PR.
  */
-async function commitAndOpenPr(
+export async function commitAndOpenPr(
   root: string,
   repo: RepoDecl,
   emit: (step: string, message: string) => void,
-): Promise<void> {
+): Promise<ScaffoldPublishResult> {
+  const result: ScaffoldPublishResult = { committed: false, pushed: false, branch: null, prUrl: null, step: null, error: null };
+  const fail = (step: "commit" | "push" | "pr", error: string): ScaffoldPublishResult => {
+    result.step = step;
+    result.error = error;
+    return result;
+  };
+
   emit("commit", "Committing the scaffolded project…");
-  await run("git", ["add", "-A"], { cwd: root, timeout: 60_000 });
-  const staged = (await run("git", ["diff", "--cached", "--name-only"], { cwd: root, timeout: 30_000 })).stdout.trim();
-  if (!staged) {
-    emit("commit", "Nothing to commit — skipping the pull request.");
-    return;
-  }
-  const commitArgs = ["commit", "-m", "chore: scaffold project (4PM)"];
   try {
-    await run("git", commitArgs, { cwd: root, timeout: 60_000 });
-  } catch {
-    // No user.name/user.email configured — retry with a 4PM fallback identity so the commit lands.
-    await run("git", ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", ...commitArgs], { cwd: root, timeout: 60_000 });
+    await run("git", ["add", "-A"], { cwd: root, timeout: 60_000 });
+    const staged = (await run("git", ["diff", "--cached", "--name-only"], { cwd: root, timeout: 30_000 })).stdout.trim();
+    if (staged) {
+      const commitArgs = ["commit", "-m", "chore: scaffold project (4PM)"];
+      try {
+        await run("git", commitArgs, { cwd: root, timeout: 60_000 });
+      } catch {
+        // No user.name/user.email configured — retry with a 4PM fallback identity so the commit lands.
+        await run("git", ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", ...commitArgs], { cwd: root, timeout: 60_000 });
+      }
+    } else {
+      emit("commit", "Nothing new to commit.");
+    }
+  } catch (err) {
+    const msg = errText(err);
+    emit("commit-failed", `Could not commit the scaffold: ${msg}`);
+    return fail("commit", msg);
   }
-  const branch = (repo.branch ?? "").trim();
+  result.committed = !!(await gitOut(root, ["rev-parse", "--verify", "HEAD"]));
+
+  const declared = (repo.branch ?? "").trim();
+  const head = await gitOut(root, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const branch = declared || (head && head !== "HEAD" ? head : "");
+  result.branch = branch || null;
   emit("push", "Pushing the scaffold branch…");
   try {
-    await run("git", ["push", "-u", "origin", ...(branch ? [branch] : ["HEAD"])], { cwd: root, timeout: 120_000 });
+    await run("git", ["push", "-u", "origin", branch || "HEAD"], { cwd: root, timeout: 120_000 });
+    result.pushed = true;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errText(err);
     // No write credentials (or a rejected push) — keep the local commit; a PR needs the branch pushed.
-    emit("push-failed", `Scaffold committed locally but the push failed: ${msg} — push it from the Git tab when credentials are available.`);
-    return;
+    emit("push-failed", `Scaffold committed locally but the push failed: ${msg} — retry from the project page when credentials are available.`);
+    return fail("push", msg);
   }
-  const { provider, slug } = providerSlug(repo.url ?? "");
+
+  // Pushed straight to the remote's default branch ⇒ there is nothing to review in a PR.
+  const remoteHead = (await gitOut(root, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])).replace(/^origin\//, "");
+  if (branch && remoteHead && branch === remoteHead) {
+    emit("pr", `Pushed to the default branch (${branch}) — no pull request needed.`);
+    return result;
+  }
+  const url = (repo.url ?? "").trim() || (await gitOut(root, ["remote", "get-url", "origin"]));
+  const { provider, slug } = providerSlug(url);
   if (!provider) {
     emit("pr", "Unknown git host — skipping the pull request.");
-    return;
+    return result;
   }
   emit("pr", `Opening a pull request via ${provider}…`);
   try {
     const args =
       provider === "glab"
-        ? ["mr", "create", "--fill", ...(slug ? ["-R", slug] : [])]
-        : ["pr", "create", "--fill", ...(slug ? ["-R", slug] : [])];
+        ? ["mr", "create", "--fill", "--yes", ...(branch ? ["--source-branch", branch] : []), ...(slug ? ["-R", slug] : [])]
+        : ["pr", "create", "--fill", ...(branch ? ["--head", branch] : []), ...(slug ? ["-R", slug] : [])];
     const { stdout } = await run(provider, args, { cwd: root, timeout: 120_000 });
-    const link = stdout.trim().split(/\s+/).find((s) => /^https?:\/\//.test(s)) ?? stdout.trim().split("\n").pop() ?? "";
+    const link = stdout.trim().split(/\s+/).find((x) => /^https?:\/\//.test(x)) ?? null;
+    result.prUrl = link;
     emit("pr", `Pull request opened${link ? `: ${link}` : "."}`);
+    return result;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    // gh/glab missing/unauthed, or branch == default (no PR to open) — surfaced, not fatal.
+    const msg = errText(err);
+    // Already open for this branch (a retry) — report the existing one instead of a failure.
+    const existing = /already exists/i.test(msg) ? (msg.match(/https?:\/\/\S+/)?.[0] ?? null) : null;
+    if (existing) {
+      result.prUrl = existing;
+      emit("pr", `A pull request is already open: ${existing}`);
+      return result;
+    }
+    // gh/glab missing/unauthed — surfaced, not fatal.
     emit("pr-failed", `Could not open a pull request (${provider}): ${msg}`);
+    return fail("pr", msg);
   }
+}
+
+/**
+ * project.publish (ADR-0368, project-0074) — re-run the publish step alone in an already-scaffolded
+ * project folder. The repo is read from the folder's `project.spec.json` when present (declared branch),
+ * else from git (origin url + HEAD's branch).
+ */
+export async function publishScaffold(
+  root: string,
+  emit: (step: string, message: string) => void,
+): Promise<ScaffoldPublishResult> {
+  let repo: RepoDecl = {};
+  try {
+    const spec = JSON.parse(await readFile(join(root, "project.spec.json"), "utf8")) as Record<string, unknown>;
+    repo = singleRepo(reposOf(spec)) ?? {};
+  } catch {
+    // No/invalid spec file — fall back to what git knows.
+  }
+  return commitAndOpenPr(root, repo, emit);
 }
 
 /** Build `git clone` args honoring an optional branch (ADR-0292). */
@@ -422,6 +496,8 @@ export async function scaffoldProject(
   onProgress?: ProgressEmitter,
   // Standard AI run path + org run slot for AI init (ADR-0362); absent ⇒ AI init writes fallbacks only.
   ai?: AiTaskRunner,
+  // Re-apply the project's git-auth before the publish step (ADR-0368); absent ⇒ keep the current one.
+  applyGitAuth?: (method: string | null, host: string | null) => void,
 ): Promise<ProjectJobReply> {
   // Track the current step so a failure reply can name what broke (ADR-0263).
   let lastStep = "start";
@@ -437,6 +513,9 @@ export async function scaffoldProject(
     // Every project declares exactly one repo (ADR-0314); the spec schema enforces it — guard here too.
     const repo = singleRepo(reposOf(payload.spec));
     if (!repo) throw new Error("A project must declare one repo (ADR-0314).");
+    // Clone + push must use the project's CURRENT git-auth (ADR-0368): the App may have been set up after
+    // this cli connected, so re-apply the method carried by project.create (idempotent when unchanged).
+    if (payload.gitAuth !== undefined) applyGitAuth?.(payload.gitAuth ?? null, payload.gitAuthHost ?? null);
     emit("git", "Cloning repository…");
     // Create mode (ADR-0326): create the declared branch on the primary + submodules when the remote
     // doesn't have it yet (a fresh project naming a new branch).
@@ -452,9 +531,9 @@ export async function scaffoldProject(
     // Commit the scaffolded working tree and open a PR (ADR-0331) — best-effort: a push/PR that fails
     // (no write creds, gh/glab not installed/authed, branch == default) is surfaced but never fails
     // the create (the local commit is kept for a later manual push from the Git tab).
-    await commitAndOpenPr(target, repo, emit);
+    const publish = await commitAndOpenPr(target, repo, emit);
     onProgress?.({ projectId: payload.projectId, step: "done", message: "Scaffold complete.", done: true });
-    return { ok: true, path: target };
+    return { ok: true, path: target, publish };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err), step: lastStep };
   }

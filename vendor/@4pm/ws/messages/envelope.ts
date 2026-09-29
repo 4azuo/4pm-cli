@@ -1251,6 +1251,44 @@ export interface ProjectCreatePayload {
   projectName: string;
   /** The PMSpec collected by the wizard (stored as jsonb server-side). */
   spec?: Record<string, unknown>;
+  /**
+   * The project's git-auth method at dispatch time (ADR-0368) — mirrors `ws_token.gitAuth` (`null` =
+   * self-managed). The cli re-applies it before the scaffold's publish step when it differs from the
+   * git-auth it currently runs with (e.g. the App was set up after the cli connected).
+   */
+  gitAuth?: string | null;
+  /** The GitHub App credential host for `gitAuth = github-app` (mirrors `ws_token.gitAuthHost`). */
+  gitAuthHost?: string | null;
+}
+
+/**
+ * The scaffold's commit → push → pull-request outcome (ADR-0331, recorded by ADR-0368). Every step is
+ * best-effort; `step` + `error` name the first one that failed (`null` = fully published).
+ */
+export interface ScaffoldPublishResult {
+  /** A scaffold commit exists (made now, or already present). */
+  committed: boolean;
+  /** The branch reached the remote. */
+  pushed: boolean;
+  /** The published branch (null when HEAD's branch is unknown). */
+  branch: string | null;
+  /** The opened (or already open) pull/merge request URL. */
+  prUrl: string | null;
+  /** The first step that failed, or null. */
+  step: "commit" | "push" | "pr" | null;
+  /** The failure reason (English, from git/gh/glab), or null. */
+  error: string | null;
+}
+
+/** project.publish request — server → cli (reply): retry the scaffold publish (project-0074, ADR-0368). */
+export interface ProjectPublishRequest {
+  projectId: string;
+}
+
+/** project.publish reply — the new publish outcome (or an error when the folder is missing). */
+export interface ProjectPublishReply {
+  publish: ScaffoldPublishResult | null;
+  error?: string;
 }
 
 /** physic.sync — server → cli: rename/recreate the physic folder on project rename
@@ -1289,6 +1327,13 @@ export interface ProjectTokensPayload {
   memory?: { mode: "inherit" | "on" | "off"; budgetChars: number };
   /** Folder-scope hardening (project aiScope) — prepend a guard to every AI prompt (ADR-0082/aiScope). */
   restrictToFolder?: boolean;
+  /**
+   * Git-auth method (ADR-0368) — mirrors `ws_token.gitAuth` (`null` = self-managed / nothing special).
+   * `undefined` (an older server) ⇒ the cli leaves its git-auth untouched.
+   */
+  gitAuth?: string | null;
+  /** GitHub App credential host (mirrors `ws_token.gitAuthHost`); null when not on the App. */
+  gitAuthHost?: string | null;
 }
 
 /**
@@ -1351,6 +1396,8 @@ export interface ProjectJobReply {
   error?: string;
   /** The step that failed when ok=false (ADR-0263) — surfaced on the project as `failedStep`. */
   step?: string;
+  /** project.create only — the commit → push → PR outcome (ADR-0368), stored as `projects.scaffold_publish`. */
+  publish?: ScaffoldPublishResult;
 }
 
 /** project.progress event — streamed to the browser during scaffold (ADR-0022). */

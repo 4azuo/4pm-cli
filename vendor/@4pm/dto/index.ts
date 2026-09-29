@@ -4,6 +4,7 @@
 export * from "./base";
 export * from "./command";
 export * from "./git-credential";
+export * from "./git-overview";
 export * from "./machine";
 export * from "./meta";
 export * from "./org";

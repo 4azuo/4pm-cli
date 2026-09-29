@@ -15,11 +15,17 @@ import {
   type ProjectCreatePayload,
   type ProjectTokensPayload,
   type WsEnvelope,
+  type GitTokenReply,
+  type ProjectPublishReply,
+  type ProjectPublishRequest,
 } from "@4pm/ws";
+import type { GitAuthMethod } from "@4pm/dto";
+import { configureGitAuth } from "../../git-auth";
+import { requestGitSnapshot } from "../../git-snapshot";
 import { uninstallCron } from "../../autonomous";
 import { manageSshKey } from "../../git-ssh-key";
 import { createAiTaskRunner } from "../../ai-task";
-import { addProject, scaffoldProject } from "../../scaffold";
+import { addProject, publishScaffold, scaffoldProject } from "../../scaffold";
 import { writeProfileConfig } from "../../../config/profile";
 import { logger } from "../../../common/logger/logger";
 import type { WsHandlerCtx } from "../context";
@@ -56,6 +62,7 @@ export function handleProjectChannels(
         mkdirSync(newPath, { recursive: true });
       }
       ctx.physicRoot = ctx.physicFolderPath(sync.newName); // browse root follows the rename
+      requestGitSnapshot("physic-sync");
       ctx.bus.setProject(sync.newName); // header updates live — now serving this project
       ctx.bus.log(t("project.folderSynced", { name: sync.newName }));
       // A fresh/renamed folder may be empty — clone any missing declared repo into it (ADR-0289).
@@ -98,6 +105,9 @@ export function handleProjectChannels(
       });
       // Folder-scope hardening is applied per-prompt from this flag — mirror the connect handler.
       ctx.setRestrictToFolder(tokens.restrictToFolder === true);
+      // Git-auth method/host (ADR-0368): re-scope the credential helper + gh shim live. `undefined` =
+      // an older server that doesn't send it ⇒ leave git-auth as the last ws_token set it.
+      if (tokens.gitAuth !== undefined) applyGitAuth(ctx, tokens.gitAuth, tokens.gitAuthHost ?? null);
       logger.info("project.tokens.applied", {
         aiRunTimeoutSec: tokens.aiRunTimeoutSec ?? 0,
         autoClearIdleMinutes: tokens.autoClearIdleMinutes ?? 0,
@@ -112,8 +122,30 @@ export function handleProjectChannels(
         (p) => ctx.send(WsChannels.PROJECT_PROGRESS, p),
         // AI init on the standard AI path + one org run slot (ADR-0362).
         createAiTaskRunner(ctx),
-      ).then((reply) => ctx.send(WsChannels.PROJECT_CREATE, reply, message.id));
+        (method, host) => applyGitAuth(ctx, method, host),
+      ).then((reply) => {
+        ctx.send(WsChannels.PROJECT_CREATE, reply, message.id);
+        requestGitSnapshot("scaffold"); // the new project's first git state (ADR-0369)
+      });
       return true;
+    case WsChannels.PROJECT_PUBLISH: {
+      // Retry the scaffold commit → push → PR in the served folder (ADR-0368, project-0074).
+      const root = ctx.physicRoot;
+      if (!root) {
+        ctx.send(WsChannels.PROJECT_PUBLISH, { publish: null, error: "This worker has no project folder." } satisfies ProjectPublishReply, message.id);
+        return true;
+      }
+      const projectId = (payload as unknown as ProjectPublishRequest).projectId;
+      void publishScaffold(root, (step, msg) => ctx.send(WsChannels.PROJECT_PROGRESS, { projectId, step, message: msg }))
+        .then((publish) => {
+          ctx.send(WsChannels.PROJECT_PUBLISH, { publish } satisfies ProjectPublishReply, message.id);
+          requestGitSnapshot("publish");
+        })
+        .catch((err: unknown) =>
+          ctx.send(WsChannels.PROJECT_PUBLISH, { publish: null, error: String(err) } satisfies ProjectPublishReply, message.id),
+        );
+      return true;
+    }
     case WsChannels.PROJECT_ADD:
       // Register an existing project: clone/link its repos into <profileDir>/<projectName>
       // (ADR-0080/0117), no scaffold/AI-init + stream progress.
@@ -123,9 +155,19 @@ export function handleProjectChannels(
         (p) => ctx.send(WsChannels.PROJECT_PROGRESS, p),
         // An add-with-scaffold runs AI init too (ADR-0362).
         createAiTaskRunner(ctx),
-      ).then((reply) => ctx.send(WsChannels.PROJECT_ADD, reply, message.id));
+      ).then((reply) => {
+        ctx.send(WsChannels.PROJECT_ADD, reply, message.id);
+        requestGitSnapshot("provision"); // repos cloned/synced ⇒ report their state (ADR-0369)
+      });
       return true;
     default:
       return false;
   }
+}
+
+/** Apply a git-auth method/host pushed by the server (ADR-0368) — same call the ws_token connect path makes. */
+function applyGitAuth(ctx: WsHandlerCtx, method: string | null, host: string | null): void {
+  configureGitAuth((method ?? null) as GitAuthMethod | null, host, ctx.profileDir, (req) =>
+    ctx.request<GitTokenReply>(WsChannels.GIT_TOKEN, req),
+  );
 }

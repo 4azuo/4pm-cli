@@ -163,3 +163,9 @@ export function githubApiBase(host: string, override?: string | null): string {
   if (kind === "ghe-cloud") return `https://api.${h}`;
   return `https://${h}/api/v3`;
 }
+
+/** Body — POST /projects/:id/scaffold/publish (project-0074, ADR-0368): optionally pick the worker. */
+export const scaffoldPublishRequestSchema = z.object({
+  machineLinkId: z.string().uuid().optional(),
+});
+export type ScaffoldPublishRequest = z.infer<typeof scaffoldPublishRequestSchema>;
