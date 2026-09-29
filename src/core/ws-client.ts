@@ -740,10 +740,10 @@ export class WsClient {
         this.startLogUpload();
         this.startKbRefresh();
         // Per-repo git state for the web Git › Repositories home (ADR-0369): now + periodically.
-        const client = this; // the getter reads the live served root on every report
+        const servedRoot = (): string | null => this.physicRoot; // read live on every report
         startGitSnapshots({
           get physicRoot() {
-            return client.physicRoot;
+            return servedRoot();
           },
           profileDir: this.context.profileDir,
           send: (channel, data) => this.send(channel, data, null),
