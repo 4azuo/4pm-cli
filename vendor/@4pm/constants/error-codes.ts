@@ -66,6 +66,9 @@ export const ErrorCode = {
   MARKET_ALREADY_PURCHASED: "MARKET_ALREADY_PURCHASED",
   KNOWLEDGE_POST_NOT_FOUND: "KNOWLEDGE_POST_NOT_FOUND",
   KNOWLEDGE_SCOPE_FORBIDDEN: "KNOWLEDGE_SCOPE_FORBIDDEN",
+  // 4rum post / Messenger message missing or not visible — also a cursor anchor (ADR-0341/0361)
+  POST_NOT_FOUND: "POST_NOT_FOUND",
+  MESSAGE_NOT_FOUND: "MESSAGE_NOT_FOUND",
   PACKAGE_ALREADY_INSTALLED: "PACKAGE_ALREADY_INSTALLED",
   // org total hosted storage cap (ADR-0122) — blocks template + community attachment uploads
   STORAGE_QUOTA_EXCEEDED: "STORAGE_QUOTA_EXCEEDED",
@@ -182,6 +185,8 @@ export const ErrorCode = {
   PASSWORD_NOT_SET: "PASSWORD_NOT_SET",
   // command · memo
   COMMAND_NOT_FOUND: "COMMAND_NOT_FOUND",
+  // Stop requested for a command that already settled (done/failed/cancelled — ADR-0362).
+  COMMAND_ALREADY_FINISHED: "COMMAND_ALREADY_FINISHED",
   COMMAND_DISPATCH_LIMITED: "COMMAND_DISPATCH_LIMITED",
   QUOTA_EXCEEDED: "QUOTA_EXCEEDED",
   // A single prompt's estimated tokens exceed project `settings.tokens.perPromptTokenLimit` (ADR-0081).

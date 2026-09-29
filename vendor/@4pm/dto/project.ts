@@ -660,7 +660,7 @@ export const putSpecDraftRequestSchema = z.object({
 });
 export type PutSpecDraftRequest = z.infer<typeof putSpecDraftRequestSchema>;
 
-/** Data GET /projects/:id/spec (project-0032, ADR-0114) — the canonical `Project.spec`. */
+/** Data GET /projects/:id/spec (project-0032b, ADR-0114) — the canonical `Project.spec`. */
 export interface ProjectSpecResponse {
   spec: Record<string, unknown> | null;
   updatedAt: string | null;

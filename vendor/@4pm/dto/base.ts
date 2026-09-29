@@ -30,6 +30,9 @@ export interface BaseResponse<T = unknown> {
   total?: number;
   /** List endpoints that advertise a per-org creation cap (count/max UI, e.g. ADR-0332). */
   max?: number;
+  /** Keyset-paged feeds (ADR-0361): whether older / newer rows exist beyond this page. */
+  hasOlder?: boolean;
+  hasNewer?: boolean;
 }
 
 /**

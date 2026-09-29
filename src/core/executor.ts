@@ -4,7 +4,12 @@
  * back to the server on the command.output channel.
  */
 import { spawn } from "node:child_process";
-import { OutputBatcher, type CommandDispatchPayload, type CommandOutputPayload } from "@4pm/ws";
+import {
+  COMMAND_CANCELLED_EXIT_CODE,
+  OutputBatcher,
+  type CommandDispatchPayload,
+  type CommandOutputPayload,
+} from "@4pm/ws";
 import { endGitScope, JOB_ID_ENV } from "./git-auth";
 
 /** Grace period after SIGTERM before a hard SIGKILL when a run is timed out (ADR-0243). */
@@ -26,6 +31,11 @@ export interface RunCommandOptions {
    * closed empty (the default for non-AI console commands).
    */
   stdin?: string;
+  /**
+   * Stop signal (ADR-0362): on abort the child is killed (SIGTERM → SIGKILL after the grace period) and
+   * the run settles with exit {@link COMMAND_CANCELLED_EXIT_CODE} (130).
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -98,10 +108,22 @@ export async function runCommand(
         }, timeoutMs)
       : null;
   timeoutTimer?.unref?.();
-  /** Clear both timers once the run settles (idempotent). */
+  // Stop (ADR-0362): kill the child on abort, like a timeout but settling with exit 130.
+  let cancelled = false;
+  const onAbort = (): void => {
+    if (cancelled) return;
+    cancelled = true;
+    child.kill("SIGTERM");
+    hardKillTimer = setTimeout(() => child.kill("SIGKILL"), KILL_GRACE_MS);
+    hardKillTimer.unref?.();
+  };
+  if (opts?.signal?.aborted) onAbort();
+  else opts?.signal?.addEventListener("abort", onAbort, { once: true });
+  /** Clear both timers + the abort listener once the run settles (idempotent). */
   const clearTimers = (): void => {
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (hardKillTimer) clearTimeout(hardKillTimer);
+    opts?.signal?.removeEventListener("abort", onAbort);
   };
 
   const batcher = new OutputBatcher({
@@ -132,9 +154,10 @@ export async function runCommand(
         seq: seq++,
         chunk: "",
         done: true,
-        // 124 (the conventional timeout code) when we killed it for exceeding the limit, so the
-        // server settles the command as failed and the web surfaces the note instead of spinning.
-        exitCode: timedOut ? 124 : (exitCode ?? -1),
+        // 130 when the run was stopped (ADR-0362); 124 (the conventional timeout code) when we killed it
+        // for exceeding the limit, so the server settles the command as failed and the web surfaces the
+        // note instead of spinning.
+        exitCode: cancelled ? COMMAND_CANCELLED_EXIT_CODE : timedOut ? 124 : (exitCode ?? -1),
       });
       resolve();
     });

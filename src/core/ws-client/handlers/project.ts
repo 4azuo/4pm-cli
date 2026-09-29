@@ -18,6 +18,7 @@ import {
 } from "@4pm/ws";
 import { uninstallCron } from "../../autonomous";
 import { manageSshKey } from "../../git-ssh-key";
+import { createAiTaskRunner } from "../../ai-task";
 import { addProject, scaffoldProject } from "../../scaffold";
 import { writeProfileConfig } from "../../../config/profile";
 import { logger } from "../../../common/logger/logger";
@@ -109,6 +110,8 @@ export function handleProjectChannels(
         payload as unknown as ProjectCreatePayload,
         ctx.profileDir,
         (p) => ctx.send(WsChannels.PROJECT_PROGRESS, p),
+        // AI init on the standard AI path + one org run slot (ADR-0362).
+        createAiTaskRunner(ctx),
       ).then((reply) => ctx.send(WsChannels.PROJECT_CREATE, reply, message.id));
       return true;
     case WsChannels.PROJECT_ADD:
@@ -118,6 +121,8 @@ export function handleProjectChannels(
         payload as unknown as ProjectAddPayload,
         ctx.profileDir,
         (p) => ctx.send(WsChannels.PROJECT_PROGRESS, p),
+        // An add-with-scaffold runs AI init too (ADR-0362).
+        createAiTaskRunner(ctx),
       ).then((reply) => ctx.send(WsChannels.PROJECT_ADD, reply, message.id));
       return true;
     default:

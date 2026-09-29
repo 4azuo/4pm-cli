@@ -3,6 +3,7 @@
  * (per-message auth) + an AES-256-GCM encrypted payload (with its own nonce).
  */
 import type { WsChannelName } from "../channels";
+import type { RunQueueInfo } from "./run-slot";
 
 /** Standard envelope for every message after the handshake. */
 export interface WsEnvelope {
@@ -252,6 +253,17 @@ export interface CommandOutputPayload {
    * the live console view is unaffected (it has its own `console.sync` transcript).
    */
   reset?: boolean;
+  /**
+   * Run-slot queue status (ADR-0362): `{position, limit, running}` while this AI run waits for an org
+   * run slot (sent on each position change), `null` once the slot is granted. A status frame — never part
+   * of the command's result; the server flips the command status `queued` ⇄ `running`.
+   */
+  queue?: RunQueueInfo | null;
+  /**
+   * Set on the terminal `done` of a run stopped via `command.cancel` (ADR-0362) — exit code
+   * {@link COMMAND_CANCELLED_EXIT_CODE}. The client applies nothing for a cancelled run.
+   */
+  cancelled?: boolean;
 }
 
 /** Status of one worker tool on the machine (worker tools, ADR-0206). */

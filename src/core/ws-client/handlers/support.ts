@@ -69,6 +69,8 @@ export function handleSupportChannels(
       return true;
     }
     case WsChannels.KNOWLEDGE_COMPOSE: {
+      // DEPRECATED (ADR-0362): the server now runs knowledge distill as a command-dispatch AI run and no
+      // longer sends this; kept for one release so a newer cli still answers an older server.
       // Request/reply (ADR-0190): AI-distil this project into a knowledge article, run in the
       // project's working dir so the model can read the code/docs. Same profile handling as the
       // normal AI dispatch (ADR-0057). No physic root (idle cli) ⇒ error ⇒ server templates it.

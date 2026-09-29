@@ -123,6 +123,9 @@ export const WsChannels = {
   CLI_UPDATE_RESULT: "cli.update-result",
   // command lifecycle
   COMMAND_ANNOUNCE: "command.announce",
+  // server → cli (reply): stop an AI run (ADR-0362) — queued ⇒ leave the run-slot queue, running ⇒ kill
+  // the AI process with no failover; the cli then ends the stream with `command.output {done, cancelled}`.
+  COMMAND_CANCEL: "command.cancel",
   // console transcript sync (ADR-0150): the cli streams its authoritative SessionBus
   // transcript so the web Console renders it verbatim; gated by console.watch (server → cli:
   // whether a web viewer is attached) so an unwatched cli syncs nothing.

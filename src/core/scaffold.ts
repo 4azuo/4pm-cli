@@ -21,7 +21,7 @@ import type {
   ProjectProgressPayload,
 } from "@4pm/ws";
 import { PROJECT_TEMPLATE, type AiGuideFile } from "@4pm/constants";
-import { aiGenerate } from "./ai-assist";
+import type { AiTaskRunner } from "./ai-task";
 
 const run = promisify(execFile);
 
@@ -420,6 +420,8 @@ export async function scaffoldProject(
   payload: ProjectCreatePayload,
   profileDir: string,
   onProgress?: ProgressEmitter,
+  // Standard AI run path + org run slot for AI init (ADR-0362); absent ⇒ AI init writes fallbacks only.
+  ai?: AiTaskRunner,
 ): Promise<ProjectJobReply> {
   // Track the current step so a failure reply can name what broke (ADR-0263).
   let lastStep = "start";
@@ -441,7 +443,7 @@ export async function scaffoldProject(
     await provisionRepo(target, repo, emit, { createMissingBranch: true });
     // Scaffold the repo at the root (template + spec + AI init). Create resets the template-managed
     // `.claude` config first (ADR-0329) so it never inherits a stale committed/leftover one.
-    await scaffoldRepo(target, payload.projectName, payload.spec, emit, { resetClaude: true });
+    await scaffoldRepo(target, payload.projectName, payload.spec, emit, { resetClaude: true, ai });
     // Attach the declared git submodules under the root (ADR-0316) — only the primary is scaffolded.
     await attachSubmodules(target, submodulesOf(reposOf(payload.spec)), emit, true);
     // Stamp the template-version marker (ADR-0262) at the root so the web can later detect drift.
@@ -469,7 +471,8 @@ async function scaffoldRepo(
   label: string,
   spec: Record<string, unknown> | undefined,
   emit: (step: string, message: string) => void,
-  opts: { resetClaude?: boolean } = {},
+  // `ai` (ADR-0362): the standard AI run path + org run slot for AI init; absent ⇒ fallbacks only.
+  opts: { resetClaude?: boolean; ai?: AiTaskRunner } = {},
 ): Promise<void> {
   await mkdir(dir, { recursive: true });
   // On create (ADR-0329), reset the template-managed `.claude` config BEFORE the copy so a create
@@ -483,7 +486,7 @@ async function scaffoldRepo(
     emit("spec", `Writing project.spec.json into ${label}…`);
     await writeFile(join(dir, "project.spec.json"), JSON.stringify(spec, null, 2), "utf8");
     // AI init (ADR-0080): subagent files + README + the project's guide file from the spec.
-    await aiInit(dir, spec, emit);
+    await aiInit(dir, spec, emit, opts.ai);
   }
 }
 
@@ -554,6 +557,7 @@ async function aiInit(
   target: string,
   spec: Record<string, unknown>,
   emit: (step: string, message: string) => void,
+  ai?: AiTaskRunner,
 ): Promise<void> {
   // The single agent-guide file the project uses (ADR-0309); default CLAUDE.md when unset/unknown.
   const guideFile: AiGuideFile = readSpecField(spec, "ai_guide_file") === "AGENT.md" ? "AGENT.md" : "CLAUDE.md";
@@ -570,35 +574,66 @@ async function aiInit(
       await writeFile(join(target, ".claude", "agents", `${name}.md`), body, "utf8");
     }
   }
-  // README + the guide file via the AI CLI (best-effort — skip on failure).
+  // README + the guide file via the AI CLI (best-effort — skip on failure). Both calls run on the
+  // standard AI path and share ONE org run slot (ADR-0362): wait in the queue if the org is at its
+  // parallel-run limit; after the max wait, skip AI and write the fallbacks so the create still completes.
   const specJson = JSON.stringify(spec);
-  await generateFile(
-    join(target, "README.md"),
-    `Write a concise README.md (Markdown only, no preamble) for this project from its spec ` +
-      `JSON:\n${specJson}`,
-  );
+  let generate: ((prompt: string, label: string) => Promise<string | null>) | null = null;
+  let releaseSlot = (): void => undefined;
+  if (ai) {
+    const slot = await ai.acquireSlot((q) =>
+      emit("ai-queued", `Waiting for an AI run slot — ${q.position} ahead (${q.running}/${q.limit} parallel runs in use)…`),
+    );
+    if (slot.kind === "granted") {
+      releaseSlot = () => slot.handle.release();
+      generate = (prompt, label) => ai.generate(prompt, target, label);
+      if (slot.queued) emit("ai-init", `AI init: subagents, README, ${guideFile}…`);
+    } else {
+      emit("ai-skipped", "No AI run slot freed up in time — AI init skipped; fallback content written.");
+    }
+  }
+  try {
+    await generateFile(
+      generate,
+      join(target, "README.md"),
+      "README.md",
+      `Write a concise README.md (Markdown only, no preamble) for this project from its spec ` +
+        `JSON:\n${specJson}`,
+    );
   // The project's single guide file (ADR-0309) — CLAUDE.md or AGENT.md, never both. Other AI CLIs
   // read AGENT.md; Claude Code reads CLAUDE.md. The choice comes from the spec (`ai_guide_file`).
   // Fallback (ADR-0309): if the AI CLI is missing/produces nothing but the user typed guide
   // instructions in the wizard, write those verbatim so the guide the user asked for is never lost.
-  await generateFile(
-    join(target, guideFile),
-    `Write a ${guideFile} (Markdown only, no preamble) with guidance/conventions for AI agents ` +
-      `working in this project, derived from its spec JSON:\n${specJson}` +
-      (guideInstructions ? `\nAlso incorporate these additional instructions/content:\n${guideInstructions}\n` : ""),
-    guideInstructions,
-  );
+    await generateFile(
+      generate,
+      join(target, guideFile),
+      guideFile,
+      `Write a ${guideFile} (Markdown only, no preamble) with guidance/conventions for AI agents ` +
+        `working in this project, derived from its spec JSON:\n${specJson}` +
+        (guideInstructions ? `\nAlso incorporate these additional instructions/content:\n${guideInstructions}\n` : ""),
+      guideInstructions,
+    );
+  } finally {
+    releaseSlot();
+  }
 }
 
 /**
- * Generate one file's content via the AI CLI (best-effort). If the AI CLI fails/produces nothing and
- * a `fallback` is given, write the fallback verbatim instead of leaving the (possibly empty) template
- * file — used for the guide file so the user's typed instructions survive a missing AI CLI (ADR-0309).
+ * Generate one file's content via the AI (best-effort). If there is no AI (`generate` null — no slot /
+ * no runner) or it fails / produces nothing and a `fallback` is given, write the fallback verbatim
+ * instead of leaving the (possibly empty) template file — used for the guide file so the user's typed
+ * instructions survive a missing AI CLI (ADR-0309).
  */
-async function generateFile(path: string, prompt: string, fallback?: string): Promise<void> {
+async function generateFile(
+  generate: ((prompt: string, label: string) => Promise<string | null>) | null,
+  path: string,
+  label: string,
+  prompt: string,
+  fallback?: string,
+): Promise<void> {
   try {
-    const text = await aiGenerate(prompt);
-    if (text.trim()) {
+    const text = generate ? await generate(prompt, label) : null;
+    if (text && text.trim()) {
       await writeFile(path, text.trim() + "\n", "utf8");
       return;
     }
@@ -618,6 +653,8 @@ export async function addProject(
   payload: ProjectAddPayload,
   profileDir: string,
   onProgress?: ProgressEmitter,
+  // Standard AI run path + org run slot for an add-with-scaffold AI init (ADR-0362).
+  ai?: AiTaskRunner,
 ): Promise<ProjectJobReply> {
   let lastStep = "start";
   const emit = (step: string, message: string): void => {
@@ -635,7 +672,7 @@ export async function addProject(
     if (repo) await provisionRepo(target, repo, emit, { mode });
     // Scaffold the root when the caller asked (add-with-scaffold); else leave the plain clone.
     if (payload.scaffoldRepos && payload.scaffoldRepos.length > 0) {
-      await scaffoldRepo(target, payload.projectName, payload.spec, emit);
+      await scaffoldRepo(target, payload.projectName, payload.spec, emit, { ai });
     }
     // Attach the declared git submodules under the root (ADR-0316); idempotent on a re-provision.
     await attachSubmodules(target, submodulesOf((payload.repos ?? []) as RepoDecl[]), emit);

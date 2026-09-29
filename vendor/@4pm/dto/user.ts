@@ -388,7 +388,7 @@ export interface UserStatsResponse {
 }
 
 /**
- * Data GET /teams/:id/stats (team-0010, ADR-0201) — the same activity stats aggregated over the
+ * Data GET /teams/:id/stats (team-0010b, ADR-0201) — the same activity stats aggregated over the
  * team's members, plus the team's own `createdAt` and `memberCount`.
  */
 export interface TeamStatsResponse {

@@ -1,7 +1,7 @@
 /**
  * AI helpers on the worker: run the AI CLI (default `claude` in print mode; override via
- * AI_CLI) with a prompt and return the result. Used by scaffold AI-init (`aiGenerate`) and
- * the outbound input review (`aiOutboundReview`, ADR-0082). Spec-assist (suggest/review/
+ * AI_CLI) with a prompt and return the result. Used only by the outbound input review
+ * (`aiOutboundReview`, ADR-0082) — scaffold AI-init moved to the standard AI run path (ADR-0362, `ai-task.ts`). Spec-assist (suggest/review/
  * compose) no longer lives here — it runs via command.dispatch({ ai:true }) → the
  * profile-failover path (ADR-0100). Requires the AI CLI installed + authenticated on the
  * worker (checked via git-env, machine-0008).
@@ -84,12 +84,6 @@ async function runAi(prompt: string): Promise<{ text: string; tokens: number }> 
     maxBuffer: 8 * 1024 * 1024,
   });
   return parseAi(cli, stdout, prompt);
-}
-
-/** Run the AI CLI and return only the text (best-effort helper for AI init). */
-export async function aiGenerate(prompt: string): Promise<string> {
-  const { text } = await runAi(prompt);
-  return text;
 }
 
 /**

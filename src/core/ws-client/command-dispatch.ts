@@ -11,8 +11,10 @@ import { randomUUID as randomCommandId } from "node:crypto";
 import { looksLikeJsonOrCode } from "@4pm/utils";
 import { UsageMetric } from "@4pm/constants";
 import {
+  COMMAND_CANCELLED_EXIT_CODE,
   WsChannels,
   type CommandAnnouncePayload,
+  type CommandCancelReply,
   type CommandDispatchPayload,
   type CommandHistoryPayload,
   type CommandImageRef,
@@ -68,15 +70,45 @@ const MEMORY_SEED_HEADER =
   "CONTEXT MEMORY from earlier in this conversation (may span prior sessions/accounts). Use it as " +
   "background; do not repeat it back unless relevant:";
 
+/** One in-flight AI run that `command.cancel` can stop (ADR-0362). */
+interface ActiveRun {
+  controller: AbortController;
+  /** `queued` until it holds a run slot, then `running`. */
+  state: "queued" | "running";
+}
+
+/** In-flight AI runs on this cli, by command id (ADR-0362). */
+const activeRuns = new Map<string, ActiveRun>();
+
 /**
- * Route COMMAND_DISPATCH: record in the local history (per cli), stream output, mark finished.
- * Returns true when the message was handled.
+ * Stop an in-flight AI run (ADR-0362): a queued run leaves the run-slot queue, a running one has its AI
+ * process killed with no failover; the run then ends its own stream with `done {cancelled}`. Returns
+ * `{ok:false, state:"unknown"}` when the command is not an active AI run on this cli.
+ */
+export function cancelActiveRun(commandId: string): CommandCancelReply {
+  const run = activeRuns.get(commandId);
+  if (!run) return { ok: false, state: "unknown" };
+  run.controller.abort();
+  return { ok: true, state: run.state };
+}
+
+/**
+ * Route COMMAND_DISPATCH: record in the local history (per cli), stream output, mark finished — and
+ * COMMAND_CANCEL (ADR-0362): stop an in-flight AI run. Returns true when the message was handled.
  */
 export function handleCommandChannels(
   ctx: WsHandlerCtx,
   message: WsEnvelope,
   payload: Record<string, unknown>,
 ): boolean {
+  // Stop an AI run (server → cli, reply — ADR-0362).
+  if (message.channel === WsChannels.COMMAND_CANCEL) {
+    const commandId = typeof payload.commandId === "string" ? payload.commandId : "";
+    const reply = cancelActiveRun(commandId);
+    logger.info("command.cancel", { commandId, ...reply });
+    ctx.send(WsChannels.COMMAND_CANCEL, reply, message.id);
+    return true;
+  }
   if (message.channel !== WsChannels.COMMAND_DISPATCH) return false;
   const dispatch = payload as unknown as CommandDispatchPayload;
   // Idempotency: WS delivery is at-least-once, so ignore a duplicate dispatch of a
@@ -201,6 +233,30 @@ export async function runAiPrompt(
   prompt: string,
   commandId: string,
   origin: CommandOrigin,
+  oneShot = false,
+  images?: CommandImageRef[],
+  aiConfig?: CommandDispatchPayload["aiConfig"],
+  readOnly = false,
+  bypass = false,
+): Promise<void> {
+  // Register the run so `command.cancel` can stop it from the very start (ADR-0362) — a stop that lands
+  // during the outbound review or the slot wait is honoured the moment the run reaches the slot.
+  const run: ActiveRun = { controller: new AbortController(), state: "queued" };
+  activeRuns.set(commandId, run);
+  try {
+    await runAiPromptInner(ctx, prompt, commandId, origin, run, oneShot, images, aiConfig, readOnly, bypass);
+  } finally {
+    activeRuns.delete(commandId);
+  }
+}
+
+/** The body of {@link runAiPrompt}; `run` carries the stop signal + the queued/running state. */
+async function runAiPromptInner(
+  ctx: WsHandlerCtx,
+  prompt: string,
+  commandId: string,
+  origin: CommandOrigin,
+  run: ActiveRun,
   oneShot = false,
   images?: CommandImageRef[],
   // Per-run AI execution overrides (ADR-0261) — model/thinking/temperature from the web modal,
@@ -467,31 +523,55 @@ export async function runAiPrompt(
   // endBusy in a `finally` so a thrown/rejected run still releases the busy state — otherwise a
   // stuck `busy` blocks the idle auto-clear indefinitely (it never clears mid-response — ADR-0244).
   let result: AiRunResult;
-  // True when the run never started (queue timeout — ADR-0359): nothing ran, so no usage is reported.
-  let queueTimedOut = false;
+  // True when the run never started (queue timeout — ADR-0359, or stopped while queued — ADR-0362):
+  // nothing ran, so no usage is reported.
+  let neverStarted = false;
   try {
-    // Per-org concurrent AI-run limit (ADR-0359): wait for a slot (FIFO) before spawning; the queue
-    // position is shown in the transcript + the web Console as a `log` line.
-    const slot = await acquireRunSlot(ctx, ({ position, limit, running }) => {
-      const text = `⏳ queued — ${position} ahead, ${running}/${limit} parallel runs in use (plan limit)`;
-      ctx.bus.push({ source: origin, kind: "log", text });
-      ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: `${text}\n`, log: true });
-    });
+    // Per-org concurrent AI-run limit (ADR-0359): wait for a slot (FIFO) before spawning. The queue
+    // position rides a `command.output {queue}` status frame (ADR-0362 — the server marks the command
+    // `queued`, the web shows it) plus a `log` line for the transcript + the web Console.
+    const slot = await acquireRunSlot(
+      ctx,
+      ({ position, limit, running }) => {
+        const text = `⏳ queued — ${position} ahead, ${running}/${limit} parallel runs in use (plan limit)`;
+        ctx.bus.push({ source: origin, kind: "log", text });
+        ctx.send(WsChannels.COMMAND_OUTPUT, {
+          commandId,
+          seq: seq++,
+          chunk: `${text}\n`,
+          log: true,
+          queue: { position, limit, running },
+        });
+      },
+      run.controller.signal,
+    );
     if (slot.kind === "timeout") {
-      queueTimedOut = true;
+      neverStarted = true;
       const text = `RUN_QUEUE_TIMEOUT: waited 30 min for a free run slot (plan limit ${slot.limit} parallel runs) — not run`;
       ctx.bus.push({ source: origin, kind: "log", text, level: "warn" });
       ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: `${text}\n`, log: true });
       result = { exitCode: 1, workedDir: null, workedKey: null, workedCmd: null, usage: { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, sessionId: "" };
+    } else if (slot.kind === "cancelled") {
+      // Stopped while queued (ADR-0362): the ticket was dropped — nothing ran.
+      neverStarted = true;
+      result = { exitCode: COMMAND_CANCELLED_EXIT_CODE, workedDir: null, workedKey: null, workedCmd: null, usage: { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, sessionId: "", cancelled: true };
     } else {
+      // Granted after waiting ⇒ tell the server the run left the queue (status back to `running`).
+      if (slot.queued) ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: "", log: true, queue: null });
+      run.state = "running";
       try {
-        result = await runAiFailover(plan, commandId, cwd, handlers, aiRunTimeoutMs);
+        result = await runAiFailover(plan, commandId, cwd, handlers, aiRunTimeoutMs, run.controller.signal);
       } finally {
         slot.handle.release();
       }
     }
   } finally {
     ctx.bus.endBusy(plan.cmd);
+  }
+  if (result.cancelled) {
+    const text = "■ stopped";
+    ctx.bus.push({ source: origin, kind: "log", text, level: "warn" });
+    ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: `${text}\n`, log: true });
   }
   // Remember the working profile so the next prompt tries it first (ADR-0057) + show it in the
   // header. Unified plans remember one cross-provider credential key (ADR-0182); the legacy plan
@@ -511,6 +591,8 @@ export async function runAiPrompt(
     chunk: "",
     done: true,
     exitCode: result.exitCode,
+    // A stopped run (ADR-0362): the server settles it `cancelled` and the web applies nothing.
+    ...(result.cancelled ? { cancelled: true } : {}),
   });
   finishCommand(commandId, result.exitCode, result.usage);
   // Push a durable command-history record (rich: cmd + real tokens + exit — ADR-0072).
@@ -518,7 +600,7 @@ export async function runAiPrompt(
     commandId,
     cmd: plan.cmd,
     args: markerArgs,
-    status: result.exitCode === 0 ? "done" : "failed",
+    status: result.cancelled ? "cancelled" : result.exitCode === 0 ? "done" : "failed",
     exitCode: result.exitCode,
     tokens: result.usage.tokens,
     // The ai_tokens split for this run (ADR-0145); attached only when we metered real tokens.
@@ -557,7 +639,9 @@ export async function runAiPrompt(
     });
     ctx.bus.addTokens?.(result.usage.tokens); // session token counter for the header
   }
-  if (!queueTimedOut) ctx.reportUsage(events, profileLabel);
+  // A run that never started reports nothing; a run stopped mid-way reports the command count only
+  // (ai_tokens is only pushed for a successful run above — ADR-0362).
+  if (!neverStarted) ctx.reportUsage(events, profileLabel);
   // Refresh the usage snapshot after any run (e.g. `/usage` rotates the token — ADR-0072).
   void ctx.pollUsage();
   // Report a friendly completion line instead of a raw exit code: on success prompt
@@ -568,8 +652,10 @@ export async function runAiPrompt(
     text:
       result.exitCode === 0
         ? "✓ ready — enter your next prompt"
-        : `✗ ${plan.cmd} failed (exit ${result.exitCode}) — see the error above`,
-    level: result.exitCode === 0 ? "info" : "error",
+        : result.cancelled
+          ? "■ stopped — enter your next prompt"
+          : `✗ ${plan.cmd} failed (exit ${result.exitCode}) — see the error above`,
+    level: result.exitCode === 0 ? "info" : result.cancelled ? "warn" : "error",
     durationMs: Date.now() - aiStartedMs,
   });
   // Shared AI memory (ADR-0245): remember the native session id for a same-profile `--resume`, then

@@ -240,10 +240,24 @@ export function isGitCommandAllowed(command: string): boolean {
   return true;
 }
 
+/** Status of a command on the activity feed (ADR-0101; `queued` + `cancelled` — ADR-0362). */
+export type CommandActivityStatus = "queued" | "running" | "done" | "failed" | "cancelled";
+
+/** Where an AI run waiting for an org run slot stands (ADR-0359/0362). */
+export interface CommandQueueInfo {
+  /** Runs ahead of it in the org's FIFO queue (0 = next). */
+  position: number;
+  /** The org plan's `maxConcurrentRuns`. */
+  limit: number;
+  /** Runs currently holding a slot. */
+  running: number;
+}
+
 /**
  * One command-activity event on the per-cli feed (`GET /commands/activity/stream` —
  * ADR-0101): a command started/finished on `machineLinkId`, so any tab of the same org
- * can show it + stream its output. `status`: `running` | `done` | `failed`.
+ * can show it + stream its output. `status`: `queued` (waiting for a run slot — with `queue`) |
+ * `running` | `done` | `failed` | `cancelled` (stopped — ADR-0362).
  */
 export interface CommandActivityEvent {
   commandId: string;
@@ -266,7 +280,9 @@ export interface CommandActivityEvent {
    * (`local` cyan / `server` magenta) so the two transcripts read the same.
    */
   origin?: "web" | "local";
-  status: "running" | "done" | "failed";
+  status: CommandActivityStatus;
+  /** Queue position while `status` is `queued` (ADR-0362). */
+  queue?: CommandQueueInfo;
   exitCode?: number | null;
   startedAt: string;
   /**
@@ -385,6 +401,11 @@ export function deriveAiReplyWindows(
   const evictMs = eff > 0 ? eff * 1500 : 1_000_000;
   const reattachCapMs = Math.max(Math.round(evictMs * 1.5), eff * profiles * 1200);
   return { evictMs, reattachCapMs };
+}
+
+/** Data POST /commands/:id/cancel (command-0010, ADR-0362). */
+export interface CancelCommandResponse {
+  cancelled: true;
 }
 
 /** Data GET /commands/:id — command status/result (output via SSE). */

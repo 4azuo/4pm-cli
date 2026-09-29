@@ -5,6 +5,7 @@
  * up after RUN_SLOT_MAX_WAIT_MS (RUN_QUEUE_TIMEOUT). A granted lease is renewed while the run lasts and
  * released by the returned handle. Any transport error fails OPEN (run without a slot) so a server or
  * cli-server outage never blocks AI work; an older server that doesn't answer behaves the same.
+ * A stop while queued (ADR-0362) sends `leave` so the ticket is dropped at once and resolves `cancelled`.
  */
 import {
   RUN_SLOT_MAX_WAIT_MS,
@@ -29,15 +30,30 @@ export interface RunSlotQueueInfo {
   running: number;
 }
 
-/** The acquire outcome: a slot (possibly a no-op one) or a queue timeout. */
-export type RunSlotOutcome = { kind: "granted"; handle: RunSlotHandle } | { kind: "timeout"; limit: number };
+/**
+ * The acquire outcome: a slot (possibly a no-op one — `queued` says whether it waited first), a queue
+ * timeout, or a stop while queued (ADR-0362).
+ */
+export type RunSlotOutcome =
+  | { kind: "granted"; handle: RunSlotHandle; queued: boolean }
+  | { kind: "timeout"; limit: number }
+  | { kind: "cancelled" };
 
 /** A handle with nothing to renew or release (unlimited plan / fail-open). */
 const NO_SLOT: RunSlotHandle = { release: () => undefined };
 
-/** Sleep `ms`. */
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/** Sleep `ms`, resolving early when `signal` aborts (a stop while queued — ADR-0362). */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const timer = setTimeout(done, ms);
+    function done(): void {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    }
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 /** Start renewing `lease` and return the handle that stops + releases it. */
@@ -59,27 +75,36 @@ function holdLease(ctx: WsHandlerCtx, lease: string): RunSlotHandle {
 
 /**
  * Acquire a concurrent-run slot for one AI run, waiting in the org's queue when the plan limit is
- * reached. `onQueued` is called whenever the queue position changes.
+ * reached. `onQueued` is called whenever the queue position changes. `signal` (ADR-0362) stops the wait:
+ * the ticket is dropped (`run.slot {op:"leave"}`) and the outcome is `cancelled`.
  */
 export async function acquireRunSlot(
   ctx: WsHandlerCtx,
   onQueued: (info: RunSlotQueueInfo) => void,
+  signal?: AbortSignal,
 ): Promise<RunSlotOutcome> {
   const startedAt = Date.now();
   let ticket: string | undefined;
   let lastPosition = -1;
   let limit = 0;
   for (;;) {
+    if (signal?.aborted) return leaveQueue(ctx, ticket);
     let reply: RunSlotReply;
     try {
       reply = await ctx.request<RunSlotReply>(WsChannels.RUN_SLOT, { op: "acquire", ...(ticket ? { ticket } : {}) });
     } catch (err) {
       logger.warn("run.slot.unavailable", { error: (err as Error).message });
-      return { kind: "granted", handle: NO_SLOT };
+      return { kind: "granted", handle: NO_SLOT, queued: ticket !== undefined };
     }
-    if (!reply || !("granted" in reply)) return { kind: "granted", handle: NO_SLOT };
+    if (!reply || !("granted" in reply)) return { kind: "granted", handle: NO_SLOT, queued: ticket !== undefined };
     if (reply.granted) {
-      return { kind: "granted", handle: reply.lease ? holdLease(ctx, reply.lease) : NO_SLOT };
+      const handle = reply.lease ? holdLease(ctx, reply.lease) : NO_SLOT;
+      // Stopped while this acquire was in flight: give the slot straight back.
+      if (signal?.aborted) {
+        handle.release();
+        return { kind: "cancelled" };
+      }
+      return { kind: "granted", handle, queued: ticket !== undefined };
     }
     ticket = reply.ticket;
     limit = reply.limit;
@@ -88,6 +113,12 @@ export async function acquireRunSlot(
       onQueued({ position: reply.position, limit: reply.limit, running: reply.running });
     }
     if (Date.now() - startedAt >= RUN_SLOT_MAX_WAIT_MS) return { kind: "timeout", limit };
-    await sleep(reply.retryAfterMs > 0 ? reply.retryAfterMs : RUN_SLOT_RETRY_MS);
+    await sleep(reply.retryAfterMs > 0 ? reply.retryAfterMs : RUN_SLOT_RETRY_MS, signal);
   }
+}
+
+/** Drop a stopped run's ticket (if it got one) and report `cancelled` (ADR-0362). Best-effort. */
+function leaveQueue(ctx: WsHandlerCtx, ticket: string | undefined): RunSlotOutcome {
+  if (ticket) ctx.request<RunSlotReply>(WsChannels.RUN_SLOT, { op: "leave", ticket }).catch(() => undefined);
+  return { kind: "cancelled" };
 }

@@ -6,6 +6,7 @@
  * stream-json / codex `exec --json`) and captures the run's real token usage (ADR-0072). The
  * caller reports it to the server + transcript.
  */
+import { COMMAND_CANCELLED_EXIT_CODE } from "@4pm/ws";
 import { runCommand } from "./executor";
 import { reportToolResult } from "./tool-health";
 import type { AiPlan } from "../utils/ai-cli";
@@ -72,6 +73,8 @@ export interface AiRunResult {
   usage: AiUsage;
   /** The claude session id of the successful attempt (ADR-0245 native resume); "" when none. */
   sessionId: string;
+  /** True when the run was stopped via `command.cancel` (ADR-0362) — exit 130, no failover. */
+  cancelled?: boolean;
 }
 
 /** Run a single attempt, resolving with its exit code; streams chunks to onChunk. */
@@ -84,6 +87,7 @@ function runAttempt(
   env: Record<string, string>,
   onChunk: (text: string) => void,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<number> {
   return new Promise((resolve) => {
     // The prompt rides stdin, not argv (ADR-0251), so a large review/compose can't exceed
@@ -96,7 +100,7 @@ function runAttempt(
         if (out.chunk) onChunk(out.chunk);
         if (out.done) resolve(out.exitCode ?? -1);
       },
-      { stdin, ...(timeoutMs > 0 ? { timeoutMs } : {}) },
+      { stdin, ...(timeoutMs > 0 ? { timeoutMs } : {}), ...(signal ? { signal } : {}) },
     ).catch(() => resolve(-1));
   });
 }
@@ -105,7 +109,8 @@ function runAttempt(
  * Execute the plan with failover. Returns the final exit code + the working profile
  * dir (if any) so the caller can remember it for next time. `timeoutMs` (ADR-0243) caps EACH
  * attempt's wall-clock — a hung/looping AI CLI is terminated and reported as a failed attempt so
- * failover still moves on; 0 ⇒ no cap.
+ * failover still moves on; 0 ⇒ no cap. `signal` (ADR-0362) stops the run: the current AI process is
+ * killed and NO further profile is tried — the result carries `cancelled` + exit 130.
  */
 export async function runAiFailover(
   plan: AiPlan,
@@ -113,6 +118,7 @@ export async function runAiFailover(
   cwd: string,
   handlers: AiRunHandlers,
   timeoutMs = 0,
+  signal?: AbortSignal,
 ): Promise<AiRunResult> {
   const total = plan.attempts.length;
   let finalExit = -1;
@@ -121,6 +127,8 @@ export async function runAiFailover(
   let lastCmd = plan.attempts[0]?.cmd ?? "claude";
   let lastCaptured = "";
   for (let i = 0; i < total; i++) {
+    // Stopped (ADR-0362) — before this attempt started, or while the previous one ran: no failover.
+    if (signal?.aborted) return cancelledResult();
     const attempt = plan.attempts[i]!;
     lastCmd = attempt.cmd;
     if (total > 1) handlers.onAttemptStart(attempt.label, i, total, attempt.cmd);
@@ -137,12 +145,14 @@ export async function runAiFailover(
         handlers.onChunk(text);
       }
     };
-    finalExit = await runAttempt(commandId, attempt.cmd, attempt.args, attempt.stdin, cwd, attempt.env, emit, timeoutMs);
+    finalExit = await runAttempt(commandId, attempt.cmd, attempt.args, attempt.stdin, cwd, attempt.env, emit, timeoutMs, signal);
     const tail = parser.flush();
     if (tail) {
       captured += tail;
       handlers.onChunk(tail);
     }
+    // Killed by a stop (ADR-0362): not an AI CLI failure — no failover, no tool-health report.
+    if (signal?.aborted) return cancelledResult();
     lastCaptured = captured;
     // A clean exit is NOT enough (ADR-0249): claude returns exit 0 even when out of credits /
     // rate-limited / not logged in, marking the terminal `result` with `is_error:true`. Treat such
@@ -188,6 +198,19 @@ export async function runAiFailover(
   // Every attempt failed — report the AI CLI's health with a short reason (ADR-0223).
   reportToolResult(lastCmd, false, summarizeAiFailure(lastCaptured, finalExit));
   return { exitCode: finalExit, workedDir: null, workedKey: null, workedCmd: null, usage: { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, sessionId: "" };
+}
+
+/** The result of a stopped run (ADR-0362): exit 130, nothing worked, no usage. */
+function cancelledResult(): AiRunResult {
+  return {
+    exitCode: COMMAND_CANCELLED_EXIT_CODE,
+    workedDir: null,
+    workedKey: null,
+    workedCmd: null,
+    usage: { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+    sessionId: "",
+    cancelled: true,
+  };
 }
 
 /** A short, human reason for a failed AI run — reused by the tool-health report (ADR-0223). */
