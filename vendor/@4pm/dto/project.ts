@@ -117,6 +117,8 @@ export interface ProjectDetailResponse extends ProjectResponse {
 /** Query of GET /projects — BaseRequest (search by name; sort name/createdAt) + pinned. */
 export const listProjectsQuerySchema = baseRequestSchema.extend({
   pinned: pinnedFilterSchema,
+  /** Only projects this team is attached to (project-0001; the public v1 list — ADR-0364). */
+  teamId: z.string().uuid().optional(),
   /** ADMIN-only Trash: list soft-deleted projects (ADR-0109). */
   deleted: deletedFilterSchema,
 });

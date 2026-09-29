@@ -70,8 +70,13 @@ export const ErrorCode = {
   POST_NOT_FOUND: "POST_NOT_FOUND",
   MESSAGE_NOT_FOUND: "MESSAGE_NOT_FOUND",
   PACKAGE_ALREADY_INSTALLED: "PACKAGE_ALREADY_INSTALLED",
-  // org total hosted storage cap (ADR-0122) — blocks template + community attachment uploads
+  // org total hosted storage cap (ADR-0122/0365) — blocks text writes, uploads, memo/book writes and new AI runs
   STORAGE_QUOTA_EXCEEDED: "STORAGE_QUOTA_EXCEEDED",
+  // Self-managed storage clear (ADR-0365): typed org-name confirmation mismatch; a kind the service
+  // cannot clear; a clear already running for the org.
+  STORAGE_CLEAR_CONFIRM_MISMATCH: "STORAGE_CLEAR_CONFIRM_MISMATCH",
+  STORAGE_CLEAR_KIND_INVALID: "STORAGE_CLEAR_KIND_INVALID",
+  STORAGE_CLEAR_RUNNING: "STORAGE_CLEAR_RUNNING",
   // project lifecycle (ADR-0092): invalid transition / operation on a paused|closed project
   PROJECT_STATE_INVALID: "PROJECT_STATE_INVALID",
   PROJECT_NOT_ACTIVE: "PROJECT_NOT_ACTIVE",
@@ -151,6 +156,9 @@ export const ErrorCode = {
   // be the approver of their own row (ADMIN may self-approve).
   APPROVAL_SELF: "APPROVAL_SELF",
   CLI_VERSION_UNSUPPORTED: "CLI_VERSION_UNSUPPORTED",
+  // Admin cli version policy rejected (ADR-0363) — meta.reason: minAboveLatest | latestNotBlockable |
+  // deadlinePast | invalidVersion.
+  CLI_VERSION_POLICY_INVALID: "CLI_VERSION_POLICY_INVALID",
   ORCHESTRATOR_OFFLINE: "ORCHESTRATOR_OFFLINE",
   WS_TOKEN_INVALID: "WS_TOKEN_INVALID",
   // A newer cli session for the same link took over ⇒ the older one stops (ADR-0047).
@@ -203,6 +211,10 @@ export const ErrorCode = {
   // plan entitlements (ADR-0105) — resource caps + feature gates per plan tier
   PLAN_USER_LIMIT: "PLAN_USER_LIMIT",
   PLAN_PROJECT_LIMIT: "PLAN_PROJECT_LIMIT",
+  // Plan memo-item cap reached (`maxMemoItems` — ADR-0365).
+  PLAN_MEMO_LIMIT: "PLAN_MEMO_LIMIT",
+  // An autonomous book reached its monthly `autonomousRequestsPerMonth` cap (ADR-0365).
+  AUTONOMOUS_BOOK_CAP_REACHED: "AUTONOMOUS_BOOK_CAP_REACHED",
   PLAN_FEATURE_UNAVAILABLE: "PLAN_FEATURE_UNAVAILABLE",
   // deployment license ceiling (ADR-0135) — a self-host license bounds orgs/seats/projects/
   // storage across the whole deployment, above the per-org plan caps
@@ -270,6 +282,15 @@ export const ErrorCode = {
   GIT_AUTH_REQUIRES_HTTPS: "GIT_AUTH_REQUIRES_HTTPS",
   GIT_HOST_MISMATCH: "GIT_HOST_MISMATCH",
   SECRETS_KEY_NOT_CONFIGURED: "SECRETS_KEY_NOT_CONFIGURED",
+  // Org announcements (ADR-0367): a target outside the sender's PM/TL scope; targets resolving to
+  // nobody; the org's daily recipient cap (`announcementDailyRecipients`); unknown history row /
+  // draft; the per-user draft cap.
+  ANNOUNCEMENT_TARGET_FORBIDDEN: "ANNOUNCEMENT_TARGET_FORBIDDEN",
+  ANNOUNCEMENT_NO_RECIPIENTS: "ANNOUNCEMENT_NO_RECIPIENTS",
+  ANNOUNCEMENT_DAILY_LIMIT: "ANNOUNCEMENT_DAILY_LIMIT",
+  ANNOUNCEMENT_NOT_FOUND: "ANNOUNCEMENT_NOT_FOUND",
+  ANNOUNCEMENT_DRAFT_NOT_FOUND: "ANNOUNCEMENT_DRAFT_NOT_FOUND",
+  ANNOUNCEMENT_DRAFT_LIMIT: "ANNOUNCEMENT_DRAFT_LIMIT",
 } as const;
 
 /** Union type of error codes. */

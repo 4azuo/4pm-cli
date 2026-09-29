@@ -263,11 +263,16 @@ export interface MachineLinkResponse {
   workerId: string | null;
   /** Running cli version the worker last reported (ADR-0015); null when unknown. */
   cliVersion?: string | null;
-  /** True when the running cli is older than the configured latest release (ADR-0015). */
+  /** True when the running cli's effective status is `warning` (older than the latest release, or an
+   *  admin warning — ADR-0015/0363). */
   cliOutdated?: boolean;
-  /** True when the running cli is older than CLI_MIN_SUPPORTED_VERSION (ADR-0015) — the server
-   *  rejects it at the WS handshake, so it must be upgraded to (re)connect. */
+  /** True when the running cli's effective status is `unsupported` (below the minimum, an admin
+   *  override or a passed cut-off date — ADR-0363): refused the next time it connects. */
   cliUnsupported?: boolean;
+  /** ISO cut-off date of a `warning` version (ADR-0363); null/omitted when none. */
+  cliUnsupportedFrom?: string | null;
+  /** The admin's note for the running version (ADR-0363); null/omitted when none. */
+  cliVersionNote?: string | null;
   /** Latest worker network probe (ADR-0221) — the machine-user page shows outbound/inbound posture
    *  and warns when it's open. Null when the cli hasn't reported one yet (old clients / offline). */
   network?: WorkerNetworkProbe | null;
@@ -506,11 +511,16 @@ export interface MachineUsageStatus {
   serving: { projectId: string; name: string } | null;
   /** Running cli version the worker last reported (machine.status, ADR-0015); null if unknown. */
   cliVersion?: string | null;
-  /** True when the running cli is older than the configured latest release (ADR-0015). */
+  /** True when the running cli's effective status is `warning` (older than the latest release, or an
+   *  admin warning — ADR-0015/0363). */
   cliOutdated?: boolean;
-  /** True when the running cli is older than CLI_MIN_SUPPORTED_VERSION (ADR-0015) — the server
-   *  rejects it at the WS handshake, so it must be upgraded to (re)connect. */
+  /** True when the running cli's effective status is `unsupported` (below the minimum, an admin
+   *  override or a passed cut-off date — ADR-0363): refused the next time it connects. */
   cliUnsupported?: boolean;
+  /** ISO cut-off date of a `warning` version (ADR-0363); null/omitted when none. */
+  cliUnsupportedFrom?: string | null;
+  /** The admin's note for the running version (ADR-0363); null/omitted when none. */
+  cliVersionNote?: string | null;
   /** The latest cli release version (for the "please update" hint); null if not resolved. */
   latestCliVersion?: string | null;
   /** The minimum cli version the server still accepts (for the "unsupported" red hint); null if

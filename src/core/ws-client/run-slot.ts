@@ -6,6 +6,8 @@
  * released by the returned handle. Any transport error fails OPEN (run without a slot) so a server or
  * cli-server outage never blocks AI work; an older server that doesn't answer behaves the same.
  * A stop while queued (ADR-0362) sends `leave` so the ticket is dropped at once and resolves `cancelled`.
+ * The server may refuse outright (`denied: "storage_full"` — the org's hosted storage is full, ADR-0365):
+ * the run is not started and resolves `denied`.
  */
 import {
   RUN_SLOT_MAX_WAIT_MS,
@@ -37,7 +39,8 @@ export interface RunSlotQueueInfo {
 export type RunSlotOutcome =
   | { kind: "granted"; handle: RunSlotHandle; queued: boolean }
   | { kind: "timeout"; limit: number }
-  | { kind: "cancelled" };
+  | { kind: "cancelled" }
+  | { kind: "denied"; reason: "storage_full" };
 
 /** A handle with nothing to renew or release (unlimited plan / fail-open). */
 const NO_SLOT: RunSlotHandle = { release: () => undefined };
@@ -106,6 +109,8 @@ export async function acquireRunSlot(
       }
       return { kind: "granted", handle, queued: ticket !== undefined };
     }
+    // Refused outright — no queue (ADR-0365).
+    if ("denied" in reply) return { kind: "denied", reason: reply.denied };
     ticket = reply.ticket;
     limit = reply.limit;
     if (reply.position !== lastPosition) {

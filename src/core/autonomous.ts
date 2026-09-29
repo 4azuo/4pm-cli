@@ -109,6 +109,18 @@ function tableRowsById(md: string): Map<string, string> {
   return rows;
 }
 
+/** The capped books (ADR-0365) → their files. */
+const CAPPED_BOOK_FILES = { USER_TODO: "USER_TODO.md", USER_QA: "USER_QA.md", AI_TODO: "AI_TODO.md" } as const;
+
+/** Row ids currently in each capped book — diffed around an autonomous tick to count new rows (ADR-0365). */
+export async function cappedBookIds(root: string): Promise<Record<keyof typeof CAPPED_BOOK_FILES, Set<string>>> {
+  const out = {} as Record<keyof typeof CAPPED_BOOK_FILES, Set<string>>;
+  for (const [book, file] of Object.entries(CAPPED_BOOK_FILES) as [keyof typeof CAPPED_BOOK_FILES, string][]) {
+    out[book] = new Set(tableRowsById(await readText(join(root, file))).keys());
+  }
+  return out;
+}
+
 /** The physic project's tick-script absolute path (the cron line key). */
 function tickScript(root: string): string {
   return join(root, TICK_REL);
@@ -243,6 +255,8 @@ export async function writeAutonomous(
   req: AutonomousWriteRequest,
   by: string,
 ): Promise<AutonomousWriteReply> {
+  // Rows a userTodo / bookSave added — counted by the server toward the monthly book cap (ADR-0365).
+  let added: number | undefined;
   try {
     switch (req.kind) {
       case "settings": {
@@ -295,6 +309,7 @@ export async function writeAutonomous(
         const id = `REQ-${String(maxGroup + 1).padStart(4, "0")}-0001`;
         const row = `| ${id} | | | ${tableCell(req.content)} |\n`;
         await writeFile(join(root, BOOK_FILES.userTodo), cur.replace(/\s*$/, "\n") + row, "utf8");
+        added = 1;
         const authors = await readJsonMap(join(root, AUTHORS_REL));
         authors[id] = { by, byLabel: req.byLabel ?? by, at: new Date().toISOString() };
         await writeFile(join(root, AUTHORS_REL), JSON.stringify(authors, null, 2) + "\n", "utf8");
@@ -310,8 +325,10 @@ export async function writeAutonomous(
         const authors = await readJsonMap(join(root, AUTHORS_REL));
         const at = new Date().toISOString();
         const byLabel = req.byLabel ?? by;
+        added = 0;
         for (const [id, cells] of next) {
           if (prev.get(id) !== cells) authors[id] = { by, byLabel, at };
+          if (!prev.has(id)) added += 1;
         }
         await writeFile(join(root, file), req.content, "utf8");
         await writeFile(join(root, AUTHORS_REL), JSON.stringify(authors, null, 2) + "\n", "utf8");
@@ -323,7 +340,7 @@ export async function writeAutonomous(
         break;
       }
     }
-    return { ok: true, status: await getAutonomousStatus(root, profileDir) };
+    return { ok: true, status: await getAutonomousStatus(root, profileDir), ...(added !== undefined ? { added } : {}) };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

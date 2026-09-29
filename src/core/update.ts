@@ -1,6 +1,7 @@
 /**
  * Auto-update on startup (ADR-0015, meta-0001):
- * GET /meta/cli-version ⇒ current < minSupported = mandatory update;
+ * GET /meta/cli-version?version=<current> ⇒ current < minSupported or status `unsupported` (admin
+ * cli version policy — ADR-0363) = mandatory update;
  * current < latest + autoUpdate ⇒ auto-update. Supports two paths: npm global
  * (`npm i -g @4pm/cli@<latest>`) or self-download tarball (verify sha256). After
  * updating, verify the version at the re-exec path actually advanced before claiming
@@ -278,14 +279,23 @@ export async function checkAndUpdate(
 
   let meta;
   try {
-    meta = await fetchCliVersion(serverUrl);
+    meta = await fetchCliVersion(serverUrl, CLI_VERSION);
   } catch (err) {
     // Server did not return a version ⇒ skip (do not block startup)
     console.warn(t("update.checkVersionFailed", { error: String(err) }));
     return { action: "none" };
   }
 
-  const mandatory = compareSemver(CLI_VERSION, meta.minSupported) < 0;
+  // Mandatory = below the minimum, or the admin policy marks this version unsupported (an override or a
+  // passed cut-off date — ADR-0363; an older server sends no `status`).
+  const mandatory = compareSemver(CLI_VERSION, meta.minSupported) < 0 || meta.status === "unsupported";
+  // A version with a cut-off date: tell the operator when it stops being supported (+ the admin's note).
+  if (meta.status === "warning" && meta.unsupportedFrom) {
+    console.warn(t("update.unsupportedSoon", { current: CLI_VERSION, date: meta.unsupportedFrom.slice(0, 10) }));
+    if (meta.note) console.warn(t("update.policyNote", { note: meta.note }));
+  } else if (meta.status === "unsupported" && meta.note) {
+    console.warn(t("update.policyNote", { note: meta.note }));
+  }
   const outdated = shouldUpdateTo(CLI_VERSION, meta.latest);
   if (!outdated) return { action: "none" };
   if (!mandatory && !autoUpdate) {

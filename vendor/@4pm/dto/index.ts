@@ -8,5 +8,6 @@ export * from "./machine";
 export * from "./meta";
 export * from "./org";
 export * from "./project";
+export * from "./storage";
 export * from "./template";
 export * from "./user";

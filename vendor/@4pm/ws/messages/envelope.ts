@@ -617,6 +617,8 @@ export interface AutonomousWriteReply {
   failedId?: string;
   /** The refreshed status after the write (so the web updates the badge without a re-read). */
   status?: AutonomousStatus;
+  /** Rows a `userTodo` / `bookSave` added (by id diff) — counted toward the monthly book cap (ADR-0365). */
+  added?: number;
 }
 
 /**

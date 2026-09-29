@@ -70,6 +70,8 @@
   "update.updating": "正在更新 {from} → {to}…",
   "update.checkVersionFailed": "无法检查 cli 版本：{error}",
   "update.newVersionAutoUpdateOff": "有新版本 {latest} 可用（当前运行 {current}）— autoUpdate 已关闭。",
+  "update.unsupportedSoon": "cli {current} 将于 {date} 停止支持 — 请在此之前更新（4pm update）。",
+  "update.policyNote": "来自 4PM 的说明：{note}",
   "update.applying": "{kind} cli 更新 {from} → {to}…",
   "update.kindMandatory": "强制",
   "update.kindAutomatic": "自动",

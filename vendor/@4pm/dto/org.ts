@@ -1,6 +1,14 @@
 /**
  * DTO for the organization domain (21-api/org-0001…0002).
  */
+import {
+  DEFAULT_STORAGE_AUTO_CLEAR,
+  readStorageAlerts,
+  readStorageAutoClear,
+  type StorageAlertRule,
+  type StorageAutoClearSettings,
+  type StorageKindBytes,
+} from "./storage";
 import { z } from "zod";
 import { PaymentProvider } from "@4pm/constants";
 
@@ -105,22 +113,6 @@ export const DEFAULT_CHECKLIST_MAX = 100;
 export const DEFAULT_CHECKLIST_VERSIONS_KEPT = 10;
 export const DEFAULT_WORKER_CONFIG_TEMPLATES_MAX = 100;
 
-/** Mail provider identifiers (ADR-0007). */
-export type OrgMailProvider = "console" | "smtp" | "ses" | "resend";
-
-/**
- * Per-org mail provider config (ADR-0045), stored under `settings.mail` —
- * overrides ENV; empty falls back to ENV then defaults. Secrets (`smtp.pass`,
- * `resend.apiKey`) are write-only (masked in responses).
- */
-export interface OrgMailSettings {
-  provider: OrgMailProvider;
-  from: string;
-  smtp: { host: string; port: number; user: string; pass: string; secure: boolean };
-  ses: { region: string };
-  resend: { apiKey: string };
-}
-
 /**
  * Per-org command-history policy (ADR-0045), stored under `settings.commandHistory`.
  * `store=false` skips writing history files but still records recent activity
@@ -203,12 +195,15 @@ export const COMMUNITY_EDIT_WINDOW_MAX_MINUTES = 43_200;
 export interface OrgSettings {
   security: OrgSecuritySettings;
   general: OrgGeneralSettings;
-  mail: OrgMailSettings;
   commandHistory: OrgCommandHistorySettings;
   communityRetention: OrgCommunityRetentionSettings;
   communityEdit: OrgCommunityEditSettings;
   tokens: OrgTokenSettings;
   cli: OrgCliSettings;
+  /** Storage alert rules (ADR-0365). */
+  storageAlerts: StorageAlertRule[];
+  /** Auto clear config (ADR-0365). */
+  storageAutoClear: StorageAutoClearSettings;
 }
 
 /** Defaults applied when a settings key is absent. */
@@ -223,13 +218,6 @@ export const DEFAULT_ORG_SETTINGS: OrgSettings = {
     checklistVersionsKept: DEFAULT_CHECKLIST_VERSIONS_KEPT,
     workerConfigTemplatesMax: DEFAULT_WORKER_CONFIG_TEMPLATES_MAX,
   },
-  mail: {
-    provider: "console",
-    from: "",
-    smtp: { host: "", port: 587, user: "", pass: "", secure: false },
-    ses: { region: "" },
-    resend: { apiKey: "" },
-  },
   commandHistory: { store: false, retentionDays: 7 },
   communityRetention: { forumPosts: 0, messages: 0, attachments: 0 },
   communityEdit: { editWindowMinutes: 60, deleteWindowMinutes: 60 },
@@ -238,6 +226,8 @@ export const DEFAULT_ORG_SETTINGS: OrgSettings = {
     cli: { wsTokenTtlSec: 86_400, hashcode3TtlSec: 0 },
   },
   cli: { reconnectMaxBackoffSec: 60, autoUpdateDaily: false, autoUpdateHour: 0 },
+  storageAlerts: [],
+  storageAutoClear: DEFAULT_STORAGE_AUTO_CLEAR,
 };
 
 /** Read a numeric TTL, clamping out-of-range values back to `def` (ADR-0056). */
@@ -262,9 +252,6 @@ function readHashcode3Ttl(value: unknown, def: number): number {
   return value >= b.min && value <= b.max ? Math.floor(value) : def;
 }
 
-/** Secret keys inside `settings.mail` that must never be returned in responses. */
-export const MAIL_SECRET_PATHS = ["smtp.pass", "resend.apiKey"] as const;
-
 /**
  * Read the typed org settings from the loosely-typed JSON store, filling in
  * defaults for any missing keys (ADR-0039).
@@ -272,10 +259,6 @@ export const MAIL_SECRET_PATHS = ["smtp.pass", "resend.apiKey"] as const;
 export function readOrgSettings(settings: Record<string, unknown> | null | undefined): OrgSettings {
   const security = (settings?.security ?? {}) as Partial<OrgSecuritySettings>;
   const general = (settings?.general ?? {}) as Partial<OrgGeneralSettings>;
-  const mail = (settings?.mail ?? {}) as Partial<OrgMailSettings>;
-  const smtp = (mail.smtp ?? {}) as Partial<OrgMailSettings["smtp"]>;
-  const ses = (mail.ses ?? {}) as Partial<OrgMailSettings["ses"]>;
-  const resend = (mail.resend ?? {}) as Partial<OrgMailSettings["resend"]>;
   const cmd = (settings?.commandHistory ?? {}) as Partial<OrgCommandHistorySettings>;
   const cr = (settings?.communityRetention ?? {}) as Partial<OrgCommunityRetentionSettings>;
   const ce = (settings?.communityEdit ?? {}) as Partial<OrgCommunityEditSettings>;
@@ -336,25 +319,6 @@ export function readOrgSettings(settings: Record<string, unknown> | null | undef
         CHECKLIST_MAX_BOUNDS.max,
       ),
     },
-    mail: {
-      provider: (["console", "smtp", "ses", "resend"] as const).includes(
-        mail.provider as OrgMailProvider,
-      )
-        ? (mail.provider as OrgMailProvider)
-        : d.mail.provider,
-      from: typeof mail.from === "string" ? mail.from : d.mail.from,
-      smtp: {
-        host: typeof smtp.host === "string" ? smtp.host : d.mail.smtp.host,
-        port: typeof smtp.port === "number" ? smtp.port : d.mail.smtp.port,
-        user: typeof smtp.user === "string" ? smtp.user : d.mail.smtp.user,
-        pass: typeof smtp.pass === "string" ? smtp.pass : d.mail.smtp.pass,
-        secure: typeof smtp.secure === "boolean" ? smtp.secure : d.mail.smtp.secure,
-      },
-      ses: { region: typeof ses.region === "string" ? ses.region : d.mail.ses.region },
-      resend: {
-        apiKey: typeof resend.apiKey === "string" ? resend.apiKey : d.mail.resend.apiKey,
-      },
-    },
     commandHistory: {
       store: typeof cmd.store === "boolean" ? cmd.store : d.commandHistory.store,
       retentionDays:
@@ -414,36 +378,28 @@ export function readOrgSettings(settings: Record<string, unknown> | null | undef
         CB.autoUpdateHour.max,
       ),
     },
+    storageAlerts: readStorageAlerts(settings?.storageAlerts),
+    storageAutoClear: readStorageAutoClear(settings?.storageAutoClear),
   };
 }
 
 /**
- * Return a copy of `Organization.settings` with mail secrets removed and replaced
- * by boolean `…Set` flags — for responses (org-0001/0002, ADR-0045 write-only).
+ * Return a copy of `Organization.settings` for responses (org-0001/0002): typed namespaces filled with
+ * defaults, and the retired `mail` namespace (platform-only mail — ADR-0366) stripped so a stale
+ * stored value (which may hold credentials) is never returned.
  */
 export function maskOrgSettingsSecrets(
   settings: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> {
   const s = readOrgSettings(settings);
-  return {
+  const out: Record<string, unknown> = {
     ...(settings ?? {}),
-    mail: {
-      provider: s.mail.provider,
-      from: s.mail.from,
-      smtp: {
-        host: s.mail.smtp.host,
-        port: s.mail.smtp.port,
-        user: s.mail.smtp.user,
-        secure: s.mail.smtp.secure,
-        passSet: s.mail.smtp.pass.length > 0,
-      },
-      ses: { region: s.mail.ses.region },
-      resend: { apiKeySet: s.mail.resend.apiKey.length > 0 },
-    },
     commandHistory: s.commandHistory,
     tokens: s.tokens,
     cli: s.cli,
   };
+  delete out.mail;
+  return out;
 }
 
 /** Response data of GET/PATCH /organizations/me. */
@@ -468,7 +424,8 @@ export const orgAliasSchema = z
   .regex(/^([a-z0-9-]{3,40})?$/, "alias must be 3–40 chars of a–z, 0–9, -");
 
 /**
- * org-0004 — hosted-storage usage vs the plan cap, split into the 3 MEMO colours (ADR-0122).
+ * org-0004 — hosted-storage usage vs the plan cap, split into the 3 meter colours (ADR-0122) plus the
+ * per-kind figures (ADR-0365).
  * With `?userId`, `machineUser` carries that machine user's own cli footprint (across its links).
  */
 export interface StorageUsageResponse {
@@ -479,13 +436,17 @@ export interface StorageUsageResponse {
   /** When the counter was last reconciled — UI shows "as of N min ago". */
   computedAt: string;
   breakdown: {
-    /** Community message-body bytes. */
+    /** Text bytes — messages + 4rum posts + comments + memo (UI label "Text"). */
     messages: number;
     /** cli input + output + whole-machine log + history metadata. */
     commandHistory: number;
-    /** Template files + community attachments + project artifacts. */
+    /** Templates + artifacts + message/post/comment attachments + memo/AI-doc images and files. */
     files: number;
   };
+  /** Per-kind bytes (ADR-0365); the colours above are sums of these. */
+  kinds: StorageKindBytes;
+  /** `usedBytes ≥ quotaBytes` — writes/uploads/new AI runs are blocked (never true when unlimited). */
+  full: boolean;
   /** Present only for `?userId`: that machine user's server-stored cli footprint (all its links). */
   machineUser?: {
     input: number;

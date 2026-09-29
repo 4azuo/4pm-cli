@@ -70,6 +70,8 @@
   "update.updating": "Updating {from} → {to}…",
   "update.checkVersionFailed": "Could not check cli version: {error}",
   "update.newVersionAutoUpdateOff": "A new version {latest} is available (running {current}) — autoUpdate is off.",
+  "update.unsupportedSoon": "cli {current} stops being supported on {date} — update before then (4pm update).",
+  "update.policyNote": "Note from 4PM: {note}",
   "update.applying": "{kind} cli update {from} → {to}…",
   "update.kindMandatory": "Mandatory",
   "update.kindAutomatic": "Automatic",

@@ -32,6 +32,8 @@ export type RunSlotRequest =
  */
 export type RunSlotReply =
   | { granted: true; lease: string | null; leaseTtlSec: number }
+  // Refused outright (no queue): the org's hosted storage is full (ADR-0365) — the cli fails the run.
+  | { granted: false; denied: "storage_full" }
   | { granted: false; ticket: string; position: number; limit: number; running: number; retryAfterMs: number }
   | { ok: boolean };
 

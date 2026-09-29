@@ -551,6 +551,13 @@ async function runAiPromptInner(
       ctx.bus.push({ source: origin, kind: "log", text, level: "warn" });
       ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: `${text}\n`, log: true });
       result = { exitCode: 1, workedDir: null, workedKey: null, workedCmd: null, usage: { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, sessionId: "" };
+    } else if (slot.kind === "denied") {
+      // The org's hosted storage is full (ADR-0365): the server refuses new runs until space is cleared.
+      neverStarted = true;
+      const text = "STORAGE_QUOTA_EXCEEDED: the organization's hosted storage is full — clear storage in Settings › Storage, then retry";
+      ctx.bus.push({ source: origin, kind: "log", text, level: "warn" });
+      ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: `${text}\n`, log: true });
+      result = { exitCode: 1, workedDir: null, workedKey: null, workedCmd: null, usage: { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, sessionId: "" };
     } else if (slot.kind === "cancelled") {
       // Stopped while queued (ADR-0362): the ticket was dropped — nothing ran.
       neverStarted = true;

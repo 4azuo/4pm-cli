@@ -143,6 +143,9 @@ export const WsChannels = {
   QUOTA_CHECK: "quota.check",
   // cli → server (reply): per-org concurrent AI-run slot — acquire / renew / release (ADR-0359)
   RUN_SLOT: "run.slot",
+  // cli → server (reply): read / add the org's monthly autonomous-book counters — USER_TODO / USER_QA /
+  // AI_TODO rows vs `autonomousRequestsPerMonth` (ADR-0365)
+  AUTONOMOUS_BOOK_USAGE: "autonomous.bookUsage",
   USAGE_REPORT: "usage.report",
   // cli → server: Claude subscription usage snapshot (5h / weekly — ADR-0072)
   MACHINE_USAGE: "machine.usage",

@@ -11,6 +11,8 @@ import { appendFile, mkdir, readFile, readdir, rm, stat } from "node:fs/promises
 import { join } from "node:path";
 import type { WsHandlerCtx } from "./ws-client/context";
 import { runAiPrompt } from "./ws-client/command-dispatch";
+import { WsChannels, type AutonomousBookUsageReply } from "@4pm/ws";
+import { cappedBookIds } from "./autonomous";
 import {
   isInQuietHours,
   readAutonomousConfig,
@@ -27,12 +29,20 @@ import { checkClaudeUsage } from "./claude-usage";
  * `.claude/commands/auto-cycle.md`. The agent runs write-capable (bypass) and folder-scoped to the
  * served project root, so all paths are relative to that root.
  */
-export function buildAutonomousCyclePrompt(): string {
+export function buildAutonomousCyclePrompt(opts: { intakeBlocked?: boolean } = {}): string {
+  // The org reached this month's cap for new AI_TODO / USER_QA rows (ADR-0365): no intake this cycle.
+  const capNote = opts.intakeBlocked
+    ? `
+
+**Step 2 is DISABLED this cycle** — the organization reached its monthly plan limit for new \`AI_TODO\` /
+\`USER_QA\` rows. Do NOT add any row to \`AI_TODO.md\` or \`USER_QA.md\`; skip Step 2 entirely and continue
+with the already-approved work.`
+    : "";
   return `You are running UNATTENDED as the 4PM autonomous cycle (headless, one tick). Do EXACTLY ONE small
 work cycle with the steps below, then STOP. Keep each cycle to ONE small task so you never run out of
 tokens mid-way. If a step fails, append a row to the **Incidents** table of \`AI_DONE.md\` and STOP —
 do not push on. Write all books/docs/code in the language the project's \`CLAUDE.md\` specifies (default
-English).
+English).${capNote}
 
 ## Books & approval (MUST read the approvals file)
 The five "book" files at the project root — \`USER_TODO.md\`, \`USER_QA.md\`, \`AI_TODO.md\`,
@@ -187,9 +197,19 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
 
     const commandId = randomUUID();
     const override = cfg.model ? { model: cfg.model } : undefined;
+    // Monthly book caps (ADR-0365): at the AI_TODO / USER_QA cap the cycle skips intake (no new rows) but
+    // still works approved tasks; the rows the agent adds are counted after the run.
+    const usage = await readBookUsage(ctx);
+    const intakeBlocked = (["AI_TODO", "USER_QA"] as const).some((b) => {
+      const c = usage?.books[b];
+      return !!c && c.limit !== null && c.used >= c.limit;
+    });
+    if (intakeBlocked) await log("[cap] monthly AI_TODO/USER_QA limit reached — intake skipped this cycle");
+    const booksBefore = await cappedBookIds(root);
     try {
       // Write-capable agent (bypass — ADR-0271): all tools, folder-scoped; metering + failover from runAiPrompt.
-      await runAiPrompt(ctx, buildAutonomousCyclePrompt(), commandId, "local", false, undefined, override, false, true);
+      await runAiPrompt(ctx, buildAutonomousCyclePrompt({ intakeBlocked }), commandId, "local", false, undefined, override, false, true);
+      await reportNewBookRows(ctx, root, booksBefore);
       hist = await readHistories(root);
       hist.consecutiveFails = 0;
       await recordRun(root, hist, "success", "cycle complete", today);
@@ -197,6 +217,8 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       ctx.bus.autonomousDone(true);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // A failed run may still have written rows before it stopped — count them too.
+      await reportNewBookRows(ctx, root, booksBefore);
       hist = await readHistories(root);
       hist.consecutiveFails += 1;
       await recordRun(root, hist, "failure", msg, today);
@@ -212,6 +234,34 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     ctx.bus.autonomousDone(false, err instanceof Error ? err.message : String(err));
   } finally {
     running.delete(root);
+  }
+}
+
+/** Read the org's monthly autonomous-book counters (ADR-0365); null when unavailable (fail open). */
+async function readBookUsage(ctx: WsHandlerCtx): Promise<AutonomousBookUsageReply | null> {
+  try {
+    return await ctx.request<AutonomousBookUsageReply>(WsChannels.AUTONOMOUS_BOOK_USAGE, {});
+  } catch {
+    return null;
+  }
+}
+
+/** Report the rows the cycle added per capped book (ids present now, absent before). Best-effort. */
+async function reportNewBookRows(
+  ctx: WsHandlerCtx,
+  root: string,
+  before: Awaited<ReturnType<typeof cappedBookIds>>,
+): Promise<void> {
+  try {
+    const after = await cappedBookIds(root);
+    const added: Partial<Record<keyof typeof after, number>> = {};
+    for (const book of Object.keys(after) as (keyof typeof after)[]) {
+      const n = [...after[book]].filter((id) => !before[book].has(id)).length;
+      if (n > 0) added[book] = n;
+    }
+    if (Object.keys(added).length > 0) await ctx.request(WsChannels.AUTONOMOUS_BOOK_USAGE, { added });
+  } catch {
+    /* best-effort — an unreported tick only under-counts */
   }
 }
 

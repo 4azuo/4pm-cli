@@ -70,6 +70,8 @@
   "update.updating": "Đang cập nhật {from} → {to}…",
   "update.checkVersionFailed": "Không thể kiểm tra phiên bản cli: {error}",
   "update.newVersionAutoUpdateOff": "Có phiên bản mới {latest} (đang chạy {current}) — autoUpdate đang tắt.",
+  "update.unsupportedSoon": "cli {current} sẽ ngừng được hỗ trợ từ {date} — hãy cập nhật trước ngày đó (4pm update).",
+  "update.policyNote": "Ghi chú từ 4PM: {note}",
   "update.applying": "Cập nhật cli {kind} {from} → {to}…",
   "update.kindMandatory": "bắt buộc",
   "update.kindAutomatic": "tự động",

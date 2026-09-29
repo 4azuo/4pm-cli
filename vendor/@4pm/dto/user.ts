@@ -172,6 +172,9 @@ export interface UserListItemResponse extends UserResponse {
   machineCliVersion: string | null;
   machineCliOutdated: boolean | null;
   machineCliUnsupported: boolean | null;
+  /** Rented users only (ADR-0363): cut-off date + admin note of the running version; null otherwise. */
+  machineCliUnsupportedFrom: string | null;
+  machineCliVersionNote: string | null;
 }
 
 /**
