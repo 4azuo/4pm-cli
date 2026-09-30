@@ -29,6 +29,14 @@ export interface AutonomousConfig {
   maxSessionPct: number;
   /** Skip the cycle when the 7-day utilization is at/over this % (ADR-0321 quota gate). */
   maxWeeklyPct: number;
+  /** A task claim lives this long from `Started`; older ⇒ released by its holder / taken over (ADR-0371). */
+  claimTtlHours: number;
+  /** Re-verify the held claim this often while the agent works; lost ⇒ the run is stopped (ADR-0371). */
+  claimCheckMinutes: number;
+  /** A task that fails / overruns this many times is split into child tasks (ADR-0371). */
+  maxTaskAttempts: number;
+  /** Indicative S/M size hints for intake (ADR-0371 §6) — guidance for the agent, not hard caps. */
+  taskSizeHints: { sMaxFiles: number; sMaxLines: number; mMaxFiles: number; mMaxLines: number };
 }
 
 /** Defaults when the file is absent or a field is missing. */
@@ -42,6 +50,10 @@ export const DEFAULT_AUTONOMOUS_CONFIG: AutonomousConfig = {
   model: "",
   maxSessionPct: 80,
   maxWeeklyPct: 90,
+  claimTtlHours: 6,
+  claimCheckMinutes: 10,
+  maxTaskAttempts: 5,
+  taskSizeHints: { sMaxFiles: 5, sMaxLines: 300, mMaxFiles: 20, mMaxLines: 1500 },
 };
 
 /** The config file path under a profile dir. */
@@ -65,6 +77,19 @@ function coerce(raw: unknown): AutonomousConfig {
     model: str(o.model, d.model),
     maxSessionPct: num(o.maxSessionPct, d.maxSessionPct),
     maxWeeklyPct: num(o.maxWeeklyPct, d.maxWeeklyPct),
+    claimTtlHours: Math.max(1, num(o.claimTtlHours, d.claimTtlHours)),
+    claimCheckMinutes: Math.max(1, num(o.claimCheckMinutes, d.claimCheckMinutes)),
+    maxTaskAttempts: Math.max(1, num(o.maxTaskAttempts, d.maxTaskAttempts)),
+    taskSizeHints: (() => {
+      const h = (o.taskSizeHints && typeof o.taskSizeHints === "object" ? o.taskSizeHints : {}) as Record<string, unknown>;
+      const dh = d.taskSizeHints;
+      return {
+        sMaxFiles: num(h.sMaxFiles, dh.sMaxFiles),
+        sMaxLines: num(h.sMaxLines, dh.sMaxLines),
+        mMaxFiles: num(h.mMaxFiles, dh.mMaxFiles),
+        mMaxLines: num(h.mMaxLines, dh.mMaxLines),
+      };
+    })(),
   };
 }
 

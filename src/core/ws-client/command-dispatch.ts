@@ -245,6 +245,22 @@ export async function runLocalCommand(ctx: WsHandlerCtx, input: string): Promise
 }
 
 /**
+ * What an AI prompt run ended with (ADR-0371) — callers that act on the result (the autonomous cycle)
+ * read it; the console path ignores it. `exhausted` = every profile attempt failed on a usage limit /
+ * credits (wait for a reset); `output` = the final attempt's verbatim answer text.
+ */
+export interface AiPromptOutcome {
+  exitCode: number;
+  cancelled: boolean;
+  exhausted: boolean;
+  neverStarted: boolean;
+  output: string;
+}
+
+/** The outcome of a prompt refused before it ran (token cap / outbound review). */
+const REFUSED: AiPromptOutcome = { exitCode: 1, cancelled: false, exhausted: false, neverStarted: true, output: "" };
+
+/**
  * Run an AI prompt through the AI-CLI **profile-failover** path (ADR-0057). Shared by a
  * locally-typed prompt (`origin: "local"`) and a server-dispatched AI prompt
  * (`origin: "server"` — command.dispatch with `ai:true`), so the web console behaves
@@ -261,13 +277,13 @@ export async function runAiPrompt(
   aiConfig?: CommandDispatchPayload["aiConfig"],
   readOnly = false,
   bypass = false,
-): Promise<void> {
+): Promise<AiPromptOutcome> {
   // Register the run so `command.cancel` can stop it from the very start (ADR-0362) — a stop that lands
   // during the outbound review or the slot wait is honoured the moment the run reaches the slot.
   const run: ActiveRun = { controller: new AbortController(), state: "queued" };
   activeRuns.set(commandId, run);
   try {
-    await runAiPromptInner(ctx, prompt, commandId, origin, run, oneShot, images, aiConfig, readOnly, bypass);
+    return await runAiPromptInner(ctx, prompt, commandId, origin, run, oneShot, images, aiConfig, readOnly, bypass);
   } finally {
     activeRuns.delete(commandId);
     // An AI run may have committed/edited files ⇒ refresh the server's git snapshot (ADR-0369).
@@ -294,7 +310,7 @@ async function runAiPromptInner(
   // (codex full-auto) so file + git/gh/glab writes run headless without an approval prompt
   // (template "Update" → branch + PR). Mutually exclusive with `oneShot`/`readOnly`.
   bypass = false,
-): Promise<void> {
+): Promise<AiPromptOutcome> {
   const config = readProfileConfig(ctx.profileDir);
   // AI-run wall-clock ceiling (ADR-0243): the serving project's override wins over the
   // machine-user default; 0 ⇒ no limit. Enforced per attempt by the executor so a hung/looping
@@ -310,7 +326,7 @@ async function runAiPromptInner(
     const estimated = estimateTokens(prompt);
     if (estimated > perPromptLimit) {
       rejectPromptOverLimit(ctx, commandId, origin, prompt, estimated, perPromptLimit);
-      return;
+      return REFUSED;
     }
   }
   // Outbound review (ADR-0082): when the project requires it, an outbound cli must approve
@@ -328,7 +344,7 @@ async function runAiPromptInner(
     }
     if (!verdict.ok) {
       rejectByReview(ctx, commandId, origin, prompt, verdict.reasons);
-      return;
+      return REFUSED;
     }
   }
   // Run inside the live serving-project folder (kept current by the connect handler +
@@ -475,6 +491,8 @@ async function runAiPromptInner(
   let resultBuf = "";
   // The full assistant answer text (verbatim), captured for the shared-memory compaction (ADR-0245).
   let answerText = "";
+  // Why each failed attempt failed (ADR-0371): all limit/credits ⇒ the run is "exhausted" (wait for a reset).
+  const failReasons: string[] = [];
   const handlers: AiRunHandlers = {
     onChunk: (text) => {
       if (!responseHeaderShown) {
@@ -528,6 +546,7 @@ async function runAiPromptInner(
       ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: `${text}\n`, log: true });
     },
     onAttemptFail: (label, reason) => {
+      failReasons.push(String(reason));
       // Distinct reason per branch (ADR-0240): only a genuine `auth` classification says "failed to
       // authenticate" — a catch-all `other` (non-zero exit, hit turn cap, crash, unrecognized error)
       // must NOT be mislabeled as an auth problem, or a working credential looks broken.
@@ -705,6 +724,17 @@ async function runAiPromptInner(
     ctx.sessionIdByKey.clear();
     ctx.sessionMetaByKey.clear();
   }
+  return {
+    exitCode: result.exitCode,
+    cancelled: !!result.cancelled,
+    exhausted:
+      result.exitCode !== 0 &&
+      !result.cancelled &&
+      failReasons.length > 0 &&
+      failReasons.every((r) => r === "limit" || r === "credits"),
+    neverStarted,
+    output: answerText,
+  };
 }
 
 /**

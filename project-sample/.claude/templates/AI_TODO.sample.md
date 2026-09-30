@@ -4,10 +4,12 @@
 > **Priority** = High / Medium / Low. **Tag** = optional catalog tag(s) (e.g. `UpdateSpecFromDB`) whose
 > action runs from the server down to the project on approve (committed on Save — ADR-0311).
 > **Approval** lives in `.claude/.autonomous.approvals.json` (ADR-0152), not the table. **Depends** =
-> `TSK-…` ids that must be in `AI_DONE.md` first.
+> `TSK-…` ids (one ⇒ in `AI_DONE.md`; two or more ⇒ all PRs merged into the base branch) and/or `QA-…` ids
+> (wait for that answer — ADR-0371). **Notes** may carry `size: S|M` and `from: <branch>`.
 
 | ID | Priority | Tag | Depends | Group | Task description | Notes |
 |----|----------|-----|---------|-------|------------------|-------|
 | TSK-0001-0001 | High | | | Auth | Add login-form validation per docs/auth.md | |
 | TSK-0001-0002 | Medium | | TSK-0001-0001 | Auth | Wire the login API call + error handling | After 0001 |
-| TSK-0001-0003 | Low | UpdateSpecFromDB | | Spec | Sync the project spec into project.spec.json on approve | Server action |
+| TSK-0001-0003 | Low | UpdateSpecFromDB | | Spec | Sync the project spec into project.spec.json on approve | Server action; size: S |
+| TSK-0001-0004 | Medium | | TSK-0001-0002, QA-0001-0002 | Auth | Add the password-reset flow | Waits for QA-0001-0002 (which mail provider?); size: M |

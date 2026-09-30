@@ -8,6 +8,9 @@
 > `.claude/.autonomous.authors.json` — the web USER_QA grid shows them and enforces four-eyes (the person
 > who answered can't approve their own answer, except ADMIN). See `.claude/templates/USER_QA.sample.md`.
 >
+> A question raised **while implementing a task** (ADR-0371) is also a row here: its id is added to the
+> task's `Depends` in `AI_TODO.md`, and the task waits until this row is answered + approved.
+>
 > **Columns (content only):** `ID` · `Group` · `Depends` (comma-separated `QA-…`) · `Original request` ·
 > `Question / options` · `Answer`.
 

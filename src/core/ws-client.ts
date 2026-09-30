@@ -70,7 +70,7 @@ import { CLI_VERSION } from "../version";
 import { envReconnectMaxSec, toDtoEntry } from "./ws-client/transcript";
 import type { WsHandlerCtx } from "./ws-client/context";
 import { handleCommandChannels, resetMemorySession, runLocalCommand } from "./ws-client/command-dispatch";
-import { runAutonomousCycle } from "./autonomous-cycle";
+import { onReconnectVerifyClaim, runAutonomousCycle } from "./autonomous-cycle";
 import { handleFsChannels } from "./ws-client/handlers/fs";
 import { handleGitChannels } from "./ws-client/handlers/git";
 import { handleMiscChannels } from "./ws-client/handlers/misc";
@@ -739,6 +739,8 @@ export class WsClient {
         this.startUsagePolling();
         this.startLogUpload();
         this.startKbRefresh();
+        // A worker that was offline re-verifies its held autonomous claim; lost ⇒ its run stops (ADR-0371).
+        onReconnectVerifyClaim(this.hctx);
         // Per-repo git state for the web Git › Repositories home (ADR-0369): now + periodically.
         const servedRoot = (): string | null => this.physicRoot; // read live on every report
         startGitSnapshots({

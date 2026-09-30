@@ -1,17 +1,18 @@
 /**
- * Autonomous cycle runner (ADR-0319). Runs ONE unattended work cycle through the daemon's live WS
- * session — reusing its profile/quota failover (ADR-0182), token metering (ADR-0072), folder-scope
- * guard (ADR-0181) and wall-clock timeout (ADR-0243) — instead of the old raw `claude -p /auto-cycle`.
- * Triggered by `4pm auto-run` over the control socket (SessionBus `autonomous-run`), it builds the
- * cli-owned cycle prompt and dispatches it as a write-capable agent (bypass mode — ADR-0271: branch +
- * PR), then reports completion back over the socket so the cron tick can settle the tick.
+ * Autonomous cycle runner (ADR-0319 → reworked by ADR-0371). Runs ONE unattended cycle through the
+ * daemon's live WS session (profile/quota failover, metering, folder scope, run timeout). Every git step
+ * runs here in code — resolve each repo's `<base>`, protection guard, sync, the books as an optimistic
+ * lock on `<base>` (claim / finish / release / question / split), the task branch
+ * `dev/<base>/<GROUP>/<TSK>` in the root + each submodule, WIP saves, delivery (push + PRs into each
+ * base). The agent only does the intake analysis, the implementation and the split analysis. A held
+ * claim is re-verified during the run and on reconnect; a lost claim stops the run without pushing.
  */
 import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { WsHandlerCtx } from "./ws-client/context";
-import { runAiPrompt } from "./ws-client/command-dispatch";
-import { WsChannels, type AutonomousBookUsageReply } from "@4pm/ws";
+import { cancelActiveRun, runAiPrompt, type AiPromptOutcome } from "./ws-client/command-dispatch";
+import { WsChannels, type AutonomousAlertPayload, type AutonomousBookUsageReply } from "@4pm/ws";
 import { cappedBookIds } from "./autonomous";
 import {
   isInQuietHours,
@@ -20,117 +21,235 @@ import {
   type AutonomousConfig,
 } from "./autonomous-config";
 import { pushRecord, readHistories, todayTickCount, writeHistories, type Histories } from "./autonomous-history";
+import * as B from "./autonomous-books";
+import {
+  aheadOf,
+  checkoutTaskBranch,
+  currentBranch,
+  deliverPr,
+  gitQuiet,
+  publishBooks,
+  publishIntake,
+  pushBranch,
+  remoteBook,
+  resolveBases,
+  syncBase,
+  wipCommit,
+  type RepoBase,
+} from "./autonomous-git";
+import {
+  applyClaim,
+  applyFinish,
+  applyQuestion,
+  applyRelease,
+  applySplit,
+  claimState,
+  foldTaskAnswers,
+  hasIntakeWork,
+  isSplitChild,
+  pickTask,
+  readLocalClaim,
+  taskBranch,
+  writeLocalClaim,
+  type Candidate,
+  type LocalClaim,
+} from "./autonomous-tasks";
+import { branchProtection } from "./git-host";
 import { readProfileConfig } from "../config/profile";
 import { activeProvider, claudeHomeDirs } from "../utils/ai-cli";
 import { checkClaudeUsage } from "./claude-usage";
 
-/**
- * The cli-owned autonomous cycle instructions (ADR-0319) — replaces the scaffold's
- * `.claude/commands/auto-cycle.md`. The agent runs write-capable (bypass) and folder-scoped to the
- * served project root, so all paths are relative to that root.
- */
-export function buildAutonomousCyclePrompt(opts: { intakeBlocked?: boolean } = {}): string {
-  // The org reached this month's cap for new AI_TODO / USER_QA rows (ADR-0365): no intake this cycle.
-  const capNote = opts.intakeBlocked
-    ? `
+// ── Prompts (the agent's parts only) ──────────────────────────────────────────────────────────────
 
-**Step 2 is DISABLED this cycle** — the organization reached its monthly plan limit for new \`AI_TODO\` /
-\`USER_QA\` rows. Do NOT add any row to \`AI_TODO.md\` or \`USER_QA.md\`; skip Step 2 entirely and continue
-with the already-approved work.`
-    : "";
-  return `You are running UNATTENDED as the 4PM autonomous cycle (headless, one tick). Do EXACTLY ONE small
-work cycle with the steps below, then STOP. Keep each cycle to ONE small task so you never run out of
-tokens mid-way. If a step fails, append a row to the **Incidents** table of \`AI_DONE.md\` and STOP —
-do not push on. Write all books/docs/code in the language the project's \`CLAUDE.md\` specifies (default
-English).${capNote}
-
-## Books & approval (MUST read the approvals file)
-The five "book" files at the project root — \`USER_TODO.md\`, \`USER_QA.md\`, \`AI_TODO.md\`,
+/** Shared books preamble for the intake agent. */
+const BOOKS_INTRO = `The five "book" files at the project root — \`USER_TODO.md\`, \`USER_QA.md\`, \`AI_TODO.md\`,
 \`AI_PROGRESS.md\`, \`AI_DONE.md\` — have canonical templates in \`.claude/templates/\` (\`<NAME>.empty.md\`
-= EMPTY, \`<NAME>.sample.md\` = example WITH DATA). To tell empty/has-work, COMPARE a book to its
-\`<NAME>.empty.md\` (equal after trimming ⇒ empty). When clearing a book, overwrite it with EXACTLY the
-empty template (\`cp .claude/templates/<NAME>.empty.md <NAME>\`).
+= EMPTY, \`<NAME>.sample.md\` = example WITH DATA). When clearing a book, overwrite it with EXACTLY the
+empty template. The single source of truth for approval is \`.claude/.autonomous.approvals.json\`
+(\`{ "<ID>": { "approved": true, … } }\`); a row is APPROVED only when its id has \`"approved": true\`.
+NEVER act on an unapproved row.`;
 
-The single source of truth for approval is \`.claude/.autonomous.approvals.json\` — a map
-\`{ "<ID>": { "approved": true, "by": "...", "at": "..." } }\` (the user ticks rows in the web grids). A
-row is APPROVED only when its ID has \`"approved": true\`. Row IDs: \`USER_TODO\` = \`REQ-…\`, \`USER_QA\`
-= \`QA-…\`, \`AI_TODO\` = \`TSK-…\`. NEVER act on an unapproved row.
+/**
+ * Intake (ADR-0371 phase 3): analyse approved `USER_TODO` requests and answered intake questions into
+ * sized tasks. Books only — no git, no code.
+ */
+export function buildIntakePrompt(cfg: AutonomousConfig): string {
+  const h = cfg.taskSizeHints;
+  return `You are the 4PM autonomous INTAKE step (headless). Edit ONLY \`USER_TODO.md\`, \`USER_QA.md\` and
+\`AI_TODO.md\`. Do NOT run git, do NOT touch \`AI_PROGRESS.md\` / \`AI_DONE.md\` / any code — the 4PM cli
+commits and publishes your book edits. Write in the language the project's \`CLAUDE.md\` specifies (default English).
 
-## Step 1 — Base branch (from the spec, ADR-0292)
-The project root IS the primary repo (ADR-0314). Its currently checked-out branch is the base branch
-(4PM cloned it with \`-b <branch>\`): \`BASE=$(git rev-parse --abbrev-ref HEAD)\`. Sync it:
-\`git fetch origin\` then \`git pull --ff-only origin "$BASE"\` (skip the pull if the remote has no such
-branch yet). Do NOT invent a separate integration/dev branch.
+${BOOKS_INTRO}
 
-## Step 2 — Intake APPROVED user requests → tasks
-Read \`USER_TODO.md\` (content-only columns \`ID | Group | Depends | Request\`; who/when wrote or approved a
-row lives in \`.claude/.autonomous.authors.json\` / \`.autonomous.approvals.json\`, ADR-0320 — never add
-provenance columns to the table). For each row that is APPROVED (its \`REQ-…\` in the approvals file) AND
-whose \`Depends\` \`REQ-…\` are already handled:
-- If the request is CLEAR: split it into small tasks and append them to \`AI_TODO.md\` (7 columns
-  \`ID | Priority | Tag | Depends | Group | Task description | Notes\`), each with an ID
-  \`TSK-{groupid:0000}-{taskid:0000}\`. **groupid** must be UNIQUE + INCREASING across all history — find
-  the largest ever used in git history of \`AI_TODO.md\`/\`AI_DONE.md\`/\`AI_PROGRESS.md\`, then use max+1;
-  **taskid** starts at 0001 within the group. Leave \`Tag\` blank unless a catalog tag applies; leave
-  \`Priority\` = High/Medium/Low (default Medium). Then REMOVE the analysed request row from
-  \`USER_TODO.md\` (if it becomes empty, reset it to the empty template).
-- If the request is UNCLEAR (ambiguous/missing info/contradictory): do NOT guess. Append a row to
-  \`USER_QA.md\` (content-only columns \`ID | Group | Depends | Original request | Question / options |
-  Answer\`) with a new \`QA-{groupid:0000}-{qaid:0000}\` id, the original request and the question +
-  options; leave \`Answer\` blank for the user. Remove the request row from \`USER_TODO.md\`. (Do NOT
-  generate tasks for it.)
-An unapproved request row is LEFT in place (wait for approval).
+## 1 — Approved user requests → tasks
+Read \`USER_TODO.md\` (columns \`ID | Group | Depends | Request\`). For each APPROVED \`REQ-…\` whose \`Depends\`
+are already handled:
+- CLEAR request ⇒ split it into tasks appended to \`AI_TODO.md\` (columns
+  \`ID | Priority | Tag | Depends | Group | Task description | Notes\`), ids \`TSK-{groupid:0000}-{taskid:0000}\`
+  (groupid UNIQUE + INCREASING across all history — the largest ever used in \`AI_TODO.md\`/\`AI_DONE.md\`/
+  \`AI_PROGRESS.md\`/their git history, +1; taskid from 0001). \`Depends\` = the \`TSK-…\` it needs.
+  Remove the analysed request row (empty ⇒ reset to the empty template).
+- UNCLEAR request ⇒ do NOT guess: append a \`USER_QA.md\` row (\`ID | Group | Depends | Original request |
+  Question / options | Answer\`) with a new \`QA-{groupid:0000}-{qaid:0000}\`, blank \`Answer\`; remove the request row.
+An unapproved request stays.
 
-## Step 3 — Fold APPROVED answers back (USER_QA)
-For each \`USER_QA.md\` row that has an \`Answer\` AND is APPROVED (its \`QA-…\` in the approvals file):
-re-analyse using the answer — append the resulting tasks to \`AI_TODO.md\` (same ID rules as Step 2) —
-then clear that QA row. An unanswered or unapproved QA row is left in place.
+## 2 — Answered intake questions
+For each \`USER_QA.md\` row with an \`Answer\`, APPROVED, and whose id is NOT in any \`AI_TODO.md\` \`Depends\`
+(those are task questions — the cli handles them; leave them alone): re-analyse the original request with the
+answer into tasks (same rules), then remove that QA row.
 
-## Step 4 — Pick ONE approved task and start it
-Read \`AI_TODO.md\` + the approvals file. Filter tasks that are BOTH approved (\`TSK-…\` in approvals) AND
-have every \`Depends\` \`TSK-…\` already in \`AI_DONE.md\`. Run group by group (smallest eligible group
-first), within a group High → Medium → Low, then line order. If NO eligible task: append a row to the
-\`AI_DONE.md\` Incidents table (e.g. "only generated tasks / waiting for approval / waiting for deps")
-and STOP. Otherwise move the chosen task into \`AI_PROGRESS.md\` (with a start timestamp), remove it from
-\`AI_TODO.md\`, and commit on the base branch: \`git commit -am "chore(auto): start TSK-…"\`.
+## Task size (MANDATORY — every task must be finishable in ONE run)
+Size each task by SCOPE and write \`size: S\` or \`size: M\` at the start of \`Notes\`:
+- **S** — one small change in one module/layer (≈ ≤ ${h.sMaxFiles} files, ≈ ≤ ${h.sMaxLines} lines), e.g. fix a bug, add a field.
+- **M** — one feature slice across 2–3 layers with ONE purpose (≈ ≤ ${h.mMaxFiles} files, ≈ ≤ ${h.mMaxLines} lines), e.g. one CRUD screen, one API + its UI + tests.
+- **L** — several features, a cross-cutting change, a big migration, a new subsystem, or an architecture decision.
+  **Never write an L task**: split it into S/M tasks chained with \`Depends\`, or ask in \`USER_QA.md\` when the split needs a decision.
+The counts are hints, not hard limits. Each task's \`Task description\` states the acceptance criteria and how to test it.
 
-## Step 5 — Implement on a task branch + test
-\`git checkout -b task/TSK-…\`. Implement following the project's architecture + \`CLAUDE.md\`; add/update
-tests. Run the project's test command (per \`CLAUDE.md\` / the project's scripts); WAIT for it to finish
-and check the result. Keep any produced report/evidence. Commit: \`git commit -am "feat(TSK-…): <desc>"\`.
-
-## Step 6 — Pull request into the base branch (NO direct merge — ADR-0319/0271)
-1. Rebase onto the freshest base to minimise conflicts: \`git fetch origin\` then
-   \`git rebase origin/"$BASE"\` (on conflict you can't resolve confidently, \`git rebase --abort\`, write a
-   \`USER_QA.md\` row, and STOP).
-2. Push the task branch: \`git push -u origin task/TSK-…\`.
-3. Open a PR into the base branch with \`gh\` (GitHub) or \`glab\` (GitLab) — e.g.
-   \`gh pr create --base "$BASE" --head task/TSK-… --title "TSK-…: <desc>" --body "<summary>"\`. Do NOT
-   merge it and do NOT fast-forward the base yourself — a human reviews the PR. If no remote / no
-   \`gh\`/\`glab\` auth is available, keep the local task-branch commit and append an Incidents row saying
-   the PR could not be opened.
-
-## Step 7 — Update the books
-On the base branch, append a row to the \`AI_DONE.md\` Done table (Timestamp, ID, Task description, Files,
-Notes — include the PR link if opened) and REMOVE the task from \`AI_PROGRESS.md\` (reset it to the empty
-template if nothing is in progress). Commit + push the base branch:
-\`git commit -am "chore(auto): finish TSK-… (PR opened)" && git push origin "$BASE"\` (a push rejected as
-non-fast-forward ⇒ \`git pull --rebase origin "$BASE"\` then push again).
-
-## Step 8 — Stop
-Print a one-line summary (task id + PR link or incident). STOP — the next cron tick runs the next cycle.
-The 4PM cli serializes cycles (one at a time); you do NOT manage any run lock.`;
+When done, reply with one short line summarising what you added.`;
 }
 
-// Serialize cycles: at most one per served project at a time (replaces the old shell file-lock — ADR-0321).
+/** Implementation (ADR-0371 phase 6): work + test on the prepared branches; commit only. */
+function buildImplementPrompt(mine: LocalClaim, subs: { dir: string; branch: string }[], resumed: boolean): string {
+  const subLines = subs.length
+    ? subs.map((s) => `- submodule \`${s.dir}\` is on branch \`${s.branch}\` — commit changes to it INSIDE \`${s.dir}\``).join("\n")
+    : "- (no submodules)";
+  return `You are the 4PM autonomous IMPLEMENT step (headless). Implement exactly ONE task, then STOP.
+
+Task ${mine.id} (group ${mine.task.group}, attempt ${mine.attempt}):
+${mine.task.desc}
+Notes: ${mine.task.notes || "(none)"}
+${resumed ? "\nThis is a CONTINUATION: earlier work for this task is already committed on the branches below — review it (git log / git diff against the base) and continue from it; do not start over.\n" : ""}
+Branches (already checked out by the 4PM cli — stay on them):
+- project root is on \`${mine.branch}\`
+${subLines}
+
+Rules:
+- Follow the project's architecture and \`CLAUDE.md\`. Add/update tests; run the project's test command and WAIT for the result.
+- Commit your work (\`git add\` + \`git commit\`) in the root and/or inside each submodule you changed.
+- Do NOT push, do NOT open pull requests, do NOT switch/create branches, do NOT edit the book files
+  (USER_TODO/USER_QA/AI_TODO/AI_PROGRESS/AI_DONE) — the 4PM cli delivers and records everything.
+- If you need a human DECISION to continue (ambiguous requirement, missing information, a choice with real
+  trade-offs), do NOT guess: commit what you have and report \`needs-input\` with the question + options.
+
+Finish with ONLY one fenced \`json\` block:
+{"status": "done" | "needs-input" | "failed", "summary": "<what you did / why it failed>", "question": "<only for needs-input: the question and the options>"}`;
+}
+
+/** Split analysis (ADR-0371 §6): read-only — propose smaller child tasks. */
+function buildSplitPrompt(mine: LocalClaim, reasons: string, diff: string): string {
+  return `You are the 4PM autonomous SPLIT step (read-only — do not change any file). Task ${mine.id} failed to
+finish after repeated attempts, so it is probably too big for one run. Split it into 2–6 smaller child tasks
+that are each finishable in ONE run (size S or M), in execution order (each depends on the previous).
+
+Task: ${mine.task.desc}
+Notes: ${mine.task.notes || "(none)"}
+Why the attempts ended: ${reasons || "(unknown)"}
+Work already done on its WIP branch \`${mine.branch}\` (diff against the base, may be truncated):
+\`\`\`
+${diff || "(no changes yet)"}
+\`\`\`
+The first child continues from that WIP branch: note which parts are already done so they are not redone.
+Each child description must state its acceptance criteria and how to test it.
+
+Reply with ONLY one fenced \`json\` block:
+{"children": [{"desc": "<task + acceptance criteria>", "priority": "High|Medium|Low", "size": "S|M", "notes": "<optional>"}]}`;
+}
+
+/** Extract the last fenced json block (or the last `{…}`) from an agent reply. */
+function parseJsonReply<T>(text: string): T | null {
+  const fenced = [...text.matchAll(/```json\s*([\s\S]*?)```/gi)].map((m) => m[1]!.trim());
+  const candidates = fenced.length ? fenced.reverse() : [text.slice(text.lastIndexOf("{"), text.lastIndexOf("}") + 1)];
+  for (const c of candidates) {
+    try {
+      return JSON.parse(c) as T;
+    } catch {
+      // try the next
+    }
+  }
+  return null;
+}
+
+// ── Claim watch (during the run + on reconnect) ───────────────────────────────────────────────────
+
+/** The run currently implementing a claimed task (one per daemon). */
+const watch: { commandId: string | null; claim: LocalClaim | null; root: string | null; lost: boolean } = {
+  commandId: null,
+  claim: null,
+  root: null,
+  lost: false,
+};
+
+/** Is the held claim still ours on the remote books? Lost ⇒ stop the running agent (ADR-0371 §2). */
+async function verifyHeldClaim(ctx: WsHandlerCtx): Promise<void> {
+  const { claim, root, commandId } = watch;
+  if (!claim || !root || !commandId || watch.lost) return;
+  const prog = await remoteBook(root, claim.base, "AI_PROGRESS.md");
+  if (!prog) return; // unreadable (offline) — keep working, the next check / deliver re-verifies
+  const row = B.parseClaims(prog).claims.find((c) => c.id === claim.id);
+  if (!row || row.claim !== claim.claim) {
+    watch.lost = true;
+    ctx.bus.log(`autonomous: claim of ${claim.id} was taken over — stopping this run`, "warn");
+    cancelActiveRun(commandId);
+  }
+}
+
+/** Reconnect hook (ADR-0371): a worker that was offline re-verifies its claim before working on. */
+export function onReconnectVerifyClaim(ctx: WsHandlerCtx): void {
+  void verifyHeldClaim(ctx).catch(() => undefined);
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────────────────────────
+
+/** Send an alert to the server (the project's managers are notified, deduplicated per day). */
+function alert(ctx: WsHandlerCtx, payload: AutonomousAlertPayload): void {
+  try {
+    ctx.send(WsChannels.AUTONOMOUS_ALERT, payload);
+  } catch {
+    // best-effort
+  }
+}
+
+/** Branches per submodule for a task, and the source each starts from (the dependency's / parent's). */
+function subBranches(subs: RepoBase[], taskId: string, rootFrom: string | null): { sub: RepoBase; branch: string; from: string | null }[] {
+  // The root's `from` is `dev/<base>/<GROUP>/<TSK-x>` — use the same TSK-x's branch in each submodule.
+  const fromTask = rootFrom ? rootFrom.split("/").pop() ?? null : null;
+  return subs
+    .filter((s) => s.base)
+    .map((s) => ({ sub: s, branch: taskBranch(s.base, taskId), from: fromTask ? taskBranch(s.base, fromTask) : null }));
+}
+
+/** Save + push the work in progress of a task (root + submodules) — no PR. Best-effort. */
+async function pushWip(root: string, mine: LocalClaim, subs: { sub: RepoBase; branch: string }[], note: string): Promise<void> {
+  for (const s of subs) {
+    const abs = join(root, s.sub.dir);
+    if ((await currentBranch(abs)) !== s.branch) continue;
+    await wipCommit(abs, `wip(${mine.id}): ${note}`);
+    if ((await aheadOf(abs, s.branch, s.sub.base)) > 0) await pushBranch(abs, s.branch).catch(() => undefined);
+  }
+  if ((await currentBranch(root)) === mine.branch) {
+    await wipCommit(root, `wip(${mine.id}): ${note}`);
+    await pushBranch(root, mine.branch).catch(() => undefined);
+  }
+}
+
+/** Short diff of a task branch against its base, for the split analysis. */
+async function wipDiff(root: string, mine: LocalClaim): Promise<string> {
+  const stat = await gitQuiet(root, ["diff", "--stat", `origin/${mine.base}...${mine.branch}`]);
+  const patch = await gitQuiet(root, ["diff", `origin/${mine.base}...${mine.branch}`]);
+  return `${stat}\n${patch}`.slice(0, 20_000);
+}
+
+// ── The cycle ─────────────────────────────────────────────────────────────────────────────────────
+
+// Serialize cycles: at most one per served project at a time (ADR-0321).
 const running = new Set<string>();
 
 /**
- * Run one autonomous cycle for the daemon's served project (ADR-0321): the daemon — not the shell tick —
- * owns ALL the logic. It reads the profile-dir config, applies the cheap gates (paused / quiet-hours /
- * max-ticks / has-work) + the quota gate (session/weekly vs the config caps, via the live usage
- * snapshot), serializes, records histories (+ auto-pause), then runs the write-capable-agent cycle
- * (bypass — ADR-0271). Completion is reported over the control socket so `4pm auto-run` can settle.
+ * Run one autonomous cycle (ADR-0371): gates → guard (protection) → sync `<base>` → resume / release a
+ * held claim → fold task answers → intake → claim (race-safe) → task branches → implement (claim watched)
+ * → deliver PRs → finish; failures release the task (WIP pushed, attempts+1) and split it at the limit;
+ * a question parks it on a `QA-…`.
  */
 export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
   const root = ctx.physicRoot;
@@ -149,10 +268,9 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     const cfg = await readAutonomousConfig(profileDir);
     await pruneLogs(root, cfg.logRetentionDays);
     const today = new Date().toISOString().slice(0, 10);
+    const worker = ctx.machineUsername || "worker";
 
     // --- Preconditions + cheap gates (no token spend) ------------------------------------------
-    // A live cli-server WS connection is REQUIRED (ADR-0321): the cycle reports + meters over the
-    // session, so an offline cli does not run autonomous. Reported as a STATUS, not a technical error.
     if (!ctx.isReady) {
       await log("[skip] cli offline (no WS connection)");
       ctx.bus.autonomousDone(false, "cli offline");
@@ -174,67 +292,331 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       ctx.bus.autonomousDone(false, "max ticks reached");
       return;
     }
-    if (!(await hasWork(root))) {
-      await log("[skip] no approved USER_TODO/USER_QA/AI_TODO work, AI_PROGRESS empty");
+
+    // --- Phase 0: bases + protection guard -----------------------------------------------------
+    const bases = await resolveBases(root);
+    const rootBase = bases.root;
+    if (!rootBase.base) {
+      await log("[skip] base branch unknown (no spec branch, no origin/HEAD)");
+      ctx.bus.autonomousDone(false, "base branch unknown");
+      return;
+    }
+    for (const r of [rootBase, ...bases.subs]) {
+      if (!r.base || !r.url) continue;
+      if ((await branchProtection(r.url, r.base)) === true) {
+        const repo = r.dir || "root";
+        await log(`[stop] base branch "${r.base}" is protected in ${repo} — the books cannot be pushed`);
+        alert(ctx, { kind: "base-protected", repo, branch: r.base, message: `The base branch "${r.base}" (${repo}) is protected; autonomous cannot record its tasks there.` });
+        await recordRun(root, hist, "skip", `base-protected: ${r.base} (${repo})`, today); // surfaced as status.baseProtected
+        ctx.bus.autonomousDone(false, "base branch protected");
+        return;
+      }
+    }
+
+    // --- Phase 1: sync <base> ------------------------------------------------------------------
+    await syncBase(root, rootBase.base);
+
+    // --- Phase 2: a held claim? (resume / release / lost) ----------------------------------------
+    let mine = await readLocalClaim(profileDir);
+    if (mine && mine.base !== rootBase.base) mine = null; // a claim of another project / base
+    if (mine) {
+      const state = await claimState(root, mine, cfg.claimTtlHours);
+      if (state === "lost") {
+        await log(`[lost] claim of ${mine.id} was taken over — dropping local work (kept on ${mine.branch} locally)`);
+        await publishBooks(root, rootBase.base, `chore(auto): incident — ${mine.id} claim lost by ${worker}`, async () => {
+          await B.writeBook(root, "AI_DONE.md", B.appendIncident(await B.readBook(root, "AI_DONE.md"), `${worker} lost its claim of ${mine!.id} (taken over); its local work was not pushed.`));
+          return true;
+        });
+        alert(ctx, { kind: "claim-lost", task: mine.id, message: `${worker} lost its claim of ${mine.id}.` });
+        await writeLocalClaim(profileDir, null);
+        mine = null;
+      } else if (state === "expired") {
+        await log(`[release] claim of ${mine.id} reached ${cfg.claimTtlHours} h — pushing WIP and returning the task`);
+        await checkoutTaskBranch(root, mine.branch, rootBase.base, null).catch(() => undefined);
+        await releaseTask(ctx, root, rootBase, bases.subs, mine, `not finished within ${cfg.claimTtlHours} h`, cfg);
+        ctx.bus.autonomousDone(false, "claim expired — task returned");
+        return;
+      }
+    }
+
+    // --- Has work? + quota gate ----------------------------------------------------------------
+    if (!mine && !(await hasWork(root))) {
+      await log("[skip] no approved USER_TODO/USER_QA/AI_TODO work");
       ctx.bus.autonomousDone(false, "no work");
       return;
     }
-    // Quota gate (ADR-0321): the session/weekly caps are checked **per AI profile** — only skip when
-    // EVERY profile is over a cap (if at least one profile is still under, the run's failover uses it).
-    // Running out of session/weekly tokens is NOT a technical error — it's a status + a notification to
-    // the web (recorded as a "skip"), so the badge shows a back-off, not a red error.
     if (await allAiProfilesExhausted(ctx, cfg)) {
-      await log(`[skip] all AI profiles over usage limit (≥ ${cfg.maxSessionPct}%/${cfg.maxWeeklyPct}%)`);
+      // A held claim is kept while waiting for the reset (ADR-0371 §4); the TTL release above bounds it.
+      await log(`[skip] all AI profiles over usage limit (≥ ${cfg.maxSessionPct}%/${cfg.maxWeeklyPct}%)${mine ? ` — ${mine.id} kept` : ""}`);
       await recordRun(root, hist, "skip", "all AI profiles over usage limit", today);
       ctx.bus.autonomousDone(false, "usage limit");
       return;
     }
-
-    // --- Count a tick that actually runs, then run the cycle -----------------------------------
     hist.ticks = { day: today, count: todayTickCount(hist, today) + 1 };
     await writeHistories(root, hist);
     await log(`[run] cycle (tick ${hist.ticks.count}/${today})`);
 
-    const commandId = randomUUID();
     const override = cfg.model ? { model: cfg.model } : undefined;
-    // Monthly book caps (ADR-0365): at the AI_TODO / USER_QA cap the cycle skips intake (no new rows) but
-    // still works approved tasks; the rows the agent adds are counted after the run.
-    const usage = await readBookUsage(ctx);
-    const intakeBlocked = (["AI_TODO", "USER_QA"] as const).some((b) => {
-      const c = usage?.books[b];
-      return !!c && c.limit !== null && c.used >= c.limit;
-    });
-    if (intakeBlocked) await log("[cap] monthly AI_TODO/USER_QA limit reached — intake skipped this cycle");
-    const booksBefore = await cappedBookIds(root);
+    let resumed = !!mine;
+    if (!mine) {
+      // --- Fold answered task questions into their tasks (cli) ------------------------------------
+      const folded = await publishBooks(root, rootBase.base, "chore(auto): fold answered task questions", () => foldTaskAnswers(root));
+      if (folded === "pushed") await log("[fold] task-question answers folded into their tasks");
+
+      // --- Phase 3: intake (agent) --------------------------------------------------------------
+      const usage = await readBookUsage(ctx);
+      const intakeBlocked = (["AI_TODO", "USER_QA"] as const).some((b) => {
+        const c = usage?.books[b];
+        return !!c && c.limit !== null && c.used >= c.limit;
+      });
+      if (intakeBlocked) await log("[cap] monthly AI_TODO/USER_QA limit reached — intake skipped this cycle");
+      else if (await hasIntakeWork(root)) {
+        const before = await cappedBookIds(root);
+        const out = await runAiPrompt(ctx, buildIntakePrompt(cfg), randomUUID(), "local", false, undefined, override, false, true);
+        if (out.exhausted) {
+          await gitQuiet(root, ["checkout", "--", "."]);
+          await log("[skip] usage limit during intake");
+          ctx.bus.autonomousDone(false, "usage limit");
+          return;
+        }
+        const res = await publishIntake(root, rootBase.base, "chore(auto): intake requests into tasks");
+        await log(`[intake] ${res}`);
+        if (res === "pushed") await reportNewBookRows(ctx, root, before);
+        await syncBase(root, rootBase.base);
+      }
+
+      // --- Phase 4: claim (race-safe) -----------------------------------------------------------
+      const skip = new Set<string>();
+      for (let i = 0; i < 5 && !mine; i++) {
+        const cand: Candidate | null = await pickTask(root, rootBase, { worker, ttlHours: cfg.claimTtlHours, maxAttempts: cfg.maxTaskAttempts, skip });
+        if (!cand) break;
+        const attempts = await B.readAttempts(root);
+        const claim: LocalClaim = {
+          id: cand.task.id,
+          claim: randomUUID(),
+          worker,
+          started: B.stamp(),
+          attempt: (attempts[cand.task.id]?.count ?? 0) + 1 + (cand.takeover ? 1 : 0),
+          branch: taskBranch(rootBase.base, cand.task.id),
+          base: rootBase.base,
+          task: cand.task,
+        };
+        const res = await publishBooks(root, rootBase.base, `chore(auto): claim ${cand.task.id} by ${worker}`, () =>
+          applyClaim(root, cand, claim, cfg.claimTtlHours),
+        );
+        if (res === "pushed") {
+          mine = { ...claim, from: cand.from };
+          await writeLocalClaim(profileDir, mine);
+          await log(`[claim] ${mine.id}${cand.takeover ? ` (taken over from ${cand.takeover.worker})` : ""} attempt ${mine.attempt}`);
+        } else skip.add(cand.task.id);
+      }
+      if (!mine) {
+        await log("[idle] no eligible task (waiting for approval / dependencies / answers)");
+        hist = await readHistories(root);
+        await recordRun(root, hist, "success", "no eligible task", today);
+        ctx.bus.autonomousDone(true);
+        return;
+      }
+      resumed = false;
+    }
+
+    // --- Phase 5: task branches (root + submodules) --------------------------------------------
+    const from = mine.from ?? null;
+    await checkoutTaskBranch(root, mine.branch, rootBase.base, from);
+    const hadWork = (await aheadOf(root, mine.branch, rootBase.base)) > 0;
+    await gitQuiet(root, ["submodule", "update", "--init", "-q"], 300_000);
+    const subs = subBranches(bases.subs, mine.id, from);
+    for (const s of subs) await checkoutTaskBranch(join(root, s.sub.dir), s.branch, s.sub.base, s.from).catch((e) => log(`[warn] submodule ${s.sub.dir}: ${String(e)}`));
+
+    // --- Phase 6: implement (agent), claim watched ---------------------------------------------
+    const commandId = randomUUID();
+    Object.assign(watch, { commandId, claim: mine, root, lost: false });
+    const timer = setInterval(() => void verifyHeldClaim(ctx).catch(() => undefined), cfg.claimCheckMinutes * 60_000);
+    timer.unref?.();
+    let out: AiPromptOutcome;
     try {
-      // Write-capable agent (bypass — ADR-0271): all tools, folder-scoped; metering + failover from runAiPrompt.
-      await runAiPrompt(ctx, buildAutonomousCyclePrompt({ intakeBlocked }), commandId, "local", false, undefined, override, false, true);
-      await reportNewBookRows(ctx, root, booksBefore);
+      out = await runAiPrompt(ctx, buildImplementPrompt(mine, subs.map((s) => ({ dir: s.sub.dir, branch: s.branch })), resumed || hadWork), commandId, "local", false, undefined, override, false, true);
+    } finally {
+      clearInterval(timer);
+    }
+    const lost = watch.lost;
+    Object.assign(watch, { commandId: null, claim: null, root: null, lost: false });
+    // The agent must stay on the prepared branches — put them back if it wandered.
+    if ((await currentBranch(root)) !== mine.branch) await gitQuiet(root, ["checkout", "-q", mine.branch]);
+
+    if (lost) {
+      // --- Phase 9: lost the claim mid-run — push nothing -------------------------------------
+      await log(`[lost] ${mine.id} was taken over while running — stopped, nothing pushed`);
+      alert(ctx, { kind: "claim-lost", task: mine.id, message: `${worker} lost its claim of ${mine.id} while working; its work was not pushed.` });
+      await writeLocalClaim(profileDir, null);
+      await syncBase(root, rootBase.base);
+      ctx.bus.autonomousDone(false, "claim lost");
+      return;
+    }
+    if (out.exhausted) {
+      // Out of tokens: keep the claim + save the work; the next cycle resumes it (ADR-0371 §4).
+      for (const s of subs) await wipCommit(join(root, s.sub.dir), `wip(${mine.id}): out of tokens`);
+      await wipCommit(root, `wip(${mine.id}): out of tokens`);
+      await log(`[wait] ${mine.id}: usage limit — claim kept, resumes after the reset`);
+      ctx.bus.autonomousDone(false, "usage limit — task kept");
+      return;
+    }
+    const reply = parseJsonReply<{ status?: string; summary?: string; question?: string }>(out.output);
+    const status = out.cancelled ? "failed" : out.exitCode !== 0 ? "failed" : (reply?.status ?? "failed");
+
+    if (status === "needs-input") {
+      await pushWip(root, mine, subs, "waiting for an answer");
+      await syncBase(root, rootBase.base);
+      const question = reply?.question?.trim() || reply?.summary?.trim() || "The agent needs a decision to continue.";
+      let qaId: string | null = null;
+      await publishBooks(root, rootBase.base, `chore(auto): ${mine.id} asks a question`, async () => {
+        qaId = await applyQuestion(root, mine!, question);
+        return qaId !== null;
+      });
+      await writeLocalClaim(profileDir, null);
+      await log(`[question] ${mine.id} parked on ${qaId ?? "?"}`);
+      alert(ctx, { kind: "task-question", task: mine.id, message: `${mine.id} waits for an answer (${qaId ?? "QA"}): ${question.slice(0, 200)}` });
       hist = await readHistories(root);
-      hist.consecutiveFails = 0;
-      await recordRun(root, hist, "success", "cycle complete", today);
-      await log("[done] cycle complete");
+      await recordRun(root, hist, "success", `${mine.id} needs input`, today);
       ctx.bus.autonomousDone(true);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // A failed run may still have written rows before it stopped — count them too.
-      await reportNewBookRows(ctx, root, booksBefore);
+      return;
+    }
+    if (status !== "done") {
+      const reason = reply?.summary?.trim() || (out.cancelled ? "run stopped" : `agent run failed (exit ${out.exitCode})`);
+      await releaseTask(ctx, root, rootBase, bases.subs, mine, reason, cfg);
       hist = await readHistories(root);
       hist.consecutiveFails += 1;
-      await recordRun(root, hist, "failure", msg, today);
-      await log(`[warn] cycle failed: ${msg}`);
-      // Auto-pause after N consecutive failures (ADR-0321) — write paused=true to the profile config.
-      if (cfg.stopOnConsecutiveFailures > 0 && hist.consecutiveFails >= cfg.stopOnConsecutiveFailures) {
-        await writeAutonomousConfig(profileDir, { ...cfg, paused: true });
-        await log(`[stop] ${hist.consecutiveFails} consecutive failures → paused`);
-      }
-      ctx.bus.autonomousDone(false, msg);
+      await recordRun(root, hist, "failure", `${mine.id}: ${reason}`, today);
+      await maybeAutoPause(root, profileDir, cfg, hist, log);
+      ctx.bus.autonomousDone(false, reason);
+      return;
     }
+
+    // --- Phase 7: deliver (verify the claim first) ---------------------------------------------
+    if (await remoteClaimLost(root, mine)) {
+      await log(`[lost] ${mine.id} was taken over before delivery — nothing pushed`);
+      alert(ctx, { kind: "claim-lost", task: mine.id, message: `${worker} lost its claim of ${mine.id} before delivering.` });
+      await writeLocalClaim(profileDir, null);
+      await syncBase(root, rootBase.base);
+      ctx.bus.autonomousDone(false, "claim lost");
+      return;
+    }
+    let delivered: { files: string; notes: string };
+    try {
+      delivered = await deliver(root, rootBase, subs, mine, reply?.summary ?? "");
+    } catch (err) {
+      const reason = `delivery failed: ${String(err instanceof Error ? err.message : err)}`;
+      await releaseTask(ctx, root, rootBase, bases.subs, mine, reason, cfg);
+      ctx.bus.autonomousDone(false, reason);
+      return;
+    }
+
+    // --- Phase 8: finish -----------------------------------------------------------------------
+    await syncBase(root, rootBase.base);
+    const fin = await publishBooks(root, rootBase.base, `chore(auto): finish ${mine.id}`, () => applyFinish(root, mine!, delivered));
+    await writeLocalClaim(profileDir, null);
+    await log(`[done] ${mine.id} — ${delivered.notes} (${fin})`);
+    hist = await readHistories(root);
+    hist.consecutiveFails = 0;
+    await recordRun(root, hist, "success", `${mine.id} delivered`, today);
+    ctx.bus.autonomousDone(true);
   } catch (err) {
+    await dayLog(root, `[warn] cycle error: ${err instanceof Error ? err.message : String(err)}`).catch(() => undefined);
     ctx.bus.autonomousDone(false, err instanceof Error ? err.message : String(err));
   } finally {
     running.delete(root);
   }
+}
+
+/** Is the claim gone from the REMOTE books (read without leaving the task branch)? Unknown ⇒ false. */
+async function remoteClaimLost(root: string, mine: LocalClaim): Promise<boolean> {
+  const prog = await remoteBook(root, mine.base, "AI_PROGRESS.md");
+  if (!prog) return false; // unreadable — the finish step re-verifies on <base>
+  const row = B.parseClaims(prog).claims.find((c) => c.id === mine.id);
+  return !row || row.claim !== mine.claim;
+}
+
+/**
+ * Deliver (ADR-0371 phase 7): push each submodule's task branch that has commits + open its PR into the
+ * submodule's base; in the root commit the pointer bumps, push, and open the PR into `<base>` linking the
+ * submodule PRs. Returns the AI_DONE Files + Notes.
+ */
+async function deliver(root: string, rootBase: RepoBase, subs: { sub: RepoBase; branch: string }[], mine: LocalClaim, summary: string): Promise<{ files: string; notes: string }> {
+  const title = `${mine.id}: ${mine.task.desc}`.replace(/\s+/g, " ").slice(0, 100);
+  const subPrs: string[] = [];
+  for (const s of subs) {
+    const abs = join(root, s.sub.dir);
+    if ((await currentBranch(abs)) !== s.branch) continue;
+    await wipCommit(abs, `feat(${mine.id}): ${summary || mine.task.desc}`.slice(0, 200));
+    if ((await aheadOf(abs, s.branch, s.sub.base)) === 0) continue;
+    await pushBranch(abs, s.branch);
+    const pr = await deliverPr(abs, s.sub.url, s.branch, s.sub.base, title, `${summary}\n\nTask ${mine.id} (4PM autonomous).`);
+    if (pr.error) throw new Error(`submodule ${s.sub.dir} PR: ${pr.error}`);
+    subPrs.push(`${s.sub.dir}: ${pr.url ?? s.branch}`);
+  }
+  // Root: pointer bumps + any uncommitted leftovers, then push + PR.
+  await wipCommit(root, `feat(${mine.id}): ${summary || mine.task.desc}`.slice(0, 200));
+  const files = (await gitQuiet(root, ["diff", "--name-only", `origin/${rootBase.base}...${mine.branch}`])).split("\n").filter(Boolean);
+  if ((await aheadOf(root, mine.branch, rootBase.base)) === 0) {
+    return { files: "", notes: `no changes needed; branch: ${mine.branch}${subPrs.length ? `; sub PRs: ${subPrs.join(", ")}` : ""}` };
+  }
+  await pushBranch(root, mine.branch);
+  const body = `${summary}\n\nTask ${mine.id} (4PM autonomous).${subPrs.length ? `\n\nSubmodule PRs:\n${subPrs.map((p) => `- ${p}`).join("\n")}` : ""}`;
+  const pr = await deliverPr(root, rootBase.url, mine.branch, rootBase.base, title, body);
+  if (pr.error) throw new Error(`PR: ${pr.error}`);
+  return {
+    files: files.slice(0, 20).join(", ") + (files.length > 20 ? ` (+${files.length - 20})` : ""),
+    notes: `branch: ${mine.branch}; PR: ${pr.url ?? "opened"}${subPrs.length ? `; sub PRs: ${subPrs.join(", ")}` : ""}`,
+  };
+}
+
+/**
+ * Release a task after a failure / overrun (ADR-0371 §4): push its WIP, then on `<base>` either return it
+ * to `AI_TODO` (attempts+1) or — at the attempt limit — split it (a split child becomes a QA question).
+ */
+async function releaseTask(ctx: WsHandlerCtx, root: string, rootBase: RepoBase, allSubs: RepoBase[], mine: LocalClaim, reason: string, cfg: AutonomousConfig): Promise<void> {
+  const subs = subBranches(allSubs, mine.id, null);
+  await pushWip(root, mine, subs, reason.slice(0, 80));
+  await syncBase(root, rootBase.base); // the books (and attempts) as on the remote
+  const attempts = await B.readAttempts(root);
+  const next = (attempts[mine.id]?.count ?? 0) + 1;
+  const reasons = `${attempts[mine.id]?.last ?? ""}; ${reason}`;
+  if (next >= cfg.maxTaskAttempts) {
+    if (isSplitChild(mine.task)) {
+      const q = `${mine.id} (a task already split from a bigger one) failed ${next} times — last: ${reason}. How should it be handled (narrow the scope, change the approach, or drop it)?`;
+      await publishBooks(root, rootBase.base, `chore(auto): ${mine.id} needs a decision`, async () => (await applyQuestion(root, mine, q, true)) !== null);
+      alert(ctx, { kind: "task-failed-limit", task: mine.id, message: `${mine.id} failed ${next} times; a decision was requested in USER_QA.` });
+    } else {
+      const out = await runAiPrompt(ctx, buildSplitPrompt(mine, reasons, await wipDiff(root, mine)), randomUUID(), "local", false, undefined, cfg.model ? { model: cfg.model } : undefined, true, false);
+      const children = parseJsonReply<{ children?: { desc: string; priority?: string; size?: string; notes?: string }[] }>(out.output)?.children?.filter((c) => c?.desc?.trim()) ?? [];
+      await syncBase(root, rootBase.base);
+      if (children.length >= 2) {
+        let ids: string[] | null = null;
+        await publishBooks(root, rootBase.base, `chore(auto): split ${mine.id}`, async () => {
+          ids = await applySplit(root, mine, children);
+          return ids !== null;
+        });
+        alert(ctx, { kind: "task-split", task: mine.id, message: `${mine.id} was split into ${(ids ?? []).join(", ")} — approve the new tasks.` });
+      } else {
+        const q = `${mine.id} failed ${next} times and could not be split automatically — last: ${reason}. How should it be handled?`;
+        await publishBooks(root, rootBase.base, `chore(auto): ${mine.id} needs a decision`, async () => (await applyQuestion(root, mine, q, true)) !== null);
+        alert(ctx, { kind: "task-failed-limit", task: mine.id, message: `${mine.id} failed ${next} times; a decision was requested in USER_QA.` });
+      }
+    }
+  } else {
+    await publishBooks(root, rootBase.base, `chore(auto): release ${mine.id} (attempt ${next})`, async () => (await applyRelease(root, mine, reason, cfg.maxTaskAttempts)) !== null);
+  }
+  await writeLocalClaim(ctx.profileDir, null);
+  await dayLog(root, `[release] ${mine.id} attempt ${next}: ${reason}`);
+}
+
+/** Auto-pause after N consecutive failures (ADR-0321). */
+async function maybeAutoPause(root: string, profileDir: string, cfg: AutonomousConfig, hist: Histories, log: (l: string) => Promise<void>): Promise<void> {
+  if (cfg.stopOnConsecutiveFailures > 0 && hist.consecutiveFails >= cfg.stopOnConsecutiveFailures) {
+    await writeAutonomousConfig(profileDir, { ...cfg, paused: true });
+    await log(`[stop] ${hist.consecutiveFails} consecutive failures → paused`);
+  }
+  await writeHistories(root, hist);
 }
 
 /** Read the org's monthly autonomous-book counters (ADR-0365); null when unavailable (fail open). */

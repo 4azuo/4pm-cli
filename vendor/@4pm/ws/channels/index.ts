@@ -155,6 +155,9 @@ export const WsChannels = {
   // cli → server (reply): read / add the org's monthly autonomous-book counters — USER_TODO / USER_QA /
   // AI_TODO rows vs `autonomousRequestsPerMonth` (ADR-0365)
   AUTONOMOUS_BOOK_USAGE: "autonomous.bookUsage",
+  // cli → server (one-way): an autonomous condition the project's managers must see (ADR-0371) —
+  // protected base, lost claim, attempt limit, task split, task question. The server notifies them.
+  AUTONOMOUS_ALERT: "autonomous.alert",
   USAGE_REPORT: "usage.report",
   // cli → server: Claude subscription usage snapshot (5h / weekly — ADR-0072)
   MACHINE_USAGE: "machine.usage",

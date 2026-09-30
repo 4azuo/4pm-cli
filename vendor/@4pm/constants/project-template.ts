@@ -38,8 +38,30 @@ export interface ProjectTemplate {
 
 /** The authoritative scaffold-template version + changelog (ADR-0262). */
 export const PROJECT_TEMPLATE: ProjectTemplate = {
-  version: "1.0.2",
+  version: "1.1.0",
   changelog: [
+    {
+      version: "1.1.0",
+      date: "2026-09-30",
+      summary: "Multi-worker autonomous books: multi-row AI_PROGRESS claims, QA-gated task Depends, attempts sidecar (ADR-0371).",
+      notes: [
+        "AI_PROGRESS.md holds one row per claimed task: | Started | ID | Worker | Claim | Attempt | Task description | (was a single | Started | ID | Task description | row). Convert an existing single row into the new columns (Worker/Claim empty, Attempt 1).",
+        "AI_TODO.md Depends may list QA-… ids (the task waits for that USER_QA answer); two or more TSK dependencies require their PRs to be merged into the base branch; Notes may carry size: S|M and from: <branch>.",
+        "USER_QA.md notes that a question raised while implementing a task is listed in that task's Depends.",
+        ".claude/AUTONOMOUS.md documents branches & claims; .claude/.autonomous.attempts.json (per-task attempts / split-pending) is committed with the books — make sure it is NOT gitignored.",
+      ],
+      files: [
+        "AI_PROGRESS.md",
+        "AI_TODO.md",
+        "USER_QA.md",
+        ".claude/AUTONOMOUS.md",
+        ".claude/templates/AI_PROGRESS.empty.md",
+        ".claude/templates/AI_PROGRESS.sample.md",
+        ".claude/templates/AI_TODO.empty.md",
+        ".claude/templates/AI_TODO.sample.md",
+        ".claude/templates/USER_QA.empty.md",
+      ],
+    },
     {
       version: "1.0.2",
       date: "2026-09-16",

@@ -555,6 +555,8 @@ export interface AutonomousStatus {
   consecutiveFails: number;
   /** Ticks that actually invoked Claude today (local day). */
   todayTicks: number;
+  /** The last tick stopped because the base branch is protected — `"<branch> (<repo>)"` (ADR-0371), else null. */
+  baseProtected?: string | null;
 }
 
 /** Raw text of the 5 autonomous "books" (the web parses them). */
@@ -579,6 +581,8 @@ export interface AutonomousReadReply {
   approvals: string;
   /** `.autonomous.authors.json` text (`{}` when absent) — who/when wrote each row (ADR-0320). */
   authors: string;
+  /** `.autonomous.attempts.json` text (`{}` when absent) — per-task attempts / split-pending (ADR-0371). */
+  attempts?: string;
 }
 
 /** autonomous.logs — tail one day's tick log. */
@@ -1484,4 +1488,19 @@ export interface ReviewResultPayload {
   reasons: string[];
   /** Tokens the aiReview consumed (metered like a run — ADR-0072). */
   tokens?: number;
+}
+
+/** The autonomous conditions a manager must see (ADR-0371 §9). */
+export type AutonomousAlertKind = "base-protected" | "claim-lost" | "task-failed-limit" | "task-split" | "task-question";
+
+/** autonomous.alert — cli → server (one-way): notify the project's managers (deduplicated per day). */
+export interface AutonomousAlertPayload {
+  kind: AutonomousAlertKind;
+  /** The task concerned (`TSK-…`), when any. */
+  task?: string;
+  /** The repo / branch concerned (base-protected). */
+  repo?: string;
+  branch?: string;
+  /** English detail line (the notification renders its own localized title). */
+  message: string;
 }

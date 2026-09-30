@@ -7,9 +7,15 @@
 > the project when the task is approved (approval is committed on Save — ADR-0311).
 > **Approval** is NOT a table column — it lives in `.claude/.autonomous.approvals.json` (ADR-0152), set
 > from the web AI Todo grid; the autonomous cli reads that file, never the table.
-> **Depends** = the `TSK-…` ids that must be DONE (present in `AI_DONE.md`) first.
-> the autonomous cli only takes tasks that are approved AND have their dependencies met → moves them to
-> `AI_PROGRESS.md`; runs group by group, within a group High → Medium → Low.
+> **Depends** = comma-separated `TSK-…` and/or `QA-…` ids (ADR-0371). One `TSK` dependency must be in
+> `AI_DONE.md` (the task's branch starts from that task's branch); **two or more** must all have their PRs
+> **merged** into the base branch. A `QA-…` dependency parks the task until that `USER_QA` row is answered
+> and approved (the cli then folds the answer into Notes and drops the id).
+> **Notes** may carry `size: S|M` (the intake sizing — an `L` request is always split), `from: <branch>`
+> (a split child continuing a WIP branch) and failure notes. Retries/split state live in
+> `.claude/.autonomous.attempts.json`, not the table.
+> The autonomous cli only takes tasks that are approved AND have their dependencies met → claims them in
+> `AI_PROGRESS.md` (one row per worker); runs group by group, within a group High → Medium → Low.
 
 | ID | Priority | Tag | Depends | Group | Task description | Notes |
 |----|----------|-----|---------|-------|------------------|-------|
