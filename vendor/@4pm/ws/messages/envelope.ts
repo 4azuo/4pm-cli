@@ -1287,6 +1287,8 @@ export interface RepoProbeRequest {
   url: string;
   branch: string;
   base?: { kind: "default" | "branch" | "empty"; branch?: string };
+  /** Declared submodules to probe too (ADR-0371). */
+  submodules?: { subdir: string; url: string; branch: string }[];
 }
 
 /** repo.probe reply — branch existence, remote branches and what the source ref already holds. */
@@ -1302,6 +1304,9 @@ export interface RepoProbeReply {
     overwrite: string[];
     tracking: string[];
   } | null;
+  /** Base branch protected on the host (ADR-0371); null = unknown / missing. */
+  protected: boolean | null;
+  submodules: { subdir: string; url: string; branch: string; exists: boolean; protected: boolean | null; error: string | null }[];
   error: string | null;
 }
 

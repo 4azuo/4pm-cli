@@ -13,6 +13,7 @@ import { promisify } from "node:util";
 import { SCAFFOLD_TRACKING_FILES } from "@4pm/dto";
 import type { RepoProbeReply, RepoProbeRequest } from "@4pm/ws";
 import { projectSampleDir } from "./scaffold";
+import { branchProtection } from "./git-host";
 
 const run = promisify(execFile);
 /** Cap on the branch list returned to the wizard. */
@@ -35,9 +36,23 @@ async function templateEntries(): Promise<Set<string>> {
   }
 }
 
+/** One declared submodule: does its base branch exist, and is it protected (ADR-0371)? Never throws. */
+async function probeSubmodule(sub: { subdir: string; url: string; branch: string }): Promise<RepoProbeReply["submodules"][number]> {
+  try {
+    const out = await git(["ls-remote", "--symref", sub.url, "HEAD", ...(sub.branch ? [`refs/heads/${sub.branch}`] : [])], undefined, 30_000);
+    const def = /ref: refs\/heads\/(\S+)\s+HEAD/.exec(out)?.[1] ?? "";
+    const branch = sub.branch || def;
+    const exists = !sub.branch || out.includes(`refs/heads/${sub.branch}`);
+    return { subdir: sub.subdir, url: sub.url, branch, exists, protected: exists ? await branchProtection(sub.url, branch) : null, error: null };
+  } catch (err) {
+    const e = err as { stderr?: string; message?: string };
+    return { subdir: sub.subdir, url: sub.url, branch: sub.branch, exists: false, protected: null, error: (e.stderr || e.message || String(err)).trim().slice(0, 300) };
+  }
+}
+
 /** Probe `req.url` / `req.branch` (and the `base` source when the branch is missing). Never throws. */
 export async function probeRepo(req: RepoProbeRequest): Promise<RepoProbeReply> {
-  const empty: RepoProbeReply = { branchExists: false, defaultBranch: null, branches: [], source: null, error: null };
+  const empty: RepoProbeReply = { branchExists: false, defaultBranch: null, branches: [], source: null, protected: null, submodules: [], error: null };
   let tmp: string | null = null;
   try {
     const [symref, heads] = await Promise.all([
@@ -54,7 +69,12 @@ export async function probeRepo(req: RepoProbeRequest): Promise<RepoProbeReply> 
     const branchExists = !branch || branches.includes(branch);
     const kind = req.base?.kind ?? "default";
     const ref = branchExists ? branch || defaultBranch : kind === "empty" ? null : kind === "branch" ? (req.base?.branch ?? "").trim() || null : defaultBranch;
-    const result: RepoProbeReply = { ...empty, branchExists, defaultBranch, branches: branches.slice(0, MAX_BRANCHES) };
+    // Protection of the base (ADR-0371) + each declared submodule's base: exists? protected?
+    const [isProtected, submodules] = await Promise.all([
+      branchExists ? branchProtection(req.url, branch || defaultBranch || "") : Promise.resolve(null),
+      Promise.all((req.submodules ?? []).map(probeSubmodule)),
+    ]);
+    const result: RepoProbeReply = { ...empty, branchExists, defaultBranch, branches: branches.slice(0, MAX_BRANCHES), protected: isProtected, submodules };
     if (!ref) return result;
     if (!branches.includes(ref)) return { ...result, error: `Branch "${ref}" does not exist on the remote.` };
 

@@ -889,6 +889,11 @@ export const repoProbeRequestSchema = z.object({
   base: z
     .object({ kind: z.enum(["default", "branch", "empty"]), branch: z.string().max(200).optional() })
     .optional(),
+  /** The declared submodules to probe too — existence + protection (ADR-0371). */
+  submodules: z
+    .array(z.object({ subdir: z.string().max(120), url: z.string().max(500), branch: z.string().max(200).optional().default("") }))
+    .max(20)
+    .optional(),
 });
 export type RepoProbeRequest = z.infer<typeof repoProbeRequestSchema>;
 
@@ -910,6 +915,10 @@ export interface RepoProbeResponse {
     /** 4PM tracking files present at the source (resettable). */
     tracking: string[];
   } | null;
+  /** The base branch is protected on the host (ADR-0371); null = unknown host / branch missing. */
+  protected: boolean | null;
+  /** The declared submodules' bases: existence + protection (ADR-0371). */
+  submodules: { subdir: string; url: string; branch: string; exists: boolean; protected: boolean | null; error: string | null }[];
   error: string | null;
 }
 
