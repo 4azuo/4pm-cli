@@ -18,10 +18,12 @@ import {
   type GitTokenReply,
   type ProjectPublishReply,
   type ProjectPublishRequest,
+  type RepoProbeRequest,
 } from "@4pm/ws";
 import type { GitAuthMethod } from "@4pm/dto";
 import { configureGitAuth } from "../../git-auth";
 import { requestGitSnapshot } from "../../git-snapshot";
+import { probeRepo } from "../../repo-probe";
 import { uninstallCron } from "../../autonomous";
 import { manageSshKey } from "../../git-ssh-key";
 import { createAiTaskRunner } from "../../ai-task";
@@ -128,6 +130,11 @@ export function handleProjectChannels(
         requestGitSnapshot("scaffold"); // the new project's first git state (ADR-0369)
       });
       return true;
+    case WsChannels.REPO_PROBE: {
+      // Probe a repo branch for the create wizard (ADR-0370, project-0076) with this worker's git creds.
+      void probeRepo(payload as unknown as RepoProbeRequest).then((reply) => ctx.send(WsChannels.REPO_PROBE, reply, message.id));
+      return true;
+    }
     case WsChannels.PROJECT_PUBLISH: {
       // Retry the scaffold commit → push → PR in the served folder (ADR-0368, project-0074).
       const root = ctx.physicRoot;

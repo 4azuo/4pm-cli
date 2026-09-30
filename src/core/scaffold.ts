@@ -7,7 +7,7 @@
  * submodules** are attached under the root (`git submodule add` + commit + push) after the primary —
  * submodules are attach-only (no scaffold); only the primary is scaffolded.
  */
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -22,6 +22,7 @@ import type {
   ScaffoldPublishResult,
 } from "@4pm/ws";
 import { PROJECT_TEMPLATE, type AiGuideFile } from "@4pm/constants";
+import { SCAFFOLD_TRACKING_FILES } from "@4pm/dto";
 import type { AiTaskRunner } from "./ai-task";
 
 const run = promisify(execFile);
@@ -36,8 +37,19 @@ interface RepoDecl {
   url?: string;
   /** Submodule folder under the root (empty ⇒ the primary/root — ADR-0316). */
   subdir?: string;
-  /** Branch to clone / check out (ADR-0292); empty ⇒ the repo's default branch. */
+  /** Branch to clone / check out (ADR-0292); empty ⇒ the repo's default branch. The project's base branch (ADR-0370). */
   branch?: string;
+  /** Where a missing `branch` is created from (ADR-0370): default branch · another branch · empty (orphan). */
+  base?: { kind?: "default" | "branch" | "empty"; branch?: string };
+  /** Primary only (ADR-0370): reset the 4PM tracking files; absent ⇒ only when the source had a scaffold. */
+  resetTracking?: boolean;
+}
+
+/** One submodule's attach outcome (ADR-0370). */
+export interface SubmoduleOutcome {
+  dir: string;
+  ok: boolean;
+  error: string | null;
 }
 
 /**
@@ -65,98 +77,118 @@ function submodulesOf(repos: RepoDecl[]): RepoDecl[] {
   return repos.filter((r) => r !== primary && !!r.url && !!(r.subdir ?? "").trim());
 }
 
+/** Whether `dir` is a registered submodule: listed in `.gitmodules`, or a gitlink (mode 160000) in the index. */
+async function isRegisteredSubmodule(root: string, dir: string): Promise<boolean> {
+  if (existsSync(join(root, ".gitmodules"))) {
+    const paths = await gitOut(root, ["config", "-f", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"]);
+    if (paths.split("\n").some((l) => l.split(" ").slice(1).join(" ") === dir)) return true;
+  }
+  const staged = await gitOut(root, ["ls-files", "--stage", "--", dir]);
+  return staged.split("\n").some((l) => l.startsWith("160000 "));
+}
+
+/** Every file under `abs` (relative, `/`-separated), skipping `.git`. */
+async function listFiles(abs: string, rel = ""): Promise<string[]> {
+  const out: string[] = [];
+  for (const e of await readdir(join(abs, rel), { withFileTypes: true }).catch(() => [])) {
+    if (e.name === ".git") continue;
+    const r = rel ? `${rel}/${e.name}` : e.name;
+    if (e.isDirectory()) out.push(...(await listFiles(abs, r)));
+    else out.push(r);
+  }
+  return out;
+}
+
 /**
- * Attach the project's git submodules under the primary root (ADR-0316): `git submodule add
- * [-b <branch>] <url> <subdir>` for each declared submodule, **idempotent** (an already-registered
- * one is `git submodule update --init` instead), then commit `.gitmodules` + the gitlinks and push to
- * the primary's remote. Push is **best-effort** — a failure is surfaced but keeps the local commit for
- * retry. 4PM never creates the repo (ADR-0172) — an empty/unreachable submodule surfaces its git error.
+ * Clear the way for `git submodule add` at `dir` (ADR-0370 §5): untrack placeholder files the primary
+ * repo committed there (e.g. the template's `docs/.gitkeep`), drop a half-attached leftover (a gitdir file
+ * or `.git/modules/<dir>` that is not registered), then delete the folder. Content that is neither tracked
+ * nor a `.gitkeep` placeholder is real work: refuse instead of deleting it.
+ */
+async function prepareSubmodulePath(root: string, dir: string, emit: (step: string, message: string) => void): Promise<void> {
+  const abs = join(root, dir);
+  const tracked = (await gitOut(root, ["ls-files", "--", dir])).split("\n").filter(Boolean);
+  const onDisk = existsSync(abs) ? await listFiles(abs) : [];
+  const trackedRel = new Set(tracked.map((f) => f.slice(dir.length + 1)));
+  const foreign = onDisk.filter((f) => !trackedRel.has(f) && !f.endsWith(".gitkeep"));
+  if (foreign.length > 0) {
+    throw new Error(`"${dir}" already holds ${foreign.length} file(s) that are not part of the repo (e.g. ${foreign[0]}) — move them away, then retry.`);
+  }
+  if (tracked.length > 0) {
+    emit("submodule", `Untracking the placeholder files in ${dir}…`);
+    await run("git", ["rm", "-r", "-q", "--cached", "--", dir], { cwd: root, timeout: 30_000 });
+  }
+  const modules = join(root, ".git", "modules", dir);
+  if (existsSync(modules)) {
+    emit("submodule", `Cleaning up a half-attached ${dir}…`);
+    await rm(modules, { recursive: true, force: true });
+  }
+  if (existsSync(abs)) await rm(abs, { recursive: true, force: true });
+}
+
+/**
+ * Attach the project's git submodules under the primary root (ADR-0316, made reliable by ADR-0370).
+ * "Registered" is decided from `.gitmodules` / gitlinks — never from an error message. A registered one
+ * is `git submodule update --init`ed; otherwise the path is cleared (placeholder files untracked, a
+ * half-attached leftover removed, real work refused) and `git submodule add [-b <branch>]` runs. A declared
+ * branch missing on the submodule remote is created (per `base`, when credentials allow); if it cannot be,
+ * the submodule is added on its default branch, `.gitmodules` records the declared branch and the branch is
+ * created locally. Returns one outcome per submodule (never throws for a single submodule). `commit`: commit
+ * `.gitmodules` + gitlinks and push (provision / clone-on-connect); a create leaves them to its scaffold commit.
  */
 async function attachSubmodules(
   root: string,
   submodules: RepoDecl[],
   emit: (step: string, message: string) => void,
-  createMissingBranch = false,
-): Promise<void> {
-  if (submodules.length === 0) return;
+  opts: { createMissingBranch?: boolean; commit?: boolean; base?: RepoDecl["base"] } = {},
+): Promise<SubmoduleOutcome[]> {
+  const outcomes: SubmoduleOutcome[] = [];
+  if (submodules.length === 0) return outcomes;
   // The root must be a git repo (the primary) before a submodule can be added.
-  if (!existsSync(join(root, ".git"))) return;
+  if (!existsSync(join(root, ".git"))) return outcomes;
   let added = 0;
   for (const sub of submodules) {
     const dir = (sub.subdir ?? "").trim();
     if (!dir || !sub.url) continue;
-    // Already registered (working tree or a stored gitdir) ⇒ just (re)initialize it (idempotent).
-    if (existsSync(join(root, dir, ".git")) || existsSync(join(root, ".git", "modules", dir))) {
-      emit("submodule", `Submodule ${dir} already present — updating…`);
-      try {
-        await run("git", ["submodule", "update", "--init", "--", dir], { cwd: root, timeout: 120_000 });
-      } catch {
-        // A missing/unreachable submodule remote must not fail the whole scaffold.
-      }
-      continue;
-    }
-    // The project template ships placeholder folders (docs/, src/, tests/…) that can collide with a
-    // submodule's subdir; `git submodule add` refuses to clone into an existing working-tree path
-    // ("'<dir>' already exists and is not a valid git repo"), so remove the placeholder first — the
-    // submodule owns that path (ADR-0316). Without this the add fails, falls through to a no-op
-    // `update --init`, and the later `git add .gitmodules` crashes (no .gitmodules was written).
-    const abs = join(root, dir);
-    if (existsSync(abs)) {
-      emit("submodule", `Removing placeholder ${dir} before attaching the submodule…`);
-      await rm(abs, { recursive: true, force: true });
-    }
-    emit("submodule", `Adding submodule ${sub.url} → ${dir}…`);
     const b = (sub.branch ?? "").trim();
-    // When creating a project (ADR-0326), ensure the declared branch exists on the submodule's remote
-    // so `submodule add -b` can check it out; if it can't be created (no write creds), fall back to
-    // adding the default branch and creating the branch locally (recorded in .gitmodules).
-    if (b && createMissingBranch && !(await ensureRemoteBranch(sub.url, b, emit))) {
-      try {
-        await run("git", ["submodule", "add", sub.url, dir], { cwd: root, timeout: 120_000 });
-        await run("git", ["config", "-f", ".gitmodules", `submodule.${dir}.branch`, b], { cwd: root, timeout: 30_000 });
-        try {
-          await run("git", ["checkout", "-b", b], { cwd: join(root, dir), timeout: 30_000 });
-          await run("git", ["push", "-u", "origin", b], { cwd: join(root, dir), timeout: 120_000 });
-        } catch (pushErr) {
-          const pmsg = pushErr instanceof Error ? pushErr.message : String(pushErr);
-          emit("git-branch-push-failed", `Submodule ${dir}: branch "${b}" created locally but the push failed: ${pmsg}`);
-        }
-        added++;
-        continue;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (!/already exists|already registered|in the index/i.test(msg)) {
-          throw new Error(`git submodule add ${dir} failed: ${msg}`);
-        }
-        // fall through to the shared "already registered" handling below
-      }
-    }
     try {
-      await run("git", ["submodule", "add", ...(b ? ["-b", b] : []), sub.url, dir], { cwd: root, timeout: 120_000 });
-      added++;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // Already in the index/.gitmodules (e.g. after a force re-clone) ⇒ initialize instead of add.
-      if (/already exists|already registered|in the index/i.test(msg)) {
-        try {
-          await run("git", ["submodule", "update", "--init", "--", dir], { cwd: root, timeout: 120_000 });
-          added++;
-        } catch {
-          // best-effort
-        }
-      } else {
-        throw new Error(`git submodule add ${dir} failed: ${msg}`);
+      if (await isRegisteredSubmodule(root, dir)) {
+        emit("submodule", `Submodule ${dir} already registered — updating…`);
+        await run("git", ["submodule", "update", "--init", "--", dir], { cwd: root, timeout: 120_000 });
+        outcomes.push({ dir, ok: true, error: null });
+        continue;
       }
+      await prepareSubmodulePath(root, dir, emit);
+      emit("submodule", `Adding submodule ${sub.url} → ${dir}…`);
+      // Submodules follow the primary's source kind, but never "another branch" (ADR-0370 §2).
+      const base = { kind: opts.base?.kind === "empty" ? ("empty" as const) : ("default" as const) };
+      const branchReady = !b || (await remoteHasBranch(sub.url, b)) || (!!opts.createMissingBranch && (await ensureRemoteBranch(sub.url, b, emit, base)));
+      if (branchReady) {
+        await run("git", ["submodule", "add", ...(b ? ["-b", b] : []), sub.url, dir], { cwd: root, timeout: 180_000 });
+      } else {
+        // The declared branch can't be created on the remote (no write access) — add the default branch,
+        // record the declared one in .gitmodules and create it locally.
+        await run("git", ["submodule", "add", sub.url, dir], { cwd: root, timeout: 180_000 });
+        await run("git", ["config", "-f", ".gitmodules", `submodule.${dir}.branch`, b], { cwd: root, timeout: 30_000 });
+        await run("git", ["checkout", "-b", b], { cwd: join(root, dir), timeout: 30_000 });
+        emit("git-branch-push-failed", `Submodule ${dir}: branch "${b}" created locally only — push it when credentials are available.`);
+      }
+      added++;
+      outcomes.push({ dir, ok: true, error: null });
+    } catch (err) {
+      const msg = errText(err);
+      emit("submodule-failed", `Submodule ${dir} was not attached: ${msg}`);
+      outcomes.push({ dir, ok: false, error: msg });
     }
   }
-  if (added > 0) await commitAndPushSubmodules(root, submodules, emit);
+  if (added > 0 && opts.commit) await commitAndPushSubmodules(root, submodules, emit);
+  return outcomes;
 }
 
 /**
  * Commit `.gitmodules` + the added gitlinks and push to the primary's remote (ADR-0316). Commits with
- * the repo's configured identity, falling back to a generic 4PM identity so a worker with no git
- * user.* never blocks (ADR-0097 sets the real author on AI runs). Push reuses the worker's git-auth
- * (ADR-0192) and is best-effort — a push failure is surfaced but the local commit is kept for retry.
+ * the configured identity, falling back to a 4PM identity when none is set. Push reuses the worker's
+ * git-auth (ADR-0192/0368) and is best-effort — a push failure is surfaced but the local commit is kept.
  */
 async function commitAndPushSubmodules(
   root: string,
@@ -164,9 +196,7 @@ async function commitAndPushSubmodules(
   emit: (step: string, message: string) => void,
 ): Promise<void> {
   const dirs = submodules.map((s) => (s.subdir ?? "").trim()).filter(Boolean);
-  // Only stage paths that actually exist: `.gitmodules` is absent when no submodule was really added
-  // (e.g. every one was already registered), and `git add` throws on a missing pathspec — which would
-  // fail the whole scaffold. Guard so a no-op submodule step never crashes the create (ADR-0316).
+  // Only stage paths that exist (`git add` throws on a missing pathspec).
   const addPaths = [
     ...(existsSync(join(root, ".gitmodules")) ? [".gitmodules"] : []),
     ...dirs.filter((d) => existsSync(join(root, d))),
@@ -174,31 +204,20 @@ async function commitAndPushSubmodules(
   if (addPaths.length === 0) return;
   emit("submodule", "Committing .gitmodules…");
   await run("git", ["add", ...addPaths], { cwd: root, timeout: 60_000 });
-  // Nothing staged (everything already committed) ⇒ no commit, no push.
   const staged = (await run("git", ["diff", "--cached", "--name-only"], { cwd: root, timeout: 30_000 })).stdout.trim();
   if (!staged) return;
   const commitArgs = ["commit", "-m", "chore: add git submodules (4PM)"];
   try {
     await run("git", commitArgs, { cwd: root, timeout: 60_000 });
   } catch {
-    // No user.name/user.email configured — retry with a 4PM fallback identity so the commit lands.
     await run("git", ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", ...commitArgs], { cwd: root, timeout: 60_000 });
   }
   emit("submodule", "Pushing .gitmodules to the primary remote…");
   try {
-    await run("git", ["push"], { cwd: root, timeout: 120_000 });
+    await run("git", ["push", "-u", "origin", "HEAD"], { cwd: root, timeout: 120_000 });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    // Best-effort (ADR-0316): keep the local commit; surface the reason so the user can push later.
-    emit("submodule-push-failed", `Submodules committed locally but the push failed: ${msg}`);
+    emit("submodule-push-failed", `Submodules committed locally but the push failed: ${errText(err)}`);
   }
-}
-
-/** Derive the PR provider (`gh`/`glab`) + `owner/repo` slug from a git remote URL (ADR-0331). */
-function providerSlug(url: string): { provider: "gh" | "glab" | null; slug: string } {
-  const provider = /github\.com/i.test(url) ? "gh" : /gitlab\.com/i.test(url) ? "glab" : null;
-  const m = /(?:github|gitlab)\.com[/:]+([^/]+\/.+?)(?:\.git)?\/?$/i.exec(url);
-  return { provider, slug: m?.[1] ?? "" };
 }
 
 /** First line of a failed command's message (git/gh/glab print the reason there), capped. */
@@ -218,21 +237,19 @@ async function gitOut(cwd: string, args: string[]): Promise<string> {
 }
 
 /**
- * Commit the scaffolded working tree and open a pull/merge request (ADR-0331), returning the outcome
- * (ADR-0368): stage everything, commit (4PM fallback identity; skipped when clean), push the branch
- * (`repo.branch`, else HEAD's branch), then open a PR via `gh`/`glab` (`--fill` — base = the repo's
- * default branch). Every step is **best-effort**: a failure is emitted as a step and recorded in the
- * result, never thrown. Idempotent, so `project.publish` can re-run it: a clean tree still pushes any
- * unpushed commit, a pushed branch pushes as a no-op, an already-open PR is reported (its URL parsed
- * from the "already exists" error), and branch == the remote default needs no PR.
+ * Commit the scaffolded working tree and push it straight into the project's base branch (ADR-0370 — no
+ * pull request; the declared branch IS the base), returning the outcome (ADR-0368). Stage everything,
+ * commit (4PM fallback identity; skipped when clean), then `push -u origin <branch>` (`repo.branch`, else
+ * HEAD's branch — an orphan branch is created on the remote by this first push). Best-effort: a failure is
+ * emitted and recorded, never thrown. Idempotent, so `project.publish` can re-run it.
  */
-export async function commitAndOpenPr(
+export async function commitAndPush(
   root: string,
   repo: RepoDecl,
   emit: (step: string, message: string) => void,
 ): Promise<ScaffoldPublishResult> {
   const result: ScaffoldPublishResult = { committed: false, pushed: false, branch: null, prUrl: null, step: null, error: null };
-  const fail = (step: "commit" | "push" | "pr", error: string): ScaffoldPublishResult => {
+  const fail = (step: "commit" | "push", error: string): ScaffoldPublishResult => {
     result.step = step;
     result.error = error;
     return result;
@@ -264,72 +281,48 @@ export async function commitAndOpenPr(
   const head = await gitOut(root, ["rev-parse", "--abbrev-ref", "HEAD"]);
   const branch = declared || (head && head !== "HEAD" ? head : "");
   result.branch = branch || null;
-  emit("push", "Pushing the scaffold branch…");
+  emit("push", `Pushing the scaffold to ${branch || "the current branch"}…`);
   try {
     await run("git", ["push", "-u", "origin", branch || "HEAD"], { cwd: root, timeout: 120_000 });
     result.pushed = true;
+    emit("push", `Pushed to ${branch || "the current branch"}.`);
   } catch (err) {
     const msg = errText(err);
-    // No write credentials (or a rejected push) — keep the local commit; a PR needs the branch pushed.
+    // No write credentials (or a rejected push) — keep the local commit for a retry.
     emit("push-failed", `Scaffold committed locally but the push failed: ${msg} — retry from the project page when credentials are available.`);
     return fail("push", msg);
   }
-
-  // Pushed straight to the remote's default branch ⇒ there is nothing to review in a PR.
-  const remoteHead = (await gitOut(root, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])).replace(/^origin\//, "");
-  if (branch && remoteHead && branch === remoteHead) {
-    emit("pr", `Pushed to the default branch (${branch}) — no pull request needed.`);
-    return result;
-  }
-  const url = (repo.url ?? "").trim() || (await gitOut(root, ["remote", "get-url", "origin"]));
-  const { provider, slug } = providerSlug(url);
-  if (!provider) {
-    emit("pr", "Unknown git host — skipping the pull request.");
-    return result;
-  }
-  emit("pr", `Opening a pull request via ${provider}…`);
-  try {
-    const args =
-      provider === "glab"
-        ? ["mr", "create", "--fill", "--yes", ...(branch ? ["--source-branch", branch] : []), ...(slug ? ["-R", slug] : [])]
-        : ["pr", "create", "--fill", ...(branch ? ["--head", branch] : []), ...(slug ? ["-R", slug] : [])];
-    const { stdout } = await run(provider, args, { cwd: root, timeout: 120_000 });
-    const link = stdout.trim().split(/\s+/).find((x) => /^https?:\/\//.test(x)) ?? null;
-    result.prUrl = link;
-    emit("pr", `Pull request opened${link ? `: ${link}` : "."}`);
-    return result;
-  } catch (err) {
-    const msg = errText(err);
-    // Already open for this branch (a retry) — report the existing one instead of a failure.
-    const existing = /already exists/i.test(msg) ? (msg.match(/https?:\/\/\S+/)?.[0] ?? null) : null;
-    if (existing) {
-      result.prUrl = existing;
-      emit("pr", `A pull request is already open: ${existing}`);
-      return result;
-    }
-    // gh/glab missing/unauthed — surfaced, not fatal.
-    emit("pr-failed", `Could not open a pull request (${provider}): ${msg}`);
-    return fail("pr", msg);
-  }
+  return result;
 }
 
 /**
- * project.publish (ADR-0368, project-0074) — re-run the publish step alone in an already-scaffolded
- * project folder. The repo is read from the folder's `project.spec.json` when present (declared branch),
- * else from git (origin url + HEAD's branch).
+ * project.publish (ADR-0368/0370, project-0074) — retry in an already-scaffolded project folder: re-attach
+ * the declared submodules (from the folder's `project.spec.json`), then commit + push to the base branch.
  */
 export async function publishScaffold(
   root: string,
   emit: (step: string, message: string) => void,
 ): Promise<ScaffoldPublishResult> {
-  let repo: RepoDecl = {};
+  let repos: RepoDecl[] = [];
   try {
     const spec = JSON.parse(await readFile(join(root, "project.spec.json"), "utf8")) as Record<string, unknown>;
-    repo = singleRepo(reposOf(spec)) ?? {};
+    repos = reposOf(spec);
   } catch {
-    // No/invalid spec file — fall back to what git knows.
+    // No/invalid spec file — fall back to what git knows (no submodules).
   }
-  return commitAndOpenPr(root, repo, emit);
+  const repo = singleRepo(repos) ?? {};
+  const submodules = await attachSubmodules(root, submodulesOf(repos), emit, { createMissingBranch: true, base: repo.base });
+  return withSubmodules(await commitAndPush(root, repo, emit), submodules);
+}
+
+/** Fold the submodule outcomes into a publish result: a failed one sets `step: "submodule"` unless a later step failed. */
+function withSubmodules(publish: ScaffoldPublishResult, submodules: SubmoduleOutcome[]): ScaffoldPublishResult {
+  const failed = submodules.filter((x) => !x.ok);
+  if (failed.length > 0 && !publish.step) {
+    publish.step = "submodule";
+    publish.error = failed.map((x) => `${x.dir}: ${x.error ?? "failed"}`).join("; ");
+  }
+  return { ...publish, submodules };
 }
 
 /** Build `git clone` args honoring an optional branch (ADR-0292). */
@@ -359,18 +352,29 @@ async function ensureRemoteBranch(
   url: string,
   branch: string,
   emit: (step: string, message: string) => void,
+  base: { kind?: "default" | "branch" | "empty"; branch?: string } = {},
 ): Promise<boolean> {
   if (await remoteHasBranch(url, branch)) return true;
   const tmp = await mkdtemp(join(tmpdir(), "4pm-branch-"));
   try {
-    emit("git", `Branch "${branch}" not found on ${url} — creating it from the default branch…`);
-    await run("git", ["clone", "--depth", "1", url, tmp], { timeout: 120_000 });
-    await run("git", ["checkout", "-b", branch], { cwd: tmp, timeout: 30_000 });
+    if (base.kind === "empty") {
+      // An orphan branch (ADR-0370): no history — one empty root commit so it can be pushed.
+      emit("git", `Branch "${branch}" not found on ${url} — creating it empty (no history)…`);
+      await run("git", ["clone", "--no-checkout", "--depth", "1", url, tmp], { timeout: 120_000 });
+      await run("git", ["checkout", "--orphan", branch], { cwd: tmp, timeout: 30_000 });
+      await run("git", ["rm", "-r", "-q", "--cached", "--ignore-unmatch", "."], { cwd: tmp, timeout: 30_000 });
+      await run("git", ["clean", "-fdxq"], { cwd: tmp, timeout: 60_000 });
+      await run("git", ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "commit", "--allow-empty", "-m", "chore: start branch (4PM)"], { cwd: tmp, timeout: 30_000 });
+    } else {
+      const from = base.kind === "branch" && base.branch ? base.branch : "";
+      emit("git", `Branch "${branch}" not found on ${url} — creating it from ${from || "the default branch"}…`);
+      await run("git", ["clone", "--depth", "1", ...(from ? ["-b", from] : []), url, tmp], { timeout: 120_000 });
+      await run("git", ["checkout", "-b", branch], { cwd: tmp, timeout: 30_000 });
+    }
     await run("git", ["push", "-u", "origin", branch], { cwd: tmp, timeout: 120_000 });
     return true;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    emit("git-branch-push-failed", `Could not create branch "${branch}" on ${url}: ${msg}`);
+    emit("git-branch-push-failed", `Could not create branch "${branch}" on ${url}: ${errText(err)}`);
     return false;
   } finally {
     await rm(tmp, { recursive: true, force: true });
@@ -430,18 +434,29 @@ async function provisionRepo(
     return;
   }
   const b = (repo.branch ?? "").trim();
-  // Create the declared branch when creating a project and the remote lacks it (ADR-0326): clone the
-  // default branch, then create the branch — pushing it best-effort so it exists for other workers.
+  // Create the declared base branch when creating a project and the remote lacks it (ADR-0326/0370),
+  // from the chosen source: the default branch, another branch, or nothing (an orphan branch whose first
+  // commit is the scaffold — pushed by the publish step).
   if (b && opts.createMissingBranch && !(await remoteHasBranch(repo.url, b))) {
-    emit("git", `Cloning ${repo.url} (default branch) to create "${b}"…`);
-    await run("git", ["clone", repo.url, target], { timeout: 120_000 });
+    const kind = repo.base?.kind ?? "default";
+    const from = kind === "branch" ? (repo.base?.branch ?? "").trim() : "";
+    if (kind === "empty") {
+      emit("git", `Creating "${b}" as an empty branch (no history) in ${repo.url}…`);
+      await run("git", ["clone", "--no-checkout", repo.url, target], { timeout: 120_000 });
+      await run("git", ["checkout", "--orphan", b], { cwd: target, timeout: 30_000 });
+      await run("git", ["rm", "-r", "-q", "--cached", "--ignore-unmatch", "."], { cwd: target, timeout: 30_000 });
+      // `--orphan` keeps the old tree on disk as untracked files — wipe it so the scaffold starts clean.
+      await run("git", ["clean", "-fdxq"], { cwd: target, timeout: 60_000 });
+      return;
+    }
+    emit("git", `Cloning ${repo.url} (${from || "default branch"}) to create "${b}"…`);
+    await run("git", cloneArgs(repo.url, target, from || undefined), { timeout: 120_000 });
     await run("git", ["checkout", "-b", b], { cwd: target, timeout: 30_000 });
     try {
       await run("git", ["push", "-u", "origin", b], { cwd: target, timeout: 120_000 });
       emit("git", `Created and pushed branch "${b}".`);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      emit("git-branch-push-failed", `Branch "${b}" created locally but the push failed: ${msg} — push it when credentials are available.`);
+      emit("git-branch-push-failed", `Branch "${b}" created locally but the push failed: ${errText(err)} — the publish step retries it.`);
     }
     return;
   }
@@ -465,7 +480,7 @@ export async function ensureReposCloned(
   await provisionRepo(physicRoot, repo, step);
   // Attach/init the declared submodules (ADR-0316): self-heals a project whose submodules were never
   // committed (a prior push failure) and initializes those already registered after a fresh clone.
-  await attachSubmodules(physicRoot, submodulesOf(list), step);
+  await attachSubmodules(physicRoot, submodulesOf(list), step, { commit: true });
 }
 
 /**
@@ -475,6 +490,11 @@ export async function ensureReposCloned(
  * tsup.config `onSuccess`). The old single `../../project-sample` assumed the source layout
  * only, so from the bundled `dist/` it resolved to a non-existent path (ENOENT /project-sample).
  */
+/** The sample-project template folder (exported for the repo probe — ADR-0370). */
+export function projectSampleDir(): string {
+  return sampleDir();
+}
+
 function sampleDir(): string {
   if (process.env.SCAFFOLD_SAMPLE_DIR) return process.env.SCAFFOLD_SAMPLE_DIR;
   const here = dirname(fileURLToPath(import.meta.url));
@@ -520,18 +540,23 @@ export async function scaffoldProject(
     // Create mode (ADR-0326): create the declared branch on the primary + submodules when the remote
     // doesn't have it yet (a fresh project naming a new branch).
     await provisionRepo(target, repo, emit, { createMissingBranch: true });
+    // Did the source already carry a 4PM scaffold? Decides the default of the tracking reset (ADR-0370 §3).
+    const sourceHadScaffold = existsSync(join(target, ".4pm", ".4pm.json"));
     // Scaffold the repo at the root (template + spec + AI init). Create resets the template-managed
     // `.claude` config first (ADR-0329) so it never inherits a stale committed/leftover one.
     await scaffoldRepo(target, payload.projectName, payload.spec, emit, { resetClaude: true, ai });
-    // Attach the declared git submodules under the root (ADR-0316) — only the primary is scaffolded.
-    await attachSubmodules(target, submodulesOf(reposOf(payload.spec)), emit, true);
+    if (repo.resetTracking ?? sourceHadScaffold) await resetTrackingFiles(target, emit);
+    // Attach the declared git submodules under the root (ADR-0316/0370) — committed with the scaffold.
+    const submodules = await attachSubmodules(target, submodulesOf(reposOf(payload.spec)), emit, {
+      createMissingBranch: true,
+      base: repo.base,
+    });
     // Stamp the template-version marker (ADR-0262) at the root so the web can later detect drift.
     emit("version", "Writing .4pm/.4pm.json…");
     await writeTemplateMarker(target);
-    // Commit the scaffolded working tree and open a PR (ADR-0331) — best-effort: a push/PR that fails
-    // (no write creds, gh/glab not installed/authed, branch == default) is surfaced but never fails
-    // the create (the local commit is kept for a later manual push from the Git tab).
-    const publish = await commitAndOpenPr(target, repo, emit);
+    // Commit + push straight into the base branch (ADR-0370, no PR) — best-effort: a failed push is
+    // surfaced + recorded (ADR-0368) but never fails the create (the local commit is kept for a retry).
+    const publish = withSubmodules(await commitAndPush(target, repo, emit), submodules);
     onProgress?.({ projectId: payload.projectId, step: "done", message: "Scaffold complete.", done: true });
     return { ok: true, path: target, publish };
   } catch (err) {
@@ -589,6 +614,23 @@ async function resetTemplateManagedClaude(
   emit("copy", `Resetting template .claude config in ${label}…`);
   await rm(join(claude, "settings.json"), { force: true });
   await rm(join(claude, "skills"), { recursive: true, force: true });
+}
+
+/**
+ * Reset the 4PM tracking files (ADR-0370 §3) to the template's empty versions
+ * (`.claude/templates/<NAME>.empty.md`), so a project started from a branch that already carried a
+ * scaffold does not inherit the previous run's tasks and progress. Code and other files are untouched.
+ */
+async function resetTrackingFiles(target: string, emit: (step: string, message: string) => void): Promise<void> {
+  const templates = join(sampleDir(), ".claude", "templates");
+  const reset: string[] = [];
+  for (const file of SCAFFOLD_TRACKING_FILES) {
+    const empty = join(templates, file.replace(/\.md$/, ".empty.md"));
+    if (!existsSync(empty)) continue;
+    await cp(empty, join(target, file), { force: true });
+    reset.push(file);
+  }
+  if (reset.length > 0) emit("copy", `Reset the 4PM tracking files: ${reset.join(", ")}.`);
 }
 
 /**
@@ -754,7 +796,9 @@ export async function addProject(
       await scaffoldRepo(target, payload.projectName, payload.spec, emit, { ai });
     }
     // Attach the declared git submodules under the root (ADR-0316); idempotent on a re-provision.
-    await attachSubmodules(target, submodulesOf((payload.repos ?? []) as RepoDecl[]), emit);
+    const outcomes = await attachSubmodules(target, submodulesOf((payload.repos ?? []) as RepoDecl[]), emit, { commit: true });
+    const failed = outcomes.filter((x) => !x.ok);
+    if (failed.length > 0) throw new Error(failed.map((x) => `submodule ${x.dir}: ${x.error ?? "failed"}`).join("; "));
     onProgress?.({ projectId: payload.projectId, step: "done", message: "Project added.", done: true });
     return { ok: true, path: target };
   } catch (err) {

@@ -1274,9 +1274,34 @@ export interface ScaffoldPublishResult {
   branch: string | null;
   /** The opened (or already open) pull/merge request URL. */
   prUrl: string | null;
-  /** The first step that failed, or null. */
-  step: "commit" | "push" | "pr" | null;
+  /** The first step that failed, or null (`submodule` = a declared submodule could not be attached). */
+  step: "submodule" | "commit" | "push" | "pr" | null;
   /** The failure reason (English, from git/gh/glab), or null. */
+  error: string | null;
+  /** Per-submodule attach outcome (ADR-0370); absent from an older cli. */
+  submodules?: { dir: string; ok: boolean; error: string | null }[];
+}
+
+/** repo.probe request — server → cli (reply): inspect a repo branch before creating (ADR-0370, project-0076). */
+export interface RepoProbeRequest {
+  url: string;
+  branch: string;
+  base?: { kind: "default" | "branch" | "empty"; branch?: string };
+}
+
+/** repo.probe reply — branch existence, remote branches and what the source ref already holds. */
+export interface RepoProbeReply {
+  branchExists: boolean;
+  defaultBranch: string | null;
+  branches: string[];
+  source: {
+    ref: string;
+    hasScaffold: boolean;
+    templateVersion: string | null;
+    keep: string[];
+    overwrite: string[];
+    tracking: string[];
+  } | null;
   error: string | null;
 }
 

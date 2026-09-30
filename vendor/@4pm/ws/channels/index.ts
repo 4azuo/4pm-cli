@@ -108,6 +108,9 @@ export const WsChannels = {
   // server → cli (reply): retry the scaffold commit → push → PR in the project folder (ADR-0368,
   // project-0074); the reply carries the new outcome, stored on `projects.scaffold_publish`.
   PROJECT_PUBLISH: "project.publish",
+  // server → cli (reply): probe a repo branch before creating a project (ADR-0370, project-0076) —
+  // branch existence, remote branches, and whether the source ref already holds a 4PM scaffold.
+  REPO_PROBE: "repo.probe",
   // server → cli: keep the physic folder name in sync with the project (folder =
   // project name — ADR-0064) when the project is renamed.
   PHYSIC_SYNC: "physic.sync",

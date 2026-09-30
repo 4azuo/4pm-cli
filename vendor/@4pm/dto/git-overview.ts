@@ -123,6 +123,8 @@ export interface GitGraphRow {
 export interface GitOverviewRepo {
   subdir: string;
   remote: string | null;
+  /** The declared base branch (ADR-0370); null = the repo's default branch. */
+  branch: string | null;
   origin: GitOrigin;
   workers: GitOverviewWorker[];
   graph?: { rows: GitGraphRow[]; truncated: boolean };

@@ -26,8 +26,10 @@ export interface ScaffoldPublish {
   pushed: boolean;
   branch: string | null;
   prUrl: string | null;
-  step: "commit" | "push" | "pr" | null;
+  step: "submodule" | "commit" | "push" | "pr" | null;
   error: string | null;
+  /** Per-submodule attach outcome (ADR-0370); empty when the project has no submodules. */
+  submodules: { dir: string; ok: boolean; error: string | null }[];
   /** When this outcome was recorded (ISO). */
   at: string;
 }
@@ -37,7 +39,10 @@ export function readScaffoldPublish(raw: unknown): ScaffoldPublish | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
   const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
-  const step = r.step === "commit" || r.step === "push" || r.step === "pr" ? r.step : null;
+  const step = r.step === "submodule" || r.step === "commit" || r.step === "push" || r.step === "pr" ? r.step : null;
+  const submodules = Array.isArray(r.submodules)
+    ? (r.submodules as Record<string, unknown>[]).map((x) => ({ dir: str(x.dir) ?? "", ok: x.ok === true, error: str(x.error) }))
+    : [];
   return {
     machineLinkId: str(r.machineLinkId) ?? "",
     committed: r.committed === true,
@@ -46,6 +51,7 @@ export function readScaffoldPublish(raw: unknown): ScaffoldPublish | null {
     prUrl: str(r.prUrl),
     step,
     error: str(r.error),
+    submodules,
     at: str(r.at) ?? "",
   };
 }
@@ -853,8 +859,59 @@ export const repoSpecSchema = z.object({
    * fast-forward pulls it.
    */
   branch: z.string().max(200).optional().default(""),
+  /**
+   * Where `branch` is created from when it does not exist on the remote yet (ADR-0370): the default
+   * branch, another remote branch (`branch`, primary only), or `empty` — an orphan branch with no
+   * history. Absent ⇒ `default`.
+   */
+  base: z
+    .object({
+      kind: z.enum(["default", "branch", "empty"]),
+      branch: z.string().max(200).optional(),
+    })
+    .optional(),
+  /**
+   * Primary only (ADR-0370): reset the 4PM tracking files (AI_TODO / AI_DONE / AI_PROGRESS / USER_TODO /
+   * USER_QA) to the template's empty versions after the scaffold copy. Absent ⇒ reset only when the
+   * source already has a 4PM scaffold.
+   */
+  resetTracking: z.boolean().optional(),
 });
 export type RepoSpec = z.infer<typeof repoSpecSchema>;
+
+/** The 4PM tracking files the scaffold can reset (ADR-0370 §3). */
+export const SCAFFOLD_TRACKING_FILES = ["AI_TODO.md", "AI_DONE.md", "AI_PROGRESS.md", "USER_TODO.md", "USER_QA.md"] as const;
+
+/** project-0076 request — probe a repo branch before creating (ADR-0370 §4). */
+export const repoProbeRequestSchema = z.object({
+  url: z.string().max(500).regex(GIT_URL_RE, "must be an https or ssh git url"),
+  branch: z.string().max(200).optional().default(""),
+  base: z
+    .object({ kind: z.enum(["default", "branch", "empty"]), branch: z.string().max(200).optional() })
+    .optional(),
+});
+export type RepoProbeRequest = z.infer<typeof repoProbeRequestSchema>;
+
+/** project-0076 response — does the branch exist, and what does the source already hold. */
+export interface RepoProbeResponse {
+  branchExists: boolean;
+  defaultBranch: string | null;
+  /** Remote branch names (≤ 100) — for the "create from another branch" picker. */
+  branches: string[];
+  /** The ref the scaffold will start from; null for an orphan (`empty`) branch. */
+  source: {
+    ref: string;
+    hasScaffold: boolean;
+    templateVersion: string | null;
+    /** Existing files the scaffold keeps as they are. */
+    keep: string[];
+    /** Existing files the scaffold rewrites (spec · README · guide · .claude config · marker). */
+    overwrite: string[];
+    /** 4PM tracking files present at the source (resettable). */
+    tracking: string[];
+  } | null;
+  error: string | null;
+}
 
 /**
  * Derive the display name of a repo from its clone url (ADR-0172): the last path segment
