@@ -12,6 +12,7 @@ import {
   readProfileConfig,
   type ProfileConfig,
 } from "../config/profile";
+import { t } from "../i18n";
 
 /**
  * Fields the server assigns/refreshes per `ws_token` (ADR-0081) — never overwritten from the
@@ -52,10 +53,10 @@ export function applyConfigText(profileDir: string, text: string): { ok: boolean
   try {
     parsed = JSON.parse(text);
   } catch (err) {
-    return { ok: false, error: `Invalid JSON: ${(err as Error).message}` };
+    return { ok: false, error: t("config.invalidJson", { message: (err as Error).message }) };
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return { ok: false, error: "config.json must be a JSON object." };
+    return { ok: false, error: t("config.notObject") };
   }
   const next = { ...(parsed as Record<string, unknown>) } as ProfileConfig;
   const current = readProfileConfig(profileDir);

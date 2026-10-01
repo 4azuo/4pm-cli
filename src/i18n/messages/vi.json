@@ -179,5 +179,9 @@
   "autoRun.failed": "Không điều phối được chu kỳ tự động: {note}",
   "autoRun.noDaemon": "Không có tiến trình nền nào cho hồ sơ \"{profile}\" — hãy khởi động trước: 4pm start --profile {profile}",
   "autoRun.timeout": "Chu kỳ tự động vượt quá giới hạn thời gian — đang hủy.",
-  "autoRun.authFailed": "Xác thực kênh điều khiển thất bại — daemon từ chối token."
+  "autoRun.authFailed": "Xác thực kênh điều khiển thất bại — daemon từ chối token.",
+  "autonomous.cronMissing": "Không cài được cron tự hành: worker này không có `crontab` hoạt động (dịch vụ cron). Lập lịch tự hành cần cron trên máy worker.",
+  "autonomous.settingsInvalidJson": "Cấu hình tự hành không phải JSON hợp lệ.",
+  "config.notObject": "config.json phải là một đối tượng JSON.",
+  "config.invalidJson": "JSON không hợp lệ: {message}"
 }

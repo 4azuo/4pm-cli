@@ -29,6 +29,7 @@ import {
 import { readHistories } from "./autonomous-history";
 import { ATTEMPTS_REL } from "./autonomous-books";
 import { mutateBooksOnBase, readBaseFile, resolveBases } from "./autonomous-git";
+import { t } from "../i18n";
 
 const run = promisify(execFile);
 
@@ -227,14 +228,19 @@ export async function readAutonomousLogs(root: string, date?: string): Promise<A
   return { date: day, lines };
 }
 
-/** Install the cron line for this physic project (idempotent — replaces any existing line). */
-async function installCron(root: string, profileDir: string): Promise<void> {
+/**
+ * Install the cron line for this physic project (idempotent — replaces any existing line).
+ * Returns whether the crontab was actually written: `crontabSet` resolves `false` when the worker
+ * has no working `crontab` (binary missing / cron service absent), so callers that care (the web
+ * install action) can surface a clear error instead of silently reporting success.
+ */
+async function installCron(root: string, profileDir: string): Promise<boolean> {
   const script = tickScript(root);
   const cfg = await readAutonomousConfig(profileDir);
   await chmod(script, 0o755).catch(() => undefined);
   const kept = (await crontabList()).split("\n").filter((l) => l.trim() && !l.includes(script));
   kept.push(`${cfg.cronSchedule} ${script}`);
-  await crontabSet(kept.join("\n"));
+  return crontabSet(kept.join("\n"));
 }
 
 /** Sync the crontab line to the current `cronSchedule` (idempotent) — called by the daemon when the
@@ -351,12 +357,19 @@ export async function writeAutonomous(
     if (req.kind === "settings") {
       // The config lives in the profile dir (ADR-0321), as clean JSON (coerced — comment keys dropped).
       const parsed = parseJson(req.settings);
-      if (!parsed) return { ok: false, error: "settings is not valid JSON" };
+      if (!parsed) return { ok: false, error: t("autonomous.settingsInvalidJson") };
       await writeAutonomousConfig(profileDir, parsed);
       await syncCron(root, profileDir); // a schedule change takes effect immediately when installed
     } else if (req.kind === "cron") {
-      if (req.action === "install") await installCron(root, profileDir);
-      else await uninstallCron(root);
+      if (req.action === "install") {
+        // Surface a crontab-write failure instead of returning ok:true with installed still false —
+        // the worker has no working cron, which autonomous needs (ADR-0152). Re-check to be sure the
+        // line actually took (a daemon-less crontab can accept the write but still never run it).
+        const wrote = await installCron(root, profileDir);
+        if (!wrote || !(await cronInstalled(root))) {
+          return { ok: false, error: t("autonomous.cronMissing") };
+        }
+      } else await uninstallCron(root);
     } else {
       const base = (await resolveBases(root).catch(() => null))?.root.base ?? "";
       let res: WebWrite | undefined;

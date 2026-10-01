@@ -291,7 +291,68 @@ export const ErrorCode = {
   ANNOUNCEMENT_NOT_FOUND: "ANNOUNCEMENT_NOT_FOUND",
   ANNOUNCEMENT_DRAFT_NOT_FOUND: "ANNOUNCEMENT_DRAFT_NOT_FOUND",
   ANNOUNCEMENT_DRAFT_LIMIT: "ANNOUNCEMENT_DRAFT_LIMIT",
+  // Worker-cli operation failures surfaced to the web/admin so they localize via `errors.*`
+  // (see CLI_ERROR_CODE_MAP below): filesystem guards, RAG, agent/content validation, support
+  // answer, FAQ compose, git host, autonomous base push.
+  WORKER_PATH_ESCAPES_ROOT: "WORKER_PATH_ESCAPES_ROOT",
+  WORKER_NO_PROJECT: "WORKER_NO_PROJECT",
+  WORKER_PATH_EXISTS: "WORKER_PATH_EXISTS",
+  WORKER_ROOT_PROTECTED: "WORKER_ROOT_PROTECTED",
+  WORKER_NOT_A_FILE: "WORKER_NOT_A_FILE",
+  WORKER_INVALID_PAYLOAD: "WORKER_INVALID_PAYLOAD",
+  WORKER_INVALID_NAME: "WORKER_INVALID_NAME",
+  WORKER_CONTENT_REQUIRED: "WORKER_CONTENT_REQUIRED",
+  RAG_PYTHON_MISSING: "RAG_PYTHON_MISSING",
+  RAG_NOT_INSTALLED: "RAG_NOT_INSTALLED",
+  RAG_NO_INDEX: "RAG_NO_INDEX",
+  RAG_INVALID_MODEL: "RAG_INVALID_MODEL",
+  SUPPORT_KB_EMPTY: "SUPPORT_KB_EMPTY",
+  SUPPORT_EMPTY_ANSWER: "SUPPORT_EMPTY_ANSWER",
+  FAQ_NO_WRITE_TOKEN: "FAQ_NO_WRITE_TOKEN",
+  GIT_UNKNOWN_HOST: "GIT_UNKNOWN_HOST",
+  AUTONOMOUS_BASE_PUSH_FAILED: "AUTONOMOUS_BASE_PUSH_FAILED",
 } as const;
 
 /** Union type of error codes. */
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
+
+/**
+ * Maps a worker-cli failure reply's `error` string to the ErrorCode + HTTP status the web/admin
+ * localize via the `errors.*` namespace. The cli `error` strings are the contract here (they also
+ * remain the English log/fallback on the reply); an unmapped string falls back to `VALIDATION_FAILED`.
+ * Shared by `@4pm/server` (wraps the reply into `AppException`) and `@4pm/web` / `@4pm/admin-web`
+ * (wrap it into `ApiError`) so a single table keeps both boundaries in sync.
+ */
+export const CLI_ERROR_CODE_MAP: Record<string, { code: ErrorCode; status: number }> = {
+  "path escapes the project root": { code: ErrorCode.WORKER_PATH_ESCAPES_ROOT, status: 422 },
+  "no project served": { code: ErrorCode.WORKER_NO_PROJECT, status: 409 },
+  "no project": { code: ErrorCode.WORKER_NO_PROJECT, status: 409 },
+  "This worker has no project folder.": { code: ErrorCode.WORKER_NO_PROJECT, status: 409 },
+  "already exists": { code: ErrorCode.WORKER_PATH_EXISTS, status: 409 },
+  "destination already exists": { code: ErrorCode.WORKER_PATH_EXISTS, status: 409 },
+  "cannot move the project root": { code: ErrorCode.WORKER_ROOT_PROTECTED, status: 422 },
+  "cannot delete the project root": { code: ErrorCode.WORKER_ROOT_PROTECTED, status: 422 },
+  "not a file": { code: ErrorCode.WORKER_NOT_A_FILE, status: 422 },
+  "invalid base64 payload": { code: ErrorCode.WORKER_INVALID_PAYLOAD, status: 422 },
+  "invalid name": { code: ErrorCode.WORKER_INVALID_NAME, status: 422 },
+  "content is required": { code: ErrorCode.WORKER_CONTENT_REQUIRED, status: 422 },
+  "invalid slug": { code: ErrorCode.MARKET_INVALID_PACKAGE, status: 422 },
+  "artifact not found": { code: ErrorCode.MARKET_PACKAGE_NOT_FOUND, status: 404 },
+  "not installed": { code: ErrorCode.MARKET_PACKAGE_NOT_FOUND, status: 404 },
+  "python3 not found": { code: ErrorCode.RAG_PYTHON_MISSING, status: 422 },
+  "python3 not found on the worker": { code: ErrorCode.RAG_PYTHON_MISSING, status: 422 },
+  "RAG is not installed": { code: ErrorCode.RAG_NOT_INSTALLED, status: 409 },
+  "no index — reindex first": { code: ErrorCode.RAG_NO_INDEX, status: 409 },
+  "invalid model name": { code: ErrorCode.RAG_INVALID_MODEL, status: 422 },
+  "KB repo has no documentation": { code: ErrorCode.SUPPORT_KB_EMPTY, status: 422 },
+  "empty answer": { code: ErrorCode.SUPPORT_EMPTY_ANSWER, status: 422 },
+  "no write token": { code: ErrorCode.FAQ_NO_WRITE_TOKEN, status: 422 },
+  "Unknown git host — no pull request opened.": { code: ErrorCode.GIT_UNKNOWN_HOST, status: 422 },
+  "could not push the change to the base branch (retry)": { code: ErrorCode.AUTONOMOUS_BASE_PUSH_FAILED, status: 422 },
+  "self-approval blocked": { code: ErrorCode.APPROVAL_SELF, status: 409 },
+};
+
+/** Resolve a cli reply's `error` string to its ErrorCode + status, or `null` when unmapped. */
+export function cliErrorToCode(error: string | null | undefined): { code: ErrorCode; status: number } | null {
+  return (error && CLI_ERROR_CODE_MAP[error]) || null;
+}

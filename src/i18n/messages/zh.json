@@ -179,5 +179,9 @@
   "autoRun.failed": "自主循环调度失败：{note}",
   "autoRun.noDaemon": "配置文件 “{profile}” 没有正在运行的守护进程 — 请先启动：4pm start --profile {profile}",
   "autoRun.timeout": "自主循环超过时间限制 — 正在中止。",
-  "autoRun.authFailed": "控制通道认证失败 — 守护进程拒绝了令牌。"
+  "autoRun.authFailed": "控制通道认证失败 — 守护进程拒绝了令牌。",
+  "autonomous.cronMissing": "无法安装自主 cron：此工作机没有可用的 `crontab`（cron 服务）。自主调度需要工作机上的 cron。",
+  "autonomous.settingsInvalidJson": "自主设置不是有效的 JSON。",
+  "config.notObject": "config.json 必须是 JSON 对象。",
+  "config.invalidJson": "无效的 JSON：{message}"
 }
