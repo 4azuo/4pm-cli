@@ -142,6 +142,13 @@ export const ErrorCode = {
   WORKER_POOL_NAME_TAKEN: "WORKER_POOL_NAME_TAKEN",
   WORKER_POOL_ATTACHED: "WORKER_POOL_ATTACHED",
   WORKER_POOL_ALREADY_ATTACHED: "WORKER_POOL_ALREADY_ATTACHED",
+  // A pool can't be both a project pool and the org AI pool (ADR-0376 mutual exclusivity).
+  AI_POOL_CONFLICT: "AI_POOL_CONFLICT",
+  // No org AI pool configured (Settings) for a project-less org AI task (ADR-0376).
+  AI_POOL_NOT_CONFIGURED: "AI_POOL_NOT_CONFIGURED",
+  // Change-request (ADR-0379) not found / already resolved.
+  CHANGE_REQUEST_NOT_FOUND: "CHANGE_REQUEST_NOT_FOUND",
+  CHANGE_REQUEST_ALREADY_RESOLVED: "CHANGE_REQUEST_ALREADY_RESOLVED",
   MACHINE_ALREADY_IN_POOL: "MACHINE_ALREADY_IN_POOL",
   NOT_MACHINE_USER: "NOT_MACHINE_USER",
   // worker · physic project

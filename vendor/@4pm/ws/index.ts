@@ -5,6 +5,7 @@ export * from "./batcher";
 export * from "./channels/index";
 export * from "./crypto";
 export * from "./messages/autonomous-book-usage";
+export * from "./messages/checklist-author";
 export * from "./messages/envelope";
 export * from "./messages/faq-compose";
 export * from "./messages/git-token";

@@ -204,6 +204,13 @@ export interface OrgSettings {
   storageAlerts: StorageAlertRule[];
   /** Auto clear config (ADR-0365). */
   storageAutoClear: StorageAutoClearSettings;
+  /**
+   * The worker pool (ADR-0284) designated to run **project-less org AI tasks** (ADR-0376 — e.g. AI
+   * checklist authoring), stored under `settings.aiPoolId`. `null` = none configured. A pool set here
+   * **cannot be attached to a project** (and a project-attached pool cannot be chosen here) — the
+   * server enforces the mutual exclusivity on both the Settings save and the project pool-attach.
+   */
+  aiPoolId: string | null;
 }
 
 /** Defaults applied when a settings key is absent. */
@@ -228,6 +235,7 @@ export const DEFAULT_ORG_SETTINGS: OrgSettings = {
   cli: { reconnectMaxBackoffSec: 60, autoUpdateDaily: false, autoUpdateHour: 0 },
   storageAlerts: [],
   storageAutoClear: DEFAULT_STORAGE_AUTO_CLEAR,
+  aiPoolId: null,
 };
 
 /** Read a numeric TTL, clamping out-of-range values back to `def` (ADR-0056). */
@@ -380,6 +388,7 @@ export function readOrgSettings(settings: Record<string, unknown> | null | undef
     },
     storageAlerts: readStorageAlerts(settings?.storageAlerts),
     storageAutoClear: readStorageAutoClear(settings?.storageAutoClear),
+    aiPoolId: typeof settings?.aiPoolId === "string" && settings.aiPoolId ? settings.aiPoolId : d.aiPoolId,
   };
 }
 

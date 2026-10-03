@@ -199,6 +199,11 @@ export const WsChannels = {
   // entries, commits, pushes a branch, opens a PR, then wipes the token/clone, and replies with the
   // PR URL. The write token never persists on the worker (leak-safety on release/reassign).
   FAQ_COMPOSE: "faq.compose",
+  // Org-level "AI author checklist items" (ADR-0376): server (picks an idle cli of the org AI pool) →
+  // cli request–reply. The server forwards a ready-built prompt; the worker runs claude one-shot (no
+  // tools, empty dir — like support-answer) and replies with the raw output for the web to parse. No
+  // project is involved (checklists are org-scoped).
+  CHECKLIST_AUTHOR: "checklist.author",
   // Shared AI memory (ADR-0245): cli → server one-way write-back of the compacted rolling memory for
   // the project it serves (persisted per project × machine-user link). The read direction rides
   // `ws_token` (seeds the cli cache on connect); this channel only carries updates.

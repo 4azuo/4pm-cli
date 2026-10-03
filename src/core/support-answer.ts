@@ -19,6 +19,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import type {
+  ChecklistAuthorReply,
+  ChecklistAuthorRequest,
   SupportAnswerImage,
   SupportAnswerModeration,
   SupportAnswerReply,
@@ -454,6 +456,27 @@ async function runClaudeWithFailover(
     if (i === attempts.length - 1) break;
   }
   throw new Error(`claude ${lastReason}`);
+}
+
+/**
+ * Run a one-shot "author checklist items" prompt (ADR-0376) and return the model's raw output. The
+ * prompt is built by the web (instruction + current items) and carries its own context, so there is no
+ * KB repo and no moderation — this just runs claude text-in → text-out (empty dir, no tools, via the
+ * operator's configured profiles with failover) and hands the output back for the web to parse. Any
+ * failure is returned as `{ error }` so the server surfaces it instead of hanging.
+ */
+export async function runChecklistAuthor(
+  req: ChecklistAuthorRequest,
+  ai: SupportAnswerAi,
+): Promise<ChecklistAuthorReply> {
+  try {
+    const { text } = await runClaudeWithFailover(req.prompt, ai);
+    if (!text) return { error: "empty output" };
+    return { output: text };
+  } catch (err) {
+    logger.warn("checklist.author.failed", { error: String(err) });
+    return { error: String(err) };
+  }
 }
 
 /**

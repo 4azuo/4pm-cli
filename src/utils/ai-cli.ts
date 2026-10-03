@@ -153,6 +153,29 @@ export interface AiProfile {
   args?: string[];
   model?: string;
   enabled?: boolean;
+  /** Optional managed `ANTHROPIC_API_KEY` (ADR-0378); absent ⇒ OAuth via the profile dir. */
+  apiKey?: ApiKeyDescriptor;
+}
+
+/**
+ * A profile's managed `ANTHROPIC_API_KEY` source (ADR-0378). `inline` carries the key value (stored in
+ * config.json — a secret); `ssm` / `secretsManager` carry only a reference the cli resolves at spawn
+ * with the worker's own AWS credentials. Resolved just-in-time by `resolve-api-key.ts` and exported as
+ * `ANTHROPIC_API_KEY` for that profile's spawn (so claude bills via the key — metering still parses the
+ * stream-json `result`). Only claude uses it today.
+ */
+export interface ApiKeyDescriptor {
+  source: "inline" | "ssm" | "secretsManager";
+  /** inline: the key value. */
+  value?: string;
+  /** ssm: the SSM Parameter Store parameter name. */
+  name?: string;
+  /** secretsManager: the secret id / ARN. */
+  secretId?: string;
+  /** ssm / secretsManager: the AWS region (else the worker's default). */
+  region?: string;
+  /** secretsManager: a key to read from a JSON secret. */
+  jsonKey?: string;
 }
 
 /** The AI providers a credential can target — each maps to a CLI command + config-dir env var. */
@@ -222,6 +245,8 @@ export interface AiAttempt {
   /** The prompt to feed on the child's stdin (ADR-0251) — `claude -p` / `codex exec` both read it. */
   stdin: string;
   env: Record<string, string>;
+  /** The profile's managed API key descriptor (ADR-0378), resolved + merged into env at spawn; omitted ⇒ OAuth. */
+  apiKey?: ApiKeyDescriptor;
 }
 
 /** A resolved plan: a representative command (first attempt's) + the ordered attempts to try. */
@@ -628,6 +653,7 @@ function planUnifiedRun(
     env: envVar
       ? { ...baseEnv, [envVar]: dir, ...overrideEnv(cmd, override) }
       : { ...baseEnv, ...overrideEnv(cmd, override) },
+    ...(cred.apiKey ? { apiKey: cred.apiKey } : {}),
   }));
   return { cmd: attempts[0]?.cmd ?? DEFAULT_AI_CLI, attempts };
 }
@@ -679,6 +705,7 @@ function planLegacyRun(
       args: buildRunArgs(profile, cmd, resume.get(key), oneShot, override, readOnly, bypass, [...allAiProfileDirs(config), dir]),
       stdin: prompt,
       env: { ...baseEnv, [envVar]: dir, ...overrideEnv(cmd, override) },
+      ...(profile.apiKey ? { apiKey: profile.apiKey } : {}),
     };
   });
   return { cmd, attempts };

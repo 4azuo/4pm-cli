@@ -7,12 +7,13 @@
  */
 import {
   WsChannels,
+  type ChecklistAuthorRequest,
   type FaqComposeRequest,
   type KnowledgeComposeRequest,
   type SupportAnswerRequest,
   type WsEnvelope,
 } from "@4pm/ws";
-import { runSupportAnswer } from "../../support-answer";
+import { runChecklistAuthor, runSupportAnswer } from "../../support-answer";
 import { runKnowledgeCompose } from "../../knowledge-compose";
 import { runFaqCompose } from "../../faq-compose";
 import { reportToolResult } from "../../tool-health";
@@ -125,6 +126,33 @@ export function handleSupportChannels(
           ctx.send(WsChannels.FAQ_COMPOSE, reply, message.id);
         })
         .finally(() => ctx.bus.endBusy("faq-compose"));
+      return true;
+    }
+    case WsChannels.CHECKLIST_AUTHOR: {
+      // Request/reply (ADR-0376): the org AI pool runs a one-shot "author checklist items" prompt
+      // (built by the web) — text-in → text-out, no tools, no project. Same profile handling as the
+      // normal AI dispatch (ADR-0057). The web parses the proposed items from the returned output.
+      const creq = payload as unknown as ChecklistAuthorRequest;
+      const ccfg = readProfileConfig(ctx.profileDir);
+      const ccmd = ccfg.aiCli || "claude";
+      const cai = {
+        cmd: ccmd,
+        profiles: resolveClaudeProfiles(ccfg, getWorkingProfile(ctx.profileDir, ccmd)),
+        env: ccfg.aiEnv,
+      };
+      ctx.bus.push({ source: "server", kind: "aireq", text: `${ccmd} ‹ author checklist items` });
+      ctx.bus.startBusy("checklist-author");
+      void runChecklistAuthor(creq, cai)
+        .then((reply) => {
+          if (reply.error) {
+            ctx.bus.push({ source: "server", kind: "log", text: `checklist-author failed: ${reply.error}`, level: "warn" });
+          } else {
+            ctx.bus.push({ source: "server", kind: "aires", text: `${ccmd} ›` });
+          }
+          reportToolResult(ccmd, !reply.error, reply.error);
+          ctx.send(WsChannels.CHECKLIST_AUTHOR, reply, message.id);
+        })
+        .finally(() => ctx.bus.endBusy("checklist-author"));
       return true;
     }
     default:

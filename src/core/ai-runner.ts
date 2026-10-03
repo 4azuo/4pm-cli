@@ -9,6 +9,7 @@
 import { COMMAND_CANCELLED_EXIT_CODE } from "@4pm/ws";
 import { runCommand } from "./executor";
 import { reportToolResult } from "./tool-health";
+import { resolveApiKey } from "./resolve-api-key";
 import type { AiPlan } from "../utils/ai-cli";
 import { createAiStreamParser, estimateTokens, type AiUsage } from "./ai-stream";
 
@@ -145,7 +146,13 @@ export async function runAiFailover(
         handlers.onChunk(text);
       }
     };
-    finalExit = await runAttempt(commandId, attempt.cmd, attempt.args, attempt.stdin, cwd, attempt.env, emit, timeoutMs, signal);
+    // Managed API key (ADR-0378): when this profile carries an `apiKey` descriptor, resolve it
+    // (inline / SSM / Secrets Manager) and export ANTHROPIC_API_KEY for this spawn only — so claude
+    // bills via the key. A failed remote fetch resolves to null ⇒ the attempt runs without it (OAuth)
+    // and, if that also fails, failover moves on.
+    const resolvedKey = attempt.apiKey ? await resolveApiKey(attempt.apiKey) : null;
+    const attemptEnv = resolvedKey ? { ...attempt.env, ANTHROPIC_API_KEY: resolvedKey } : attempt.env;
+    finalExit = await runAttempt(commandId, attempt.cmd, attempt.args, attempt.stdin, cwd, attemptEnv, emit, timeoutMs, signal);
     const tail = parser.flush();
     if (tail) {
       captured += tail;
