@@ -75,6 +75,7 @@ import { handleFsChannels } from "./ws-client/handlers/fs";
 import { handleGitChannels } from "./ws-client/handlers/git";
 import { handleMiscChannels } from "./ws-client/handlers/misc";
 import { handleProjectChannels } from "./ws-client/handlers/project";
+import { handleResearchChannels } from "./ws-client/handlers/research";
 import { handleSupportChannels } from "./ws-client/handlers/support";
 import { handleToolsChannels } from "./ws-client/handlers/tools";
 import { handleWorkerChannels } from "./ws-client/handlers/worker";
@@ -821,6 +822,7 @@ export class WsClient {
     if (handleToolsChannels(this.hctx, message, payload)) return;
     if (handleGitChannels(this.hctx, message, payload)) return;
     if (handleSupportChannels(this.hctx, message, payload)) return;
+    if (handleResearchChannels(this.hctx, message, payload)) return;
     if (handleMiscChannels(this.hctx, message, payload)) return;
     this.bus.log(t("error.unsupportedChannel", { channel: message.channel }), "warn");
   }

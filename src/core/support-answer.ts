@@ -468,14 +468,14 @@ async function runClaudeWithFailover(
 export async function runChecklistAuthor(
   req: ChecklistAuthorRequest,
   ai: SupportAnswerAi,
-): Promise<ChecklistAuthorReply> {
+): Promise<{ reply: ChecklistAuthorReply; usage: AiUsage }> {
   try {
-    const { text } = await runClaudeWithFailover(req.prompt, ai);
-    if (!text) return { error: "empty output" };
-    return { output: text };
+    const { text, usage } = await runClaudeWithFailover(req.prompt, ai);
+    if (!text) return { reply: { error: "empty output" }, usage };
+    return { reply: { output: text }, usage };
   } catch (err) {
     logger.warn("checklist.author.failed", { error: String(err) });
-    return { error: String(err) };
+    return { reply: { error: String(err) }, usage: { ...NO_USAGE } };
   }
 }
 

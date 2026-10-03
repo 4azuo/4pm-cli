@@ -7,19 +7,24 @@
  */
 import {
   WsChannels,
+  type ChecklistAuthorReply,
   type ChecklistAuthorRequest,
   type FaqComposeRequest,
   type KnowledgeComposeRequest,
   type SupportAnswerRequest,
+  type UsageReportPayload,
   type WsEnvelope,
 } from "@4pm/ws";
+import { UsageMetric } from "@4pm/constants";
 import { runChecklistAuthor, runSupportAnswer } from "../../support-answer";
 import { runKnowledgeCompose } from "../../knowledge-compose";
 import { runFaqCompose } from "../../faq-compose";
 import { reportToolResult } from "../../tool-health";
 import { getWorkingProfile } from "../../ai-profile-state";
-import { resolveClaudeProfiles } from "../../../utils/ai-cli";
+import { aiProviderOf } from "../../ai-stream";
+import { resolveClaudeAuthMode, resolveClaudeProfiles } from "../../../utils/ai-cli";
 import { readProfileConfig } from "../../../config/profile";
+import { acquireRunSlot } from "../run-slot";
 import type { WsHandlerCtx } from "../context";
 
 /** Route the AI-compose channels; returns true when the message was handled. */
@@ -142,8 +147,36 @@ export function handleSupportChannels(
       };
       ctx.bus.push({ source: "server", kind: "aireq", text: `${ccmd} ‹ author checklist items` });
       ctx.bus.startBusy("checklist-author");
-      void runChecklistAuthor(creq, cai)
-        .then((reply) => {
+      void (async () => {
+        // Org AI checklist authoring takes an org run slot (ADR-0359) and is metered to the org
+        // (ADR-0380 — COMMANDS + AI_TOKENS, projectId=null on an org-AI-pool cli), like every AI run.
+        const slot = await acquireRunSlot(ctx, () => undefined);
+        if (slot.kind !== "granted") {
+          ctx.send(
+            WsChannels.CHECKLIST_AUTHOR,
+            { error: slot.kind === "denied" ? "storage full" : "no idle run slot" } satisfies ChecklistAuthorReply,
+            message.id,
+          );
+          return;
+        }
+        try {
+          const { reply, usage } = await runChecklistAuthor(creq, cai);
+          const occurredAt = new Date().toISOString();
+          const events: UsageReportPayload["events"] = [{ metric: UsageMetric.COMMANDS, amount: 1, occurredAt }];
+          if (usage.tokens > 0) {
+            events.push({
+              metric: UsageMetric.AI_TOKENS,
+              amount: usage.tokens,
+              occurredAt,
+              inputTokens: usage.input,
+              outputTokens: usage.output,
+              cacheReadTokens: usage.cacheRead,
+              cacheCreationTokens: usage.cacheCreation,
+              provider: aiProviderOf(ccmd),
+              authMode: resolveClaudeAuthMode(ccfg),
+            });
+          }
+          ctx.reportUsage(events, null);
           if (reply.error) {
             ctx.bus.push({ source: "server", kind: "log", text: `checklist-author failed: ${reply.error}`, level: "warn" });
           } else {
@@ -151,8 +184,10 @@ export function handleSupportChannels(
           }
           reportToolResult(ccmd, !reply.error, reply.error);
           ctx.send(WsChannels.CHECKLIST_AUTHOR, reply, message.id);
-        })
-        .finally(() => ctx.bus.endBusy("checklist-author"));
+        } finally {
+          slot.handle.release();
+        }
+      })().finally(() => ctx.bus.endBusy("checklist-author"));
       return true;
     }
     default:

@@ -204,6 +204,15 @@ export const WsChannels = {
   // tools, empty dir — like support-answer) and replies with the raw output for the web to parse. No
   // project is involved (checklists are org-scoped).
   CHECKLIST_AUTHOR: "checklist.author",
+  // Org-level "AI Research" (ADR-0380): server (picks an idle cli of the org AI pool) → cli
+  // request–reply. The server forwards the user's question; the worker runs a one-shot research agent
+  // (read-only web/search tools) under a content policy + a research-guard post-check, and replies with
+  // the markdown answer (or a structured refusal) plus the run's token usage so the server meters it to
+  // the org (projectId=null). No project is involved.
+  RESEARCH_ASK: "research.ask",
+  // Org AI Research live progress (ADR-0380): cli → server one-way stream of answer chunks / status for
+  // a running research question, keyed by the query id, relayed to the web over SSE.
+  RESEARCH_PROGRESS: "research.progress",
   // Shared AI memory (ADR-0245): cli → server one-way write-back of the compacted rolling memory for
   // the project it serves (persisted per project × machine-user link). The read direction rides
   // `ws_token` (seeds the cli cache on connect); this channel only carries updates.

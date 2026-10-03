@@ -149,6 +149,9 @@ export const ErrorCode = {
   // Change-request (ADR-0379) not found / already resolved.
   CHANGE_REQUEST_NOT_FOUND: "CHANGE_REQUEST_NOT_FOUND",
   CHANGE_REQUEST_ALREADY_RESOLVED: "CHANGE_REQUEST_ALREADY_RESOLVED",
+  // org AI Research (ADR-0380): question refused by the content policy / research-guard; row not found.
+  RESEARCH_REFUSED: "RESEARCH_REFUSED",
+  RESEARCH_NOT_FOUND: "RESEARCH_NOT_FOUND",
   MACHINE_ALREADY_IN_POOL: "MACHINE_ALREADY_IN_POOL",
   NOT_MACHINE_USER: "NOT_MACHINE_USER",
   // worker · physic project

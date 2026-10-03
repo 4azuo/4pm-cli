@@ -11,5 +11,6 @@ export * from "./messages/faq-compose";
 export * from "./messages/git-token";
 export * from "./messages/knowledge-compose";
 export * from "./messages/memory";
+export * from "./messages/research-ask";
 export * from "./messages/run-slot";
 export * from "./messages/support-answer";
