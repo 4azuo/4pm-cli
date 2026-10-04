@@ -80,6 +80,13 @@ export function attachmentExt(mime: string): string | null {
   }
 }
 
+/** The MIME of a stored `<uuid>.<ext>` attachment id (the server derives the ext from the MIME). */
+export function attachmentMimeFromId(id: string): string {
+  const ext = id.split(".").pop() ?? "";
+  const mime = [...ATTACHMENT_IMAGE_MIME_TYPES, ...ATTACHMENT_FILE_MIME_TYPES].find((m) => attachmentExt(m) === ext);
+  return mime ?? "application/octet-stream";
+}
+
 /** The extension group a stored `<uuidv4>.<ext>` attachment id may carry (path-traversal-safe ids). */
 export const ATTACHMENT_ID_EXT_PATTERN = "png|jpg|webp|gif|pdf|zip|doc|docx|xls|xlsx|txt|csv|json";
 
