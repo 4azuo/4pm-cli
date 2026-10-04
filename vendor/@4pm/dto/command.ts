@@ -6,6 +6,7 @@
 import { z } from "zod";
 import { AI_JOBS, type AiJob } from "@4pm/constants";
 import { baseRequestSchema } from "./base";
+import { ATTACHMENT_FILE_MIME_TYPES, ATTACHMENT_ID_EXT_PATTERN, ATTACHMENT_IMAGE_MIME_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENT_MAX_COUNT, attachmentExt } from "./attachment";
 
 /**
  * Max `command` length for an executable command vs an AI prompt (ADR-0106).
@@ -19,12 +20,13 @@ export const COMMAND_MAX_LEN = 8_000;
 export const AI_PROMPT_MAX_LEN = 500_000;
 
 /**
- * Console prompt image attachments (ADR-0257): allowed MIME types, per-image byte cap, and the
- * max number of images per prompt. Shared by the upload endpoint (server validation) and the web.
+ * Console prompt attachments (ADR-0257; images **and files** since ADR-0388): allowed MIME types,
+ * per-item byte cap, and the max number per prompt — the unified attachment limits. Shared by the
+ * upload endpoint (server validation) and the web.
  */
-export const COMMAND_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
-export const COMMAND_IMAGE_MAX_COUNT = 10;
-export const COMMAND_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
+export const COMMAND_IMAGE_MAX_BYTES = ATTACHMENT_MAX_BYTES;
+export const COMMAND_IMAGE_MAX_COUNT = ATTACHMENT_MAX_COUNT;
+export const COMMAND_IMAGE_MIME_TYPES = [...ATTACHMENT_IMAGE_MIME_TYPES, ...ATTACHMENT_FILE_MIME_TYPES] as const;
 export type CommandImageMime = (typeof COMMAND_IMAGE_MIME_TYPES)[number];
 
 /**
@@ -33,8 +35,9 @@ export type CommandImageMime = (typeof COMMAND_IMAGE_MIME_TYPES)[number];
  * fetch key are checked against this so a client-supplied id can never carry `/` or `..` path
  * separators into a storage key (path-traversal guard — the id becomes `command-images/{orgId}/{id}`).
  */
-export const COMMAND_IMAGE_ID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(png|jpg|webp|gif)$/;
+export const COMMAND_IMAGE_ID_RE = new RegExp(
+  `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.(${ATTACHMENT_ID_EXT_PATTERN})$`,
+);
 
 /** True when `id` is a well-formed command-image id (`<uuidv4>.<ext>`) — see COMMAND_IMAGE_ID_RE. */
 export function isCommandImageId(id: string): boolean {
@@ -43,18 +46,7 @@ export function isCommandImageId(id: string): boolean {
 
 /** The file extension for a stored command-image MIME (ADR-0257) — drives the storage key + on-disk name. */
 export function commandImageExt(mime: string): string {
-  switch (mime) {
-    case "image/png":
-      return "png";
-    case "image/jpeg":
-      return "jpg";
-    case "image/webp":
-      return "webp";
-    case "image/gif":
-      return "gif";
-    default:
-      return "bin";
-  }
+  return attachmentExt(mime) ?? "bin";
 }
 
 /** Response of POST /commands/images (command-0008) — the stored image's id + metadata. */
@@ -64,6 +56,8 @@ export interface CommandImageUploadResponse {
   mime: string;
   name: string;
   bytes: number;
+  /** Image (`[Image#N]`) or file (`[File#N]`) — ADR-0388. */
+  category: "image" | "file";
 }
 
 /**
@@ -77,6 +71,8 @@ export const commandImageRefSchema = z.object({
   placeholder: z.string().min(1).max(40),
   name: z.string().max(255),
   mime: z.enum(COMMAND_IMAGE_MIME_TYPES),
+  /** Image or file (ADR-0388); omitted by older clients ⇒ derived from `mime`. */
+  category: z.enum(["image", "file"]).optional(),
 });
 export type CommandImageRef = z.infer<typeof commandImageRefSchema>;
 

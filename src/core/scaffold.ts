@@ -24,6 +24,7 @@ import type {
 import { PROJECT_TEMPLATE, type AiGuideFile } from "@4pm/constants";
 import { SCAFFOLD_TRACKING_FILES } from "@4pm/dto";
 import type { AiTaskRunner } from "./ai-task";
+import { resolveCliPrompt } from "./prompt-overrides";
 
 const run = promisify(execFile);
 
@@ -718,8 +719,8 @@ async function aiInit(
       generate,
       join(target, "README.md"),
       "README.md",
-      `Write a concise README.md (Markdown only, no preamble) for this project from its spec ` +
-        `JSON:\n${specJson}`,
+      // Admin override (ADR-0381) for `cli.scaffold.readme`, else the shared registry default.
+      resolveCliPrompt("cli.scaffold.readme", { specJson }),
     );
   // The project's single guide file (ADR-0309) — CLAUDE.md or AGENT.md, never both. Other AI CLIs
   // read AGENT.md; Claude Code reads CLAUDE.md. The choice comes from the spec (`ai_guide_file`).
@@ -729,9 +730,14 @@ async function aiInit(
       generate,
       join(target, guideFile),
       guideFile,
-      `Write a ${guideFile} (Markdown only, no preamble) with guidance/conventions for AI agents ` +
-        `working in this project, derived from its spec JSON:\n${specJson}` +
-        (guideInstructions ? `\nAlso incorporate these additional instructions/content:\n${guideInstructions}\n` : ""),
+      // Admin override (ADR-0381) for `cli.scaffold.guide`, else the shared registry default.
+      resolveCliPrompt("cli.scaffold.guide", {
+        guideFile,
+        specJson,
+        guideInstructionsBlock: guideInstructions
+          ? `\nAlso incorporate these additional instructions/content:\n${guideInstructions}\n`
+          : "",
+      }),
       guideInstructions,
     );
   } finally {

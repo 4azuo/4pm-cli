@@ -8,12 +8,27 @@
  * server meters it to the org (projectId=null). No project is involved.
  */
 
+/**
+ * One research attachment delivered inline on the dispatch (ADR-0385). The server reads the relay blob
+ * and base64-encodes it, so delivery works on every storage backend (the worker never reaches storage).
+ * The cli writes it into a per-run scratch dir and grants the agent a `Read` scoped to that dir.
+ */
+export interface ResearchAttachmentPayload {
+  /** File name written into the scratch dir (sanitized by the cli). */
+  name: string;
+  mime: string;
+  /** The file bytes, base64-encoded. */
+  dataBase64: string;
+}
+
 /** Server → cli: the research question to run, tagged with the persisted query id for progress routing. */
 export interface ResearchAskRequest {
   /** The `ResearchQuery` row id — echoed on every progress frame so the server routes/accumulates it. */
   queryId: string;
   /** The user's question (plain text / markdown). */
   question: string;
+  /** Inline attachments (ADR-0385) — materialized on the worker, read-scoped to the run's scratch dir. */
+  attachments?: ResearchAttachmentPayload[];
 }
 
 /** cli → server: the final research result — the markdown answer, a structured refusal, or an error. */

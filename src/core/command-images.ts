@@ -1,5 +1,5 @@
 /**
- * Console prompt image attachments on the worker (ADR-0257). A web-dispatched full agent run may
+ * Console prompt attachments on the worker (ADR-0257; images and files — ADR-0388). A web-dispatched full agent run may
  * carry image references (`[Image#N]` placeholders + uploaded ids); this module fetches each blob
  * from the server, materializes it **inside the served project folder** (so the folder-scope guard
  * lets the agent read it), rewrites the placeholders in the AI prompt to the on-disk paths, and
@@ -45,7 +45,7 @@ export async function materializeImages(
         continue;
       }
       const ext = commandImageExt(reply.mime ?? img.mime);
-      const file = join(dir, `img-${n}.${ext}`);
+      const file = join(dir, `attachment-${n}.${ext}`);
       writeFileSync(file, Buffer.from(reply.dataBase64, "base64"));
       map.set(img.placeholder, file);
     } catch (err) {

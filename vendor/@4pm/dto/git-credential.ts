@@ -98,6 +98,46 @@ export const putGitCredentialRequestSchema = z
   });
 export type PutGitCredentialRequest = z.infer<typeof putGitCredentialRequestSchema>;
 
+// ── GitLab group/project access token (ADR-0382) ───────────────────────────────────────────────────
+
+/** Data — GET /projects/:id/gitlab-credential (project-0078); `null` when none is saved. */
+export interface GitLabCredentialResponse {
+  provider: "gitlab-token";
+  host: string;
+  group: string;
+  apiBaseUrl: string | null;
+  hasCaCert: boolean;
+  /** SHA-256 of the token ("SHA256:<base64>") — shown instead of the token. */
+  tokenFingerprint: string;
+  /** Whether `settings.gitAuth.method` is `gitlab-group-token`. */
+  active: boolean;
+  updatedAt: string;
+  updatedBy: string | null;
+}
+
+/** Body — PUT /projects/:id/gitlab-credential (project-0079). */
+export const putGitLabCredentialRequestSchema = z.object({
+  host: hostSchema.optional(),
+  group: z.string().trim().min(1).max(200),
+  /** The access token; omit to keep the stored one (required on first save — enforced server-side). */
+  token: z.string().trim().min(1).max(512).optional(),
+  apiBaseUrl: z.string().trim().url().startsWith("https://").max(500).nullable().optional(),
+  caCert: z.string().trim().max(32_768).nullable().optional(),
+});
+export type PutGitLabCredentialRequest = z.infer<typeof putGitLabCredentialRequestSchema>;
+
+/** One step of a GitLab connection test (project-0081). */
+export interface GitLabCredentialTestStep {
+  step: "connect" | "authenticate" | "scope";
+  ok: boolean;
+  message: string | null;
+}
+
+/** Data — POST /projects/:id/gitlab-credential/test (project-0081). */
+export interface GitLabCredentialTestResponse {
+  steps: GitLabCredentialTestStep[];
+}
+
 /** One step of a connection test (project-0073). */
 export interface GitCredentialTestStep {
   step: "connect" | "authenticate" | "installations" | "permissions";

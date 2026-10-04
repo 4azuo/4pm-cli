@@ -27,7 +27,9 @@ import type {
   SupportAnswerRequest,
   SupportAnswerTask,
 } from "@4pm/ws";
+import { commandImageExt } from "@4pm/dto";
 import { logger } from "../common/logger/logger";
+import { resolveCliPrompt } from "./prompt-overrides";
 import { createAiStreamParser, estimateTokens, type AiUsage } from "./ai-stream";
 import type { ResolvedClaudeProfile } from "../utils/ai-cli";
 import { agentEnv, gitAuthArgs } from "./agent-sandbox";
@@ -182,33 +184,8 @@ function buildPrompt(docs: string, question: string, askerRole: "admin" | "user"
     askerRole === "admin"
       ? "The asker is a platform admin."
       : "The asker is a regular user — do NOT reveal admin-only features.";
-  return [
-    "You are the 4PM product support assistant. Answer the user's question about how to use 4PM",
-    "using ONLY the documentation and FAQ provided below. If the answer is not in the docs, say",
-    "you don't have that information and suggest contacting human support — do not invent details.",
-    roleNote,
-    "Answer concisely in the user's language; reference the relevant doc heading/path when useful.",
-    "",
-    // Structured output for inline moderation (ADR-0237): the same run also classifies the question.
-    "Return ONLY a single JSON object (no markdown fences, no prose around it) with these keys:",
-    '  "onTopic": boolean   — false if the question is NOT about how to use the 4PM product,',
-    '  "sensitive": boolean — true if the question is inappropriate / abusive OR asks how to hack,',
-    "                         bypass security, gain unauthorized access, take over or steal another",
-    "                         user's/org's account or data, obtain credentials, or any malicious intent,",
-    '  "reason": string     — a short reason when onTopic is false or sensitive is true, else "",',
-    '  "answer": string     — your reply to the user, in markdown (in the user\'s language).',
-    "Refusal policy (ADR-0237): if the question is off-topic (onTopic false) OR sensitive, DO NOT",
-    "answer it. Set \"answer\" to this EXACT same polite refusal for BOTH cases (in the user's",
-    "language, do not reveal which category or hint at the reason): \"Sorry, I can only help with",
-    "questions about how to use 4PM. For anything else, please contact human support.\" Only answer",
-    "normally when onTopic is true AND sensitive is false.",
-    "",
-    "===== DOCUMENTATION =====",
-    docs,
-    "",
-    "===== QUESTION =====",
-    question,
-  ].join("\n");
+  // Admin override (ADR-0381) for `cli.support.answer`, else the shared registry default.
+  return resolveCliPrompt("cli.support.answer", { roleNote, docs, question });
 }
 
 /**
@@ -217,87 +194,55 @@ function buildPrompt(docs: string, question: string, askerRole: "admin" | "user"
  * prompt there is no refusal policy and no moderation JSON — the whole output is the markdown draft.
  */
 function buildDraftPrompt(docs: string, context: string, task: SupportAnswerTask): string {
-  if (task === "legal_draft") return buildLegalDraftPrompt(docs, context);
-  const goal =
-    task === "reply_draft"
-      ? [
-          "You are drafting a reply FROM the 4PM support team TO the customer in the support ticket below.",
-          "Address the customer's latest message, using the whole conversation for context. Be accurate,",
-          "friendly and concise. Write in the language the customer uses in the ticket.",
-        ]
-      : [
-          "You are drafting an outreach message FROM the 4PM platform team TO the customer organizations.",
-          "Use the subject and any current draft below as the starting point. Be clear, friendly and concise.",
-          "Write in the language of the subject/draft (or of the admin's instructions when those are empty).",
-        ];
-  return [
-    ...goal,
-    "Use the documentation and FAQ below for any product facts; never invent features, prices or",
-    "commitments that are not in the docs — leave a clear [placeholder] for the admin to fill instead.",
-    "Follow the admin's instructions when given. A human admin reviews and edits your draft before",
-    "sending it.",
-    "",
-    "Output ONLY the message body in markdown — no subject line, no preamble, no explanation, no code",
-    "fences around the whole message.",
-    "",
-    "===== DOCUMENTATION =====",
-    docs,
-    "",
-    "===== CONTEXT =====",
-    context,
-  ].join("\n");
+  if (task === "prompt_generate") return buildPromptGeneratePrompt(context);
+  if (task === "prompt_translate") return buildPromptTranslatePrompt(context);
+  if (task === "legal_draft") return resolveCliPrompt("cli.support.legal_draft", { docs, context });
+  // reply_draft / outreach_draft — admin overrides (ADR-0381) or the shared registry defaults.
+  const key = task === "reply_draft" ? "cli.support.reply_draft" : "cli.support.outreach_draft";
+  return resolveCliPrompt(key, { docs, context });
 }
 
 /**
- * The legal-document drafting prompt (ADR-0360): write or revise the WHOLE body of one 4PM legal
- * document in the target locale, grounded ONLY in the server-built facts (live plan catalog + billing
- * behaviour) and the docs — keeping `{{placeholders}}` verbatim and marking unknowns as `[TODO: …]`.
- * Output is the markdown body alone; a human admin reviews it (and counsel) before publishing.
+ * The AI-prompt generate prompt (ADR-0381): write a reusable 4PM prompt template from the server-built
+ * specification (feature + goal + required placeholders). Output is the template text alone; a human
+ * admin reviews it before it goes live.
  */
-function buildLegalDraftPrompt(docs: string, context: string): string {
+function buildPromptGeneratePrompt(context: string): string {
   return [
-    "You are drafting the body of one of 4PM's legal documents (Terms of Service, Privacy Policy,",
-    "Add-on Terms, Rented Machine Addendum, …) for the platform admin to review and publish.",
-    "Write or revise the WHOLE document body in the target locale given in the context. Keep the",
-    "existing heading structure and numbering unless the admin's instructions say otherwise.",
-    "When the target locale is not English and an English reference is given, follow its meaning closely.",
-    "Rules:",
-    "- Every {{placeholder}} (e.g. {{companyName}}) must be kept verbatim — never fill or rename it.",
-    "- Describe plans, prices, upgrades, downgrades, cancellations, renewals, refunds and add-ons ONLY",
-    "  as stated in the PLAN CATALOG and BILLING FACTS below or the documentation; never invent",
-    "  commitments, prices or legal guarantees. Where something is unknown write `[TODO: …]`.",
-    "- Plain, precise legal English (or the target language); short numbered sections and bullet lists.",
-    "- This is a draft, not legal advice; do not add a disclaimer about that inside the document.",
+    "You are writing a reusable AI PROMPT TEMPLATE for the 4PM platform. Based on the specification",
+    "below, write a clear, effective prompt. Include each required {{placeholder}} verbatim where",
+    "appropriate — never rename or invent placeholders. A human admin reviews your draft before it",
+    "goes live.",
+    "Output ONLY the prompt template text — no preamble, no explanation, no code fences.",
     "",
-    "Output ONLY the document body in markdown — no title line, no preamble, no explanation, no code",
-    "fences around the whole document.",
-    "",
-    "===== DOCUMENTATION =====",
-    docs,
-    "",
-    "===== CONTEXT =====",
+    "===== SPECIFICATION =====",
     context,
   ].join("\n");
 }
 
-/** File extension for a materialized help image's MIME. */
+/**
+ * The AI-prompt translate prompt (ADR-0381): translate a 4PM prompt template into the target locale
+ * from the context, keeping every `{{placeholder}}` verbatim. Output is the translated template alone.
+ */
+function buildPromptTranslatePrompt(context: string): string {
+  return [
+    "You are translating a reusable AI PROMPT TEMPLATE for the 4PM platform into the target language",
+    "given below. Preserve EVERY {{placeholder}} exactly — never translate, rename, or remove a",
+    "placeholder. Keep the same structure, intent and formatting. A human admin reviews your draft.",
+    "Output ONLY the translated template text — no preamble, no explanation, no code fences.",
+    "",
+    "===== SPECIFICATION =====",
+    context,
+  ].join("\n");
+}
+
+/** File extension for a materialized help attachment's MIME — image or file (ADR-0273/0388). */
 function imageExt(mime: string): string {
-  switch (mime) {
-    case "image/png":
-      return "png";
-    case "image/jpeg":
-      return "jpg";
-    case "image/webp":
-      return "webp";
-    case "image/gif":
-      return "gif";
-    default:
-      return "png";
-  }
+  return commandImageExt(mime);
 }
 
 /**
- * Materialize the pasted help images (ADR-0273) into a throwaway folder and rewrite each `[Image#N]`
+ * Materialize the help attachments — images and files (ADR-0273/0388) — into a throwaway folder and rewrite each `[Image#N]` / `[File#N]`
  * placeholder in the question to the on-disk path so the agent can `Read` the screenshot (mirrors the
  * Console command-image pipeline, ADR-0257). Returns the folder to clean up + the rewritten question.
  */
@@ -307,7 +252,7 @@ function materializeImages(images: SupportAnswerImage[], question: string): { di
   const dir = mkdtempSync(join(tmpdir(), "4pm-help-images-"));
   let rewritten = question;
   images.forEach((img, i) => {
-    const file = join(dir, `image-${i + 1}.${imageExt(img.mime)}`);
+    const file = join(dir, `attachment-${i + 1}.${imageExt(img.mime)}`);
     writeFileSync(file, Buffer.from(img.dataBase64, "base64"));
     if (img.placeholder) rewritten = rewritten.split(img.placeholder).join(file);
   });

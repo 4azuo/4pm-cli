@@ -44,9 +44,16 @@ export interface SupportAnswerRequest {
 
 /**
  * The drafting task of a support-answer request: a ticket reply or an outreach message (ADR-0345),
- * or a legal document body (ADR-0360).
+ * a legal document body (ADR-0360), or drafting/translating an AI prompt template (ADR-0381 —
+ * `prompt_generate` writes a template from a description, `prompt_translate` localizes one). For the
+ * prompt tasks the server builds the full instruction as the context; the cli runs it focused.
  */
-export type SupportAnswerTask = "reply_draft" | "outreach_draft" | "legal_draft";
+export type SupportAnswerTask =
+  | "reply_draft"
+  | "outreach_draft"
+  | "legal_draft"
+  | "prompt_generate"
+  | "prompt_translate";
 
 /** The claude run's token split for a support answer (ADR-0224). */
 export interface SupportAnswerUsage {

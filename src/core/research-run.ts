@@ -7,12 +7,14 @@
  * but never touch the worker or other systems. Usage is captured so the handler meters it to the org.
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ResearchAttachmentPayload } from "@4pm/ws";
 import { createAiStreamParser, estimateTokens, type AiUsage } from "./ai-stream";
 import { agentEnv } from "./agent-sandbox";
 import { denySettingsArgs } from "../utils/agent-deny";
+import { resolveCliPrompt } from "./prompt-overrides";
 import type { ResolvedClaudeProfile } from "../utils/ai-cli";
 
 /** Max time a research run may take (ms) — it may search/read several pages before answering. */
@@ -24,19 +26,31 @@ const RESEARCH_MAX_TURNS = 16;
 /** Zero usage — the fallback when a run captured no token counts. */
 const NO_USAGE: AiUsage = { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
 
-/** The only tools the research agent may use (auto-approved); everything else is denied. */
+/**
+ * The tools the research agent may use (auto-approved); everything else is denied. When the question
+ * carries attachments (ADR-0385) `Read` + `Glob` are added so the agent can read the files materialized
+ * into its throwaway working dir (the only readable location) — see `toolArgs`.
+ */
 const RESEARCH_ALLOWED_TOOLS = "WebSearch,WebFetch";
+const RESEARCH_ATTACH_TOOLS = "WebSearch,WebFetch,Read,Glob";
 
 /**
  * Every tool denied to the research agent — anything that touches the worker, other systems, or spawns
- * side-effecting work. Only WebSearch/WebFetch (allow-listed above) remain.
+ * side-effecting work. Only WebSearch/WebFetch (allow-listed above) remain; with attachments, `Read`
+ * and `Glob` are lifted (confined to the throwaway working dir).
  */
-const RESEARCH_DENIED_TOOLS = [
+const RESEARCH_DENIED_BASE = [
   "Bash", "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit", "Task", "SlashCommand", "Skill",
   "ToolSearch", "TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate", "Monitor",
   "DesignSync", "CronCreate", "CronDelete", "CronList", "EnterWorktree", "ExitWorktree", "RemoteTrigger",
   "ScheduleWakeup", "SendMessage", "PushNotification",
-].join(",");
+];
+
+/** A safe on-disk file name for one attachment (strip any path segments / unsafe chars). */
+function safeAttachmentName(name: string, index: number): string {
+  const base = (name || `file-${index + 1}`).replace(/[/\\]/g, "_").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80);
+  return base || `file-${index + 1}`;
+}
 
 /** How to run claude for research — the operator's configured profiles (working-first, ADR-0057). */
 export interface ResearchAi {
@@ -51,33 +65,8 @@ export interface ResearchAi {
  * research-guard) for a disallowed question.
  */
 export function buildResearchPrompt(question: string): string {
-  return [
-    "You are a research assistant for the 4PM platform. Answer the user's question thoroughly and",
-    "accurately, in Markdown. Use the read-only web tools (WebSearch / WebFetch) to find current, factual",
-    "information when helpful, and cite sources inline where relevant.",
-    "",
-    "STRICT CONTENT POLICY — you MUST refuse, and must not answer, if the question (or a faithful answer",
-    "to it) would involve any of:",
-    "- sexual, abusive, hateful, or illegal content;",
-    "- political persuasion, campaigning, or partisan advocacy;",
-    "- discrimination or demeaning content targeting a race, ethnicity, religion, gender, nationality, or",
-    "  other protected group;",
-    "- probing, scanning, exploiting, or attacking the security of ANY system, network, account, device,",
-    "  or person you do not own (no vulnerability hunting, no exploit/malware creation, no credential or",
-    "  PII harvesting, no evasion of security controls). General defensive-security education is allowed.",
-    "- any other seriously harmful activity.",
-    "",
-    'When you must refuse, reply with EXACTLY one line starting with "REFUSED:" followed by a short,',
-    "neutral reason, and output nothing else.",
-    "",
-    "You have READ-ONLY web tools only. Never attempt to read local files, run shell commands, or interact",
-    "with other systems.",
-    "",
-    "---",
-    "",
-    "Question:",
-    question,
-  ].join("\n");
+  // Admin override (ADR-0381) for `cli.research.policy`, else the shared registry default.
+  return resolveCliPrompt("cli.research.policy", { question });
 }
 
 /** One research `claude` attempt: web tools only, streaming each readable delta to `onChunk`. */
@@ -88,33 +77,52 @@ function runClaudeOnce(
   extraEnv: Record<string, string> | undefined,
   onChunk: (delta: string) => void,
   denyDirs: string[],
+  attachments: ResearchAttachmentPayload[],
 ): Promise<{ code: number; out: string; err: string; usage: AiUsage }> {
   return new Promise((resolve, reject) => {
     const isClaude = cmd.includes("claude");
+    // Empty throwaway dir (the per-run scratch — ADR-0385): attachments are written here and the agent's
+    // Read is confined to it, so a project-less run never touches a project folder or the wider machine.
+    const cwd = mkdtempSync(join(tmpdir(), "4pm-research-"));
+    const hasAttachments = attachments.length > 0;
+    let finalPrompt = prompt;
+    if (hasAttachments) {
+      const lines: string[] = [];
+      attachments.forEach((a, i) => {
+        const file = join(cwd, safeAttachmentName(a.name, i));
+        try {
+          writeFileSync(file, Buffer.from(a.dataBase64, "base64"));
+          lines.push(`- \`${file}\``);
+        } catch {
+          // best-effort — skip an attachment that fails to write
+        }
+      });
+      if (lines.length > 0) {
+        finalPrompt = `${prompt}\n\nThe user attached these files — use the Read tool to read them before answering:\n${lines.join("\n")}`;
+      }
+    }
     const args = [
       "-p",
       ...(profile?.model ? ["--model", profile.model] : []),
       ...(isClaude ? ["--output-format", "stream-json", "--verbose"] : []),
       // Secret-path deny rules (ADR-0347) — reads are not confined to the working dir.
       ...denySettingsArgs(cmd, [...denyDirs, profile?.dir]),
-      // Web-only agent: allow WebSearch/WebFetch (auto-approved), deny everything else, bound the loop.
-      // `--permission-mode default` is the non-variadic terminator (so the variadic tool flags consume
-      // only their own comma-token — same trick as the one-shot/read-only runners).
+      // Web-only agent (+ Read/Glob of the scratch dir when attachments are present): allow the tool set,
+      // deny everything else, bound the loop. `--permission-mode default` is the non-variadic terminator
+      // (so the variadic tool flags consume only their own comma-token — same trick as the other runners).
       ...(isClaude
         ? [
             `--max-turns=${RESEARCH_MAX_TURNS}`,
             "--allowedTools",
-            RESEARCH_ALLOWED_TOOLS,
+            hasAttachments ? RESEARCH_ATTACH_TOOLS : RESEARCH_ALLOWED_TOOLS,
             "--disallowedTools",
-            RESEARCH_DENIED_TOOLS,
+            (hasAttachments ? RESEARCH_DENIED_BASE.filter((t) => t !== "Read" && t !== "Glob") : RESEARCH_DENIED_BASE).join(","),
             "--permission-mode",
             "default",
           ]
         : []),
     ];
     const env = agentEnv(extraEnv, profile ? { CLAUDE_CONFIG_DIR: profile.dir } : undefined);
-    // Empty throwaway dir (the question is in the prompt) so there is nothing to read nearby.
-    const cwd = mkdtempSync(join(tmpdir(), "4pm-research-"));
     const cleanup = (): void => {
       try {
         rmSync(cwd, { recursive: true, force: true });
@@ -154,7 +162,7 @@ function runClaudeOnce(
       }
       resolve({ code: code ?? -1, out, err, usage: parser.usage() });
     });
-    child.stdin.write(prompt);
+    child.stdin.write(finalPrompt);
     child.stdin.end();
   });
 }
@@ -175,6 +183,7 @@ export async function runResearch(
   question: string,
   ai: ResearchAi,
   onChunk: (delta: string) => void,
+  attachments: ResearchAttachmentPayload[] = [],
 ): Promise<ResearchRunResult> {
   const prompt = buildResearchPrompt(question);
   const denyDirs = ai.profiles.map((p) => p.dir);
@@ -182,7 +191,7 @@ export async function runResearch(
   let lastReason = "no attempt";
   for (let i = 0; i < attempts.length; i++) {
     try {
-      const { code, out, err, usage } = await runClaudeOnce(ai.cmd, attempts[i]!, prompt, ai.env, onChunk, denyDirs);
+      const { code, out, err, usage } = await runClaudeOnce(ai.cmd, attempts[i]!, prompt, ai.env, onChunk, denyDirs, attachments);
       if (code === 0 && out.trim()) {
         const u = usage.tokens > 0 ? usage : { ...NO_USAGE, tokens: estimateTokens(out) };
         return { text: out.trim(), usage: u };

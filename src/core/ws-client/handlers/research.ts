@@ -71,7 +71,7 @@ async function run(
       profiles: resolveClaudeProfiles(config, getWorkingProfile(ctx.profileDir, cmd)),
       env: config.aiEnv,
     };
-    const result = await runResearch(req.question, ai, (delta) => emit({ chunk: delta }));
+    const result = await runResearch(req.question, ai, (delta) => emit({ chunk: delta }), req.attachments ?? []);
 
     // Meter the run (ADR-0020/0380): one command + the real tokens; reported with projectId=null (the
     // org-AI-pool cli serves no project), so it counts against the org's AI usage/quota.

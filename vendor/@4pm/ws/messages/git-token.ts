@@ -5,8 +5,9 @@
  * The App private key never leaves the server.
  */
 
-/** Host kind of the token's GitHub host — picks the `gh` env (`GH_TOKEN` vs `GH_ENTERPRISE_TOKEN`). */
-export type GitHostKind = "github" | "ghe-cloud" | "ghes";
+/** Host kind of the token's host — picks the shim env (`gh` GH_TOKEN/GH_ENTERPRISE_TOKEN, or `glab`
+ *  GITLAB_TOKEN for a GitLab group token — ADR-0382). */
+export type GitHostKind = "github" | "ghe-cloud" | "ghes" | "gitlab";
 
 /** cli → server: issue a token for `repo` under `scope`, or report `scope` revoked. */
 export type GitTokenRequest =
@@ -20,7 +21,7 @@ export type GitTokenRequest =
   | { op: "revoked"; scope: string };
 
 /** Why no token was issued — the helper then stays silent (git falls back to worker creds). */
-export type GitTokenDenyReason = "not_github_app" | "not_covered" | "not_configured" | "mint_failed";
+export type GitTokenDenyReason = "not_github_app" | "not_gitlab" | "not_covered" | "not_configured" | "mint_failed";
 
 /** server → cli reply. `issue`: a token or `{token:null, reason}`; `revoked`: `{}`. */
 export interface GitTokenReply {

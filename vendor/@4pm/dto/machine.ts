@@ -213,6 +213,13 @@ export interface WsTokenResponse {
    * orchestrator/idle links or a project with no declared repos.
    */
   repos: WsTokenRepo[];
+  /**
+   * Admin-edited overrides for cli-built prompts (ADR-0381), keyed by the `@4pm/constants` prompt
+   * key → per-locale content map ({ en, vi, ja, zh } → string). Only keys the platform admin has
+   * actually edited are sent (the cli falls back to its built-in default otherwise); absent/empty on
+   * an older server. Platform-wide, so every link carries the same map.
+   */
+  promptOverrides?: Record<string, Record<string, string>>;
 }
 
 /** One declared repo pushed to the cli via ws_token for clone-on-connect (ADR-0289). */

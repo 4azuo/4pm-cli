@@ -92,6 +92,28 @@ exec "${realGh}" "$@"
 `;
 }
 
+/** Find the real `glab` on PATH (skipping our shim dir); null when not installed. */
+function findRealGlab(pathValue: string, shimDir: string): string | null {
+  for (const dir of pathValue.split(delimiter)) {
+    if (!dir || dir === shimDir) continue;
+    const candidate = join(dir, process.platform === "win32" ? "glab.exe" : "glab");
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+/** The POSIX shim that injects the GitLab group token into one `glab` call (a caller-set token wins). */
+function glabShimScript(realGlab: string, cli: string): string {
+  return `#!/bin/sh
+# 4PM glab shim (ADR-0382) — injects the served project's GitLab group token.
+if [ -z "$GITLAB_TOKEN" ]; then
+  T="$(${cli} git-token 2>/dev/null)"
+  if [ -n "$T" ]; then export GITLAB_HOST="$${GIT_HOST_ENV}" GITLAB_TOKEN="$T"; fi
+fi
+exec "${realGlab}" "$@"
+`;
+}
+
 /** Restore the env this module changed (helper config, PATH, host vars). */
 function clearEnv(): void {
   if (!state.baseEnv) return;
@@ -120,7 +142,8 @@ export function configureGitAuth(
   transport: GitTokenTransport,
 ): boolean {
   try {
-    const active = method === "github-app" && !!host;
+    const isGitlab = method === "gitlab-group-token";
+    const active = (method === "github-app" || isGitlab) && !!host;
     if (!active || (state.host && state.host !== host)) {
       if (state.host) void revokeAll();
       clearEnv();
@@ -156,24 +179,29 @@ export function configureGitAuth(
       process.env.TSX_TSCONFIG_PATH = devTsconfig;
     }
     process.env[GIT_HOST_ENV] = host;
-    process.env[GIT_HOST_KIND_ENV] = githubHostKind(host);
+    process.env[GIT_HOST_KIND_ENV] = isGitlab ? "gitlab" : githubHostKind(host);
 
-    // gh shim (POSIX only) — first on PATH so agents' `gh` picks up the token.
+    // Tool shim (POSIX only) — first on PATH so the agent's `gh` (GitHub) / `glab` (GitLab) picks up
+    // the token. The other tool's stale shim is removed when the method switches.
     if (process.platform !== "win32") {
       const shimDir = join(profileDir, "bin");
-      const realGh = findRealGh(state.baseEnv.path, shimDir);
-      if (realGh) {
+      const toolName = isGitlab ? "glab" : "gh";
+      const otherTool = isGitlab ? "gh" : "glab";
+      const realTool = isGitlab ? findRealGlab(state.baseEnv.path, shimDir) : findRealGh(state.baseEnv.path, shimDir);
+      if (realTool) {
         mkdirSync(shimDir, { recursive: true });
-        const shim = join(shimDir, "gh");
-        writeFileSync(shim, shimScript(realGh, cliInvocation()), { encoding: "utf8", mode: 0o755 });
+        const shim = join(shimDir, toolName);
+        const shimContent = isGitlab ? glabShimScript(realTool, cliInvocation()) : shimScript(realTool, cliInvocation());
+        writeFileSync(shim, shimContent, { encoding: "utf8", mode: 0o755 });
         chmodSync(shim, 0o755);
         process.env.PATH = `${shimDir}${delimiter}${state.baseEnv.path}`;
       } else {
-        rmSync(join(shimDir, "gh"), { force: true });
+        rmSync(join(shimDir, toolName), { force: true });
       }
+      rmSync(join(shimDir, otherTool), { force: true });
     }
     state.host = host;
-    logger.info("git.auth.github-app", { host });
+    logger.info(isGitlab ? "git.auth.gitlab" : "git.auth.github-app", { host });
     return true;
   } catch (err) {
     logger.warn("git.auth.configure.failed", { error: String(err) });

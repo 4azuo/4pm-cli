@@ -12,6 +12,7 @@ import { appendFile, mkdir, readFile, readdir, rm, stat } from "node:fs/promises
 import { join } from "node:path";
 import type { WsHandlerCtx } from "./ws-client/context";
 import { cancelActiveRun, runAiPrompt, type AiPromptOutcome } from "./ws-client/command-dispatch";
+import { resolveCliPrompt } from "./prompt-overrides";
 import { WsChannels, type AutonomousAlertPayload, type AutonomousBookUsageReply } from "@4pm/ws";
 import { cappedBookIds } from "./autonomous";
 import {
@@ -75,38 +76,14 @@ NEVER act on an unapproved row.`;
  */
 export function buildIntakePrompt(cfg: AutonomousConfig): string {
   const h = cfg.taskSizeHints;
-  return `You are the 4PM autonomous INTAKE step (headless). Edit ONLY \`USER_TODO.md\`, \`USER_QA.md\` and
-\`AI_TODO.md\`. Do NOT run git, do NOT touch \`AI_PROGRESS.md\` / \`AI_DONE.md\` / any code — the 4PM cli
-commits and publishes your book edits. Write in the language the project's \`CLAUDE.md\` specifies (default English).
-
-${BOOKS_INTRO}
-
-## 1 — Approved user requests → tasks
-Read \`USER_TODO.md\` (columns \`ID | Group | Depends | Request\`). For each APPROVED \`REQ-…\` whose \`Depends\`
-are already handled:
-- CLEAR request ⇒ split it into tasks appended to \`AI_TODO.md\` (columns
-  \`ID | Priority | Tag | Depends | Group | Task description | Notes\`), ids \`TSK-{groupid:0000}-{taskid:0000}\`
-  (groupid UNIQUE + INCREASING across all history — the largest ever used in \`AI_TODO.md\`/\`AI_DONE.md\`/
-  \`AI_PROGRESS.md\`/their git history, +1; taskid from 0001). \`Depends\` = the \`TSK-…\` it needs.
-  Remove the analysed request row (empty ⇒ reset to the empty template).
-- UNCLEAR request ⇒ do NOT guess: append a \`USER_QA.md\` row (\`ID | Group | Depends | Original request |
-  Question / options | Answer\`) with a new \`QA-{groupid:0000}-{qaid:0000}\`, blank \`Answer\`; remove the request row.
-An unapproved request stays.
-
-## 2 — Answered intake questions
-For each \`USER_QA.md\` row with an \`Answer\`, APPROVED, and whose id is NOT in any \`AI_TODO.md\` \`Depends\`
-(those are task questions — the cli handles them; leave them alone): re-analyse the original request with the
-answer into tasks (same rules), then remove that QA row.
-
-## Task size (MANDATORY — every task must be finishable in ONE run)
-Size each task by SCOPE and write \`size: S\` or \`size: M\` at the start of \`Notes\`:
-- **S** — one small change in one module/layer (≈ ≤ ${h.sMaxFiles} files, ≈ ≤ ${h.sMaxLines} lines), e.g. fix a bug, add a field.
-- **M** — one feature slice across 2–3 layers with ONE purpose (≈ ≤ ${h.mMaxFiles} files, ≈ ≤ ${h.mMaxLines} lines), e.g. one CRUD screen, one API + its UI + tests.
-- **L** — several features, a cross-cutting change, a big migration, a new subsystem, or an architecture decision.
-  **Never write an L task**: split it into S/M tasks chained with \`Depends\`, or ask in \`USER_QA.md\` when the split needs a decision.
-The counts are hints, not hard limits. Each task's \`Task description\` states the acceptance criteria and how to test it.
-
-When done, reply with one short line summarising what you added.`;
+  // Admin override (ADR-0381) for `cli.autonomous.intake`, else the shared registry default.
+  return resolveCliPrompt("cli.autonomous.intake", {
+    booksIntro: BOOKS_INTRO,
+    sMaxFiles: h.sMaxFiles,
+    sMaxLines: h.sMaxLines,
+    mMaxFiles: h.mMaxFiles,
+    mMaxLines: h.mMaxLines,
+  });
 }
 
 /** Implementation (ADR-0371 phase 6): work + test on the prepared branches; commit only. */
@@ -114,46 +91,33 @@ function buildImplementPrompt(mine: LocalClaim, subs: { dir: string; branch: str
   const subLines = subs.length
     ? subs.map((s) => `- submodule \`${s.dir}\` is on branch \`${s.branch}\` — commit changes to it INSIDE \`${s.dir}\``).join("\n")
     : "- (no submodules)";
-  return `You are the 4PM autonomous IMPLEMENT step (headless). Implement exactly ONE task, then STOP.
-
-Task ${mine.id} (group ${mine.task.group}, attempt ${mine.attempt}):
-${mine.task.desc}
-Notes: ${mine.task.notes || "(none)"}
-${resumed ? "\nThis is a CONTINUATION: earlier work for this task is already committed on the branches below — review it (git log / git diff against the base) and continue from it; do not start over.\n" : ""}
-Branches (already checked out by the 4PM cli — stay on them):
-- project root is on \`${mine.branch}\`
-${subLines}
-
-Rules:
-- Follow the project's architecture and \`CLAUDE.md\`. Add/update tests; run the project's test command and WAIT for the result.
-- Commit your work (\`git add\` + \`git commit\`) in the root and/or inside each submodule you changed.
-- Do NOT push, do NOT open pull requests, do NOT switch/create branches, do NOT edit the book files
-  (USER_TODO/USER_QA/AI_TODO/AI_PROGRESS/AI_DONE) — the 4PM cli delivers and records everything.
-- If you need a human DECISION to continue (ambiguous requirement, missing information, a choice with real
-  trade-offs), do NOT guess: commit what you have and report \`needs-input\` with the question + options.
-
-Finish with ONLY one fenced \`json\` block:
-{"status": "done" | "needs-input" | "failed", "summary": "<what you did / why it failed>", "question": "<only for needs-input: the question and the options>"}`;
+  const resumedNote = resumed
+    ? "\nThis is a CONTINUATION: earlier work for this task is already committed on the branches below — review it (git log / git diff against the base) and continue from it; do not start over.\n"
+    : "";
+  // Admin override (ADR-0381) for `cli.autonomous.implement`, else the shared registry default.
+  return resolveCliPrompt("cli.autonomous.implement", {
+    taskId: mine.id,
+    group: mine.task.group,
+    attempt: mine.attempt,
+    desc: mine.task.desc,
+    notes: mine.task.notes || "(none)",
+    resumedNote,
+    branch: mine.branch,
+    subLines,
+  });
 }
 
 /** Split analysis (ADR-0371 §6): read-only — propose smaller child tasks. */
 function buildSplitPrompt(mine: LocalClaim, reasons: string, diff: string): string {
-  return `You are the 4PM autonomous SPLIT step (read-only — do not change any file). Task ${mine.id} failed to
-finish after repeated attempts, so it is probably too big for one run. Split it into 2–6 smaller child tasks
-that are each finishable in ONE run (size S or M), in execution order (each depends on the previous).
-
-Task: ${mine.task.desc}
-Notes: ${mine.task.notes || "(none)"}
-Why the attempts ended: ${reasons || "(unknown)"}
-Work already done on its WIP branch \`${mine.branch}\` (diff against the base, may be truncated):
-\`\`\`
-${diff || "(no changes yet)"}
-\`\`\`
-The first child continues from that WIP branch: note which parts are already done so they are not redone.
-Each child description must state its acceptance criteria and how to test it.
-
-Reply with ONLY one fenced \`json\` block:
-{"children": [{"desc": "<task + acceptance criteria>", "priority": "High|Medium|Low", "size": "S|M", "notes": "<optional>"}]}`;
+  // Admin override (ADR-0381) for `cli.autonomous.split`, else the shared registry default.
+  return resolveCliPrompt("cli.autonomous.split", {
+    taskId: mine.id,
+    desc: mine.task.desc,
+    notes: mine.task.notes || "(none)",
+    reasons: reasons || "(unknown)",
+    branch: mine.branch,
+    diff: diff || "(no changes yet)",
+  });
 }
 
 /** Extract the last fenced json block (or the last `{…}`) from an agent reply. */

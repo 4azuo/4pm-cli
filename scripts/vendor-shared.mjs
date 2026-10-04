@@ -208,8 +208,11 @@ if (write) {
       mkdirSync(dirname(dest), { recursive: true });
       cpSync(join(root, rel), dest);
     }
-    // Curated barrel: re-export only the copied files (never the server-only ones).
+    // Curated barrel: re-export only the copied TS files (never the server-only ones). Non-TS
+    // assets (e.g. a `.json` data file) are copied but imported directly, never `export *`-ed
+    // (a JSON module is `export =` and cannot be re-exported with `export *`).
     const barrel = files
+      .filter((f) => /\.tsx?$/.test(f))
       .map((f) => `export * from "./${f.replace(/\.tsx?$/, "")}";`)
       .join("\n");
     writeFileSync(

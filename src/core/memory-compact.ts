@@ -11,6 +11,7 @@ import { spawn } from "node:child_process";
 import { reportToolResult } from "./tool-health";
 import { ONE_SHOT_DISALLOWED_CLAUDE_TOOLS, type ResolvedClaudeProfile } from "../utils/ai-cli";
 import { denySettingsArgs } from "../utils/agent-deny";
+import { resolveCliPrompt } from "./prompt-overrides";
 import type { AiUsage } from "./ai-stream";
 
 /** How to run the AI CLI for a compaction (resolved by the caller from the profile config). */
@@ -76,22 +77,13 @@ const COMPACT_TIMEOUT_MS = 60_000;
 
 /** Build the compaction prompt fed to the AI CLI over stdin. */
 function buildPrompt(input: MemoryCompactInput): string {
-  return [
-    "You maintain a COMPACT running memory of an ongoing assistant conversation so it can continue",
-    "across sessions and accounts. Merge the latest exchange into the existing memory and return the",
-    `UPDATED memory. Keep it UNDER ${input.budgetChars} characters. Use terse Markdown bullets grouped`,
-    "as: Decisions, Constraints, Open tasks, Glossary. Keep durable facts; drop chit-chat and anything",
-    "now obsolete. Output ONLY the updated memory text — no preamble, no code fences.",
-    "",
-    "=== EXISTING MEMORY ===",
-    input.oldMemory || "(empty)",
-    "",
-    "=== LATEST USER PROMPT ===",
-    input.prompt,
-    "",
-    "=== LATEST ASSISTANT ANSWER ===",
-    input.answer,
-  ].join("\n");
+  // Admin override (ADR-0381) for `cli.memory.compact`, else the shared registry default.
+  return resolveCliPrompt("cli.memory.compact", {
+    budgetChars: input.budgetChars,
+    oldMemory: input.oldMemory || "(empty)",
+    prompt: input.prompt,
+    answer: input.answer,
+  });
 }
 
 /** Run the AI CLI once with the prompt on stdin; returns exit code + stdout/stderr. */

@@ -22,6 +22,7 @@ import { createAiStreamParser, estimateTokens, type AiUsage } from "./ai-stream"
 import type { ResolvedClaudeProfile } from "../utils/ai-cli";
 import { agentEnv, gitAuthArgs } from "./agent-sandbox";
 import { denySettingsArgs } from "../utils/agent-deny";
+import { resolveCliPrompt } from "./prompt-overrides";
 
 const execFileAsync = promisify(execFile);
 
@@ -54,35 +55,12 @@ function buildPrompt(tickets: FaqTicket[], customPrompt?: string): string {
     })
     .join("\n\n");
   const ids = tickets.map((t) => t.id);
-  return [
-    "You are maintaining the 4PM product FAQ, stored as markdown in THIS git repository (your CWD).",
-    "From the resolved support tickets below, distil reusable, product-general FAQ entries and add or",
-    "update the appropriate markdown file(s) in this repo (e.g. an FAQ.md, or the closest existing",
-    "topic file — inspect the repo first and match its structure/style).",
-    "",
-    "Rules:",
-    "- Write generalized Q&A, NOT ticket-specific replies; never include customer names, emails, ids,",
-    "  org names or any personal data from the tickets.",
-    "- Merge with existing entries instead of duplicating; keep the existing formatting and headings.",
-    "- If a ticket yields no reusable FAQ value, skip it. If nothing is worth adding, make NO changes.",
-    "- Only edit markdown documentation files; do not touch code, CI, or unrelated files.",
-    "- Do NOT run git commit/push or open a PR yourself — just leave the edited files in the working",
-    "  tree; the surrounding tooling handles commit + PR.",
-    ...(customPrompt?.trim()
-      ? ["", "Additional instruction from the operator (follow it too):", customPrompt.trim()]
-      : []),
-    "",
-    "===== RESOLVED TICKETS =====",
-    transcript,
-    "",
-    "===== REQUIRED FINAL OUTPUT =====",
-    "After finishing all file edits, output — as the LAST thing, on its own — a single fenced JSON",
-    "block summarizing what you did PER TICKET (created/updated which FAQ entry, or skipped + why):",
-    "```json",
-    `{"perTicket":[${ids.map((id) => `{"ticketId":"${id}","summary":"..."}`).join(",")}]}`,
-    "```",
-    "Include exactly one entry per ticket id above; keep each summary to one or two sentences.",
-  ].join("\n");
+  const ticketJsonSkeleton = `{"perTicket":[${ids.map((id) => `{"ticketId":"${id}","summary":"..."}`).join(",")}]}`;
+  const customInstruction = customPrompt?.trim()
+    ? `\n\nAdditional instruction from the operator (follow it too):\n${customPrompt.trim()}`
+    : "";
+  // Admin override (ADR-0381) for `cli.faq.compose`, else the shared registry default.
+  return resolveCliPrompt("cli.faq.compose", { transcript, ticketJsonSkeleton, customInstruction });
 }
 
 /** Parse the trailing ```json {"perTicket":[…]} ``` block from the agent output; [] when absent/invalid. */

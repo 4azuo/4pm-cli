@@ -10,7 +10,7 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import { CONTROL_SOCKET_FILE, createFrameParser, encodeFrame, type ControlServerFrame } from "../core/control-protocol";
 import { readControlToken } from "../core/control-token";
-import { GIT_HOST_ENV, JOB_ID_ENV, PROFILE_DIR_ENV } from "../core/git-auth";
+import { GIT_HOST_ENV, GIT_HOST_KIND_ENV, JOB_ID_ENV, PROFILE_DIR_ENV } from "../core/git-auth";
 
 /** Give up on the daemon after this long (git would otherwise hang on the helper). */
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -78,7 +78,9 @@ export async function runGitCredential(action: string | undefined): Promise<void
   const host = (input.host ?? "").toLowerCase();
   if (input.protocol !== "https" || !host || host !== (process.env[GIT_HOST_ENV] ?? "").toLowerCase()) return;
   const token = await requestToken(host, input.path ?? "");
-  if (token) process.stdout.write(`username=x-access-token\npassword=${token}\n`);
+  // GitLab accepts the token as the password with username `oauth2` (ADR-0382); GitHub uses x-access-token.
+  const username = (process.env[GIT_HOST_KIND_ENV] ?? "") === "gitlab" ? "oauth2" : "x-access-token";
+  if (token) process.stdout.write(`username=${username}\npassword=${token}\n`);
 }
 
 /** `gh` shim helper: print a token for the App host's primary repo (empty ⇒ nothing). */

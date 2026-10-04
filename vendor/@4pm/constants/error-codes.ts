@@ -21,6 +21,11 @@ export const ErrorCode = {
   FEATURE_NOT_AVAILABLE: "FEATURE_NOT_AVAILABLE",
   // Request body exceeded the HTTP gateway's JSON size limit (see HTTP_JSON_BODY_LIMIT_BYTES).
   PAYLOAD_TOO_LARGE: "PAYLOAD_TOO_LARGE",
+  // Unified composer attachments (ADR-0388): an upload over ATTACHMENT_MAX_BYTES, a MIME outside the
+  // image + file lists, or a submit carrying more than ATTACHMENT_MAX_COUNT refs.
+  ATTACHMENT_TOO_LARGE: "ATTACHMENT_TOO_LARGE",
+  ATTACHMENT_TYPE_UNSUPPORTED: "ATTACHMENT_TYPE_UNSUPPORTED",
+  ATTACHMENT_LIMIT_EXCEEDED: "ATTACHMENT_LIMIT_EXCEEDED",
   INTERNAL_ERROR: "INTERNAL_ERROR",
   // auth
   INVALID_CREDENTIALS: "INVALID_CREDENTIALS",
@@ -188,6 +193,14 @@ export const ErrorCode = {
   // web blocks the dispatch and shows an actionable "spec too large" message instead of letting
   // the server reject it as a confusing VALIDATION_FAILED.
   AI_PROMPT_TOO_LARGE: "AI_PROMPT_TOO_LARGE",
+  // Server-managed prompt catalog (ADR-0381): the key is not in the @4pm/constants registry.
+  AI_PROMPT_KEY_UNKNOWN: "AI_PROMPT_KEY_UNKNOWN",
+  // The submitted template is missing a required `{{var}}` the builder depends on.
+  AI_PROMPT_TEMPLATE_INVALID: "AI_PROMPT_TEMPLATE_INVALID",
+  // Prompt editing is disabled by the AI_PROMPTS_READONLY env flag (use the defaults).
+  AI_PROMPTS_READONLY: "AI_PROMPTS_READONLY",
+  // Terms & policies editing is disabled by the LEGAL_READONLY env flag.
+  LEGAL_READONLY: "LEGAL_READONLY",
   REPO_NOT_FOUND: "REPO_NOT_FOUND",
   // invitation
   INVITATION_TOKEN_INVALID: "INVITATION_TOKEN_INVALID",
