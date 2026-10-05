@@ -6,8 +6,11 @@
  * container-accurate cgroup v2 set (ADR-0218): CPU throttling (`cpu.stat`), PSI pressure
  * (`cpu/memory/io.pressure`), memory breakdown + swap (`memory.stat` / `memory.swap.*`), block-I/O
  * throughput (`io.stat`), process count (`pids.*`) and OOM-kill events (`memory.events`). Rate/delta
- * metrics keep the previous counters. Host-level temperature/GPU and network are out of scope. Never
- * throws — a read failure degrades to the `os` source and any unavailable field is simply omitted.
+ * metrics keep the previous counters. It also runs an **over-provision self-check** (ADR-0390): comparing
+ * the container's effective cpu/memory limit with the host physical totals, it attaches warn-only advisory
+ * codes (`cpu/mem-unbounded`, `cpu/mem-overcommit`, `disk-full`) to the sample — pure data, the caller logs
+ * them. Host-level temperature/GPU and network are out of scope. Never throws — a read failure degrades to
+ * the `os` source and any unavailable field is simply omitted.
  */
 import { statfs, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -17,6 +20,8 @@ import type { WorkerResources } from "@4pm/dto";
 const CGROUP = "/sys/fs/cgroup";
 const MB = 1024 * 1024;
 const GB = 1024 * 1024 * 1024;
+/** Disk-usage ratio (used/total) at or above which a `disk-full` advisory is raised (ADR-0390). */
+const DISK_FULL_RATIO = 0.9;
 
 /** Read a cgroup file as text, or null when unavailable. */
 async function readCgroup(file: string): Promise<string | null> {
@@ -103,17 +108,20 @@ export function createWorkerMetricsSampler(diskPath: string): { sample: () => Pr
   let cgPrev: CgroupPrev | null = null;
   let osPrev: OsPrev | null = null;
 
-  /** cgroup CPU count from `cpu.max` ("quota period"); "max" ⇒ host cores. */
-  async function cgroupCpuCount(): Promise<number> {
+  /**
+   * cgroup CPU allotment from `cpu.max` ("quota period"). Returns the effective core count and whether
+   * the quota is unbounded ("max" / unreadable ⇒ the container inherits all host cores — ADR-0390).
+   */
+  async function cgroupCpuInfo(): Promise<{ count: number; unbounded: boolean }> {
     const raw = await readCgroup("cpu.max");
     if (raw) {
       const [quota, period] = raw.split(/\s+/);
       if (quota && quota !== "max" && period) {
         const n = Number(quota) / Number(period);
-        if (n > 0) return Math.max(1, Math.round(n * 10) / 10);
+        if (n > 0) return { count: Math.max(1, Math.round(n * 10) / 10), unbounded: false };
       }
     }
-    return cpus().length;
+    return { count: cpus().length, unbounded: true };
   }
 
   /** os CPU% from the aggregate idle/total tick delta across all cores. */
@@ -243,23 +251,39 @@ export function createWorkerMetricsSampler(diskPath: string): { sample: () => Pr
       if (cgroupV2) {
         const memMaxRaw = await readCgroup("memory.max");
         const memCurRaw = await readCgroup("memory.current");
-        const memTotalBytes =
-          memMaxRaw && memMaxRaw !== "max" ? Number(memMaxRaw) : totalmem();
+        const memLimited = !!memMaxRaw && memMaxRaw !== "max";
+        const memTotalBytes = memLimited ? Number(memMaxRaw) : totalmem();
         const memUsedBytes = memCurRaw ? Number(memCurRaw) : totalmem() - freemem();
-        const cpuCount = await cgroupCpuCount();
-        const { cpuPct, extra } = await cgroupExtended(cpuCount, now);
+        const cpuInfo = await cgroupCpuInfo();
+        const { cpuPct, extra } = await cgroupExtended(cpuInfo.count, now);
+
+        // Over-provision self-check (ADR-0390): compare the container's effective limit with the host
+        // physical totals. No `--memory`/`--cpus` ⇒ the container can claim the whole host; a limit above
+        // the host physical ⇒ OOM/throttle risk. Warn-only — never alters the sample otherwise.
+        const warnings: string[] = [];
+        if (!memLimited) warnings.push("mem-unbounded");
+        else if (Number(memMaxRaw) > totalmem()) warnings.push("mem-overcommit");
+        if (cpuInfo.unbounded) warnings.push("cpu-unbounded");
+        else if (cpuInfo.count > cpus().length) warnings.push("cpu-overcommit");
+        if (diskTotalGb > 0 && diskUsedGb / diskTotalGb >= DISK_FULL_RATIO) warnings.push("disk-full");
+
         return {
           ...base,
           source: "cgroup",
-          cpuCount,
+          cpuCount: cpuInfo.count,
           cpuPct,
           memUsedMb: Math.round(memUsedBytes / MB),
           memTotalMb: Math.round(memTotalBytes / MB),
           ...extra,
+          ...(warnings.length ? { warnings } : {}),
         };
       }
 
       const total = totalmem();
+      // Bare-metal / VM has no container limit (the worker IS the machine), so unbounded/overcommit don't
+      // apply — only the disk-full advisory is meaningful here.
+      const warnings: string[] = [];
+      if (diskTotalGb > 0 && diskUsedGb / diskTotalGb >= DISK_FULL_RATIO) warnings.push("disk-full");
       return {
         ...base,
         source: "os",
@@ -267,6 +291,7 @@ export function createWorkerMetricsSampler(diskPath: string): { sample: () => Pr
         cpuPct: osCpuPct(),
         memUsedMb: Math.round((total - freemem()) / MB),
         memTotalMb: Math.round(total / MB),
+        ...(warnings.length ? { warnings } : {}),
       };
     },
   };

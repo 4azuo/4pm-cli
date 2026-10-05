@@ -183,7 +183,7 @@ async function main(): Promise<void> {
           "  4pm link      Pair with the server (pairing → confirmation code)",
           "  4pm start     Connect WS, receive commands from the server",
           "  4pm attach    Open the TUI against a running headless daemon (ADR-0192)",
-          "  4pm auto-run  Run one autonomous cycle via the running daemon (cron — ADR-0319)",
+          "  4pm auto-run  Run one autonomous cycle now via the running daemon (ADR-0319/0392)",
           "  4pm ai-login  Log into a profile's AI CLI (claude/codex) in place (ADR-0199)",
           "  4pm unlink    Delete a link (pick a profile if several)",
           "  4pm version   Show the installed version (+ latest from the server)",

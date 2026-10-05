@@ -72,6 +72,8 @@ import { envReconnectMaxSec, toDtoEntry } from "./ws-client/transcript";
 import type { WsHandlerCtx } from "./ws-client/context";
 import { handleCommandChannels, resetMemorySession, runLocalCommand } from "./ws-client/command-dispatch";
 import { onReconnectVerifyClaim, runAutonomousCycle } from "./autonomous-cycle";
+import { startAutonomousScheduler } from "./autonomous-scheduler";
+import { migrateLegacyCron } from "./autonomous-legacy-cron";
 import { handleFsChannels } from "./ws-client/handlers/fs";
 import { handleGitChannels } from "./ws-client/handlers/git";
 import { handleMiscChannels } from "./ws-client/handlers/misc";
@@ -243,6 +245,8 @@ export class WsClient {
   private metricsWatchExpiry: NodeJS.Timeout | null = null;
   /** Lazily created on the first `metrics.watch` (keeps the CPU-delta baseline across samples). */
   private metricsSampler: ReturnType<typeof createWorkerMetricsSampler> | null = null;
+  /** Last over-provision advisory set logged (ADR-0390) — so we WARN only when it changes, not every sample. */
+  private prevMetricsWarnings = "";
   /** cli → server requests awaiting a reply (quota.check — ADR-0020). */
   private readonly pending = new Map<
     string,
@@ -282,7 +286,7 @@ export class WsClient {
     this.hctx = this.buildHandlerCtx();
     // The operator's local commands (TUI input box) run through the same executor.
     context.bus.onLocalSubmit((input) => void runLocalCommand(this.hctx, input));
-    // Autonomous cycle (ADR-0319): `4pm auto-run` (cron tick) triggers ONE cycle through this live
+    // Autonomous cycle (ADR-0319/0392): the scheduler (or a manual `4pm auto-run`) triggers ONE cycle through this live
     // session over the control socket, so it reuses failover + metering instead of a raw `claude -p`.
     context.bus.onAutonomousRun(() => void runAutonomousCycle(this.hctx));
     // /reconnect ⇒ drop the socket / wake the backoff so the loop reconnects now.
@@ -746,6 +750,17 @@ export class WsClient {
         this.startKbRefresh();
         // A worker that was offline re-verifies its held autonomous claim; lost ⇒ its run stops (ADR-0371).
         onReconnectVerifyClaim(this.hctx);
+        // Autonomous ticks come from this daemon's own scheduler (ADR-0392). Migrate the served root off
+        // a legacy crontab line first (once per profile), so an upgrade never ticks twice or starts an
+        // engine that was not armed; then arm the scheduler (idempotent across reconnects).
+        const autoRoot = this.physicRoot;
+        void (autoRoot ? migrateLegacyCron(autoRoot, this.context.profileDir) : Promise.resolve()).finally(() =>
+          startAutonomousScheduler({
+            profileDir: this.context.profileDir,
+            servedRoot: () => this.physicRoot,
+            submit: () => this.context.bus.submitAutonomous(),
+          }),
+        );
         // Per-repo git state for the web Git › Repositories home (ADR-0369): now + periodically.
         const servedRoot = (): string | null => this.physicRoot; // read live on every report
         startGitSnapshots({
@@ -1246,6 +1261,19 @@ export class WsClient {
     try {
       if (!this.metricsSampler) this.metricsSampler = createWorkerMetricsSampler(this.context.profileDir);
       const resources = await this.metricsSampler.sample();
+      // Over-provision self-check (ADR-0390): WARN once when the advisory set changes (avoids per-sample spam).
+      const warnKey = (resources.warnings ?? []).join(",");
+      if (warnKey !== this.prevMetricsWarnings) {
+        this.prevMetricsWarnings = warnKey;
+        if (warnKey) {
+          logger.warn("worker.resources.overprovision", {
+            warnings: resources.warnings,
+            cpuCount: resources.cpuCount,
+            memTotalMb: resources.memTotalMb,
+            source: resources.source,
+          });
+        }
+      }
       this.send(WsChannels.MACHINE_METRICS, {
         fingerprint: this.context.machine.fingerprint,
         resources,

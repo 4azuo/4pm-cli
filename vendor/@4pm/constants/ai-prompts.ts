@@ -148,8 +148,16 @@ const PROMPT_META: PromptMeta[] = [
     ownerApp: "cli",
     phase: 1,
     title: "Scaffold — agent guide author",
-    description: "Writes the project's CLAUDE.md / AGENT.md guide from its spec JSON (on project create).",
+    description: "Writes the project's CLAUDE.md / AGENT.md guide from its spec JSON (on project create); includes the mandatory AI_SECURITY.md reference.",
     requiredVars: ["guideFile", "specJson"],
+  },
+  {
+    key: "cli.scaffold.security",
+    ownerApp: "cli",
+    phase: 1,
+    title: "Scaffold — AI security policy author",
+    description: "Writes the project's AI_SECURITY.md security policy from its spec JSON (on project create); the static project-sample file is the fallback when the AI is unavailable.",
+    requiredVars: ["specJson"],
   },
   {
     key: "cli.autonomous.intake",

@@ -434,6 +434,14 @@ export interface WorkerResources {
   pidsCurrent?: number;
   /** Process/thread limit; `null` when unlimited (`pids.max` = `max`). */
   pidsMax?: number | null;
+
+  /**
+   * Over-provision self-check advisories (ADR-0390) — warn-only, never blocks the worker. Stable codes
+   * the UI maps to text: `cpu-unbounded` / `mem-unbounded` (no cgroup limit ⇒ can consume the whole host),
+   * `cpu-overcommit` / `mem-overcommit` (limit exceeds host physical ⇒ OOM/throttle risk), `disk-full`
+   * (volume near capacity). Omitted/empty when the config looks healthy; older clis omit it entirely.
+   */
+  warnings?: string[];
 }
 
 /**
@@ -1023,7 +1031,7 @@ export const autonomousWriteRequestSchema = z.discriminatedUnion("kind", [
     book: z.enum(["userTodo", "userQa", "aiTodo"]),
     content: z.string().max(256 * 1024),
   }),
-  z.object({ kind: z.literal("cron"), action: z.enum(["install", "uninstall"]) }),
+  // (The `cron` install/uninstall kind was retired by ADR-0392 — the cli daemon schedules ticks itself.)
 ]);
 export type AutonomousWriteBody = z.infer<typeof autonomousWriteRequestSchema>;
 

@@ -670,10 +670,11 @@ function readSpecField(spec: Record<string, unknown>, key: string): string {
 
 /**
  * AI init (ADR-0080) — write `.claude/agents/<name>.md` for each declared subagent, then ask the
- * AI CLI to author `README.md` and the project's single guide file (`CLAUDE.md` **or** `AGENT.md`,
- * from `spec.ai_guide_file` — ADR-0309) from the spec. The guide's `ai_guide_instructions` field is
- * folded into the prompt as extra guidance. Best-effort: a missing/failed AI CLI must not fail the
- * scaffold.
+ * AI CLI to author `README.md`, the project's single guide file (`CLAUDE.md` **or** `AGENT.md`,
+ * from `spec.ai_guide_file` — ADR-0309) and `AI_SECURITY.md` (ADR-0391) from the spec. The guide's
+ * `ai_guide_instructions` field is folded into the guide prompt as extra guidance. Best-effort: a
+ * missing/failed AI CLI must not fail the scaffold (the copied `project-sample` files stay as the
+ * baseline — the guide fallback is the user's typed instructions, the security fallback is the sample).
  */
 async function aiInit(
   target: string,
@@ -684,7 +685,7 @@ async function aiInit(
   // The single agent-guide file the project uses (ADR-0309); default CLAUDE.md when unset/unknown.
   const guideFile: AiGuideFile = readSpecField(spec, "ai_guide_file") === "AGENT.md" ? "AGENT.md" : "CLAUDE.md";
   const guideInstructions = readSpecField(spec, "ai_guide_instructions").trim();
-  emit("ai-init", `AI init: subagents, README, ${guideFile}…`);
+  emit("ai-init", `AI init: subagents, README, ${guideFile}, AI_SECURITY.md…`);
   // Subagents come straight from the spec (name + description) — no AI call needed.
   const subagents = Array.isArray(spec.subagents) ? (spec.subagents as SubagentDecl[]) : [];
   if (subagents.length > 0) {
@@ -709,7 +710,7 @@ async function aiInit(
     if (slot.kind === "granted") {
       releaseSlot = () => slot.handle.release();
       generate = (prompt, label) => ai.generate(prompt, target, label);
-      if (slot.queued) emit("ai-init", `AI init: subagents, README, ${guideFile}…`);
+      if (slot.queued) emit("ai-init", `AI init: subagents, README, ${guideFile}, AI_SECURITY.md…`);
     } else {
       emit("ai-skipped", "No AI run slot freed up in time — AI init skipped; fallback content written.");
     }
@@ -739,6 +740,17 @@ async function aiInit(
           : "",
       }),
       guideInstructions,
+    );
+    // AI_SECURITY.md (ADR-0391): rewrite the copied sample into a spec-tailored security policy so it
+    // matches each project's domain/stack/workflow. No fallback — the static `project-sample/AI_SECURITY.md`
+    // was already copied before `aiInit`, so when the AI is missing/produces nothing it remains as the
+    // baseline policy. The guide (above) is now told to reference this file (cli.scaffold.guide).
+    await generateFile(
+      generate,
+      join(target, "AI_SECURITY.md"),
+      "AI_SECURITY.md",
+      // Admin override (ADR-0381) for `cli.scaffold.security`, else the shared registry default.
+      resolveCliPrompt("cli.scaffold.security", { specJson }),
     );
   } finally {
     releaseSlot();

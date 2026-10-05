@@ -1,17 +1,14 @@
 /**
  * Autonomous mode control on the worker (ADR-0152, autonomous.read/write/logs channels). The
  * dashboard drives the physic project's headless autonomous engine through the cli: read
- * settings+status+books+approvals, tail the tick log, write {settings|approvals|userTodo}, and
- * install/uninstall the cron. Everything is scoped to the serving physic project's root; the cron
- * line is keyed by that root's tick script so the 1:1:1:1:1 chain (ADR-0152) stays clean — the
- * cli also uninstalls its cron on physic delete/rename/unlink. Never throws — errors map to a
- * failing reply.
+ * settings+status+books+approvals, tail the tick log, write {settings|approvals|userTodo|bookSave}.
+ * Everything is scoped to the serving physic project's root. Ticks come from the daemon's in-process
+ * scheduler (ADR-0392 — no OS crontab), so on/off is just the `paused` flag. Never throws — errors map
+ * to a failing reply.
  */
-import { readFile, writeFile, chmod } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
-import { execFile, spawn } from "node:child_process";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import type {
   AutonomousBooks,
   AutonomousLogsReply,
@@ -29,15 +26,13 @@ import {
 import { readHistories } from "./autonomous-history";
 import { ATTEMPTS_REL } from "./autonomous-books";
 import { mutateBooksOnBase, readBaseFile, resolveBases } from "./autonomous-git";
+import { isValidCronSchedule, reloadAutonomousSchedule } from "./autonomous-scheduler";
 import { t } from "../i18n";
-
-const run = promisify(execFile);
 
 const APPROVALS_REL = ".claude/.autonomous.approvals.json";
 // Authorship sidecar (ADR-0320): `{ "<id>": { by, at } }` — the last human who wrote (created/edited)
 // a row, server-stamped on a `bookSave`. Used to enforce separation of duties on approval.
 const AUTHORS_REL = ".claude/.autonomous.authors.json";
-const TICK_REL = ".claude/hooks/autonomous-tick.sh";
 const LOG_DIR_REL = ".claude/logs";
 const BOOK_FILES: Record<keyof AutonomousBooks, string> = {
   userTodo: "USER_TODO.md",
@@ -124,52 +119,18 @@ export async function cappedBookIds(root: string): Promise<Record<keyof typeof C
   return out;
 }
 
-/** The physic project's tick-script absolute path (the cron line key). */
-function tickScript(root: string): string {
-  return join(root, TICK_REL);
-}
-
-/** Current crontab content (empty when the user has no crontab). */
-async function crontabList(): Promise<string> {
-  try {
-    const { stdout } = await run("crontab", ["-l"], { timeout: 10_000 });
-    return stdout;
-  } catch {
-    return "";
-  }
-}
-
-/** Replace the crontab with `content` (via `crontab -`). Never throws. */
-async function crontabSet(content: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const child = spawn("crontab", ["-"], { stdio: ["pipe", "ignore", "ignore"] });
-    child.on("error", () => resolve(false));
-    child.on("close", (code) => resolve(code === 0));
-    child.stdin.end(content.endsWith("\n") ? content : content + "\n");
-  });
-}
-
-/** True when the crontab has a line for this physic project's tick script. */
-async function cronInstalled(root: string): Promise<boolean> {
-  const script = tickScript(root);
-  return (await crontabList()).split("\n").some((l) => l.includes(script) && !l.trim().startsWith("#"));
-}
-
 /**
- * Compute the engine status from crontab + the profile-dir config + the project's histories (ADR-0152,
- * config relocated by ADR-0321). `root` = the served physic project; `profileDir` = where
- * `autonomous.config.json` lives.
+ * Compute the engine status from the profile-dir config + the project's histories (ADR-0152, config
+ * relocated by ADR-0321). `root` = the served physic project; `profileDir` = where
+ * `autonomous.config.json` lives. `installed` is always true: the in-process scheduler (ADR-0392) is
+ * armed for any served project, so on/off is `paused` alone (kept for wire compat — ADR-0317 guard).
  */
 export async function getAutonomousStatus(root: string, profileDir: string): Promise<AutonomousStatus> {
-  const [cfg, hist, installed] = await Promise.all([
-    readAutonomousConfig(profileDir),
-    readHistories(root),
-    cronInstalled(root),
-  ]);
+  const [cfg, hist] = await Promise.all([readAutonomousConfig(profileDir), readHistories(root)]);
   const last = hist.records[hist.records.length - 1];
   const today = new Date().toISOString().slice(0, 10);
   return {
-    installed,
+    installed: true,
     paused: cfg.paused,
     cronSchedule: cfg.cronSchedule,
     lastTickAt: last?.ts ?? null,
@@ -226,43 +187,6 @@ export async function readAutonomousLogs(root: string, date?: string): Promise<A
   const text = await readText(join(root, LOG_DIR_REL, `autonomous-tick-${day}.log`));
   const lines = text ? text.split("\n").filter((l) => l.length > 0).slice(-500) : [];
   return { date: day, lines };
-}
-
-/**
- * Install the cron line for this physic project (idempotent — replaces any existing line).
- * Returns whether the crontab was actually written: `crontabSet` resolves `false` when the worker
- * has no working `crontab` (binary missing / cron service absent), so callers that care (the web
- * install action) can surface a clear error instead of silently reporting success.
- */
-async function installCron(root: string, profileDir: string): Promise<boolean> {
-  const script = tickScript(root);
-  const cfg = await readAutonomousConfig(profileDir);
-  await chmod(script, 0o755).catch(() => undefined);
-  const kept = (await crontabList()).split("\n").filter((l) => l.trim() && !l.includes(script));
-  kept.push(`${cfg.cronSchedule} ${script}`);
-  return crontabSet(kept.join("\n"));
-}
-
-/** Sync the crontab line to the current `cronSchedule` (idempotent) — called by the daemon when the
- *  config changes or when a cycle runs, so a schedule edit takes effect without a manual reinstall. */
-export async function syncCron(root: string, profileDir: string): Promise<void> {
-  if (await cronInstalled(root)) await installCron(root, profileDir);
-}
-
-/** Remove this physic project's cron line (idempotent). Exposed for lifecycle cleanup. */
-export async function uninstallCron(root: string): Promise<void> {
-  const script = tickScript(root);
-  const cur = await crontabList();
-  if (!cur.includes(script)) return;
-  const kept = cur.split("\n").filter((l) => l.trim() && !l.includes(script));
-  await crontabSet(kept.join("\n"));
-}
-
-/** Re-point the cron from an old root to a new root when the physic folder is renamed. */
-export async function repointCron(oldRoot: string, newRoot: string, profileDir: string): Promise<void> {
-  if (!(await cronInstalled(oldRoot))) return;
-  await uninstallCron(oldRoot);
-  await installCron(newRoot, profileDir);
 }
 
 /** Result of a web book write before it is published. */
@@ -340,7 +264,7 @@ async function applyWebWrite(dir: string, req: AutonomousWriteRequest, by: strin
 }
 
 /**
- * Apply a web write (autonomous.write). Settings + cron stay local to the worker; book edits
+ * Apply a web write (autonomous.write). Settings stay local to the worker (profile dir); book edits
  * (approvals, requests, book saves) are published straight to `<base>` through a side worktree
  * (ADR-0371) — the cycle's sync would otherwise discard an unpushed edit, and the working tree may be
  * on a task branch. With no remote base they fall back to the working tree.
@@ -358,18 +282,14 @@ export async function writeAutonomous(
       // The config lives in the profile dir (ADR-0321), as clean JSON (coerced — comment keys dropped).
       const parsed = parseJson(req.settings);
       if (!parsed) return { ok: false, error: t("autonomous.settingsInvalidJson") };
+      if (typeof parsed.cronSchedule === "string" && !isValidCronSchedule(parsed.cronSchedule)) {
+        return { ok: false, error: t("autonomous.settingsInvalidCron") };
+      }
       await writeAutonomousConfig(profileDir, parsed);
-      await syncCron(root, profileDir); // a schedule change takes effect immediately when installed
-    } else if (req.kind === "cron") {
-      if (req.action === "install") {
-        // Surface a crontab-write failure instead of returning ok:true with installed still false —
-        // the worker has no working cron, which autonomous needs (ADR-0152). Re-check to be sure the
-        // line actually took (a daemon-less crontab can accept the write but still never run it).
-        const wrote = await installCron(root, profileDir);
-        if (!wrote || !(await cronInstalled(root))) {
-          return { ok: false, error: t("autonomous.cronMissing") };
-        }
-      } else await uninstallCron(root);
+      await reloadAutonomousSchedule(); // a schedule change takes effect at once (ADR-0392)
+    } else if ((req as { kind: string }).kind === "cron") {
+      // Retired (ADR-0392): an older dashboard's Install/Uninstall cron — the scheduler is always
+      // armed, so answer with the live status instead of touching any crontab.
     } else {
       const base = (await resolveBases(root).catch(() => null))?.root.base ?? "";
       let res: WebWrite | undefined;

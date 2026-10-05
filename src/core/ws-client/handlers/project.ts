@@ -24,7 +24,7 @@ import type { GitAuthMethod } from "@4pm/dto";
 import { configureGitAuth } from "../../git-auth";
 import { requestGitSnapshot } from "../../git-snapshot";
 import { probeRepo } from "../../repo-probe";
-import { uninstallCron } from "../../autonomous";
+import { pauseAutonomous } from "../../autonomous-config";
 import { manageSshKey } from "../../git-ssh-key";
 import { createAiTaskRunner } from "../../ai-task";
 import { addProject, publishScaffold, scaffoldProject } from "../../scaffold";
@@ -48,12 +48,6 @@ export function handleProjectChannels(
       const oldName = sync.oldName;
       const oldPath = oldName ? join(ctx.profileDir, oldName) : null;
       const newPath = join(ctx.profileDir, sync.newName);
-      // Clean up the old physic project's cron before moving/dropping its folder (ADR-0152) — a
-      // renamed/rebound project must not leave an orphan tick firing at the old path.
-      if (oldName) {
-        const oldRoot = ctx.physicFolderPath(oldName);
-        if (oldRoot) void uninstallCron(oldRoot).catch(() => undefined);
-      }
       if (oldPath && oldName !== sync.newName && existsSync(oldPath) && !existsSync(newPath)) {
         // Rename in place — keep the cloned repos + local work (ADR-0288).
         renameSync(oldPath, newPath);
@@ -77,9 +71,10 @@ export function handleProjectChannels(
       const del = payload as unknown as PhysicDeletePayload;
       // Guard: an empty name would resolve to the profile dir itself — never delete that.
       if (del.name) {
-        const delRoot = ctx.physicFolderPath(del.name);
-        // Uninstall the physic project's cron first (ADR-0152) — no orphan tick after delete.
-        if (delRoot) void uninstallCron(delRoot).catch(() => undefined);
+        // Stop the autonomous engine (ADR-0392): its config is per-profile, so the next project bound
+        // to this cli must start paused — no orphan ticks. (A rename needs nothing: the scheduler reads
+        // the served root live.)
+        void pauseAutonomous(ctx.profileDir).catch(() => undefined);
         rmSync(join(ctx.profileDir, del.name), { recursive: true, force: true });
         ctx.bus.log(t("project.folderDeleted", { name: del.name }));
       }

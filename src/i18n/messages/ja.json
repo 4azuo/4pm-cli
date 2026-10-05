@@ -180,7 +180,7 @@
   "autoRun.noDaemon": "プロファイル \"{profile}\" のデーモンが実行されていません — 先に起動してください: 4pm start --profile {profile}",
   "autoRun.timeout": "自律サイクルが制限時間を超えました — 中止します。",
   "autoRun.authFailed": "コントロールチャネルの認証に失敗しました — デーモンがトークンを拒否しました。",
-  "autonomous.cronMissing": "自律 cron をインストールできませんでした: このワーカーには動作する `crontab`（cron サービス）がありません。自律スケジューリングにはワーカーマシンの cron が必要です。",
+  "autonomous.settingsInvalidCron": "cron スケジュールが無効です — 標準の 5 フィールド式を使用してください（例: */10 * * * *）。",
   "autonomous.settingsInvalidJson": "自律設定が有効な JSON ではありません。",
   "config.notObject": "config.json は JSON オブジェクトである必要があります。",
   "config.invalidJson": "無効な JSON: {message}"

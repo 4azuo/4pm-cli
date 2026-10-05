@@ -11,9 +11,9 @@ import { join } from "node:path";
 
 /** The autonomous knobs (parameters only — no logic). */
 export interface AutonomousConfig {
-  /** Soft brake: the daemon skips the cycle without running the AI. */
+  /** The on/off switch: when true the daemon's scheduler does not start cycles (ADR-0392). */
   paused: boolean;
-  /** Standard 5-field cron the daemon keeps the crontab line in sync with. */
+  /** Standard 5-field cron the daemon's in-process scheduler fires on (ADR-0392 — no OS crontab). */
   cronSchedule: string;
   /** Empty = run all day; `HH:MM-HH:MM` = skip within the window (may cross midnight). */
   quietHours: string;
@@ -124,6 +124,13 @@ export async function readAutonomousConfigText(profileDir: string): Promise<stri
 export async function writeAutonomousConfig(profileDir: string, raw: unknown): Promise<void> {
   const cfg = coerce(raw);
   await writeFile(autonomousConfigPath(profileDir), JSON.stringify(cfg, null, 2) + "\n", "utf8");
+}
+
+/** Turn the engine off (`paused:true`) — e.g. when the served project is deleted, so the next project
+ *  bound to this cli starts stopped (ADR-0392). No-op when already paused. */
+export async function pauseAutonomous(profileDir: string): Promise<void> {
+  const cfg = await readAutonomousConfig(profileDir);
+  if (!cfg.paused) await writeAutonomousConfig(profileDir, { ...cfg, paused: true });
 }
 
 /** True when `now` (local) falls inside the `HH:MM-HH:MM` quiet-hours window (supports crossing midnight). */

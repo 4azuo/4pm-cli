@@ -539,11 +539,15 @@ export interface FsDownloadReply {
  * (`.claude/.autonomous.settings.json` + `auto-cycle`), reached over these channels via the cli.
  */
 
-/** Computed run-state of the autonomous engine on the worker (from crontab + settings + histories). */
+/** Computed run-state of the autonomous engine on the worker (from settings + histories). */
 export interface AutonomousStatus {
-  /** The physic project's tick line is present in the OS crontab (hard on). */
+  /**
+   * The tick scheduler is armed for the served project. Always `true` from a cli with the in-process
+   * scheduler (ADR-0392); `false` only from an older cli whose OS crontab line is absent. Kept for wire
+   * compat — "armed" (ADR-0317) is `installed && !paused`.
+   */
   installed: boolean;
-  /** `paused:true` in settings (soft brake). */
+  /** `paused:true` in settings — the engine's on/off switch (ADR-0392). */
   paused: boolean;
   /** Effective cron schedule from settings. */
   cronSchedule: string;
@@ -610,8 +614,8 @@ export type AutonomousWriteRequest =
   // Traced book save (ADR-0320): the cli diffs rows by id against the current book and stamps
   // `.autonomous.authors.json` (author = `by`/`byLabel`) for added/edited rows, so authorship can't be
   // forged in a client-written `.md` cell. `book` selects which of the three approval books is saved.
-  | { kind: "bookSave"; book: "userTodo" | "userQa" | "aiTodo"; content: string; by: string; byLabel?: string }
-  | { kind: "cron"; action: "install" | "uninstall" };
+  | { kind: "bookSave"; book: "userTodo" | "userQa" | "aiTodo"; content: string; by: string; byLabel?: string };
+// (The `cron` install/uninstall kind was retired by ADR-0392 — the daemon schedules ticks itself.)
 export interface AutonomousWriteReply {
   ok: boolean;
   error?: string;
