@@ -47,6 +47,12 @@ export interface WorkerToolCatalogEntry {
    * npm-updatable). Requires a non-null `installPackage` to resolve the target.
    */
   updatable: boolean;
+  /**
+   * Whether the panel offers **Install** when the tool is missing (ADR-0396) — no Uninstall, so it stays
+   * a prerequisite. `true` for `claude`/`codex` (npm) and `gh`/`glab` (release binary — `installPackage`
+   * null): the cli also self-installs them (gh/glab at start, AI CLIs at start for used providers + on use).
+   */
+  installWhenMissing: boolean;
 }
 
 /**
@@ -55,17 +61,18 @@ export interface WorkerToolCatalogEntry {
  * uninstalls it. The npm-distributed ones (`pnpm`/`claude`/`codex`) are **updatable**
  * (`updatable: true`, ADR-0252): the panel offers an Update button that reinstalls them at `@latest`.
  * `installPackage` is still the package identity (extras-dedup + Documents reference) and resolves
- * the update target, independent of `installable`.
+ * the update target, independent of `installable`. `claude`/`codex`/`gh`/`glab` are `installWhenMissing`
+ * (ADR-0396): an Install button while missing, and the cli self-installs them.
  */
 export const WORKER_TOOL_CATALOG: readonly WorkerToolCatalogEntry[] = [
-  { id: "git", label: "Git", category: "vcs", versionArg: "--version", installPackage: null, installable: false, updatable: false },
-  { id: "node", label: "Node.js", category: "runtime", versionArg: "--version", installPackage: null, installable: false, updatable: false },
-  { id: "npm", label: "npm", category: "runtime", versionArg: "--version", installPackage: null, installable: false, updatable: false },
-  { id: "pnpm", label: "pnpm", category: "runtime", versionArg: "--version", installPackage: "pnpm", installable: false, updatable: true },
-  { id: "claude", label: "Claude Code", category: "ai-cli", versionArg: "--version", installPackage: "@anthropic-ai/claude-code", installable: false, updatable: true },
-  { id: "codex", label: "Codex", category: "ai-cli", versionArg: "--version", installPackage: "@openai/codex", installable: false, updatable: true },
-  { id: "gh", label: "GitHub CLI", category: "vcs", versionArg: "--version", installPackage: null, installable: false, updatable: false },
-  { id: "glab", label: "GitLab CLI", category: "vcs", versionArg: "--version", installPackage: null, installable: false, updatable: false },
+  { id: "git", label: "Git", category: "vcs", versionArg: "--version", installPackage: null, installable: false, updatable: false, installWhenMissing: false },
+  { id: "node", label: "Node.js", category: "runtime", versionArg: "--version", installPackage: null, installable: false, updatable: false, installWhenMissing: false },
+  { id: "npm", label: "npm", category: "runtime", versionArg: "--version", installPackage: null, installable: false, updatable: false, installWhenMissing: false },
+  { id: "pnpm", label: "pnpm", category: "runtime", versionArg: "--version", installPackage: "pnpm", installable: false, updatable: true, installWhenMissing: false },
+  { id: "claude", label: "Claude Code", category: "ai-cli", versionArg: "--version", installPackage: "@anthropic-ai/claude-code", installable: false, updatable: true, installWhenMissing: true },
+  { id: "codex", label: "Codex", category: "ai-cli", versionArg: "--version", installPackage: "@openai/codex", installable: false, updatable: true, installWhenMissing: true },
+  { id: "gh", label: "GitHub CLI", category: "vcs", versionArg: "--version", installPackage: null, installable: false, updatable: false, installWhenMissing: true },
+  { id: "glab", label: "GitLab CLI", category: "vcs", versionArg: "--version", installPackage: null, installable: false, updatable: false, installWhenMissing: true },
 ] as const;
 
 /** The catalog ids that are detect-only prerequisites (cannot be installed/uninstalled). */
@@ -84,3 +91,8 @@ export const WORKER_TOOL_UPDATABLE_IDS: readonly string[] = WORKER_TOOL_CATALOG.
  * would break the runtime.
  */
 export const WORKER_TOOL_BUNDLED_GLOBALS: readonly string[] = ["npm", "corepack"];
+
+/** The catalog ids the panel can install while missing + the cli self-installs (ADR-0396). */
+export const WORKER_TOOL_INSTALL_WHEN_MISSING_IDS: readonly string[] = WORKER_TOOL_CATALOG.filter(
+  (t) => t.installWhenMissing,
+).map((t) => t.id);

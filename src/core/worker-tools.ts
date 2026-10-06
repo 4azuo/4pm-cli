@@ -136,6 +136,11 @@ function run(
   });
 }
 
+/** Whether a tool answers `<cmd> <versionArg>` (exit 0) — the toolchain self-install check (ADR-0396). */
+export async function isToolInstalled(cmd: string, versionArg = "--version"): Promise<boolean> {
+  return (await detectOne(cmd, versionArg)) !== null;
+}
+
 /** Probe one tool's `--version`; returns the first output line, or null when not installed. */
 async function detectOne(cmd: string, versionArg: string): Promise<string | null> {
   const { code, out } = await run(cmd, [versionArg], undefined, 15_000);
@@ -215,7 +220,9 @@ function resolvePackage(name: string, op: ToolOp): { pkg?: string; error?: strin
     // A default-catalog tool is detect-only for install/uninstall (ADR-0227) but the npm-distributed
     // ones (pnpm/claude/codex) are update-to-latest-open (ADR-0252). `installPackage` stays the
     // package identity used to resolve the target for either allowed op.
-    const allowed = op === "update" ? entry.updatable : entry.installable;
+    // ADR-0396: an `installWhenMissing` npm tool (claude/codex) may be installed (never uninstalled);
+    // the release-binary ones (gh/glab) are routed to the toolchain installer before reaching here.
+    const allowed = op === "update" ? entry.updatable : entry.installable || (op === "install" && entry.installWhenMissing && !!entry.installPackage);
     if (!allowed) {
       return { error: `"${name}" is a prerequisite and cannot be ${opPast(op)} from here.` };
     }

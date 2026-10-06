@@ -25,6 +25,7 @@ import {
   runWorkerToolOp,
   setToolAutoUpdate,
 } from "../../worker-tools";
+import { installTool } from "../../toolchain";
 import { readProfileConfig } from "../../../config/profile";
 import type { WsHandlerCtx } from "../context";
 
@@ -68,14 +69,14 @@ export function handleToolsChannels(
       const opTimeoutMs = resolveInstallTimeoutMs(
         readProfileConfig(ctx.profileDir).toolInstallTimeoutSec,
       );
-      void runWorkerToolOp(
-        op,
-        req.name,
-        req.manager,
-        (line) =>
-          ctx.send(WsChannels.TOOLS_PROGRESS, { opId: req.opId, line } satisfies ToolsProgressPayload),
-        opTimeoutMs,
-      ).then((res) => {
+      const onLine = (line: string): void =>
+        ctx.send(WsChannels.TOOLS_PROGRESS, { opId: req.opId, line } satisfies ToolsProgressPayload);
+      // gh/glab are release binaries, not npm packages (ADR-0396) — Install routes to the toolchain.
+      const binaryInstall = op === "install" && (req.name === "gh" || req.name === "glab");
+      const job = binaryInstall
+        ? installTool(req.name as "gh" | "glab", onLine).then((ok) => ({ ok, exitCode: ok ? 0 : 1, error: ok ? undefined : `${req.name} install failed` }))
+        : runWorkerToolOp(op, req.name, req.manager, onLine, opTimeoutMs);
+      void job.then((res) => {
         ctx.send(WsChannels.TOOLS_DONE, {
           opId: req.opId,
           ok: res.ok,

@@ -76,6 +76,11 @@ export interface ProfileConfig {
    */
   autoUpdateTools?: string[];
   /**
+   * Toolchain self-install (ADR-0396): install a missing gh/glab at start and the AI CLIs of the enabled
+   * profiles at start + on use. Defaults to true; `false` leaves installs to the Tools tab's Install button.
+   */
+  autoInstallTools?: boolean;
+  /**
    * Timeout (seconds) for a global tool install/update/restore op (ADR-0258) — bounds each
    * `npm i -g`/`pnpm add -g` attempt so a hung child can't wedge a restore, while being long enough
    * for a cold npm on a slow container egress (the old fixed 180s was too short). `0`/absent ⇒ the
@@ -189,6 +194,12 @@ export interface ProfileConfig {
    */
   projectAiMemoryMode?: "inherit" | "on" | "off";
   projectAiMemoryBudgetChars?: number;
+  /**
+   * Read-only mirror of `ws_token.maskAiAccounts` (ADR-0395): on a platform-pool (rented) worker the
+   * AI credential labels are shown as `AI account #N`. Kept here so `4pm start` masks the header
+   * before the first token arrives. Server-managed, never operator-editable.
+   */
+  maskAiAccounts?: boolean;
 }
 
 /**

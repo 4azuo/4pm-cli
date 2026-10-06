@@ -694,6 +694,9 @@ async function applyDefaultModel(dir: string, spec: Record<string, unknown>, emi
   const path = join(dir, ".claude", "settings.json");
   if (!existsSync(path)) return;
   const model = readSpecField(spec, "ai_model").trim();
+  // `.claude/settings.json` is the Claude CLI's file — another provider's model is not written here (ADR-0396).
+  const provider = readSpecField(spec, "ai_provider").trim() || "claude";
+  if (provider !== "claude") return;
   try {
     const settings = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
     if (!model || model === "default") delete settings.model;

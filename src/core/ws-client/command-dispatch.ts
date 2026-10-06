@@ -65,6 +65,7 @@ import type { WsHandlerCtx } from "./context";
 import { acquireRunSlot } from "./run-slot";
 import { t } from "../../i18n";
 import { requestGitSnapshot } from "../git-snapshot";
+import { ensureAiClisFor } from "../toolchain";
 
 /** Preamble prepended before the shared AI memory when seeding a fresh native session (ADR-0245). */
 const MEMORY_SEED_HEADER =
@@ -443,6 +444,8 @@ async function runAiPromptInner(
     effectivePrompt = `${MEMORY_SEED_HEADER}\n${ctx.aiMemory}\n\n${guardedPrompt}`;
   }
   const plan = planAiRun(effectivePrompt, config, hint, resume, oneShot, aiConfig, readOnly, bypass);
+  // On-use self-install (ADR-0396): a missing AI CLI is installed before the first attempt spawns.
+  await ensureAiClisFor(ctx.profileDir, plan.attempts.map((a) => a.cmd), (line) => ctx.bus.log(line));
   // Representative argv for the announce/history markers (args are now per-profile —
   // the first attempt's are used; failover may run a different profile's args).
   const markerArgs = plan.attempts[0]?.args ?? [];

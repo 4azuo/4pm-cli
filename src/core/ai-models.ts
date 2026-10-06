@@ -5,12 +5,15 @@
  * Agent SDK uses for `supportedModels()` — no turn is run, so no tokens are spent), then kill the process.
  * Results are cached in memory per (provider, config dir) for an hour; failures are not cached.
  * codex / antigravity have no catalog yet ⇒ an empty list + an error (the web falls back to free text).
+ * A missing CLI (ADR-0396) ⇒ `cliMissing` and a background install (`installing`) — the reply never waits
+ * for the install, so the web polls until the list appears.
  */
 import { spawn } from "node:child_process";
 import type { AiModelsReply, AiModelsRequest } from "@4pm/ws";
 import { readProfileConfig } from "../config/profile";
 import { claudeHomeDirs } from "../utils/ai-cli";
 import { getWorkingProfile } from "./ai-profile-state";
+import { ensureTool, hasTool, isInstalling } from "./toolchain";
 
 /** How long a successful list is reused. */
 const CACHE_TTL_MS = 60 * 60 * 1000;
@@ -86,13 +89,34 @@ function probeClaude(cmd: string, dir: string | null): Promise<Model[]> {
   });
 }
 
+/** Whether the cli will self-install a missing CLI (config `autoInstallTools`, default on — ADR-0396). */
+function autoInstallPolicy(profileDir: string): boolean {
+  try {
+    return readProfileConfig(profileDir).autoInstallTools !== false;
+  } catch {
+    return true;
+  }
+}
+
 /** Handle `ai.models` for this profile: cached or freshly probed list, or an empty list + the reason. */
 export async function listAiModels(profileDir: string, req: AiModelsRequest): Promise<AiModelsReply> {
   const provider = req?.provider ?? "claude";
+  if (provider === "codex" && !(await hasTool("codex"))) {
+    // No catalog for codex yet, but the create/add gate still needs to know the CLI is missing (ADR-0396).
+    void ensureTool(profileDir, "codex");
+    return { provider, models: [], cliMissing: true, installing: autoInstallPolicy(profileDir), error: "The Codex CLI is not installed on this worker." };
+  }
   if (provider !== "claude") return { provider, models: [], error: `No model catalog for ${provider} yet.` };
   try {
     const config = readProfileConfig(profileDir);
     const aiCli = config.aiCli && config.aiCli.includes("claude") ? config.aiCli : "claude";
+    // ADR-0396: no CLI ⇒ report it and start the self-install in the background (on use).
+    if (!(await hasTool("claude"))) {
+      // ensureTool registers the install asynchronously, so report `installing` from the policy, not the map.
+      const installing = isInstalling("claude") || autoInstallPolicy(profileDir);
+      void ensureTool(profileDir, "claude");
+      return { provider, models: [], cliMissing: true, installing, error: "The Claude CLI is not installed on this worker." };
+    }
     // The profile in use first (its account decides availability), else the first configured one.
     const working = getWorkingProfile(profileDir, aiCli);
     const dir = working ?? claudeHomeDirs(config)[0] ?? null;

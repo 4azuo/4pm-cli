@@ -15,6 +15,7 @@ import { isUnifiedConfig, planAiRun, profileDisplayLabel, resolveClaudeAuthMode 
 import { readProfileConfig } from "../config/profile";
 import { acquireRunSlot, type RunSlotOutcome, type RunSlotQueueInfo } from "./ws-client/run-slot";
 import type { WsHandlerCtx } from "./ws-client/context";
+import { ensureAiClisFor } from "./toolchain";
 
 /** What a cli-internal AI caller needs: the org run slot + one-shot generations on the standard path. */
 export interface AiTaskRunner {
@@ -47,6 +48,8 @@ async function generate(ctx: WsHandlerCtx, prompt: string, cwd: string, label: s
       }
     : { dir: getWorkingProfile(ctx.profileDir, cmd) };
   const plan = planAiRun(prompt, config, hint, new Map(), true);
+  // On-use self-install (ADR-0396): a missing AI CLI is installed before the first attempt spawns.
+  await ensureAiClisFor(ctx.profileDir, plan.attempts.map((a) => a.cmd), (line) => ctx.bus.log(line));
   const timeoutSec = config.projectAiRunTimeoutSec || config.aiRunTimeoutSec || 0;
   ctx.bus.push({ source: "system", kind: "aireq", text: `${plan.cmd} ‹ ${label}` });
   let text = "";

@@ -467,13 +467,64 @@ export function claudeHomeDirs(config: AiCliConfig): string[] {
 }
 
 /**
+ * Reads the worker's current AI config while account labels are masked (ADR-0395); null ⇒ unmasked.
+ * Read at label time so the `#N` numbering follows live config edits.
+ */
+let maskConfigReader: (() => AiCliConfig) | null = null;
+
+/**
+ * Turn AI account label masking on (with a reader of the current config) or off (null) — ADR-0395.
+ * Set from `ws_token.maskAiAccounts` (mirrored in `config.json`) on a platform-pool (rented) worker.
+ */
+export function setAiAccountMask(readConfig: (() => AiCliConfig) | null): void {
+  maskConfigReader = readConfig;
+}
+
+/** True while AI account labels are masked (ADR-0395). */
+export function isAiAccountMaskOn(): boolean {
+  return maskConfigReader !== null;
+}
+
+/**
+ * The masked label of a credential dir (ADR-0395): `AI account #N`, where N is the dir's 1-based
+ * position among the configured credential dirs (all providers, config order); plain `AI account`
+ * when the dir isn't configured (or the config can't be read).
+ */
+function maskedAccountLabel(dir: string): string {
+  try {
+    const index = maskConfigReader ? allAiProfileDirs(maskConfigReader()).indexOf(dir) : -1;
+    return index >= 0 ? `AI account #${index + 1}` : "AI account";
+  } catch {
+    return "AI account";
+  }
+}
+
+/**
+ * The real (unmasked) label of a profile dir: the account email, else the folder basename.
+ * Only for admin-only surfaces (`machine.status.aiAccounts` — ADR-0354).
+ */
+function unmaskedProfileLabel(dir: string): string {
+  return profileAccountEmail(dir) ?? basename(dir);
+}
+
+/**
  * Human label for a profile dir: the signed-in **account email** when it can be read
  * from `<dir>/.claude.json` (`oauthAccount.emailAddress`), else the folder basename
  * (e.g. ".claude-1"). Best-effort — a missing/unreadable file or a non-claude profile
- * falls back to the folder name so the header is never blank.
+ * falls back to the folder name so the header is never blank. Masked to `AI account #N`
+ * on a platform-pool (rented) worker (ADR-0395).
  */
 export function profileDisplayLabel(dir: string): string {
-  return profileAccountEmail(dir) ?? basename(dir);
+  return maskConfigReader ? maskedAccountLabel(dir) : unmaskedProfileLabel(dir);
+}
+
+/**
+ * Display label for a configured credential: its explicit `label`, else {@link profileDisplayLabel}.
+ * While masked (ADR-0395) the explicit label is hidden too — an operator may have typed an email there.
+ */
+export function credentialDisplayLabel(label: string | undefined, dir: string): string {
+  const explicit = label?.trim();
+  return explicit && !maskConfigReader ? explicit : profileDisplayLabel(dir);
 }
 
 /**
@@ -507,7 +558,8 @@ export function aiAccountLabels(config: AiCliConfig): string[] {
           return profileAccountEmail(dir) ?? (c.label?.trim() || basename(dir));
         })
     : [...profileDirs(config.claudeHome), ...profileDirs(config.codexHome), ...profileDirs(config.antigravityHome)].map(
-        (dir) => profileDisplayLabel(dir),
+        // Admin-only (ADR-0354) — never masked (ADR-0395).
+        (dir) => unmaskedProfileLabel(dir),
       );
   return [...new Set(labels)];
 }
@@ -536,7 +588,7 @@ export function profileLabels(config: AiCliConfig): string[] {
   if (isUnifiedConfig(config)) {
     return config
       .aiProfiles!.filter(isUsableCredential)
-      .map((c) => c.label?.trim() || profileDisplayLabel(resolveHomePath(c.profile)));
+      .map((c) => credentialDisplayLabel(c.label, resolveHomePath(c.profile)));
   }
   const cmd = config.aiCli ?? DEFAULT_AI_CLI;
   return profileDirs(profilesFor(config, cmd)).map((dir) => profileDisplayLabel(dir));
@@ -645,7 +697,7 @@ function planUnifiedRun(
       : resolved;
   const attempts: AiAttempt[] = ordered.map(({ cred, cmd, dir, key, envVar }) => ({
     cmd,
-    label: cred.label?.trim() || profileDisplayLabel(dir),
+    label: credentialDisplayLabel(cred.label, dir),
     dir,
     key,
     args: buildRunArgs(cred, cmd, resume.get(key), oneShot, override, readOnly, bypass, [...allAiProfileDirs(config), dir]),

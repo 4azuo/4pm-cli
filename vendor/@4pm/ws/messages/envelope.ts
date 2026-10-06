@@ -1333,6 +1333,10 @@ export interface AiModelsRequest {
 export interface AiModelsReply {
   provider: "claude" | "codex" | "antigravity";
   models: { value: string; resolvedModel: string | null; displayName: string; description: string }[];
+  /** The provider's CLI is not on the worker (ADR-0396). Absent from an older cli. */
+  cliMissing?: boolean;
+  /** The cli is installing the missing CLI in the background — ask again shortly (ADR-0396). */
+  installing?: boolean;
   error: string | null;
 }
 

@@ -29,12 +29,12 @@ import { SessionBus } from "../core/session-bus";
 import { startControlServer } from "../core/control-server";
 import { revokeAll } from "../core/git-auth";
 import { startIdleAutoClear } from "../core/idle-auto-clear";
-import { getWorkingProfile } from "../core/ai-profile-state";
-import { profileDisplayLabel, profileLabels } from "../utils/ai-cli";
+import { activeProfileLabel, applyAiAccountMask } from "../core/ai-account-mask";
 import { attachConsoleSink } from "../ui/console-sink";
 import { runTui } from "../ui/run-tui";
 import type { SessionInfo } from "../ui/session-info";
 import { CLI_VERSION } from "../version";
+import { addToolDirToPath, ensureToolchainAtBoot, setToolchainReporter } from "../core/toolchain";
 
 /**
  * Resolve the log level: `--verbose` ⇒ debug (highest priority), else FOURPM_LOG_LEVEL,
@@ -84,6 +84,8 @@ export async function runStart(
   // Localize the cli's operator-facing messages per the worker config (ADR-0276);
   // absent `locale` falls back to FOURPM_LOCALE/LANG, then English.
   initI18n(config.locale);
+  // Mask AI account labels from the last ws_token's flag (ADR-0395) before anything renders one.
+  applyAiAccountMask(profileDir, config.maskAiAccounts === true);
   const autoUpdate =
     config.autoUpdate !== false && process.env.FOURPM_NO_UPDATE !== "1";
   const result = await checkAndUpdate(credential.serverUrl, autoUpdate);
@@ -125,6 +127,10 @@ export async function runStart(
   process.once("SIGINT", () => process.exit(0));
   process.once("SIGTERM", () => process.exit(0));
 
+  // Toolchain (ADR-0396): the self-installed release binaries (gh/glab) come first on PATH, for the cli
+  // and every child it spawns — set before anything captures PATH (git-auth's base env, AI runs).
+  addToolDirToPath();
+
   try {
     // Local command history (per cli) + periodic R2 upload (config-gated) + per-command
     // output capture (for /output — ADR-0057).
@@ -139,6 +145,10 @@ export async function runStart(
       profileDir,
       bus,
     });
+    // Start-up self-heal (ADR-0396): install a missing gh/glab and the enabled profiles' AI CLIs in the
+    // background; each success re-reports the tools snapshot. Never blocks or fails the start.
+    setToolchainReporter(() => client.reportToolsSnapshot());
+    void ensureToolchainAtBoot(profileDir, (line) => bus.log(line)).catch(() => undefined);
     // Expose this daemon's session over a per-profile unix socket so a `4pm attach` TUI can
     // observe/drive it (essential when headless in a container — ADR-0192 §2). Best-effort.
     stopControl = startControlServer(bus, profileDir, {
@@ -182,10 +192,7 @@ export async function runStart(
       };
       // Seed the header's active AI profile: the last working one, else the first
       // configured candidate (ADR-0057). Updated live when failover picks one.
-      const aiCli = config.aiCli || "claude";
-      const workingDir = getWorkingProfile(profileDir, aiCli);
-      const labels = profileLabels(config);
-      bus.setActiveProfile(workingDir ? profileDisplayLabel(workingDir) : (labels[0] ?? null));
+      bus.setActiveProfile(activeProfileLabel(profileDir, config));
       const tui = runTui(bus, info);
       bus.log(t("start.connecting", { server: credential.serverUrl, profile: profileName }));
       // The WS loop runs concurrently, feeding the bus; the TUI resolves on quit.

@@ -179,6 +179,12 @@ export interface WsTokenResponse {
    */
   gitAuthHost?: string | null;
   /**
+   * Mask the worker's AI account labels (ADR-0395) — `true` when the link's user is a platform-pool
+   * (rented) machine user. The cli then shows every renter-visible credential label as `AI account #N`
+   * instead of the account email. Absent (older server) ⇒ treated as `false`.
+   */
+  maskAiAccounts?: boolean;
+  /**
    * Outbound-review policy of the project this link serves (ADR-0082). Tells the cli to
    * require an outbound review before spawning AI (`enabled`), which engines to run, and
    * whether THIS link is itself an outbound reviewer (`isOutbound`). `null` when the
@@ -1238,5 +1244,9 @@ export interface AiModelOption {
 export interface AiModelsResponse {
   provider: AiModelProvider;
   models: AiModelOption[];
+  /** The provider's CLI is not installed on the worker (ADR-0396). */
+  cliMissing: boolean;
+  /** The worker is installing that CLI now — poll again (ADR-0396). */
+  installing: boolean;
   error: string | null;
 }

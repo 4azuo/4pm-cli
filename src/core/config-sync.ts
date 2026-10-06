@@ -32,6 +32,8 @@ const SERVER_MANAGED_KEYS = [
   // / `aiMemoryBudgetChars` are operator-editable and NOT listed here.
   "projectAiMemoryMode",
   "projectAiMemoryBudgetChars",
+  // Pool-worker AI account masking mirror (ADR-0395) — a Worker-config edit must not turn it off.
+  "maskAiAccounts",
 ] as const;
 
 /** Read the profile's config.json as text (canonical defaults when the file is absent). */

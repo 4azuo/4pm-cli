@@ -151,6 +151,8 @@ export const ErrorCode = {
   AI_POOL_CONFLICT: "AI_POOL_CONFLICT",
   // No org AI pool configured (Settings) for a project-less org AI task (ADR-0376).
   AI_POOL_NOT_CONFIGURED: "AI_POOL_NOT_CONFIGURED",
+  // The serving worker has no CLI for the spec's AI provider — create/add refused (ADR-0396).
+  AI_CLI_MISSING: "AI_CLI_MISSING",
   // Change-request (ADR-0379) not found / already resolved.
   CHANGE_REQUEST_NOT_FOUND: "CHANGE_REQUEST_NOT_FOUND",
   CHANGE_REQUEST_ALREADY_RESOLVED: "CHANGE_REQUEST_ALREADY_RESOLVED",

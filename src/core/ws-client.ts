@@ -53,6 +53,7 @@ import { getWorkingProfile } from "./ai-profile-state";
 import { INSECURE_URL_BLOCKED, insecureTransportAllowed, isInsecureRemoteUrl } from "../utils/secure-url";
 import { t } from "../i18n";
 import { aiAccountLabels, claudeHomeDirs } from "../utils/ai-cli";
+import { activeProfileLabel, applyAiAccountMask } from "./ai-account-mask";
 import { checkClaudeUsage } from "./claude-usage";
 import { pruneCommandHistoryByAge } from "./command-history";
 import { sweepOldAttachments } from "./command-images";
@@ -398,6 +399,11 @@ export class WsClient {
     return next;
   }
 
+  /** Report the tools snapshot now (after a toolchain self-install — ADR-0396); no-op when offline. */
+  reportToolsSnapshot(): void {
+    if (this.sessionKey) void this.reportWorkerTools("op");
+  }
+
   /**
    * Detect the worker's tools and report the snapshot to the server (ADR-0254, `tools.report`) so the
    * DB-backed Tools panel + restore target stay current. One-way, best-effort — a detect/send failure
@@ -610,7 +616,13 @@ export class WsClient {
           // Per-tool auto-update flags (ADR-0253) are now DB-owned (ADR-0254) — mirror the server's
           // list locally so the idle daily tick (UpdateScheduler) can read it without a round-trip.
           autoUpdateTools: token.toolRestore?.autoUpdate ?? [],
+          // Pool-worker AI account masking (ADR-0395) — mirrored so a restart masks before connecting.
+          maskAiAccounts: token.maskAiAccounts === true,
         });
+        // Apply it now; when it flips, re-render the header label that was seeded unmasked/masked.
+        if (applyAiAccountMask(this.context.profileDir, token.maskAiAccounts === true) && this.bus.activeProfile) {
+          this.bus.setActiveProfile(activeProfileLabel(this.context.profileDir, readProfileConfig(this.context.profileDir)));
+        }
         // Seed the shared-AI-memory cache (ADR-0245) from the server's stored copy — only when the
         // cli holds none yet (a fresh process / reconnect), so a periodic ws_token refresh never
         // clobbers a newer value this cli itself wrote (it is the sole writer for its link).

@@ -23,6 +23,7 @@ import {
   setPinnedCredential,
 } from "../core/ai-profile-state";
 import {
+  credentialDisplayLabel,
   credentialKey,
   isUsableCredential,
   labelFromCredentialKey,
@@ -294,7 +295,7 @@ function runWhoami(ctx: SlashContext): void {
 
 /** Display label for a unified credential entry (its `label`, else the account email / dir name). */
 function aiProfileLabel(c: AiCredential): string {
-  return c.label?.trim() || profileDisplayLabel(resolveHomePath(c.profile));
+  return credentialDisplayLabel(c.label, resolveHomePath(c.profile));
 }
 
 /**
