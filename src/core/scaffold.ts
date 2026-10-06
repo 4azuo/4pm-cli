@@ -205,9 +205,11 @@ async function commitAndPushSubmodules(
   if (addPaths.length === 0) return;
   emit("submodule", "Committing .gitmodules…");
   await run("git", ["add", ...addPaths], { cwd: root, timeout: 60_000 });
-  const staged = (await run("git", ["diff", "--cached", "--name-only"], { cwd: root, timeout: 30_000 })).stdout.trim();
+  const staged = (await run("git", ["diff", "--cached", "--name-only", "--", ...addPaths], { cwd: root, timeout: 30_000 })).stdout.trim();
   if (!staged) return;
-  const commitArgs = ["commit", "-m", "chore: add git submodules (4PM)"];
+  // Commit ONLY the submodule paths (`--only` via the pathspec): whatever else the index holds — e.g. the
+  // empty index of a clone whose checkout failed — must never ride along as mass deletions.
+  const commitArgs = ["commit", "-m", "chore: add git submodules (4PM)", "--", ...addPaths];
   try {
     await run("git", commitArgs, { cwd: root, timeout: 60_000 });
   } catch {
@@ -219,6 +221,19 @@ async function commitAndPushSubmodules(
   } catch (err) {
     emit("submodule-push-failed", `Submodules committed locally but the push failed: ${errText(err)}`);
   }
+}
+
+/**
+ * Heal a clone whose checkout never happened ("Clone succeeded, but checkout failed" — e.g. a file appeared
+ * in the folder mid-clone): HEAD has a tree but the index is empty. Left as-is, the next step treats every
+ * file as deleted; re-populate the index + working tree from HEAD instead. No-op on a healthy/unborn repo.
+ */
+async function healUncheckedClone(root: string, emit: (step: string, message: string) => void): Promise<void> {
+  const headTree = await gitOut(root, ["ls-tree", "--name-only", "HEAD"]);
+  if (!headTree) return; // unborn branch (or unreadable) — nothing to restore
+  if (await gitOut(root, ["ls-files"])) return; // index populated — a normal clone
+  emit("git", "Repository checkout was incomplete — restoring the working tree from HEAD…");
+  await run("git", ["checkout", "-q", "HEAD", "--", ":/"], { cwd: root, timeout: 120_000 });
 }
 
 /** First line of a failed command's message (git/gh/glab print the reason there), capped. */
@@ -425,6 +440,7 @@ async function provisionRepo(
   }
   // The root already holds a clone — apply the requested mode (ADR-0288/0292).
   if (existsSync(join(target, ".git"))) {
+    await healUncheckedClone(target, emit);
     if (mode === "sync") {
       await updateRepo(target, repo.branch, emit);
     } else if (mode === "force") {

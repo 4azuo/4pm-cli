@@ -208,6 +208,9 @@ export class WsClient {
   /** Declared repos of the served project (ADR-0289), from each ws_token — cloned into the physic
    *  root on connect (and after a PHYSIC_SYNC creates the folder) when any is missing its `.git`. */
   private servingRepos: WsTokenRepo[] = [];
+  /** Tail of the serialized clone-on-connect runs — two concurrent runs on one root race (a half-done
+   *  clone's `.git` makes the other skip the clone and commit an empty index), so they queue here. */
+  private cloneQueue: Promise<void> = Promise.resolve();
   /** This machine-user's username — the git commit author for this project (ADR-0097).
    *  Push uses the account already logged in with gh/glab on the worker. */
   private machineUsername = "";
@@ -380,14 +383,19 @@ export class WsClient {
    * Clone any declared repo missing from the served physic root (ADR-0289) — idempotent (skips a
    * repo that already has `.git`). Best-effort: a clone failure never disrupts the session (the web
    * still surfaces "not provisioned"). No-op when idle (no physic root) or no repos declared.
+   * Runs are serialized (connect + PHYSIC_SYNC both trigger it): each waits for the previous one.
    */
-  private async ensureServingReposCloned(): Promise<void> {
-    if (!this.physicRoot || this.servingRepos.length === 0) return;
-    try {
-      await ensureReposCloned(this.physicRoot, this.servingRepos, (_step, message) => this.bus.log(message));
-    } catch (err) {
-      logger.warn("repos.clone.failed", { error: err instanceof Error ? err.message : String(err) });
-    }
+  private ensureServingReposCloned(): Promise<void> {
+    const next = this.cloneQueue.then(async () => {
+      if (!this.physicRoot || this.servingRepos.length === 0) return;
+      try {
+        await ensureReposCloned(this.physicRoot, this.servingRepos, (_step, message) => this.bus.log(message));
+      } catch (err) {
+        logger.warn("repos.clone.failed", { error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+    this.cloneQueue = next;
+    return next;
   }
 
   /**
