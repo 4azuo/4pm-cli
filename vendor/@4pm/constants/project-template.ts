@@ -38,8 +38,18 @@ export interface ProjectTemplate {
 
 /** The authoritative scaffold-template version + changelog (ADR-0262). */
 export const PROJECT_TEMPLATE: ProjectTemplate = {
-  version: "1.1.0",
+  version: "1.1.1",
   changelog: [
+    {
+      version: "1.1.1",
+      date: "2026-10-06",
+      summary: "The default AI model is chosen per project instead of being hard-coded in .claude/settings.json (ADR-0394).",
+      notes: [
+        ".claude/settings.json no longer pins \"model\": \"claude-opus-4-8\". Remove the key to follow the AI CLI's default model, or set it to the model the project should use.",
+        ".claude/agents/<name>.md frontmatter may carry description: and model: (a subagent without model: inherits the session model).",
+      ],
+      files: [".claude/settings.json"],
+    },
     {
       version: "1.1.0",
       date: "2026-09-30",

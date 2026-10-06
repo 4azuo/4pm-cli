@@ -606,6 +606,7 @@ async function scaffoldRepo(
   // force:false ⇒ keep any files the clone already has instead of clobbering them.
   await cp(sampleDir(), dir, { recursive: true, force: false, errorOnExist: false });
   if (spec) {
+    await applyDefaultModel(dir, spec, emit);
     emit("spec", `Writing project.spec.json into ${label}…`);
     await writeFile(join(dir, "project.spec.json"), JSON.stringify(spec, null, 2), "utf8");
     // AI init (ADR-0080): subagent files + README + the project's guide file from the spec.
@@ -668,6 +669,40 @@ async function writeTemplateMarker(target: string): Promise<void> {
 interface SubagentDecl {
   name?: string;
   description?: string;
+  /** Model alias/id for the agent (ADR-0394); `inherit` / empty ⇒ no `model:` (uses the session model). */
+  model?: string;
+}
+
+/**
+ * Render a subagent file (ADR-0394): frontmatter `name`, `description` (the role on one line, JSON-quoted —
+ * valid YAML — so Claude Code can pick the agent) and `model` unless it inherits; the full role is the body.
+ */
+function renderSubagentFile(name: string, sa: SubagentDecl): string {
+  const role = (sa.description || "").trim();
+  const oneLine = role.replace(/\s+/g, " ").slice(0, 500);
+  const model = (sa.model || "").trim();
+  const front = [`name: ${name}`, ...(oneLine ? [`description: ${JSON.stringify(oneLine)}`] : []), ...(model && model !== "inherit" ? [`model: ${JSON.stringify(model)}`] : [])];
+  return `---\n${front.join("\n")}\n---\n\n${role}\n`;
+}
+
+/**
+ * Apply the spec's default model (`ai_model`, ADR-0394) to `.claude/settings.json`: set `model`, or remove
+ * the key for `default` / empty so the CLI uses its own default. Other keys are kept; a missing or
+ * unreadable settings file is left alone (best-effort — never fails the scaffold).
+ */
+async function applyDefaultModel(dir: string, spec: Record<string, unknown>, emit: (step: string, message: string) => void): Promise<void> {
+  const path = join(dir, ".claude", "settings.json");
+  if (!existsSync(path)) return;
+  const model = readSpecField(spec, "ai_model").trim();
+  try {
+    const settings = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    if (!model || model === "default") delete settings.model;
+    else settings.model = model;
+    await writeFile(path, JSON.stringify(settings, null, 2) + "\n", "utf8");
+    emit("copy", `Default AI model: ${model && model !== "default" ? model : "CLI default"}.`);
+  } catch {
+    emit("copy", "Could not apply the default AI model to .claude/settings.json — kept as is.");
+  }
 }
 
 /**
@@ -704,15 +739,14 @@ async function aiInit(
   const guideFile: AiGuideFile = readSpecField(spec, "ai_guide_file") === "AGENT.md" ? "AGENT.md" : "CLAUDE.md";
   const guideInstructions = readSpecField(spec, "ai_guide_instructions").trim();
   emit("ai-init", `AI init: subagents, README, ${guideFile}, AI_SECURITY.md…`);
-  // Subagents come straight from the spec (name + description) — no AI call needed.
+  // Subagents come straight from the spec (name + description + model) — no AI call needed.
   const subagents = Array.isArray(spec.subagents) ? (spec.subagents as SubagentDecl[]) : [];
   if (subagents.length > 0) {
     await mkdir(join(target, ".claude", "agents"), { recursive: true });
     for (const sa of subagents) {
       const name = (sa.name || "").trim().replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "");
       if (!name) continue;
-      const body = `---\nname: ${name}\n---\n\n${(sa.description || "").trim()}\n`;
-      await writeFile(join(target, ".claude", "agents", `${name}.md`), body, "utf8");
+      await writeFile(join(target, ".claude", "agents", `${name}.md`), renderSubagentFile(name, sa), "utf8");
     }
   }
   // README + the guide file via the AI CLI (best-effort — skip on failure). Both calls run on the

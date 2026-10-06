@@ -918,6 +918,8 @@ export interface RepoProbeResponse {
     spec?: Record<string, unknown> | null;
     /** `project.spec.json` exists but could not be read (bad JSON / too large) — ADR-0393. */
     specError?: string | null;
+    /** `model` of `.claude/settings.json` at `ref` (ADR-0394); null when absent. Absent from an older cli. */
+    settingsModel?: string | null;
   } | null;
   /** The base branch is protected on the host (ADR-0371); null = unknown host / branch missing. */
   protected: boolean | null;

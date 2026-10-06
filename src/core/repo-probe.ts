@@ -4,7 +4,8 @@
  * "create from" picker), and what the source ref already holds — a 4PM scaffold (template version), the
  * existing files the scaffold keeps / rewrites, and the resettable tracking files — plus the source's
  * `project.spec.json` for the Add-existing wizard (ADR-0393). The tree is read with a blobless shallow
- * fetch into a temp repo; only `.4pm/.4pm.json` and `project.spec.json` are downloaded (no clone).
+ * fetch into a temp repo; only `.4pm/.4pm.json`, `project.spec.json` and `.claude/settings.json` (its `model` — ADR-0394) are
+ * downloaded (no clone).
  */
 import { execFile } from "node:child_process";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
@@ -23,6 +24,8 @@ const MAX_BRANCHES = 100;
 /** The spec file read for the Add-existing wizard (ADR-0393), and its size cap. */
 const SPEC_FILE = "project.spec.json";
 const MAX_SPEC_BYTES = 512 * 1024;
+/** The Claude project settings whose `model` the Add-existing wizard shows (ADR-0394). */
+const SETTINGS_FILE = ".claude/settings.json";
 const REWRITTEN = ["project.spec.json", "README.md", "CLAUDE.md", "AGENT.md", ".4pm/.4pm.json", ".claude/settings.json", ".claude/skills/", ".claude/agents/"];
 
 /** Run git; throws with the stderr tail on failure. */
@@ -47,6 +50,17 @@ async function readSourceSpec(
     return { spec: parsed as Record<string, unknown>, specError: null };
   } catch (err) {
     return { spec: null, specError: `${SPEC_FILE} could not be read: ${(err as Error).message.split("\n")[0]}` };
+  }
+}
+
+/** `model` of `.claude/settings.json` at FETCH_HEAD (ADR-0394); null when the file/key is absent or unreadable. */
+async function readSettingsModel(tmp: string, files: string[]): Promise<string | null> {
+  if (!files.includes(SETTINGS_FILE)) return null;
+  try {
+    const parsed = JSON.parse(await git(["show", `FETCH_HEAD:${SETTINGS_FILE}`], tmp)) as { model?: unknown };
+    return typeof parsed.model === "string" && parsed.model.trim() ? parsed.model.trim() : null;
+  } catch {
+    return null;
   }
 }
 
@@ -124,9 +138,10 @@ export async function probeRepo(req: RepoProbeRequest): Promise<RepoProbeReply> 
       (f) => template.has(f.split("/")[0] ?? "") && !isRewritten(f) && !(tracking as readonly string[]).includes(f) && !f.endsWith(".gitkeep"),
     );
     const { spec, specError } = await readSourceSpec(tmp, files);
+    const settingsModel = await readSettingsModel(tmp, files);
     return {
       ...result,
-      source: { ref, hasScaffold, templateVersion, keep: keep.slice(0, 200), overwrite, tracking: [...tracking], spec, specError },
+      source: { ref, hasScaffold, templateVersion, keep: keep.slice(0, 200), overwrite, tracking: [...tracking], spec, specError, settingsModel },
     };
   } catch (err) {
     const e = err as { stderr?: string; message?: string };

@@ -111,6 +111,9 @@ export const WsChannels = {
   // server → cli (reply): probe a repo branch before creating a project (ADR-0370, project-0076) —
   // branch existence, remote branches, and whether the source ref already holds a 4PM scaffold.
   REPO_PROBE: "repo.probe",
+  // server → cli (reply): list the models the worker's AI CLI supports (ADR-0394; template-0013,
+  // machine-0071, project-0082) — claude via its stream-json `initialize` handshake (no tokens).
+  AI_MODELS: "ai.models",
   // server → cli: keep the physic folder name in sync with the project (folder =
   // project name — ADR-0064) when the project is renamed.
   PHYSIC_SYNC: "physic.sync",

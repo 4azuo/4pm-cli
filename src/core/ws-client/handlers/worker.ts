@@ -2,11 +2,13 @@
  * Worker-config channel handlers: the dashboard's per-project editors that read/write files inside
  * the served physic project — autonomous settings (ADR-0152), subagents/skills (ADR-0153), secrets
  * (ADR-0154), agent tool permissions (ADR-0183), packages (ADR-0185), the dependency graph
- * (ADR-0155), RAG (ADR-0156/0157), and the paired profile's config.json (ADR-0141). Each project
+ * (ADR-0155), RAG (ADR-0156/0157), the paired profile's config.json (ADR-0141), and the AI CLI's model
+ * list (ADR-0394). Each project
  * op is a no-op on an idle cli (no `physicRoot`); config.json ops target the profile dir directly.
  */
 import {
   WsChannels,
+  type AiModelsRequest,
   type AgentReadRequest,
   type AgentToolsReadRequest,
   type AgentToolsWriteRequest,
@@ -33,6 +35,7 @@ import { installPackage, listPackages, packPackage, removePackage } from "../../
 import { buildGraph } from "../../graph";
 import { ragInstall, ragQuery, ragReindex, ragStatus } from "../../rag";
 import { applyConfigText, readConfigText } from "../../config-sync";
+import { listAiModels } from "../../ai-models";
 import type { WsHandlerCtx } from "../context";
 
 /** Route the worker-config channels; returns true when the message was handled. */
@@ -42,6 +45,13 @@ export function handleWorkerChannels(
   payload: Record<string, unknown>,
 ): boolean {
   switch (message.channel) {
+    case WsChannels.AI_MODELS: {
+      // Reply with the AI CLI's own model list (ADR-0394) — profile-wide, works on an idle cli too.
+      void listAiModels(ctx.profileDir, payload as unknown as AiModelsRequest).then((reply) =>
+        ctx.send(WsChannels.AI_MODELS, reply, message.id),
+      );
+      return true;
+    }
     case WsChannels.AUTONOMOUS_READ:
       // Request/reply (machine-0028, ADR-0152): settings + status + books + approvals.
       if (ctx.physicRoot) {

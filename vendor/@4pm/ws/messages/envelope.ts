@@ -1315,10 +1315,24 @@ export interface RepoProbeReply {
     spec?: Record<string, unknown> | null;
     /** `project.spec.json` exists but could not be read (bad JSON / too large) — ADR-0393. */
     specError?: string | null;
+    /** `model` of `.claude/settings.json` at `ref` (ADR-0394); null when absent. */
+    settingsModel?: string | null;
   } | null;
   /** Base branch protected on the host (ADR-0371); null = unknown / missing. */
   protected: boolean | null;
   submodules: { subdir: string; url: string; branch: string; exists: boolean; protected: boolean | null; error: string | null }[];
+  error: string | null;
+}
+
+/** ai.models request — server → cli (reply): list the models the worker's AI CLI supports (ADR-0394). */
+export interface AiModelsRequest {
+  provider: "claude" | "codex" | "antigravity";
+}
+
+/** ai.models reply — the CLI's own model list (empty + `error` when it couldn't be read). */
+export interface AiModelsReply {
+  provider: "claude" | "codex" | "antigravity";
+  models: { value: string; resolvedModel: string | null; displayName: string; description: string }[];
   error: string | null;
 }
 

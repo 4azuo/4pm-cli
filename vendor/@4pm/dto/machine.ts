@@ -1211,3 +1211,32 @@ export interface SshDeployKeyResponse {
   /** SHA256 fingerprint of the key, when present. */
   fingerprint: string | null;
 }
+
+/** The AI providers a model list can be asked for (ADR-0394) — mirrors the cli's `AiProvider`. */
+export const AI_MODEL_PROVIDERS = ["claude", "codex", "antigravity"] as const;
+export type AiModelProvider = (typeof AI_MODEL_PROVIDERS)[number];
+
+/** Query of the ai-models endpoints (template-0013 / machine-0071 / project-0082) — provider, default claude. */
+export const aiModelsQuerySchema = z.object({
+  provider: z.enum(AI_MODEL_PROVIDERS).optional().default("claude"),
+});
+export type AiModelsQuery = z.infer<typeof aiModelsQuerySchema>;
+
+/** One model the worker's AI CLI supports (ADR-0394) — `value` is what goes into `--model` / settings. */
+export interface AiModelOption {
+  /** Alias or id the CLI accepts (`default`, `opus`, `claude-opus-5`…). */
+  value: string;
+  /** The concrete model the alias resolves to, when the CLI reports it. */
+  resolvedModel: string | null;
+  /** Human label (`Opus 5.5`). */
+  displayName: string;
+  /** One-line description from the CLI. */
+  description: string;
+}
+
+/** Data of the ai-models endpoints (ADR-0394) — the CLI's own list, `error` when it couldn't be read. */
+export interface AiModelsResponse {
+  provider: AiModelProvider;
+  models: AiModelOption[];
+  error: string | null;
+}
