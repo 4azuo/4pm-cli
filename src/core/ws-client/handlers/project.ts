@@ -150,13 +150,15 @@ export function handleProjectChannels(
     }
     case WsChannels.PROJECT_ADD:
       // Register an existing project: clone/link its repos into <profileDir>/<projectName>
-      // (ADR-0080/0117), no scaffold/AI-init + stream progress.
+      // (ADR-0080/0117), no scaffold/AI-init; a carried spec is written back + pushed (ADR-0393).
       void addProject(
         payload as unknown as ProjectAddPayload,
         ctx.profileDir,
         (p) => ctx.send(WsChannels.PROJECT_PROGRESS, p),
         // An add-with-scaffold runs AI init too (ADR-0362).
         createAiTaskRunner(ctx),
+        // The Add-existing spec push re-applies the job's git-auth (ADR-0368/0393).
+        (method, host) => applyGitAuth(ctx, method, host),
       ).then((reply) => {
         ctx.send(WsChannels.PROJECT_ADD, reply, message.id);
         requestGitSnapshot("provision"); // repos cloned/synced ⇒ report their state (ADR-0369)

@@ -242,12 +242,14 @@ async function gitOut(cwd: string, args: string[]): Promise<string> {
  * pull request; the declared branch IS the base), returning the outcome (ADR-0368). Stage everything,
  * commit (4PM fallback identity; skipped when clean), then `push -u origin <branch>` (`repo.branch`, else
  * HEAD's branch — an orphan branch is created on the remote by this first push). Best-effort: a failure is
- * emitted and recorded, never thrown. Idempotent, so `project.publish` can re-run it.
+ * emitted and recorded, never thrown. Idempotent, so `project.publish` can re-run it. `opts` (ADR-0393):
+ * the Add-existing spec write-back stages only `paths` (never unrelated local changes) with its own message.
  */
 export async function commitAndPush(
   root: string,
   repo: RepoDecl,
   emit: (step: string, message: string) => void,
+  opts: { message?: string; paths?: string[] } = {},
 ): Promise<ScaffoldPublishResult> {
   const result: ScaffoldPublishResult = { committed: false, pushed: false, branch: null, prUrl: null, step: null, error: null };
   const fail = (step: "commit" | "push", error: string): ScaffoldPublishResult => {
@@ -258,10 +260,10 @@ export async function commitAndPush(
 
   emit("commit", "Committing the scaffolded project…");
   try {
-    await run("git", ["add", "-A"], { cwd: root, timeout: 60_000 });
+    await run("git", ["add", ...(opts.paths?.length ? ["--", ...opts.paths] : ["-A"])], { cwd: root, timeout: 60_000 });
     const staged = (await run("git", ["diff", "--cached", "--name-only"], { cwd: root, timeout: 30_000 })).stdout.trim();
     if (staged) {
-      const commitArgs = ["commit", "-m", "chore: scaffold project (4PM)"];
+      const commitArgs = ["commit", "-m", opts.message ?? "chore: scaffold project (4PM)"];
       try {
         await run("git", commitArgs, { cwd: root, timeout: 60_000 });
       } catch {
@@ -786,7 +788,9 @@ async function generateFile(
  * project.add — register an existing project (ADR-0117). Derive the target from the profile
  * (`<profileDir>/<projectName>`, folder = name — ADR-0064/0080; no user-chosen path), then clone the
  * declared repo at the root (ADR-0314). No sample template, no AI init unless `scaffoldRepos` asks —
- * the codebase already exists; the spec is filled later via the Spec tab (ADR-0114). Returns the path.
+ * the codebase already exists. A `spec` without `scaffoldRepos` (the Add-existing wizard, ADR-0393) is
+ * written back as the root's `project.spec.json` and committed + pushed to the declared branch
+ * (best-effort, the outcome returned as `publish`). Returns the path.
  */
 export async function addProject(
   payload: ProjectAddPayload,
@@ -794,6 +798,8 @@ export async function addProject(
   onProgress?: ProgressEmitter,
   // Standard AI run path + org run slot for an add-with-scaffold AI init (ADR-0362).
   ai?: AiTaskRunner,
+  // Re-apply the project's git-auth before the spec push (ADR-0368/0393); absent ⇒ keep the current one.
+  applyGitAuth?: (method: string | null, host: string | null) => void,
 ): Promise<ProjectJobReply> {
   let lastStep = "start";
   const emit = (step: string, message: string): void => {
@@ -805,6 +811,9 @@ export async function addProject(
     const target = join(root, payload.projectName);
     await mkdir(target, { recursive: true });
     const repo = singleRepo((payload.repos ?? []) as RepoDecl[]);
+    // Add-existing spec write-back (ADR-0393): clone + push with the project's CURRENT git-auth.
+    const writeSpec = !!payload.spec && !(payload.scaffoldRepos && payload.scaffoldRepos.length > 0);
+    if (writeSpec && payload.gitAuth !== undefined) applyGitAuth?.(payload.gitAuth ?? null, payload.gitAuthHost ?? null);
     // `mode` (ADR-0292): the provision job sends "sync"/"force" for the on-demand "update repo"
     // action; a plain add (project-0011) omits it ⇒ "clone" (idempotent clone-of-missing).
     const mode: ProvisionMode = payload.mode ?? "clone";
@@ -817,8 +826,15 @@ export async function addProject(
     const outcomes = await attachSubmodules(target, submodulesOf((payload.repos ?? []) as RepoDecl[]), emit, { commit: true });
     const failed = outcomes.filter((x) => !x.ok);
     if (failed.length > 0) throw new Error(failed.map((x) => `submodule ${x.dir}: ${x.error ?? "failed"}`).join("; "));
+    // Write back the wizard's spec (ADR-0393) and publish only that file — never fails the add.
+    let publish: ScaffoldPublishResult | undefined;
+    if (writeSpec && repo) {
+      emit("spec", "Writing project.spec.json…");
+      await writeFile(join(target, "project.spec.json"), JSON.stringify(payload.spec, null, 2), "utf8");
+      publish = await commitAndPush(target, repo, emit, { message: "chore: update project spec (4PM)", paths: ["project.spec.json"] });
+    }
     onProgress?.({ projectId: payload.projectId, step: "done", message: "Project added.", done: true });
-    return { ok: true, path: target };
+    return { ok: true, path: target, ...(publish ? { publish } : {}) };
   } catch (err) {
     // Emit a terminal error frame (ADR-0292) so the web's live progress modal always ends (with a
     // failure), rather than spinning forever when a clone/pull can't complete.

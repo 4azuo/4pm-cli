@@ -914,6 +914,10 @@ export interface RepoProbeResponse {
     overwrite: string[];
     /** 4PM tracking files present at the source (resettable). */
     tracking: string[];
+    /** The parsed `project.spec.json` at `ref` (ADR-0393); null when absent or unreadable. Absent from an older cli. */
+    spec?: Record<string, unknown> | null;
+    /** `project.spec.json` exists but could not be read (bad JSON / too large) — ADR-0393. */
+    specError?: string | null;
   } | null;
   /** The base branch is protected on the host (ADR-0371); null = unknown host / branch missing. */
   protected: boolean | null;
@@ -1081,15 +1085,18 @@ export type CreateFromSpecRequest = z.infer<typeof createFromSpecRequestSchema>;
 
 /**
  * Body POST /projects/add — step 2 (add mode): register an existing project by cloning
- * its repos (project-0011, ADR-0117). No spec/scaffold/AI-init; no manual `path`
+ * its repos (project-0011, ADR-0117). No scaffold/AI-init; no manual `path`
  * (ADR-0080 — the cli derives `<profileDir>/<project-name>` and returns it). Reuses the
  * multi-repo Git declaration (ADR-0073, simplified by ADR-0172): ≥1 repo, exactly one
  * `primary`; every repo carries a clone `url` (https or ssh), enforced by `repoSpecSchema`.
+ * `spec` (ADR-0393) = the primary repo's `project.spec.json` read by the probe, with `repos`
+ * replaced by the Git section's rows — saved to `project.spec` and written back by the cli.
  */
 export const addRepoRequestSchema = z
   .object({
     projectId: z.string().uuid(),
     repos: z.array(repoSpecSchema).min(1),
+    spec: projectSpecSchema,
   })
   .superRefine((v, ctx) => {
     // Same repo rules as create (ADR-0316): ≥1 repo, one primary at the root, unique submodule subdir + url.

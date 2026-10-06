@@ -1311,6 +1311,10 @@ export interface RepoProbeReply {
     keep: string[];
     overwrite: string[];
     tracking: string[];
+    /** The parsed `project.spec.json` at `ref` (ADR-0393); null when absent or unreadable. */
+    spec?: Record<string, unknown> | null;
+    /** `project.spec.json` exists but could not be read (bad JSON / too large) — ADR-0393. */
+    specError?: string | null;
   } | null;
   /** Base branch protected on the host (ADR-0371); null = unknown / missing. */
   protected: boolean | null;
@@ -1421,8 +1425,16 @@ export interface ProjectAddPayload {
    * runs AI-init (needs `spec`). Empty/absent ⇒ clone only (Skip, or a plain re-provision).
    */
   scaffoldRepos?: string[];
-  /** The project spec used to scaffold the `scaffoldRepos` folders (ADR-0299 §4). */
+  /**
+   * The project spec. With `scaffoldRepos`: used to scaffold those folders (ADR-0299 §4). Without
+   * (the Add-existing wizard — ADR-0393): written back as the root's `project.spec.json`, then
+   * committed + pushed to the declared branch. Absent ⇒ clone only (provision).
+   */
   spec?: Record<string, unknown>;
+  /** Add-existing only (ADR-0393): the project's git-auth at dispatch, re-applied before the push (as `ProjectCreatePayload.gitAuth`). */
+  gitAuth?: string | null;
+  /** The GitHub App credential host for `gitAuth = github-app` (mirrors `ws_token.gitAuthHost`). */
+  gitAuthHost?: string | null;
 }
 
 /** The cli's reply for project.create / project.add (cli-ws 0002). */
@@ -1434,7 +1446,7 @@ export interface ProjectJobReply {
   error?: string;
   /** The step that failed when ok=false (ADR-0263) — surfaced on the project as `failedStep`. */
   step?: string;
-  /** project.create only — the commit → push → PR outcome (ADR-0368), stored as `projects.scaffold_publish`. */
+  /** project.create / spec-carrying project.add (ADR-0393) — the commit → push outcome (ADR-0368), stored as `projects.scaffold_publish`. */
   publish?: ScaffoldPublishResult;
 }
 

@@ -2,8 +2,9 @@
  * `repo.probe` (ADR-0370 §4, project-0076) — inspect a repo branch before a project is created, with the
  * worker's own git credentials: does the declared branch exist, which branches the remote has (the
  * "create from" picker), and what the source ref already holds — a 4PM scaffold (template version), the
- * existing files the scaffold keeps / rewrites, and the resettable tracking files. The tree is read with
- * a blobless shallow fetch into a temp repo; only `.4pm/.4pm.json` is downloaded.
+ * existing files the scaffold keeps / rewrites, and the resettable tracking files — plus the source's
+ * `project.spec.json` for the Add-existing wizard (ADR-0393). The tree is read with a blobless shallow
+ * fetch into a temp repo; only `.4pm/.4pm.json` and `project.spec.json` are downloaded (no clone).
  */
 import { execFile } from "node:child_process";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
@@ -19,12 +20,34 @@ const run = promisify(execFile);
 /** Cap on the branch list returned to the wizard. */
 const MAX_BRANCHES = 100;
 /** Files (or folder prefixes, ending `/`) a create always rewrites (ADR-0329 + spec + AI init + marker). */
+/** The spec file read for the Add-existing wizard (ADR-0393), and its size cap. */
+const SPEC_FILE = "project.spec.json";
+const MAX_SPEC_BYTES = 512 * 1024;
 const REWRITTEN = ["project.spec.json", "README.md", "CLAUDE.md", "AGENT.md", ".4pm/.4pm.json", ".claude/settings.json", ".claude/skills/", ".claude/agents/"];
 
 /** Run git; throws with the stderr tail on failure. */
 async function git(args: string[], cwd?: string, timeout = 60_000): Promise<string> {
   const { stdout } = await run("git", args, { cwd, timeout, maxBuffer: 32 * 1024 * 1024 });
   return stdout;
+}
+
+/** Read + parse `project.spec.json` at FETCH_HEAD (ADR-0393); absent ⇒ both null, unreadable ⇒ an error. */
+async function readSourceSpec(
+  tmp: string,
+  files: string[],
+): Promise<{ spec: Record<string, unknown> | null; specError: string | null }> {
+  if (!files.includes(SPEC_FILE)) return { spec: null, specError: null };
+  try {
+    const size = Number((await git(["cat-file", "-s", `FETCH_HEAD:${SPEC_FILE}`], tmp)).trim());
+    if (size > MAX_SPEC_BYTES) return { spec: null, specError: `${SPEC_FILE} is larger than ${MAX_SPEC_BYTES / 1024} KB.` };
+    const parsed = JSON.parse(await git(["show", `FETCH_HEAD:${SPEC_FILE}`], tmp)) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { spec: null, specError: `${SPEC_FILE} is not a JSON object.` };
+    }
+    return { spec: parsed as Record<string, unknown>, specError: null };
+  } catch (err) {
+    return { spec: null, specError: `${SPEC_FILE} could not be read: ${(err as Error).message.split("\n")[0]}` };
+  }
 }
 
 /** The template's top-level entries (what a scaffold copies without overwriting). */
@@ -100,7 +123,11 @@ export async function probeRepo(req: RepoProbeRequest): Promise<RepoProbeReply> 
     const keep = files.filter(
       (f) => template.has(f.split("/")[0] ?? "") && !isRewritten(f) && !(tracking as readonly string[]).includes(f) && !f.endsWith(".gitkeep"),
     );
-    return { ...result, source: { ref, hasScaffold, templateVersion, keep: keep.slice(0, 200), overwrite, tracking: [...tracking] } };
+    const { spec, specError } = await readSourceSpec(tmp, files);
+    return {
+      ...result,
+      source: { ref, hasScaffold, templateVersion, keep: keep.slice(0, 200), overwrite, tracking: [...tracking], spec, specError },
+    };
   } catch (err) {
     const e = err as { stderr?: string; message?: string };
     return { ...empty, error: (e.stderr || e.message || String(err)).trim().split("\n").slice(-2).join(" ").slice(0, 400) };
