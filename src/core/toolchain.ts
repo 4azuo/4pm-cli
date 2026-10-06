@@ -9,9 +9,16 @@
  * Every install is single-flight per tool, logged, and followed by a tools snapshot report. A failure
  * never stops the cli (the tool stays missing; the Tools tab offers Install). `autoInstallTools: false`
  * in config.json turns the automatic installs off (the manual Install still works).
+ * Slow links are expected (a container shares the host's bandwidth with its siblings): downloads use an
+ * **idle** timeout (no bytes for 2 min) instead of a total one, npm gets 30 min, an interrupted npm install's
+ * leftovers are cleaned before a retry, and a failed automatic install backs off (15 min) so a polling page
+ * can't turn it into a retry loop; a failed start-up install is retried in the background (5 → 15 → 30 min).
  */
 import { execFile } from "node:child_process";
-import { chmod, copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { createWriteStream } from "node:fs";
+import { chmod, copyFile, mkdir, mkdtemp, readdir, rename, rm } from "node:fs/promises";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
@@ -26,13 +33,21 @@ const run = promisify(execFile);
 export type SelfInstallTool = "gh" | "glab" | "claude" | "codex";
 /** The release-binary tools (not npm-distributed). */
 const BINARY_TOOLS = new Set<SelfInstallTool>(["gh", "glab"]);
-/** Download + extract budget for one binary release. */
-const DOWNLOAD_TIMEOUT_MS = 180_000;
+/** A download is aborted only after this long without receiving a byte (not a total budget). */
+const DOWNLOAD_IDLE_MS = 120_000;
+/** Total budget for one npm AI-CLI install (claude-code pulls a large native binary). */
+const NPM_INSTALL_TIMEOUT_MS = 30 * 60_000;
+/** After a failed automatic install, don't start another automatic one for this long. */
+const FAIL_BACKOFF_MS = 15 * 60_000;
+/** Background retries of a failed start-up install. */
+const BOOT_RETRY_DELAYS_MS = [5 * 60_000, 15 * 60_000, 30 * 60_000];
 
 /** In-flight installs, so concurrent callers share one run per tool. */
 const inFlight = new Map<SelfInstallTool, Promise<boolean>>();
 /** Tools known present this process (skips re-probing on every AI run). */
 const present = new Set<SelfInstallTool>();
+/** The last failed install per tool (backs off automatic retries; surfaced by `ai.models`). */
+const lastFailure = new Map<SelfInstallTool, { at: number; error: string }>();
 /** Called after a successful install so the new snapshot reaches the server (set by `start`). */
 let reporter: (() => void) | null = null;
 
@@ -113,16 +128,36 @@ async function findFile(dir: string, name: string): Promise<string | null> {
   return null;
 }
 
+/** Stream `url` into `dest`, aborting only when no byte arrives for `DOWNLOAD_IDLE_MS`. */
+async function downloadTo(url: string, dest: string): Promise<void> {
+  const ctrl = new AbortController();
+  let idle = setTimeout(() => ctrl.abort(), DOWNLOAD_IDLE_MS);
+  const bump = (): void => {
+    clearTimeout(idle);
+    idle = setTimeout(() => ctrl.abort(), DOWNLOAD_IDLE_MS);
+  };
+  try {
+    const res = await fetch(url, { headers: { "user-agent": "4pm-cli" }, signal: ctrl.signal });
+    if (!res.ok || !res.body) throw new Error(`Download failed: HTTP ${res.status}`);
+    const body = Readable.fromWeb(res.body as unknown as import("node:stream/web").ReadableStream);
+    body.on("data", bump);
+    await pipeline(body, createWriteStream(dest));
+  } catch (err) {
+    if (ctrl.signal.aborted) throw new Error(`Download stalled (no data for ${DOWNLOAD_IDLE_MS / 1000}s).`);
+    throw err;
+  } finally {
+    clearTimeout(idle);
+  }
+}
+
 /** Download the latest `tool` release, extract its binary into the tool dir. Throws on any failure. */
 async function installReleaseBinary(tool: "gh" | "glab", onLine: (line: string) => void): Promise<void> {
   const url = await releaseUrl(tool);
   onLine(`Downloading ${url}…`);
-  const res = await fetch(url, { headers: { "user-agent": "4pm-cli" }, signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
-  if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
   const tmp = await mkdtemp(join(tmpdir(), `4pm-${tool}-`));
   try {
     const archive = join(tmp, url.endsWith(".zip") ? "pkg.zip" : "pkg.tar.gz");
-    await writeFile(archive, Buffer.from(await res.arrayBuffer()));
+    await downloadTo(url, archive);
     const out = join(tmp, "x");
     await mkdir(out);
     // `tar` reads both .tar.gz and (bsdtar on macOS/Windows) .zip.
@@ -132,35 +167,76 @@ async function installReleaseBinary(tool: "gh" | "glab", onLine: (line: string) 
     if (!bin) throw new Error(`${binName} not found in the archive.`);
     await mkdir(toolBinDir(), { recursive: true });
     const dest = join(toolBinDir(), binName);
-    await copyFile(bin, dest);
-    await chmod(dest, 0o755);
+    // Copy then rename, so a running copy of the old binary is replaced atomically ("text file busy").
+    await copyFile(bin, `${dest}.new`);
+    await chmod(`${dest}.new`, 0o755);
+    await rename(`${dest}.new`, dest);
     onLine(`Installed ${tool} → ${dest}`);
   } finally {
     await rm(tmp, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
+/** The global npm `node_modules` dir (`npm root -g`), or null when npm can't tell. */
+async function npmGlobalRoot(): Promise<string | null> {
+  try {
+    const { stdout } = await run("npm", ["root", "-g"], { timeout: 30_000 });
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Remove what an interrupted `npm i -g <pkg>` leaves behind — the half-written package dir and npm's
+ * `.<name>-XXXX` rename temp — which otherwise fails every later install with `ENOTEMPTY`.
+ */
+async function cleanNpmLeftovers(pkg: string, onLine: (line: string) => void): Promise<void> {
+  const root = await npmGlobalRoot();
+  if (!root) return;
+  const [scope, name] = pkg.startsWith("@") ? pkg.split("/") : ["", pkg];
+  const parent = scope ? join(root, scope) : root;
+  const entries = await readdir(parent).catch(() => [] as string[]);
+  for (const e of entries) {
+    if (e === name || e.startsWith(`.${name}-`)) {
+      onLine(`Cleaning a leftover ${join(parent, e)}…`);
+      await rm(join(parent, e), { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+}
+
+/** `npm i -g` an AI CLI with a long budget; on a timeout / ENOTEMPTY, clean the leftovers and retry once. */
+async function installNpmTool(tool: SelfInstallTool, onLine: (line: string) => void): Promise<void> {
+  const pkg = WORKER_TOOL_CATALOG.find((t) => t.id === tool)?.installPackage ?? tool;
+  let res = await runWorkerToolOp("install", tool, "npm", onLine, NPM_INSTALL_TIMEOUT_MS);
+  if (!res.ok && /ENOTEMPTY|exited 124|EEXIST/i.test(res.error ?? "")) {
+    await cleanNpmLeftovers(pkg, onLine);
+    onLine(`Retrying ${pkg}…`);
+    res = await runWorkerToolOp("install", tool, "npm", onLine, NPM_INSTALL_TIMEOUT_MS);
+  }
+  if (!res.ok) throw new Error(res.error ?? "npm install failed");
+}
+
 /**
  * Install `tool` now (single-flight) — release binary for gh/glab, `npm i -g` for claude/codex. Resolves
- * true on success; never throws (a failure is logged and reported through `onLine`).
+ * true on success; never throws (a failure is logged, recorded for the back-off, and sent to `onLine`).
+ * A manual Install (Tools tab) calls this directly, so it is never held back by the back-off.
  */
 export function installTool(tool: SelfInstallTool, onLine: (line: string) => void = () => undefined): Promise<boolean> {
   const running = inFlight.get(tool);
   if (running) return running;
   const job = (async (): Promise<boolean> => {
     try {
-      if (BINARY_TOOLS.has(tool)) {
-        await installReleaseBinary(tool as "gh" | "glab", onLine);
-      } else {
-        const res = await runWorkerToolOp("install", tool, "npm", onLine);
-        if (!res.ok) throw new Error(res.error ?? "npm install failed");
-      }
+      if (BINARY_TOOLS.has(tool)) await installReleaseBinary(tool as "gh" | "glab", onLine);
+      else await installNpmTool(tool, onLine);
       present.add(tool);
+      lastFailure.delete(tool);
       logger.info("toolchain.installed", { tool });
       reporter?.();
       return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      lastFailure.set(tool, { at: Date.now(), error: msg });
       onLine(`✗ ${tool}: ${msg}`);
       logger.warn("toolchain.install.failed", { tool, error: msg });
       return false;
@@ -170,6 +246,24 @@ export function installTool(tool: SelfInstallTool, onLine: (line: string) => voi
   })();
   inFlight.set(tool, job);
   return job;
+}
+
+/** The last install failure of `tool` while its back-off is active, else null. */
+export function recentInstallFailure(tool: SelfInstallTool): string | null {
+  const f = lastFailure.get(tool);
+  return f && Date.now() - f.at < FAIL_BACKOFF_MS ? f.error : null;
+}
+
+/**
+ * Start an automatic install of a tool already known missing, unless one is running, auto-install is off,
+ * or the last attempt failed recently (back-off). Returns whether an install is running afterwards — sync,
+ * so `ai.models` can report `installing` truthfully.
+ */
+export function kickInstall(profileDir: string, tool: SelfInstallTool, onLine: (line: string) => void = () => undefined): boolean {
+  if (inFlight.has(tool)) return true;
+  if (!autoInstallOn(profileDir) || recentInstallFailure(tool)) return false;
+  void installTool(tool, onLine);
+  return true;
 }
 
 /** Whether `tool` is on PATH now (cached once found). */
@@ -193,7 +287,9 @@ function autoInstallOn(profileDir: string): boolean {
 /** Install `tool` when missing (and auto-install is on); resolves whether it is present afterwards. */
 export async function ensureTool(profileDir: string, tool: SelfInstallTool, onLine: (line: string) => void = () => undefined): Promise<boolean> {
   if (await hasTool(tool)) return true;
-  if (!autoInstallOn(profileDir)) return false;
+  const running = inFlight.get(tool);
+  if (running) return running;
+  if (!autoInstallOn(profileDir) || recentInstallFailure(tool)) return false;
   onLine(`${tool} is not installed — installing it…`);
   return installTool(tool, onLine);
 }
@@ -222,9 +318,27 @@ function usedAiTools(profileDir: string): SelfInstallTool[] {
  */
 export async function ensureToolchainAtBoot(profileDir: string, onLine: (line: string) => void): Promise<void> {
   if (!autoInstallOn(profileDir)) return;
-  for (const tool of ["gh", "glab", ...usedAiTools(profileDir)] as SelfInstallTool[]) {
-    await ensureTool(profileDir, tool, onLine).catch(() => false);
-  }
+  const tools = ["gh", "glab", ...usedAiTools(profileDir)] as SelfInstallTool[];
+  const failed: SelfInstallTool[] = [];
+  for (const tool of tools) if (!(await ensureTool(profileDir, tool, onLine).catch(() => false))) failed.push(tool);
+  if (failed.length > 0) scheduleBootRetry(profileDir, failed, onLine, 0);
+}
+
+/** Retry the start-up installs that failed, on a widening schedule (timers never keep the process alive). */
+function scheduleBootRetry(profileDir: string, tools: SelfInstallTool[], onLine: (line: string) => void, attempt: number): void {
+  const delay = BOOT_RETRY_DELAYS_MS[attempt];
+  if (delay === undefined) return;
+  const timer = setTimeout(() => {
+    void (async () => {
+      const still: SelfInstallTool[] = [];
+      for (const tool of tools) {
+        if (await hasTool(tool)) continue;
+        if (!(await installTool(tool, onLine))) still.push(tool);
+      }
+      if (still.length > 0) scheduleBootRetry(profileDir, still, onLine, attempt + 1);
+    })();
+  }, delay);
+  timer.unref?.();
 }
 
 /** On-use (ADR-0396): before an AI run, install the missing AI CLIs among the plan's commands. */
