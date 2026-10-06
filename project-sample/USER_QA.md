@@ -16,4 +16,3 @@
 
 | ID | Group | Depends | Original request | Question / options | Answer |
 |----|-------|---------|------------------|--------------------|--------|
-| | | | | | |

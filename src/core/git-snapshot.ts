@@ -77,6 +77,20 @@ function parseStatus(out: string): { dirty: GitRepoSnapshot["dirty"]; files: Git
   return { dirty, files };
 }
 
+/** Stamp each dirty file with its mtime (ISO; null when deleted/unreadable) — when/who in the UI (ADR-0397). */
+async function withMtimes(dir: string, files: GitFileChange[]): Promise<GitFileChange[]> {
+  return Promise.all(
+    files.map(async (f) => {
+      if (f.status === "D") return { ...f, mtime: null };
+      try {
+        return { ...f, mtime: (await stat(join(dir, f.path))).mtime.toISOString() };
+      } catch {
+        return { ...f, mtime: null };
+      }
+    }),
+  );
+}
+
 /** Parse `--format=<RS>%H<US>%P<US>%an<US>%aI<US>%s` (+ optional `--name-status` lines) records. */
 function parseLog(out: string, withFiles: boolean): (GitSnapshotCommit & { files: GitFileChange[] })[] {
   const commits: (GitSnapshotCommit & { files: GitFileChange[] })[] = [];
@@ -162,7 +176,7 @@ export async function buildRepoSnapshot(dir: string, subdir: string): Promise<Gi
     branches,
     remote: { name: "origin", defaultBranch, branches: remoteBranches },
     dirty,
-    dirtyFiles: files.slice(0, L.dirtyFiles),
+    dirtyFiles: await withMtimes(dir, files.slice(0, L.dirtyFiles)),
     dirtyTruncated: files.length > L.dirtyFiles,
     localCommits,
     localTruncated: localAll.length > L.localCommits,

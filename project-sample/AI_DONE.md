@@ -8,10 +8,8 @@
 
 | Timestamp | ID | Task description | Files | Notes |
 |-----------|----|------------------|-------|-------|
-| | | | | |
 
 ## Incidents / notes
 
 | Timestamp | Note |
 |-----------|------|
-| | |

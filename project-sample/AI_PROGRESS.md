@@ -9,4 +9,3 @@
 
 | Started | ID | Worker | Claim | Attempt | Task description |
 |---|---|---|---|---|---|
-| | | | | | |

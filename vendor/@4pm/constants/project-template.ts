@@ -38,8 +38,30 @@ export interface ProjectTemplate {
 
 /** The authoritative scaffold-template version + changelog (ADR-0262). */
 export const PROJECT_TEMPLATE: ProjectTemplate = {
-  version: "1.1.1",
+  version: "1.1.2",
   changelog: [
+    {
+      version: "1.1.2",
+      date: "2026-10-07",
+      summary: "Empty autonomous book tables no longer carry a blank placeholder row.",
+      notes: [
+        "USER_TODO.md, USER_QA.md, AI_TODO.md, AI_PROGRESS.md and AI_DONE.md (both tables) start as header + separator only; the `| | … |` placeholder row is gone.",
+        "Delete any all-blank row left in these books — it showed as an empty, un-deletable row in the web grid.",
+      ],
+      files: [
+        "USER_TODO.md",
+        "USER_QA.md",
+        "AI_TODO.md",
+        "AI_PROGRESS.md",
+        "AI_DONE.md",
+        ".claude/templates/USER_TODO.empty.md",
+        ".claude/templates/USER_QA.empty.md",
+        ".claude/templates/AI_TODO.empty.md",
+        ".claude/templates/AI_PROGRESS.empty.md",
+        ".claude/templates/AI_DONE.empty.md",
+      ],
+      skippable: true,
+    },
     {
       version: "1.1.1",
       date: "2026-10-06",

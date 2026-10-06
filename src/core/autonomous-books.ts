@@ -53,12 +53,12 @@ export function findTables(md: string): MdTable[] {
   return out;
 }
 
-/** Replace a table's data rows (an empty list keeps one blank row, like the templates). */
+/** Replace a table's data rows (an empty list leaves header + separator only, like the templates). */
 export function replaceRows(md: string, table: MdTable, rows: string[][]): string {
   const lines = md.split("\n");
   const width = table.header.length;
   const sep = `|${table.header.map(() => "---").join("|")}|`;
-  const body = (rows.length ? rows : [table.header.map(() => "")]).map(
+  const body = rows.map(
     (r) => `| ${Array.from({ length: width }, (_, k) => cell(r[k] ?? "")).join(" | ")} |`,
   );
   const head = `| ${table.header.join(" | ")} |`;

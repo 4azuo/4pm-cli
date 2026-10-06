@@ -16,6 +16,8 @@ export const GIT_SNAPSHOT_LIMITS = {
 export interface GitFileChange {
   status: string;
   path: string;
+  /** A working-tree file's last modification (ISO); null when deleted, absent from an older cli (ADR-0397). */
+  mtime?: string | null;
 }
 
 /** A commit as carried by a snapshot / the origin window. */
@@ -133,4 +135,29 @@ export interface GitOverviewRepo {
 /** project-0075 response `data`. */
 export interface GitOverviewResponse {
   repos: GitOverviewRepo[];
+}
+
+/** One changed file of an origin commit (project-0083): status letter (A/M/D/R/C) + path (+ the old path). */
+export interface GitOriginCommitFile {
+  status: string;
+  path: string;
+  /** The old path of a rename/copy, else null. */
+  from: string | null;
+}
+
+/** project-0083 response `data` — an origin commit's changed files (ADR-0397). */
+export interface GitCommitFilesResponse {
+  files: GitOriginCommitFile[];
+  /** GitHub lists at most 300 files per commit. */
+  truncated: boolean;
+}
+
+/** project-0084 response `data` — one file of an origin commit, first parent ↔ commit (ADR-0397). */
+export interface GitCommitDiffResponse {
+  original: string;
+  modified: string;
+  /** Either side is binary — both texts are then empty. */
+  binary: boolean;
+  /** Either side exceeds the 1 MB contents limit — both texts are then empty. */
+  tooLarge: boolean;
 }

@@ -306,6 +306,8 @@ export const ErrorCode = {
   GIT_CREDENTIAL_INVALID: "GIT_CREDENTIAL_INVALID",
   GIT_AUTH_REQUIRES_HTTPS: "GIT_AUTH_REQUIRES_HTTPS",
   GIT_HOST_MISMATCH: "GIT_HOST_MISMATCH",
+  /** An origin commit cannot be read server-side (no GitHub App / not GitHub / GitHub refused) — project-0083/0084, ADR-0397. */
+  GIT_ORIGIN_UNAVAILABLE: "GIT_ORIGIN_UNAVAILABLE",
   SECRETS_KEY_NOT_CONFIGURED: "SECRETS_KEY_NOT_CONFIGURED",
   // Org announcements (ADR-0367): a target outside the sender's PM/TL scope; targets resolving to
   // nobody; the org's daily recipient cap (`announcementDailyRecipients`); unknown history row /
