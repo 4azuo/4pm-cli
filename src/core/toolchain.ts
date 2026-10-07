@@ -143,7 +143,7 @@ async function downloadTo(url: string, dest: string): Promise<void> {
     body.on("data", bump);
     await pipeline(body, createWriteStream(dest));
   } catch (err) {
-    if (ctrl.signal.aborted) throw new Error(`Download stalled (no data for ${DOWNLOAD_IDLE_MS / 1000}s).`);
+    if (ctrl.signal.aborted) throw new Error(`Download stalled (no data for ${DOWNLOAD_IDLE_MS / 1000}s).`, { cause: err });
     throw err;
   } finally {
     clearTimeout(idle);

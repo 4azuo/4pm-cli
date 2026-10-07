@@ -89,7 +89,6 @@ export async function acquireRunSlot(
   const startedAt = Date.now();
   let ticket: string | undefined;
   let lastPosition = -1;
-  let limit = 0;
   for (;;) {
     if (signal?.aborted) return leaveQueue(ctx, ticket);
     let reply: RunSlotReply;
@@ -112,7 +111,7 @@ export async function acquireRunSlot(
     // Refused outright — no queue (ADR-0365).
     if ("denied" in reply) return { kind: "denied", reason: reply.denied };
     ticket = reply.ticket;
-    limit = reply.limit;
+    const limit = reply.limit;
     if (reply.position !== lastPosition) {
       lastPosition = reply.position;
       onQueued({ position: reply.position, limit: reply.limit, running: reply.running });

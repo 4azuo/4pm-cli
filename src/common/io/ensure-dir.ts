@@ -41,6 +41,7 @@ export function ensureDir(dir: string, mode?: number): void {
           `    -v <volume>:/home/node/.4pm ${CLI_IMAGE} -R node:node /home/node/.4pm\n` +
           `(host bind-mount: run \`sudo chown -R 1000:1000 <host-path>\` on the host instead;` +
           ` a FRESH named volume needs none of this.)`,
+        { cause: err },
       );
     }
     throw err;

@@ -96,7 +96,6 @@ function wrapToWidth(text: string, width: number): string[] {
     if (word.length > width) {
       if (line) {
         rows.push(line);
-        line = "";
       }
       for (let i = 0; i < word.length; i += width) rows.push(word.slice(i, i + width));
       line = rows.pop() ?? ""; // keep the remainder open so the next word can append

@@ -99,7 +99,7 @@ export async function ragStatus(root: string): Promise<RagStatusReply> {
       ])
     : [false, false, false];
   // Machine specs (best-effort).
-  let diskFreeGB = 0;
+  let diskFreeGB: number;
   try {
     const s = await statfs(root);
     diskFreeGB = Math.round(((s.bavail * s.bsize) / 1e9) * 10) / 10;
@@ -114,7 +114,7 @@ export async function ragStatus(root: string): Promise<RagStatusReply> {
     gpu,
   };
   // Installed = deps present + a model marker written by a successful install.
-  let modelName = "";
+  let modelName: string;
   try {
     modelName = (await readFile(join(root, RAG_REL, ".installed"), "utf8")).trim();
   } catch {

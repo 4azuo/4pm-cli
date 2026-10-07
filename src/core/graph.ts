@@ -62,7 +62,7 @@ async function buildDocs(root: string): Promise<GraphBuildReply> {
   const seen = new Set<string>();
   for (const f of files) {
     const rel = relative(root, f).split("\\").join("/");
-    let text = "";
+    let text: string;
     try {
       text = await readFile(f, "utf8");
     } catch {
@@ -109,7 +109,7 @@ async function buildCode(root: string): Promise<GraphBuildReply> {
   for (const f of files) {
     if (nodes.length >= MAX_NODES) break;
     const rel = relative(root, f).split("\\").join("/");
-    let text = "";
+    let text: string;
     try {
       text = await readFile(f, "utf8");
     } catch {

@@ -131,11 +131,11 @@ function updateViaNpm(version: string): void {
   } catch (err) {
     const e = err as { stderr?: string | Buffer | null; stdout?: string | Buffer | null; killed?: boolean; message?: string };
     if (e.killed) {
-      throw new Error(`npm install timed out after ${NPM_INSTALL_TIMEOUT_MS / 1000}s (\`npm i -g @4pm/cli@${version}\`).`);
+      throw new Error(`npm install timed out after ${NPM_INSTALL_TIMEOUT_MS / 1000}s (\`npm i -g @4pm/cli@${version}\`).`, { cause: err });
     }
     const out = `${e.stderr?.toString() ?? ""}\n${e.stdout?.toString() ?? ""}`;
     const reason = tailReason(out) || e.message || "npm install failed";
-    throw new Error(`npm install failed: ${reason}`);
+    throw new Error(`npm install failed: ${reason}`, { cause: err });
   }
 }
 
@@ -162,6 +162,7 @@ async function updateViaDownload(
       controller.signal.aborted
         ? `Downloading the update tarball timed out after ${DOWNLOAD_TIMEOUT_MS / 1000}s.`
         : `Failed to download tarball: ${String(err)}`,
+      { cause: err },
     );
   } finally {
     clearTimeout(timer);
@@ -203,7 +204,7 @@ async function updateViaDownload(
   try {
     await extract({ file: tmp, cwd: installRoot, strip: 1 });
   } catch (err) {
-    throw new Error(`Failed to extract the update tarball into ${installRoot}: ${String(err)}`);
+    throw new Error(`Failed to extract the update tarball into ${installRoot}: ${String(err)}`, { cause: err });
   }
 }
 

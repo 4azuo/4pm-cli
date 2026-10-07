@@ -49,7 +49,7 @@ export async function git(cwd: string, args: string[], timeout = 120_000): Promi
     return stdout;
   } catch (err) {
     const e = err as { stderr?: string; message?: string };
-    throw new Error((e.stderr || e.message || String(err)).trim().split("\n").slice(-3).join(" "));
+    throw new Error((e.stderr || e.message || String(err)).trim().split("\n").slice(-3).join(" "), { cause: err });
   }
 }
 
