@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { ATTEMPTS_REL } from "./autonomous-books";
 import { openPullRequest, prStateOf } from "./git-host";
+import { attachSubmoduleBranches } from "./submodule-branch";
 
 const run = promisify(execFile);
 
@@ -131,6 +132,7 @@ export async function syncBase(root: string, base: string): Promise<void> {
   if (await hasRemoteBranch(root, base)) await git(root, ["checkout", "-q", "-B", base, `origin/${base}`]);
   else await git(root, ["checkout", "-q", base]);
   await gitQuiet(root, ["submodule", "update", "--init", "-q"], 300_000);
+  await attachSubmoduleBranches(root);
 }
 
 /** Outcome of a books publish. */

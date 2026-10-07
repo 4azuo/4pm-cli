@@ -25,6 +25,7 @@ import { PROJECT_TEMPLATE, type AiGuideFile } from "@4pm/constants";
 import { SCAFFOLD_TRACKING_FILES } from "@4pm/dto";
 import type { AiTaskRunner } from "./ai-task";
 import { resolveCliPrompt } from "./prompt-overrides";
+import { attachSubmoduleBranches } from "./submodule-branch";
 
 const run = promisify(execFile);
 
@@ -156,6 +157,8 @@ async function attachSubmodules(
       if (await isRegisteredSubmodule(root, dir)) {
         emit("submodule", `Submodule ${dir} already registered — updating…`);
         await run("git", ["submodule", "update", "--init", "--", dir], { cwd: root, timeout: 120_000 });
+        // `update --init` leaves a detached HEAD — name it after the declared branch when HEAD is its tip.
+        await attachSubmoduleBranches(root, [dir]);
         outcomes.push({ dir, ok: true, error: null });
         continue;
       }
