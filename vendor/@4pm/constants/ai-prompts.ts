@@ -313,6 +313,33 @@ const PROMPT_META: PromptMeta[] = [
     requiredVars: ["entries", "question"],
   },
   {
+    key: "web.bookGenerate.aiTodo",
+    ownerApp: "web",
+    phase: 2,
+    title: "AI generate — AI_TODO tasks",
+    description:
+      "Read-only: drafts AI_TODO engineering tasks from the user's description (ADR-0408). Keep the JSON array output shape ({key, priority, group, depends, description, notes}).",
+    requiredVars: ["entries", "description"],
+  },
+  {
+    key: "web.bookGenerate.userTodo",
+    ownerApp: "web",
+    phase: 2,
+    title: "AI generate — USER_TODO requests",
+    description:
+      "Read-only: drafts USER_TODO requests from the user's description (ADR-0408). Keep the JSON array output shape ({key, group, depends, request}).",
+    requiredVars: ["entries", "description"],
+  },
+  {
+    key: "web.bookGenerate.userQa",
+    ownerApp: "web",
+    phase: 2,
+    title: "AI generate — USER_QA questions",
+    description:
+      "Read-only: drafts USER_QA questions from the user's description (ADR-0408). Keep the JSON array output shape ({key, group, depends, original, question}).",
+    requiredVars: ["entries", "description"],
+  },
+  {
     key: "web.git.resolve",
     ownerApp: "web",
     phase: 2,

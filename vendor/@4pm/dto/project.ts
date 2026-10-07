@@ -777,6 +777,55 @@ export interface TemplateUpdateResult {
   pullRequestCheckedAt?: string | null;
 }
 
+/** The parsed outcome of a template Update run (ADR-0271) — drives the panel's success/warning/error. */
+export interface TemplateUpdateParsed {
+  status: TemplateUpdateStatus;
+  pullRequestId: string | null;
+  pullRequestUrl: string | null;
+  branch: string | null;
+  message: string | null;
+}
+
+/** Coerce an unknown JSON value to a trimmed non-empty string, else null. */
+function asTrimmedStr(v: unknown): string | null {
+  if (typeof v === "string") return v.trim() || null;
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  return null;
+}
+
+/**
+ * Parse the Update agent's fenced-JSON result (ADR-0271) into a resolved status. Success requires the
+ * agent to report `status:"success"` AND a real `pullRequestId`; a reported `failed` maps to `failed`;
+ * anything else (blocked, success without a PR id, or no parseable JSON) maps to `warning` — so the
+ * panel only ever shows "Update complete" when a PR was genuinely created. Shared by the web (on run
+ * completion) and the server's `template-update` result sink (ADR-0407).
+ */
+export function parseTemplateUpdateResult(out: string): TemplateUpdateParsed {
+  const start = out.indexOf("{");
+  const end = out.lastIndexOf("}");
+  let obj: Record<string, unknown> | null = null;
+  if (start >= 0 && end > start) {
+    try {
+      obj = JSON.parse(out.slice(start, end + 1)) as Record<string, unknown>;
+    } catch {
+      obj = null;
+    }
+  }
+  if (!obj) {
+    return { status: "warning", pullRequestId: null, pullRequestUrl: null, branch: null, message: null };
+  }
+  const pullRequestId = asTrimmedStr(obj.pullRequestId);
+  const pullRequestUrl = asTrimmedStr(obj.pullRequestUrl);
+  const branch = asTrimmedStr(obj.branch);
+  const message = asTrimmedStr(obj.message);
+  const reported = asTrimmedStr(obj.status);
+  let status: TemplateUpdateStatus;
+  if (reported === "success" && pullRequestId) status = "success";
+  else if (reported === "failed") status = "failed";
+  else status = "warning";
+  return { status, pullRequestId, pullRequestUrl, branch, message };
+}
+
 /** Data GET /projects/:id/template/analysis (project-0057) — the saved report, or null when none. */
 export interface ProjectTemplateAnalysisResponse {
   analysis: TemplateAnalysis | null;

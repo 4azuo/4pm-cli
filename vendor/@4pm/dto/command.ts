@@ -97,6 +97,18 @@ export const aiRunConfigSchema = z.object({
 });
 export type AiRunConfig = z.infer<typeof aiRunConfigSchema>;
 
+/**
+ * A dispatch's server-side result sink (ADR-0407). `template-update` carries the version pair and
+ * custom instruction the saved `TemplateUpdateResult` records.
+ */
+export const commandResultSinkSchema = z.object({
+  kind: z.literal("template-update"),
+  fromVersion: z.string().max(64).nullable(),
+  toVersion: z.string().min(1).max(64),
+  instruction: z.string().nullable(),
+});
+export type CommandResultSink = z.infer<typeof commandResultSinkSchema>;
+
 /** Body POST /commands — dispatch a command to the project's cli. */
 export const dispatchCommandRequestSchema = z
   .object({
@@ -179,6 +191,13 @@ export const dispatchCommandRequestSchema = z
      * explicit `machineLinkId`.
      */
     job: z.enum(AI_JOBS as [AiJob, ...AiJob[]]).optional(),
+    /**
+     * Server-side result sink (ADR-0407): when the command finishes (`done`, not cancelled) the server
+     * hands its transcript to the sink of this `kind` — `template-update` parses the Update agent's
+     * result and saves `Project.templateUpdate`, so the result is kept even when no tab re-attaches.
+     * Requires `ai:true`.
+     */
+    resultSink: commandResultSinkSchema.optional(),
   })
   // A plain executable command stays tightly capped; only AI prompts may be large.
   .superRefine((v, ctx) => {
@@ -203,6 +222,13 @@ export const dispatchCommandRequestSchema = z
         code: z.ZodIssueCode.custom,
         path: ["aiBypass"],
         message: "aiBypass is mutually exclusive with aiOneShot and aiReadOnly.",
+      });
+    }
+    if (v.resultSink && !v.ai) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["resultSink"],
+        message: "resultSink requires ai:true.",
       });
     }
     if (!v.ai && v.command.length > COMMAND_MAX_LEN) {
