@@ -18,5 +18,5 @@ export function runTui(bus: SessionBus, info: SessionInfo): Promise<void> {
   // ESC[2J clear screen · ESC[3J clear scrollback · ESC[H home cursor.
   process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
   const instance = render(<App bus={bus} info={info} />);
-  return instance.waitUntilExit();
+  return instance.waitUntilExit().then(() => undefined);
 }

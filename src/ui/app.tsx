@@ -37,7 +37,8 @@ function Rule({ width }: { width: number }): React.ReactElement {
 
 /** Track the terminal size, updating on resize. */
 function useTerminalSize(): { rows: number; cols: number } {
-  const { stdout } = useStdout();
+  // ink 8 types stdout as a generic stream; at runtime it is the TTY (rows/columns + "resize").
+  const stdout = useStdout().stdout as NodeJS.WriteStream;
   const [size, setSize] = useState({ rows: stdout.rows || 24, cols: stdout.columns || 80 });
   useEffect(() => {
     const onResize = (): void => setSize({ rows: stdout.rows || 24, cols: stdout.columns || 80 });
