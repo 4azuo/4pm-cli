@@ -140,6 +140,8 @@ export const ErrorCode = {
   LINK_REVOKED: "LINK_REVOKED",
   LINK_NOT_FOUND: "LINK_NOT_FOUND",
   WORKER_OFFLINE: "WORKER_OFFLINE",
+  // Two AI profiles in a worker config name the same profile dir (ADR-0409).
+  PROFILE_DIR_DUPLICATE: "PROFILE_DIR_DUPLICATE",
   // command-0001 pick:"idle" (ADR-0171) — no idle cli in the project's pool
   ALL_CLIS_BUSY: "ALL_CLIS_BUSY",
   // worker pools (ADR-0284)

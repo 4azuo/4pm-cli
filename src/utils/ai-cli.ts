@@ -11,7 +11,8 @@
  */
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
+import { logger } from "../common/logger/logger";
 import { denySettingsArgs } from "./agent-deny";
 
 /**
@@ -199,6 +200,30 @@ export interface AiCredential extends AiProfile {
 /** A profile is usable when it has a non-blank dir and isn't explicitly disabled (ADR-0180). */
 function isUsableProfile(p: AiProfile): boolean {
   return p.enabled !== false && Boolean(p.profile && p.profile.trim());
+}
+
+/** Resolved dirs already reported as duplicated — so the per-prompt plan warns once per dir. */
+const warnedDuplicateDirs = new Set<string>();
+
+/**
+ * Keep the first entry per resolved profile dir and drop the rest (ADR-0409): two profiles sharing a
+ * dir are one account (same credential key / session state), so a duplicate only repeats a failover
+ * attempt. Covers configs edited on the machine, which the web/server checks never see.
+ */
+export function dropDuplicateDirs<T extends AiProfile>(profiles: T[]): T[] {
+  const seen = new Set<string>();
+  return profiles.filter((p) => {
+    const dir = resolve(resolveHomePath(p.profile.trim()));
+    if (!seen.has(dir)) {
+      seen.add(dir);
+      return true;
+    }
+    if (!warnedDuplicateDirs.has(dir)) {
+      warnedDuplicateDirs.add(dir);
+      logger.warn("ai.profile.duplicateDir", { dir });
+    }
+    return false;
+  });
 }
 
 /** A credential is usable when it is a usable profile AND names a known provider (ADR-0182). */
@@ -670,7 +695,8 @@ function planUnifiedRun(
   const baseEnv = config.aiEnv ?? {};
   // Scope to the pinned provider unless "—" (mixed) is selected (ADR-0197).
   const active = activeProvider(config);
-  const usable = config.aiProfiles!.filter(isUsableCredential);
+  // Duplicate dirs collapse to the first entry across all providers, before scoping (ADR-0409).
+  const usable = dropDuplicateDirs(config.aiProfiles!.filter(isUsableCredential));
   const scoped = active ? usable.filter((c) => c.provider === active) : usable;
   // Pinned provider with no usable credential ⇒ a single default attempt on its own default env
   // (mirrors the legacy no-profile fallback in planLegacyRun — never silently spills to another CLI).
@@ -734,8 +760,7 @@ function planLegacyRun(
   if (!envVar) return defaultPlan;
 
   // Resolve each configured profile to its home dir (dropping blank/disabled entries — ADR-0180).
-  const resolved = profilesFor(config, cmd)
-    .filter(isUsableProfile)
+  const resolved = dropDuplicateDirs(profilesFor(config, cmd).filter(isUsableProfile))
     .map((p) => ({ profile: p, dir: resolveHomePath(p.profile) }));
   if (resolved.length === 0) return defaultPlan;
 
