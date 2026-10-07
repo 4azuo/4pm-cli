@@ -331,7 +331,7 @@ export interface ContactChangeStatusResponse {
  * non-project pages). Doubles as the session keepalive (ADR-0098).
  */
 export const activityHeartbeatSchema = z.object({
-  projectId: z.string().uuid().optional(),
+  projectId: z.string().guid().optional(),
   /** ADR-0342 — the client is idle (5 min no input · tab hidden) ⇒ presence `idle`. */
   idle: z.boolean().optional(),
 });
@@ -349,7 +349,7 @@ export const userCardsQuerySchema = z.object({
   ids: z
     .string()
     .transform((v) => [...new Set(v.split(",").map((s) => s.trim()).filter(Boolean))])
-    .pipe(z.array(z.string().uuid()).min(1).max(USER_CARDS_MAX_IDS)),
+    .pipe(z.array(z.string().guid()).min(1).max(USER_CARDS_MAX_IDS)),
 });
 export type UserCardsQuery = z.infer<typeof userCardsQuerySchema>;
 

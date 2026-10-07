@@ -207,6 +207,6 @@ export function githubApiBase(host: string, override?: string | null): string {
 
 /** Body — POST /projects/:id/scaffold/publish (project-0074, ADR-0368): optionally pick the worker. */
 export const scaffoldPublishRequestSchema = z.object({
-  machineLinkId: z.string().uuid().optional(),
+  machineLinkId: z.string().guid().optional(),
 });
 export type ScaffoldPublishRequest = z.infer<typeof scaffoldPublishRequestSchema>;

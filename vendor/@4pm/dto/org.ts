@@ -490,6 +490,6 @@ export const updateOrgRequestSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   // ADMIN-only login alias (ADR-0111); empty string clears it.
   alias: orgAliasSchema.optional(),
-  settings: z.record(z.unknown()).optional(),
+  settings: z.record(z.string(), z.unknown()).optional(),
 });
 export type UpdateOrgRequest = z.infer<typeof updateOrgRequestSchema>;

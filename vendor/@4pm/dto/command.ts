@@ -112,10 +112,10 @@ export type CommandResultSink = z.infer<typeof commandResultSinkSchema>;
 /** Body POST /commands — dispatch a command to the project's cli. */
 export const dispatchCommandRequestSchema = z
   .object({
-    projectId: z.string().uuid(),
+    projectId: z.string().guid(),
     // Target cli. Required unless `pick` is set — with `pick:"idle"` the server chooses the
     // target from the project's pool, so the client omits it (ADR-0171).
-    machineLinkId: z.string().uuid().optional(),
+    machineLinkId: z.string().guid().optional(),
     /**
      * Server-side idle-cli pick (ADR-0171): `"idle"` ⇒ omit `machineLinkId` and let the server
      * select + atomically claim an idle cli from the project's pool (machine-users + org
@@ -233,9 +233,9 @@ export const dispatchCommandRequestSchema = z
     }
     if (!v.ai && v.command.length > COMMAND_MAX_LEN) {
       ctx.addIssue({
-        code: z.ZodIssueCode.too_big,
+        code: "too_big",
         maximum: COMMAND_MAX_LEN,
-        type: "string",
+        origin: "string",
         inclusive: true,
         path: ["command"],
         message: `command too long (max ${COMMAND_MAX_LEN})`,
@@ -381,13 +381,13 @@ export type ConsoleSyncEvent =
  * `BaseRequest` (page/size) plus the required project filter.
  */
 export const listCommandsQuerySchema = baseRequestSchema.extend({
-  projectId: z.string().uuid(),
+  projectId: z.string().guid(),
   // Optional search filters (command-0005): `search` (from BaseRequest) matches the command
   // text/status; `from`/`to` are an inclusive `YYYY-MM-DD` date range over `startedAt`;
   // `machineLinkId` (ADR-0249) filters to one machine-user's commands (absent ⇒ all).
   from: z.string().optional(),
   to: z.string().optional(),
-  machineLinkId: z.string().uuid().optional(),
+  machineLinkId: z.string().guid().optional(),
 });
 export type ListCommandsQuery = z.infer<typeof listCommandsQuerySchema>;
 

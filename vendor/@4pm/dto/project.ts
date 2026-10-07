@@ -161,7 +161,7 @@ export interface ProjectDetailResponse extends ProjectResponse {
 export const listProjectsQuerySchema = baseRequestSchema.extend({
   pinned: pinnedFilterSchema,
   /** Only projects this team is attached to (project-0001; the public v1 list — ADR-0364). */
-  teamId: z.string().uuid().optional(),
+  teamId: z.string().guid().optional(),
   /** ADMIN-only Trash: list soft-deleted projects (ADR-0109). */
   deleted: deletedFilterSchema,
 });
@@ -179,7 +179,7 @@ export type RecentProjectsQuery = z.infer<typeof recentProjectsQuerySchema>;
 export const createProjectRequestSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().max(2000).optional(),
-  machineUserId: z.string().uuid().optional(),
+  machineUserId: z.string().guid().optional(),
 });
 export type CreateProjectRequest = z.infer<typeof createProjectRequestSchema>;
 
@@ -233,7 +233,7 @@ export const projectAlertRuleSchema = z.object({
   metric: z.enum([UsageMetric.AI_TOKENS, UsageMetric.COMMANDS]),
   threshold: z.number().int().min(1),
   email: z.union([z.string().email(), z.literal("")]).optional(),
-  notifyUserId: z.union([z.string().uuid(), z.literal("")]).optional(),
+  notifyUserId: z.union([z.string().guid(), z.literal("")]).optional(),
   enabled: z.boolean().default(true),
 });
 export type ProjectAlertRule = z.infer<typeof projectAlertRuleSchema>;
@@ -639,7 +639,7 @@ export const updateProjectRequestSchema = z.object({
   // ≤6 levels); an empty array clears the group. Segments are trimmed server-side.
   groupPath: z.array(z.string().trim().min(1).max(60)).max(6).optional(),
   // Project settings (ADR-0081) — key-level shallow-merge; `tokens` clamped on read.
-  settings: z.record(z.unknown()).optional(),
+  settings: z.record(z.string(), z.unknown()).optional(),
   // Identity ↔ spec sync (ADR-0148): the Settings tab edits the spec basic group
   // (id = spec slug, name, desc). The server merges these into `spec` (READY) or
   // `specDraft` (DRAFT) so the Content → Spec tab / wizard stays consistent.
@@ -700,7 +700,7 @@ export interface SpecDraftSavedResponse {
 
 /** Body PUT /projects/:id/spec-draft — save (upsert) the in-progress wizard spec. */
 export const putSpecDraftRequestSchema = z.object({
-  spec: z.record(z.unknown()),
+  spec: z.record(z.string(), z.unknown()),
   specVersion: z.number().int().positive().optional(),
 });
 export type PutSpecDraftRequest = z.infer<typeof putSpecDraftRequestSchema>;
@@ -713,7 +713,7 @@ export interface ProjectSpecResponse {
 
 /** Body PUT /projects/:id/spec (project-0033) — replace the canonical spec (READY project). */
 export const putProjectSpecRequestSchema = z.object({
-  spec: z.record(z.unknown()),
+  spec: z.record(z.string(), z.unknown()),
 });
 export type PutProjectSpecRequest = z.infer<typeof putProjectSpecRequestSchema>;
 
@@ -1112,7 +1112,7 @@ export const projectSpecSchema = z
     fields: z.array(specFieldEnvelopeSchema),
     repos: z.array(repoSpecSchema).optional().default([]),
     subagents: z.array(subagentSpecSchema).optional().default([]),
-    meta: z.record(z.unknown()).optional(),
+    meta: z.record(z.string(), z.unknown()).optional(),
   })
   .superRefine((v, ctx) => {
     // id + name must be present (non-empty string) among the fields.
@@ -1139,7 +1139,7 @@ export type ProjectSpec = z.infer<typeof projectSpecSchema>;
  * the resolved path back.
  */
 export const createFromSpecRequestSchema = z.object({
-  projectId: z.string().uuid(),
+  projectId: z.string().guid(),
   spec: projectSpecSchema,
 });
 export type CreateFromSpecRequest = z.infer<typeof createFromSpecRequestSchema>;
@@ -1155,7 +1155,7 @@ export type CreateFromSpecRequest = z.infer<typeof createFromSpecRequestSchema>;
  */
 export const addRepoRequestSchema = z
   .object({
-    projectId: z.string().uuid(),
+    projectId: z.string().guid(),
     repos: z.array(repoSpecSchema).min(1),
     spec: projectSpecSchema,
   })

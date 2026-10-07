@@ -36,7 +36,7 @@ export interface ProjectAiMemoryPush {
 /** Body POST /machine-links/pair (machine-0001). */
 export const pairRequestSchema = z.object({
   hashcode1: hexTokenSchema,
-  userId: z.string().uuid().optional(),
+  userId: z.string().guid().optional(),
 });
 export type PairRequest = z.infer<typeof pairRequestSchema>;
 
@@ -89,7 +89,7 @@ export type PairTokenRequest = z.infer<typeof pairTokenRequestSchema>;
 
 /** Body POST /machine-links/provisioning-token (ADR-0192 §6) — issue a headless-pairing token. */
 export const issueProvisioningTokenRequestSchema = z.object({
-  machineLinkId: z.string().uuid(),
+  machineLinkId: z.string().guid(),
   /** TTL seconds (0/absent ⇒ a default short TTL applied server-side). */
   ttlSec: z.number().int().min(0).max(2_592_000).optional(),
 });
@@ -112,8 +112,8 @@ export type ProvisionRequest = z.infer<typeof provisionRequestSchema>;
  * and applies the same `mode` (sync/force) as `provision`.
  */
 export const provisionForUserRequestSchema = z.object({
-  userId: z.string().uuid(),
-  projectId: z.string().uuid(),
+  userId: z.string().guid(),
+  projectId: z.string().guid(),
   mode: z.enum(["sync", "force"]).optional().default("sync"),
 });
 export type ProvisionForUserRequest = z.infer<typeof provisionForUserRequestSchema>;
@@ -635,7 +635,7 @@ export type UpdateWorkerRequest = z.infer<typeof updateWorkerRequestSchema>;
 
 /** Body PUT /machine-links/:id/physic-project (machine-0011 — upsert 1:1). */
 export const putPhysicProjectRequestSchema = z.object({
-  projectId: z.string().uuid(),
+  projectId: z.string().guid(),
   /** null/empty ⇒ pending — the folder is finalized in wizard step 2. */
   path: z.string().min(1).max(500).nullable().optional(),
   name: z.string().max(100).optional(),
@@ -647,7 +647,7 @@ export type PutPhysicProjectRequest = z.infer<
 /** Body PATCH /machine-links/:id/physic-project (machine-0012). */
 export const patchPhysicProjectRequestSchema = z.object({
   name: z.string().min(1).max(100).optional(),
-  projectId: z.string().uuid().optional(),
+  projectId: z.string().guid().optional(),
   isAutonomous: z.boolean().optional(),
   disabled: z.boolean().optional(),
 });
@@ -798,9 +798,9 @@ export interface WorkerToolRestorePush {
  */
 export const workerToolCopySchema = z.object({
   /** Source machine-link id whose `toolSnapshot` supplies the manifest. */
-  sourceLinkId: z.string().uuid(),
+  sourceLinkId: z.string().guid(),
   /** Target machine-link ids to queue the manifest for (pushed on their next connect). */
-  targetLinkIds: z.array(z.string().uuid()).min(1).max(200),
+  targetLinkIds: z.array(z.string().guid()).min(1).max(200),
 });
 export type WorkerToolCopyRequest = z.infer<typeof workerToolCopySchema>;
 
@@ -822,8 +822,8 @@ export interface WorkerToolCopyResponse {
 /** Body POST /admin/pool-users/tools/copy (ADR-0307) — copy one pool machine's tool set onto other
  * pool machines of the **same role** (rented↔rented / support↔support). Keyed by pool-user id. */
 export const adminPoolToolsCopySchema = z.object({
-  sourceUserId: z.string().uuid(),
-  targetUserIds: z.array(z.string().uuid()).min(1).max(200),
+  sourceUserId: z.string().guid(),
+  targetUserIds: z.array(z.string().guid()).min(1).max(200),
 });
 export type AdminPoolToolsCopyRequest = z.infer<typeof adminPoolToolsCopySchema>;
 
@@ -1129,7 +1129,7 @@ export const autonomousWriteRequestSchema = z.discriminatedUnion("kind", [
     // Staged evidence files (machine-0072) to commit with the book (ADR-0404); each path must sit under
     // the saved book's own `.4pm/evidence/<BOOK>/` folder (the cli re-checks).
     evidence: z
-      .array(z.object({ stageId: z.string().uuid(), path: z.string().regex(EVIDENCE_PATH_RE) }))
+      .array(z.object({ stageId: z.string().guid(), path: z.string().regex(EVIDENCE_PATH_RE) }))
       .max(EVIDENCE_MAX_PER_SAVE)
       .optional(),
   }),
