@@ -613,8 +613,20 @@ export type AutonomousWriteRequest =
   | { kind: "userTodo"; content: string; by: string; byLabel?: string }
   // Traced book save (ADR-0320): the cli diffs rows by id against the current book and stamps
   // `.autonomous.authors.json` (author = `by`/`byLabel`) for added/edited rows, so authorship can't be
-  // forged in a client-written `.md` cell. `book` selects which of the three approval books is saved.
-  | { kind: "bookSave"; book: "userTodo" | "userQa" | "aiTodo"; content: string; by: string; byLabel?: string };
+  // forged in a client-written `.md` cell. `book` selects the book saved; `aiDone` (AI Verify verdicts on the
+  // read-only AI Done — ADR-0400) is written without an authorship stamp.
+  // `evidence` (ADR-0404): staged files moved into `.4pm/evidence/<BOOK>/…` and committed with the book.
+  | {
+      kind: "bookSave";
+      book: "userTodo" | "userQa" | "aiTodo" | "aiDone";
+      content: string;
+      by: string;
+      byLabel?: string;
+      evidence?: { stageId: string; path: string }[];
+    }
+  // Stage one evidence file in the profile dir until a `bookSave` commits it (ADR-0404). Server-built
+  // from the multipart upload (machine-0072).
+  | { kind: "evidenceStage"; name: string; contentBase64: string; by: string; byLabel?: string };
 // (The `cron` install/uninstall kind was retired by ADR-0392 — the daemon schedules ticks itself.)
 export interface AutonomousWriteReply {
   ok: boolean;
@@ -627,7 +639,19 @@ export interface AutonomousWriteReply {
   status?: AutonomousStatus;
   /** Rows a `userTodo` / `bookSave` added (by id diff) — counted toward the monthly book cap (ADR-0365). */
   added?: number;
+  /** The staged file's handle (`evidenceStage` — ADR-0404). */
+  stageId?: string;
 }
+
+/** autonomous.evidence — read one committed book evidence file (machine-0073, ADR-0404). */
+export interface AutonomousEvidenceRequest {
+  /** `.4pm/evidence/<BOOK>/<ROW-ID>/<file>` — anything else is refused. */
+  path: string;
+  /** A task branch to fall back to when the file is not on `<base>` yet. */
+  ref?: string;
+}
+/** Same shape as `FsDownloadReply`: base64 bytes, or `error`. */
+export type AutonomousEvidenceReply = FsDownloadReply;
 
 /**
  * Subagents & skills management (ADR-0153) — the dashboard manages subagent files under

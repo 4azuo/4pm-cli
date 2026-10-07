@@ -304,6 +304,15 @@ const PROMPT_META: PromptMeta[] = [
     requiredVars: ["verifyBook", "entries", "question"],
   },
   {
+    key: "web.verifyDone",
+    ownerApp: "web",
+    phase: 2,
+    title: "AI Verify (AI Done + follow-ups)",
+    description:
+      "Read-only: verdict per completed task + optional follow-up proposals (ADR-0400). Keep the `[<ID>]` verdict and `FOLLOWUP [<ID>]` line formats.",
+    requiredVars: ["entries", "question"],
+  },
+  {
     key: "web.git.resolve",
     ownerApp: "web",
     phase: 2,

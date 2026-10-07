@@ -38,6 +38,7 @@ import {
   wipCommit,
   type RepoBase,
 } from "./autonomous-git";
+import { agentEvidence } from "./autonomous-evidence";
 import {
   applyClaim,
   applyFinish,
@@ -465,7 +466,7 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       ctx.bus.autonomousDone(false, "claim lost");
       return;
     }
-    let delivered: { files: string; notes: string };
+    let delivered: { files: string; notes: string; evidence: string[] };
     try {
       delivered = await deliver(root, rootBase, subs, mine, reply?.summary ?? "");
     } catch (err) {
@@ -505,7 +506,7 @@ async function remoteClaimLost(root: string, mine: LocalClaim): Promise<boolean>
  * submodule's base; in the root commit the pointer bumps, push, and open the PR into `<base>` linking the
  * submodule PRs. Returns the AI_DONE Files + Notes.
  */
-async function deliver(root: string, rootBase: RepoBase, subs: { sub: RepoBase; branch: string }[], mine: LocalClaim, summary: string): Promise<{ files: string; notes: string }> {
+async function deliver(root: string, rootBase: RepoBase, subs: { sub: RepoBase; branch: string }[], mine: LocalClaim, summary: string): Promise<{ files: string; notes: string; evidence: string[] }> {
   const title = `${mine.id}: ${mine.task.desc}`.replace(/\s+/g, " ").slice(0, 100);
   const subPrs: string[] = [];
   for (const s of subs) {
@@ -521,8 +522,10 @@ async function deliver(root: string, rootBase: RepoBase, subs: { sub: RepoBase; 
   // Root: pointer bumps + any uncommitted leftovers, then push + PR.
   await wipCommit(root, `feat(${mine.id}): ${summary || mine.task.desc}`.slice(0, 200));
   const files = (await gitQuiet(root, ["diff", "--name-only", `origin/${rootBase.base}...${mine.branch}`])).split("\n").filter(Boolean);
+  // The agent's own evidence on the task branch (ADR-0404) — listed in AI Done's Evidence column.
+  const evidence = await agentEvidence(root, mine.id);
   if ((await aheadOf(root, mine.branch, rootBase.base)) === 0) {
-    return { files: "", notes: `no changes needed; branch: ${mine.branch}${subPrs.length ? `; sub PRs: ${subPrs.join(", ")}` : ""}` };
+    return { files: "", notes: `no changes needed; branch: ${mine.branch}${subPrs.length ? `; sub PRs: ${subPrs.join(", ")}` : ""}`, evidence: [] };
   }
   await pushBranch(root, mine.branch);
   const body = `${summary}\n\nTask ${mine.id} (4PM autonomous).${subPrs.length ? `\n\nSubmodule PRs:\n${subPrs.map((p) => `- ${p}`).join("\n")}` : ""}`;
@@ -531,6 +534,7 @@ async function deliver(root: string, rootBase: RepoBase, subs: { sub: RepoBase; 
   return {
     files: files.slice(0, 20).join(", ") + (files.length > 20 ? ` (+${files.length - 20})` : ""),
     notes: `branch: ${mine.branch}; PR: ${pr.url ?? "opened"}${subPrs.length ? `; sub PRs: ${subPrs.join(", ")}` : ""}`,
+    evidence,
   };
 }
 

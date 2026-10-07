@@ -11,6 +11,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
   AutonomousBooks,
+  AutonomousEvidenceReply,
+  AutonomousEvidenceRequest,
   AutonomousLogsReply,
   AutonomousReadReply,
   AutonomousStatus,
@@ -24,8 +26,9 @@ import {
   writeAutonomousConfig,
 } from "./autonomous-config";
 import { readHistories } from "./autonomous-history";
-import { ATTEMPTS_REL } from "./autonomous-books";
+import { ATTEMPTS_REL, findTables, replaceRows } from "./autonomous-books";
 import { mutateBooksOnBase, readBaseFile, resolveBases } from "./autonomous-git";
+import { applyStagedEvidence, pruneEvidence, readEvidenceFile, stageEvidence } from "./autonomous-evidence";
 import { isValidCronSchedule, reloadAutonomousSchedule } from "./autonomous-scheduler";
 import { t } from "../i18n";
 
@@ -196,7 +199,7 @@ type WebWrite = { ok: boolean; code?: "APPROVAL_SELF"; failedId?: string; error?
  * Apply one web book edit (approvals / batch / posted request / traced book save — ADR-0311/0319/0320)
  * to the books under `dir` (a side worktree of `<base>`, or the working tree when there is no remote).
  */
-async function applyWebWrite(dir: string, req: AutonomousWriteRequest, by: string): Promise<WebWrite> {
+async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWriteRequest, by: string): Promise<WebWrite> {
   switch (req.kind) {
     case "approvals": {
       // Separation of duties (ADR-0320): a non-ADMIN may not approve a row they wrote.
@@ -233,8 +236,13 @@ async function applyWebWrite(dir: string, req: AutonomousWriteRequest, by: strin
       const ids = [...cur.matchAll(/REQ-(\d{4})-(\d{4})/g)];
       const maxGroup = ids.reduce((m, g) => Math.max(m, Number(g[1])), 0);
       const id = `REQ-${String(maxGroup + 1).padStart(4, "0")}-0001`;
-      const row = `| ${id} | | | ${tableCell(req.content)} |\n`;
-      await writeFile(join(dir, BOOK_FILES.userTodo), cur.replace(/\s*$/, "\n") + row, "utf8");
+      // Insert into the request table (not at the end of the file — a trailing `<!-- 4pm:… -->` block
+      // such as the attachment map must stay after the table; ADR-0400). No table ⇒ append as before.
+      const table = findTables(cur).find((tb) => tb.header.some((h) => h.toLowerCase() === "id"));
+      const next = table
+        ? replaceRows(cur, table, [...table.rows, table.header.map((h) => (h.toLowerCase() === "id" ? id : /request/i.test(h) ? req.content : ""))])
+        : cur.replace(/\s*$/, "\n") + `| ${id} | | | ${tableCell(req.content)} |\n`;
+      await writeFile(join(dir, BOOK_FILES.userTodo), next, "utf8");
       const authors = await readJsonMap(join(dir, AUTHORS_REL));
       authors[id] = { by, byLabel: req.byLabel ?? by, at: new Date().toISOString() };
       await writeFile(join(dir, AUTHORS_REL), JSON.stringify(authors, null, 2) + "\n", "utf8");
@@ -244,7 +252,19 @@ async function applyWebWrite(dir: string, req: AutonomousWriteRequest, by: strin
       // Traced book save (ADR-0320): write the md and stamp the authors sidecar for every row this save
       // ADDED or EDITED (diff by id vs the book on <base>) — authorship is server-filled, not a cell.
       const file = BOOK_FILES[req.book];
-      const prev = tableRowsById(await readText(join(dir, file)));
+      // Evidence (ADR-0404): move the staged files in first — a missing/invalid one aborts the whole save.
+      if (req.evidence?.length) {
+        const bad = await applyStagedEvidence(dir, profileDir, req.book, req.evidence);
+        if (bad) return { ok: false, error: bad };
+      }
+      // AI Done is cli-written history (ADR-0400): the web only saves its `AI verify` verdicts there — no
+      // authorship to stamp and no capped rows to count.
+      if (req.book === "aiDone") {
+        await writeFile(join(dir, file), req.content, "utf8");
+        return { ok: true, added: 0 };
+      }
+      const prevText = await readText(join(dir, file));
+      const prev = tableRowsById(prevText);
       const next = tableRowsById(req.content);
       const authors = await readJsonMap(join(dir, AUTHORS_REL));
       const at = new Date().toISOString();
@@ -256,6 +276,8 @@ async function applyWebWrite(dir: string, req: AutonomousWriteRequest, by: strin
       }
       await writeFile(join(dir, file), req.content, "utf8");
       await writeFile(join(dir, AUTHORS_REL), JSON.stringify(authors, null, 2) + "\n", "utf8");
+      // Files whose link this save removed (and no book still references) go in the same commit (ADR-0404).
+      await pruneEvidence(dir, req.book, prevText, req.content);
       return { ok: true, added };
     }
     default:
@@ -287,6 +309,10 @@ export async function writeAutonomous(
       }
       await writeAutonomousConfig(profileDir, parsed);
       await reloadAutonomousSchedule(); // a schedule change takes effect at once (ADR-0392)
+    } else if (req.kind === "evidenceStage") {
+      // Book evidence upload (machine-0072, ADR-0404): kept in the profile dir until a bookSave commits it.
+      const staged = await stageEvidence(profileDir, req.contentBase64);
+      return staged.ok ? { ok: true, stageId: staged.stageId } : { ok: false, error: staged.error };
     } else if ((req as { kind: string }).kind === "cron") {
       // Retired (ADR-0392): an older dashboard's Install/Uninstall cron — the scheduler is always
       // armed, so answer with the live status instead of touching any crontab.
@@ -295,11 +321,11 @@ export async function writeAutonomous(
       let res: WebWrite | undefined;
       const pub = base
         ? await mutateBooksOnBase(root, base, `chore(web): ${req.kind} by ${req.byLabel ?? by}`, async (dir) => {
-            res = await applyWebWrite(dir, req, by);
+            res = await applyWebWrite(dir, profileDir, req, by);
             return res.ok;
           })
         : "unchanged";
-      if (res === undefined) res = await applyWebWrite(root, req, by); // no remote base ⇒ working tree
+      if (res === undefined) res = await applyWebWrite(root, profileDir, req, by); // no remote base ⇒ working tree
       else if (pub === "failed") return { ok: false, error: "could not push the change to the base branch (retry)" };
       if (!res.ok) return { ok: false, ...(res.code ? { code: res.code } : {}), ...(res.failedId ? { failedId: res.failedId } : {}), error: res.error };
       added = res.added;
@@ -307,5 +333,15 @@ export async function writeAutonomous(
     return { ok: true, status: await getAutonomousStatus(root, profileDir), ...(added !== undefined ? { added } : {}) };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** Read one committed book evidence file for the web (machine-0073, ADR-0404). */
+export async function readAutonomousEvidence(root: string, req: AutonomousEvidenceRequest): Promise<AutonomousEvidenceReply> {
+  try {
+    const base = (await resolveBases(root).catch(() => null))?.root.base ?? null;
+    return await readEvidenceFile(root, base, req.path, req.ref);
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
   }
 }

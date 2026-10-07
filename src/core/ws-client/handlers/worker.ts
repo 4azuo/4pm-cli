@@ -13,6 +13,7 @@ import {
   type AgentToolsReadRequest,
   type AgentToolsWriteRequest,
   type AgentWriteRequest,
+  type AutonomousEvidenceRequest,
   type AutonomousLogsRequest,
   type AutonomousWriteRequest,
   type ConfigReadReply,
@@ -27,7 +28,7 @@ import {
   type SecretsWriteRequest,
   type WsEnvelope,
 } from "@4pm/ws";
-import { readAutonomous, readAutonomousLogs, writeAutonomous } from "../../autonomous";
+import { readAutonomous, readAutonomousEvidence, readAutonomousLogs, writeAutonomous } from "../../autonomous";
 import { listAgents, readAgent, writeAgent } from "../../agents";
 import { readSecrets, writeSecrets } from "../../secrets";
 import { readAgentTools, writeAgentTools } from "../../agent-tools";
@@ -60,6 +61,16 @@ export function handleWorkerChannels(
         );
       }
       return true;
+    case WsChannels.AUTONOMOUS_EVIDENCE: {
+      // Request/reply (machine-0073, ADR-0404): one committed book evidence file as base64.
+      const req = payload as unknown as AutonomousEvidenceRequest;
+      if (ctx.physicRoot) {
+        void readAutonomousEvidence(ctx.physicRoot, req).then((reply) =>
+          ctx.send(WsChannels.AUTONOMOUS_EVIDENCE, reply, message.id),
+        );
+      }
+      return true;
+    }
     case WsChannels.AUTONOMOUS_LOGS: {
       // Request/reply (machine-0030, ADR-0152): tail one day's tick log.
       const req = payload as unknown as AutonomousLogsRequest;

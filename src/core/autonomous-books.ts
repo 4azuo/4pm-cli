@@ -190,11 +190,43 @@ export function writeClaims(md: string, claims: ClaimRow[]): string {
 
 // ── AI_DONE (Done + Incidents) ───────────────────────────────────────────────────────────────────
 
-/** Append a Done row (`Timestamp | ID | Task description | Files | Notes`). */
-export function appendDone(md: string, row: { id: string; desc: string; files: string; notes: string }): string {
-  const table = findTables(md).find((t) => col(t.header, "ID") >= 0 && col(t.header, "Timestamp") >= 0);
-  if (!table) return md;
-  const values = { timestamp: stamp(), id: row.id, "task description": row.desc, files: row.files, notes: row.notes };
+/** Insert `names` (those still missing) right after column `after`, giving old rows empty cells. */
+function insertColumns(table: MdTable, after: string, names: string[]): MdTable {
+  const missing = names.filter((h) => col(table.header, h) < 0);
+  if (missing.length === 0) return table;
+  const anchor = col(table.header, after);
+  const at = anchor >= 0 ? anchor + 1 : table.header.length;
+  const header = [...table.header.slice(0, at), ...missing, ...table.header.slice(at)];
+  const rows = table.rows.map((r) => [...r.slice(0, at), ...missing.map(() => ""), ...r.slice(at)]);
+  return { ...table, header, rows };
+}
+
+/**
+ * Upgrade a Done table in place: `Group` + `Depends` after `ID` (ADR-0400) and `Evidence` after `Files`
+ * (ADR-0404), keeping every other column (e.g. the web's `AI verify`).
+ */
+function withDoneColumns(table: MdTable): MdTable {
+  return insertColumns(insertColumns(table, "ID", ["Group", "Depends"]), "Files", ["Evidence"]);
+}
+
+/** Append a Done row (`Timestamp | ID | Group | Depends | Task description | Files | Evidence | Notes`). */
+export function appendDone(
+  md: string,
+  row: { id: string; group: string; depends: string[]; desc: string; files: string; evidence: string; notes: string },
+): string {
+  const found = findTables(md).find((t) => col(t.header, "ID") >= 0 && col(t.header, "Timestamp") >= 0);
+  if (!found) return md;
+  const table = withDoneColumns(found);
+  const values = {
+    timestamp: stamp(),
+    id: row.id,
+    group: row.group,
+    depends: row.depends.join(", "),
+    "task description": row.desc,
+    files: row.files,
+    evidence: row.evidence,
+    notes: row.notes,
+  };
   return replaceRows(md, table, [...table.rows, build(table.header, values)]);
 }
 

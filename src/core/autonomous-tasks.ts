@@ -10,6 +10,7 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import * as B from "./autonomous-books";
 import { isMerged, type RepoBase } from "./autonomous-git";
+import { evidenceCell, moveTaskEvidence, rehomeTaskLinks } from "./autonomous-evidence";
 
 /** The approvals sidecar. */
 const APPROVALS_REL = ".claude/.autonomous.approvals.json";
@@ -214,10 +215,15 @@ async function dropClaim(root: string, mine: LocalClaim): Promise<boolean> {
   return true;
 }
 
-/** Finish (ADR-0371 phase 8): claim → `AI_DONE` with branch + PR links; attempts cleared. */
-export async function applyFinish(root: string, mine: LocalClaim, done: { files: string; notes: string }): Promise<boolean> {
+/**
+ * Finish (ADR-0371 phase 8): claim → `AI_DONE` with branch + PR links; attempts cleared. The task's
+ * attachments move from `AI_TODO/<TSK>/` to `AI_DONE/<TSK>/` and, with the agent's own files on the task
+ * branch, fill the `Evidence` column (ADR-0404).
+ */
+export async function applyFinish(root: string, mine: LocalClaim, done: { files: string; notes: string; evidence: string[] }): Promise<boolean> {
   if (!(await dropClaim(root, mine))) return false;
-  await B.writeBook(root, "AI_DONE.md", B.appendDone(await B.readBook(root, "AI_DONE.md"), { id: mine.id, desc: mine.task.desc, files: done.files, notes: done.notes }));
+  const moved = await moveTaskEvidence(root, mine.id);
+  await B.writeBook(root, "AI_DONE.md", B.appendDone(await B.readBook(root, "AI_DONE.md"), { id: mine.id, group: mine.task.group, depends: mine.task.depends, desc: rehomeTaskLinks(mine.task.desc, mine.id), files: done.files, evidence: evidenceCell([...moved, ...done.evidence]), notes: done.notes }));
   const attempts = await B.readAttempts(root);
   delete attempts[mine.id];
   await B.writeAttempts(root, attempts);
@@ -342,7 +348,9 @@ export async function applySplit(
   });
   const { tasks } = B.parseTasks(todo);
   await B.writeBook(root, "AI_TODO.md", B.writeTasks(todo, [...tasks, ...rows]));
-  await B.writeBook(root, "AI_DONE.md", B.appendDone(done, { id: mine.id, desc: mine.task.desc, files: "", notes: `split into ${ids.join(", ")} (after repeated attempts); WIP on ${mine.branch}` }));
+  // The parent's attachments follow it to AI Done (ADR-0404); the books' links are rewritten in place.
+  const moved = await moveTaskEvidence(root, mine.id);
+  await B.writeBook(root, "AI_DONE.md", B.appendDone(await B.readBook(root, "AI_DONE.md"), { id: mine.id, group: mine.task.group, depends: mine.task.depends, desc: rehomeTaskLinks(mine.task.desc, mine.id), files: "", evidence: evidenceCell(moved), notes: `split into ${ids.join(", ")} (after repeated attempts); WIP on ${mine.branch}` }));
   const attempts = await B.readAttempts(root);
   delete attempts[mine.id];
   await B.writeAttempts(root, attempts);

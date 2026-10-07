@@ -1,6 +1,22 @@
 {
-  "version": "1.1.2",
+  "version": "1.1.3",
   "changelog": [
+    {
+      "version": "1.1.3",
+      "date": "2026-10-07",
+      "summary": "AI_DONE's Done table records each task's Group, Depends and Evidence; book evidence lives in `.4pm/evidence/`.",
+      "notes": [
+        "The Done header is now `Timestamp | ID | Group | Depends | Task description | Files | Evidence | Notes`.",
+        "Book attachments are committed under `.4pm/evidence/<BOOK>/<ROW-ID>/` and linked from the cells; a finished task's evidence moves to `.4pm/evidence/AI_DONE/<ID>/`.",
+        "No manual change needed: the cli inserts the new columns into an existing Done table at its next append (old rows stay empty)."
+      ],
+      "files": [
+        "AI_DONE.md",
+        ".claude/templates/AI_DONE.empty.md",
+        ".claude/templates/AI_DONE.sample.md"
+      ],
+      "skippable": true
+    },
     {
       "version": "1.1.2",
       "date": "2026-10-07",

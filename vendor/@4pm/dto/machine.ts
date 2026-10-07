@@ -295,6 +295,9 @@ export interface MachineLinkResponse {
   /** Last failed cli self-update (ADR-0305) — surfaced only while the cli is still outdated, so the
    *  web "Update" modal shows why an update didn't land. Null/omitted = no recent failure. */
   cliUpdateError?: WorkerCliUpdateError | null;
+  /** AI accounts the cli last reported (`machine.status`, ADR-0354) — the org's own links only; a rented
+   *  (pool) link always returns `[]` (its 4PM accounts are admin-only, ADR-0402). */
+  aiAccounts?: string[];
   createdAt: string;
 }
 
@@ -1014,6 +1017,92 @@ export interface TaskApproveBatchResponse {
   reason?: string;
 }
 
+// ── Book evidence (ADR-0404) ─────────────────────────────────────────────────────────────────────
+
+/** Per-file cap of a book evidence file (plain git — keep the history lean). */
+export const EVIDENCE_MAX_BYTES = 5 * 1024 * 1024;
+/** Max new evidence files committed by one book save. */
+export const EVIDENCE_MAX_PER_SAVE = 20;
+/** Repo-relative root of every book evidence file. */
+export const EVIDENCE_ROOT = ".4pm/evidence";
+/** The evidence folder of each book (by its `bookSave` key). */
+export const EVIDENCE_BOOK_DIR = { userTodo: "USER_TODO", userQa: "USER_QA", aiTodo: "AI_TODO", aiDone: "AI_DONE" } as const;
+export type EvidenceBookKey = keyof typeof EVIDENCE_BOOK_DIR;
+/** A valid evidence path: `.4pm/evidence/<BOOK>/<ROW-ID>/<file>` (groups: book, row id, file). */
+export const EVIDENCE_PATH_RE =
+  /^\.4pm\/evidence\/(USER_TODO|USER_QA|AI_TODO|AI_DONE)\/([A-Z]+-\d{4}-\d{4})\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
+/** A markdown link / image whose target is an evidence path (groups: `!`, label, path). */
+const EVIDENCE_LINK_RE = /(!?)\[([^\]\n]*)\]\(<?(\.4pm\/evidence\/[^)>\s]+)>?\)/g;
+
+/** One evidence link found in a cell. */
+export interface EvidenceLink {
+  /** The whole markdown link text (to strip it). */
+  markdown: string;
+  label: string;
+  path: string;
+  /** Written as an image (`![…](…)`). */
+  image: boolean;
+}
+
+/** Slug a file name for an evidence path (`[A-Za-z0-9._-]`, ≤ 100 chars, never empty). */
+export function evidenceSlug(name: string): string {
+  const s = name
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[đĐ]/g, (c) => (c === "đ" ? "d" : "D"))
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-.]+|-+$/g, "");
+  return (s || "file").slice(-100);
+}
+
+/** The repo path of the `k`-th evidence file of a row. */
+export function evidencePath(book: EvidenceBookKey, rowId: string, k: number, name: string): string {
+  return `${EVIDENCE_ROOT}/${EVIDENCE_BOOK_DIR[book]}/${rowId}/${k}-${evidenceSlug(name)}`;
+}
+
+/** The markdown for an evidence file — an image link for images, a plain link otherwise. */
+export function evidenceMarkdown(name: string, path: string, mime: string): string {
+  const label = name.replace(/[[\]\n]/g, " ").trim() || "file";
+  return `${mime.startsWith("image/") ? "!" : ""}[${label}](${path})`;
+}
+
+/** Every evidence link in `text`, in order. */
+export function evidenceLinks(text: string): EvidenceLink[] {
+  return [...text.matchAll(EVIDENCE_LINK_RE)].map((m) => ({
+    markdown: m[0],
+    image: m[1] === "!",
+    label: m[2] ?? "",
+    path: m[3] ?? "",
+  }));
+}
+
+/** Next free 1-based file number for a row folder, from the `<k>-…` names already referenced in `text`. */
+export function nextEvidenceNumber(text: string, folder: string): number {
+  let max = 0;
+  for (const l of evidenceLinks(text)) {
+    if (!l.path.startsWith(`${folder}/`)) continue;
+    const k = Number(/^(\d+)-/.exec(l.path.slice(folder.length + 1))?.[1] ?? 0);
+    max = Math.max(max, k);
+  }
+  return max + 1;
+}
+
+/** Query GET /machines/:id/autonomous/evidence — read one committed evidence file (machine-0073). */
+export const autonomousEvidenceQuerySchema = z.object({
+  path: z.string().regex(EVIDENCE_PATH_RE),
+  // A task branch to fall back to (an AI Done row whose PR is not merged yet).
+  ref: z.string().regex(/^[A-Za-z0-9._/-]{1,200}$/).optional(),
+});
+export type AutonomousEvidenceQuery = z.infer<typeof autonomousEvidenceQuerySchema>;
+
+/** Response of machine-0072 — the staged file's handle for the next `bookSave.evidence`. */
+export interface AutonomousEvidenceStageResponse {
+  stageId: string;
+  name: string;
+  size: number;
+}
+
 /**
  * Body PUT /machines/:id/autonomous — a discriminated write to the autonomous engine
  * (machine-0029, ADR-0152). The **author** (`by`) is filled by the server from the
@@ -1034,8 +1123,15 @@ export const autonomousWriteRequestSchema = z.discriminatedUnion("kind", [
   // authorship is server-filled, not a spoofable `.md` cell. `by`/author are added server-side.
   z.object({
     kind: z.literal("bookSave"),
-    book: z.enum(["userTodo", "userQa", "aiTodo"]),
+    // `aiDone` = the AI Verify verdict column on the read-only AI Done (ADR-0400): no authorship, no cap.
+    book: z.enum(["userTodo", "userQa", "aiTodo", "aiDone"]),
     content: z.string().max(256 * 1024),
+    // Staged evidence files (machine-0072) to commit with the book (ADR-0404); each path must sit under
+    // the saved book's own `.4pm/evidence/<BOOK>/` folder (the cli re-checks).
+    evidence: z
+      .array(z.object({ stageId: z.string().uuid(), path: z.string().regex(EVIDENCE_PATH_RE) }))
+      .max(EVIDENCE_MAX_PER_SAVE)
+      .optional(),
   }),
   // (The `cron` install/uninstall kind was retired by ADR-0392 — the cli daemon schedules ticks itself.)
 ]);

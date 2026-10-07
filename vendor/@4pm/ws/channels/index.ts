@@ -61,6 +61,8 @@ export const WsChannels = {
   AUTONOMOUS_READ: "autonomous.read",
   AUTONOMOUS_WRITE: "autonomous.write",
   AUTONOMOUS_LOGS: "autonomous.logs",
+  // read one committed book evidence file (ADR-0404): origin/<base> → task branch → working tree
+  AUTONOMOUS_EVIDENCE: "autonomous.evidence",
   // subagents & skills management (ADR-0153): list/read/write .claude/agents + .claude/skills
   AGENTS_LIST: "agents.list",
   AGENTS_READ: "agents.read",

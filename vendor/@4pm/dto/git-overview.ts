@@ -144,12 +144,22 @@ export interface GitOriginCommitFile {
   path: string;
   /** The old path of a rename/copy, else null. */
   from: string | null;
+  /** Lines added / deleted (ADR-0401) — absent when the provider didn't report them. */
+  additions?: number;
+  deletions?: number;
 }
 
 /** project-0083 response `data` — an origin commit's changed files (ADR-0397). */
 export interface GitCommitFilesResponse {
   files: GitOriginCommitFile[];
   /** GitHub lists at most 300 files per commit. */
+  truncated: boolean;
+}
+
+/** project-0085 response `data` — every file path of an origin commit (ADR-0401). */
+export interface GitCommitTreeResponse {
+  paths: string[];
+  /** The provider's listing was cut (GitHub's recursive-tree limit / the GitLab page cap). */
   truncated: boolean;
 }
 

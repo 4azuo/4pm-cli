@@ -11,13 +11,17 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { EVIDENCE_ROOT } from "@4pm/dto";
 import { ATTEMPTS_REL } from "./autonomous-books";
 import { openPullRequest, prStateOf } from "./git-host";
 import { attachSubmoduleBranches } from "./submodule-branch";
 
 const run = promisify(execFile);
 
-/** The book files + sidecars — the ONLY paths ever pushed straight to `<base>` (ADR-0371 §1). */
+/**
+ * The book files + sidecars — with the evidence folder (`addEvidence`, ADR-0404) the ONLY paths ever pushed
+ * straight to `<base>` (ADR-0371 §1).
+ */
 export const BOOK_PATHS = [
   "AI_TODO.md",
   "AI_DONE.md",
@@ -28,6 +32,15 @@ export const BOOK_PATHS = [
   ".claude/.autonomous.authors.json",
   ATTEMPTS_REL,
 ];
+
+/**
+ * Stage the book evidence folder (ADR-0404) — additions, edits and deletions. Separate from `BOOK_PATHS`
+ * so an absent folder (nothing to commit) never fails the books' own `git add`.
+ */
+async function addEvidence(root: string): Promise<void> {
+  const tracked = (await gitQuiet(root, ["ls-files", "--", EVIDENCE_ROOT])).trim();
+  if (tracked || existsSync(join(root, EVIDENCE_ROOT))) await gitQuiet(root, ["add", "-A", "--", EVIDENCE_ROOT]);
+}
 
 /** Run git; throws (with stderr in the message) on failure. */
 export async function git(cwd: string, args: string[], timeout = 120_000): Promise<string> {
@@ -160,6 +173,7 @@ export async function publishBooks(
     }
     if (!(await change())) return "aborted";
     await gitQuiet(root, ["add", "--", ...BOOK_PATHS.filter((p) => existsSync(join(root, p)))]);
+    await addEvidence(root);
     const staged = (await gitQuiet(root, ["diff", "--cached", "--name-only"])).trim();
     if (!staged) return "unchanged";
     await git(root, ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "commit", "-q", "-m", message]);
@@ -182,6 +196,7 @@ export async function publishBooks(
  */
 export async function publishIntake(root: string, base: string, message: string): Promise<PublishResult> {
   await gitQuiet(root, ["add", "--", ...BOOK_PATHS.filter((p) => existsSync(join(root, p)))]);
+  await addEvidence(root);
   const staged = (await gitQuiet(root, ["diff", "--cached", "--name-only"])).trim();
   // Anything else the agent touched is not intake — drop it (intake edits the books only).
   await gitQuiet(root, ["checkout", "--", "."]);
