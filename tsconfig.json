@@ -20,7 +20,6 @@
     "outDir": "dist",
     "jsx": "react-jsx",
 
-    "baseUrl": ".",
     "paths": {
       "@4pm/constants": ["./vendor/@4pm/constants"],
       "@4pm/dto": ["./vendor/@4pm/dto"],
