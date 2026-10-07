@@ -14,7 +14,7 @@ const devtoolsStub = fileURLToPath(
 export default defineConfig({
   entry: ["src/index.ts"],
   format: ["esm"],
-  target: "node20",
+  target: "node24",
   outDir: "dist",
   clean: true,
   // The scaffolder copies the `project-sample/` template into new projects (core/scaffold.ts).
