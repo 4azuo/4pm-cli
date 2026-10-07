@@ -747,6 +747,12 @@ export interface TemplateAnalysis {
 export type TemplateUpdateStatus = "success" | "warning" | "failed";
 
 /**
+ * The template Update PR's state as last read server-side (ADR-0405): `merged`/`closed` are final;
+ * `null` = not read yet, or untrackable (self-managed git-auth has no server credential).
+ */
+export type TemplatePullRequestState = "open" | "merged" | "closed";
+
+/**
  * The saved template "Update" run output for a project (ADR-0270, ADR-0271). Latest-only; overwritten
  * on each update run. `output` is the agent's raw summary; `status`/`pullRequestId`/`pullRequestUrl`/
  * `branch`/`message` are parsed from the agent's structured result so the panel reports completion
@@ -765,6 +771,10 @@ export interface TemplateUpdateResult {
   toVersion: string;
   savedAt: string;
   savedBy: string | null;
+  /** The PR state last read server-side (ADR-0405); absent/null = not read / untracked. */
+  pullRequestState?: TemplatePullRequestState | null;
+  /** ISO time of the last PR state read (ADR-0405). */
+  pullRequestCheckedAt?: string | null;
 }
 
 /** Data GET /projects/:id/template/analysis (project-0057) — the saved report, or null when none. */

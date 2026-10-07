@@ -155,6 +155,12 @@ export interface UserListItemResponse extends UserResponse {
    */
   machineProjectId: string | null;
   /**
+   * For a MACHINE user, the id of the single worker pool it belongs to (ADR-0284: a MACHINE is in
+   * ≤1 pool); null when in no pool or for non-MACHINE users. Lets the UI hide machines already in a
+   * pool from other pools' free lists and from the project routing's lone-machine attach list.
+   */
+  machinePoolId: string | null;
+  /**
    * For a **rented** (4PM-hosted pool) user (`isRented`), the live WS state of its
    * pool-owned worker cli (ADR-0160) — the org's own `machines.list` never returns the
    * pool link, so the machine list can't derive it. `null` for non-rented users (the UI

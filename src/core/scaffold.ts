@@ -867,9 +867,10 @@ export async function addProject(
     const target = join(root, payload.projectName);
     await mkdir(target, { recursive: true });
     const repo = singleRepo((payload.repos ?? []) as RepoDecl[]);
-    // Add-existing spec write-back (ADR-0393): clone + push with the project's CURRENT git-auth.
+    // Clone + push with the project's CURRENT git-auth (ADR-0368/0393): an add, a provision of a worker
+    // attached after it connected, and the add-existing spec write-back all carry it.
     const writeSpec = !!payload.spec && !(payload.scaffoldRepos && payload.scaffoldRepos.length > 0);
-    if (writeSpec && payload.gitAuth !== undefined) applyGitAuth?.(payload.gitAuth ?? null, payload.gitAuthHost ?? null);
+    if (payload.gitAuth !== undefined) applyGitAuth?.(payload.gitAuth ?? null, payload.gitAuthHost ?? null);
     // `mode` (ADR-0292): the provision job sends "sync"/"force" for the on-demand "update repo"
     // action; a plain add (project-0011) omits it ⇒ "clone" (idempotent clone-of-missing).
     const mode: ProvisionMode = payload.mode ?? "clone";

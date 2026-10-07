@@ -1473,7 +1473,10 @@ export interface ProjectAddPayload {
    * committed + pushed to the declared branch. Absent ⇒ clone only (provision).
    */
   spec?: Record<string, unknown>;
-  /** Add-existing only (ADR-0393): the project's git-auth at dispatch, re-applied before the push (as `ProjectCreatePayload.gitAuth`). */
+  /**
+   * The project's git-auth at dispatch (as `ProjectCreatePayload.gitAuth`), applied before the clone —
+   * the Add-existing push (ADR-0393) and a provision of a worker attached after it connected (ADR-0405).
+   */
   gitAuth?: string | null;
   /** The GitHub App credential host for `gitAuth = github-app` (mirrors `ws_token.gitAuthHost`). */
   gitAuthHost?: string | null;
