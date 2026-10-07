@@ -23,12 +23,18 @@ let deps: AutonomousSchedulerDeps | null = null;
 let job: Cron | null = null;
 let pattern = "";
 
+/**
+ * croner ≥10 rejects non-vixie ranges like `0/10` by default; keep accepting them so a schedule saved
+ * under croner 9 still validates and runs instead of silently falling back to the default.
+ */
+const CRON_OPTIONS = { sloppyRanges: true } as const;
+
 /** True for a standard 5-field cron expression croner accepts (no seconds field — no sub-minute ticks). */
 export function isValidCronSchedule(expr: string): boolean {
   const s = expr.trim();
   if (s.split(/\s+/).length !== 5) return false;
   try {
-    new Cron(s, { paused: true }).stop();
+    new Cron(s, { ...CRON_OPTIONS, paused: true }).stop();
     return true;
   } catch {
     return false;
@@ -65,5 +71,5 @@ export async function reloadAutonomousSchedule(): Promise<void> {
   job?.stop();
   pattern = next;
   // `unref` so the timer never keeps a process alive on its own; `catch` so a throw can't kill the job.
-  job = new Cron(next, { unref: true, catch: true }, onTick);
+  job = new Cron(next, { ...CRON_OPTIONS, unref: true, catch: true }, onTick);
 }
