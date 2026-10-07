@@ -128,7 +128,8 @@ export type PutGitLabCredentialRequest = z.infer<typeof putGitLabCredentialReque
 
 /** One step of a GitLab connection test (project-0081). */
 export interface GitLabCredentialTestStep {
-  step: "connect" | "authenticate" | "scope";
+  /** `api` — the primary repo read through the REST API (`read_api`, ADR-0398). */
+  step: "connect" | "authenticate" | "scope" | "api";
   ok: boolean;
   message: string | null;
 }

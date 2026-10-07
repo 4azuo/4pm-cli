@@ -80,7 +80,8 @@ export interface GitSnapshotPayload {
 
 /** Origin of one repo as served by project-0075. */
 export interface GitOrigin {
-  source: "github-app" | "worker-fetch" | "none";
+  /** `gitlab-token` = read via the project's GitLab token (ADR-0398). */
+  source: "github-app" | "gitlab-token" | "worker-fetch" | "none";
   fetchedAt: string | null;
   sourceWorker: { machineLinkId: string; username: string } | null;
   defaultBranch: string | null;
