@@ -65,7 +65,7 @@ export function handleWorkerChannels(
       // Request/reply (machine-0073, ADR-0404): one committed book evidence file as base64.
       const req = payload as unknown as AutonomousEvidenceRequest;
       if (ctx.physicRoot) {
-        void readAutonomousEvidence(ctx.physicRoot, req).then((reply) =>
+        void readAutonomousEvidence(ctx.physicRoot, ctx.profileDir, req).then((reply) =>
           ctx.send(WsChannels.AUTONOMOUS_EVIDENCE, reply, message.id),
         );
       }

@@ -164,7 +164,8 @@ const PROMPT_META: PromptMeta[] = [
     ownerApp: "cli",
     phase: 1,
     title: "Autonomous — intake",
-    description: "Analyses approved user requests + answered intake questions into sized AI tasks (books only; no git/code).",
+    description:
+      "Analyses approved user requests + answered intake questions into sized AI tasks, and writes UI mockups to the mockup folder (ADR-0418) — books + mockups only; no git/code.",
     requiredVars: ["booksIntro", "sMaxFiles", "sMaxLines", "mMaxFiles", "mMaxLines"],
   },
   {
@@ -338,6 +339,60 @@ const PROMPT_META: PromptMeta[] = [
     description:
       "Read-only: drafts USER_QA questions from the user's description (ADR-0408). Keep the JSON array output shape ({key, group, depends, original, question}).",
     requiredVars: ["entries", "description"],
+  },
+  {
+    key: "web.bookEdit.aiTodo",
+    ownerApp: "web",
+    phase: 2,
+    title: "AI edit — AI_TODO tasks",
+    description:
+      "Read-only: rewrites the selected AI_TODO tasks from the user's instruction (ADR-0417). Keep the JSON array output shape ({id, priority, group, depends, description, notes}).",
+    requiredVars: ["entries", "context", "instruction"],
+  },
+  {
+    key: "web.bookEdit.userTodo",
+    ownerApp: "web",
+    phase: 2,
+    title: "AI edit — USER_TODO requests",
+    description:
+      "Read-only: rewrites the selected USER_TODO requests from the user's instruction (ADR-0417). Keep the JSON array output shape ({id, group, depends, request}).",
+    requiredVars: ["entries", "context", "instruction"],
+  },
+  {
+    key: "web.bookEdit.userQa",
+    ownerApp: "web",
+    phase: 2,
+    title: "AI edit — USER_QA questions",
+    description:
+      "Read-only: rewrites the selected USER_QA questions from the user's instruction (ADR-0417). Keep the JSON array output shape ({id, group, depends, original, question}).",
+    requiredVars: ["entries", "context", "instruction"],
+  },
+  {
+    key: "web.bookVerifyLogic.aiTodo",
+    ownerApp: "web",
+    phase: 2,
+    title: "AI verify book — AI_TODO structure",
+    description:
+      "Read-only: checks Group / Depends / Priority of every AI_TODO task against its content (ADR-0417). Keep the JSON array output shape ({id, issue, group, depends, priority}).",
+    requiredVars: ["entries", "focus"],
+  },
+  {
+    key: "web.bookVerifyLogic.userTodo",
+    ownerApp: "web",
+    phase: 2,
+    title: "AI verify book — USER_TODO structure",
+    description:
+      "Read-only: checks Group / Depends of every USER_TODO request against its content (ADR-0417). Keep the JSON array output shape ({id, issue, group, depends}).",
+    requiredVars: ["entries", "focus"],
+  },
+  {
+    key: "web.bookVerifyLogic.userQa",
+    ownerApp: "web",
+    phase: 2,
+    title: "AI verify book — USER_QA structure",
+    description:
+      "Read-only: checks Group / Depends of every USER_QA question against its content (ADR-0417). Keep the JSON array output shape ({id, issue, group, depends}).",
+    requiredVars: ["entries", "focus"],
   },
   {
     key: "web.git.resolve",

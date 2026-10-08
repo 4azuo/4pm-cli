@@ -587,6 +587,8 @@ export interface AutonomousReadReply {
   authors: string;
   /** `.autonomous.attempts.json` text (`{}` when absent) — per-task attempts / split-pending (ADR-0371). */
   attempts?: string;
+  /** Intake UI mockups — repo paths of the `.html` files under `mockupDir` on `<base>` (ADR-0418). */
+  mockups?: string[];
 }
 
 /** autonomous.logs — tail one day's tick log. */

@@ -220,9 +220,14 @@ async function dropClaim(root: string, mine: LocalClaim): Promise<boolean> {
  * attachments move from `AI_TODO/<TSK>/` to `AI_DONE/<TSK>/` and, with the agent's own files on the task
  * branch, fill the `Evidence` column (ADR-0404).
  */
-export async function applyFinish(root: string, mine: LocalClaim, done: { files: string; notes: string; evidence: string[] }): Promise<boolean> {
+export async function applyFinish(
+  root: string,
+  mine: LocalClaim,
+  done: { files: string; notes: string; evidence: string[] },
+  evRoot: string,
+): Promise<boolean> {
   if (!(await dropClaim(root, mine))) return false;
-  const moved = await moveTaskEvidence(root, mine.id);
+  const moved = await moveTaskEvidence(root, mine.id, evRoot);
   await B.writeBook(root, "AI_DONE.md", B.appendDone(await B.readBook(root, "AI_DONE.md"), { id: mine.id, group: mine.task.group, depends: mine.task.depends, desc: rehomeTaskLinks(mine.task.desc, mine.id), files: done.files, evidence: evidenceCell([...moved, ...done.evidence]), notes: done.notes }));
   const attempts = await B.readAttempts(root);
   delete attempts[mine.id];
@@ -333,6 +338,7 @@ export async function applySplit(
   root: string,
   mine: LocalClaim,
   children: { desc: string; priority?: string; notes?: string; size?: string }[],
+  evRoot: string,
 ): Promise<string[] | null> {
   if (!(await dropClaim(root, mine))) return null;
   const [todo, done, prog] = await Promise.all([B.readBook(root, "AI_TODO.md"), B.readBook(root, "AI_DONE.md"), B.readBook(root, "AI_PROGRESS.md")]);
@@ -349,7 +355,7 @@ export async function applySplit(
   const { tasks } = B.parseTasks(todo);
   await B.writeBook(root, "AI_TODO.md", B.writeTasks(todo, [...tasks, ...rows]));
   // The parent's attachments follow it to AI Done (ADR-0404); the books' links are rewritten in place.
-  const moved = await moveTaskEvidence(root, mine.id);
+  const moved = await moveTaskEvidence(root, mine.id, evRoot);
   await B.writeBook(root, "AI_DONE.md", B.appendDone(await B.readBook(root, "AI_DONE.md"), { id: mine.id, group: mine.task.group, depends: mine.task.depends, desc: rehomeTaskLinks(mine.task.desc, mine.id), files: "", evidence: evidenceCell(moved), notes: `split into ${ids.join(", ")} (after repeated attempts); WIP on ${mine.branch}` }));
   const attempts = await B.readAttempts(root);
   delete attempts[mine.id];

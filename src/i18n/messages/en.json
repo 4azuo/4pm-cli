@@ -181,6 +181,7 @@
   "autoRun.timeout": "Autonomous cycle exceeded the time limit — aborting.",
   "autoRun.authFailed": "Control-channel authentication failed — the daemon rejected the token.",
   "autonomous.settingsInvalidCron": "Invalid cron schedule — use a standard 5-field expression (e.g. */10 * * * *).",
+  "autonomous.settingsInvalidDir": "Invalid folder — use a repo-relative path like .4pm/evidence (letters, digits, . _ -, no '..', not inside .git).",
   "autonomous.settingsInvalidJson": "The autonomous settings are not valid JSON.",
   "config.notObject": "config.json must be a JSON object.",
   "config.invalidJson": "Invalid JSON: {message}"

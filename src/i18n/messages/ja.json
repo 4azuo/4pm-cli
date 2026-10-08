@@ -181,6 +181,7 @@
   "autoRun.timeout": "自律サイクルが制限時間を超えました — 中止します。",
   "autoRun.authFailed": "コントロールチャネルの認証に失敗しました — デーモンがトークンを拒否しました。",
   "autonomous.settingsInvalidCron": "cron スケジュールが無効です — 標準の 5 フィールド式を使用してください（例: */10 * * * *）。",
+  "autonomous.settingsInvalidDir": "フォルダーが無効です — .4pm/evidence のようなリポジトリ相対パスを使用してください（英数字と . _ -、'..' 不可、.git 内は不可）。",
   "autonomous.settingsInvalidJson": "自律設定が有効な JSON ではありません。",
   "config.notObject": "config.json は JSON オブジェクトである必要があります。",
   "config.invalidJson": "無効な JSON: {message}"

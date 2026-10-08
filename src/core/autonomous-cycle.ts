@@ -18,6 +18,7 @@ import { cappedBookIds } from "./autonomous";
 import {
   isInQuietHours,
   readAutonomousConfig,
+  repoDirsOf,
   writeAutonomousConfig,
   type AutonomousConfig,
 } from "./autonomous-config";
@@ -38,7 +39,7 @@ import {
   wipCommit,
   type RepoBase,
 } from "./autonomous-git";
-import { agentEvidence } from "./autonomous-evidence";
+import { agentEvidence, listMockups } from "./autonomous-evidence";
 import {
   applyClaim,
   applyFinish,
@@ -80,6 +81,8 @@ export function buildIntakePrompt(cfg: AutonomousConfig): string {
   // Admin override (ADR-0381) for `cli.autonomous.intake`, else the shared registry default.
   return resolveCliPrompt("cli.autonomous.intake", {
     booksIntro: BOOKS_INTRO,
+    evidenceDir: cfg.evidenceDir,
+    mockupDir: cfg.mockupDir,
     sMaxFiles: h.sMaxFiles,
     sMaxLines: h.sMaxLines,
     mMaxFiles: h.mMaxFiles,
@@ -87,8 +90,17 @@ export function buildIntakePrompt(cfg: AutonomousConfig): string {
   });
 }
 
-/** Implementation (ADR-0371 phase 6): work + test on the prepared branches; commit only. */
-function buildImplementPrompt(mine: LocalClaim, subs: { dir: string; branch: string }[], resumed: boolean): string {
+/**
+ * Implementation (ADR-0371 phase 6): work + test on the prepared branches; commit only. `mockups` = the intake
+ * mockups of the task's group (ADR-0418) — the design reference.
+ */
+function buildImplementPrompt(
+  mine: LocalClaim,
+  subs: { dir: string; branch: string }[],
+  resumed: boolean,
+  cfg: AutonomousConfig,
+  mockups: string[],
+): string {
   const subLines = subs.length
     ? subs.map((s) => `- submodule \`${s.dir}\` is on branch \`${s.branch}\` — commit changes to it INSIDE \`${s.dir}\``).join("\n")
     : "- (no submodules)";
@@ -105,6 +117,10 @@ function buildImplementPrompt(mine: LocalClaim, subs: { dir: string; branch: str
     resumedNote,
     branch: mine.branch,
     subLines,
+    evidenceDir: cfg.evidenceDir,
+    mockupNote: mockups.length
+      ? `\nUI MOCKUPS for this task's group (the design reference — follow their layout, fields and states; do not edit them):\n${mockups.map((m) => `- \`${m}\``).join("\n")}\n`
+      : "",
   });
 }
 
@@ -321,7 +337,8 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     await writeHistories(root, hist);
     await log(`[run] cycle (tick ${hist.ticks.count}/${today})`);
 
-    const override = cfg.model ? { model: cfg.model } : undefined;
+    // The folders committed with the books: evidence roots + mockups (ADR-0418).
+    const dirs = repoDirsOf(cfg);
     let resumed = !!mine;
     if (!mine) {
       // --- Fold answered task questions into their tasks (cli) ------------------------------------
@@ -337,14 +354,14 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       if (intakeBlocked) await log("[cap] monthly AI_TODO/USER_QA limit reached — intake skipped this cycle");
       else if (await hasIntakeWork(root)) {
         const before = await cappedBookIds(root);
-        const out = await runAiPrompt(ctx, buildIntakePrompt(cfg), randomUUID(), "local", false, undefined, override, false, true);
+        const out = await runAiPrompt(ctx, buildIntakePrompt(cfg), randomUUID(), "local", false, undefined, undefined, false, true);
         if (out.exhausted) {
           await gitQuiet(root, ["checkout", "--", "."]);
           await log("[skip] usage limit during intake");
           ctx.bus.autonomousDone(false, "usage limit");
           return;
         }
-        const res = await publishIntake(root, rootBase.base, "chore(auto): intake requests into tasks");
+        const res = await publishIntake(root, rootBase.base, "chore(auto): intake requests into tasks", dirs);
         await log(`[intake] ${res}`);
         if (res === "pushed") await reportNewBookRows(ctx, root, before);
         await syncBase(root, rootBase.base);
@@ -400,7 +417,12 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     timer.unref?.();
     let out: AiPromptOutcome;
     try {
-      out = await runAiPrompt(ctx, buildImplementPrompt(mine, subs.map((s) => ({ dir: s.sub.dir, branch: s.branch })), resumed || hadWork), commandId, "local", false, undefined, override, false, true);
+      // The intake mockups of this task's group (`<mockupDir>/TSK-<group>--*.html` — ADR-0418).
+      const group = /^(TSK-\d{4})-/.exec(mine.id)?.[1] ?? "";
+      const mockups = group ? (await listMockups(root, rootBase.base, cfg.mockupDir).catch(() => [])).filter((m) => m.split("/").pop()?.startsWith(`${group}--`)) : [];
+      const prompt = buildImplementPrompt(mine, subs.map((s) => ({ dir: s.sub.dir, branch: s.branch })), resumed || hadWork, cfg, mockups);
+      // No model override: each AI profile's own model applies (ADR-0418).
+      out = await runAiPrompt(ctx, prompt, commandId, "local", false, undefined, undefined, false, true);
     } finally {
       clearInterval(timer);
     }
@@ -468,7 +490,7 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     }
     let delivered: { files: string; notes: string; evidence: string[] };
     try {
-      delivered = await deliver(root, rootBase, subs, mine, reply?.summary ?? "");
+      delivered = await deliver(root, rootBase, subs, mine, reply?.summary ?? "", cfg.evidenceDir);
     } catch (err) {
       const reason = `delivery failed: ${String(err instanceof Error ? err.message : err)}`;
       await releaseTask(ctx, root, rootBase, bases.subs, mine, reason, cfg);
@@ -478,7 +500,7 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
 
     // --- Phase 8: finish -----------------------------------------------------------------------
     await syncBase(root, rootBase.base);
-    const fin = await publishBooks(root, rootBase.base, `chore(auto): finish ${mine.id}`, () => applyFinish(root, mine!, delivered));
+    const fin = await publishBooks(root, rootBase.base, `chore(auto): finish ${mine.id}`, () => applyFinish(root, mine!, delivered, cfg.evidenceDir), { dirs });
     await writeLocalClaim(profileDir, null);
     await log(`[done] ${mine.id} — ${delivered.notes} (${fin})`);
     hist = await readHistories(root);
@@ -506,7 +528,14 @@ async function remoteClaimLost(root: string, mine: LocalClaim): Promise<boolean>
  * submodule's base; in the root commit the pointer bumps, push, and open the PR into `<base>` linking the
  * submodule PRs. Returns the AI_DONE Files + Notes.
  */
-async function deliver(root: string, rootBase: RepoBase, subs: { sub: RepoBase; branch: string }[], mine: LocalClaim, summary: string): Promise<{ files: string; notes: string; evidence: string[] }> {
+async function deliver(
+  root: string,
+  rootBase: RepoBase,
+  subs: { sub: RepoBase; branch: string }[],
+  mine: LocalClaim,
+  summary: string,
+  evRoot: string,
+): Promise<{ files: string; notes: string; evidence: string[] }> {
   const title = `${mine.id}: ${mine.task.desc}`.replace(/\s+/g, " ").slice(0, 100);
   const subPrs: string[] = [];
   for (const s of subs) {
@@ -523,7 +552,7 @@ async function deliver(root: string, rootBase: RepoBase, subs: { sub: RepoBase; 
   await wipCommit(root, `feat(${mine.id}): ${summary || mine.task.desc}`.slice(0, 200));
   const files = (await gitQuiet(root, ["diff", "--name-only", `origin/${rootBase.base}...${mine.branch}`])).split("\n").filter(Boolean);
   // The agent's own evidence on the task branch (ADR-0404) — listed in AI Done's Evidence column.
-  const evidence = await agentEvidence(root, mine.id);
+  const evidence = await agentEvidence(root, mine.id, evRoot);
   if ((await aheadOf(root, mine.branch, rootBase.base)) === 0) {
     return { files: "", notes: `no changes needed; branch: ${mine.branch}${subPrs.length ? `; sub PRs: ${subPrs.join(", ")}` : ""}`, evidence: [] };
   }
@@ -555,15 +584,21 @@ async function releaseTask(ctx: WsHandlerCtx, root: string, rootBase: RepoBase, 
       await publishBooks(root, rootBase.base, `chore(auto): ${mine.id} needs a decision`, async () => (await applyQuestion(root, mine, q, true)) !== null);
       alert(ctx, { kind: "task-failed-limit", task: mine.id, message: `${mine.id} failed ${next} times; a decision was requested in USER_QA.` });
     } else {
-      const out = await runAiPrompt(ctx, buildSplitPrompt(mine, reasons, await wipDiff(root, mine)), randomUUID(), "local", false, undefined, cfg.model ? { model: cfg.model } : undefined, true, false);
+      const out = await runAiPrompt(ctx, buildSplitPrompt(mine, reasons, await wipDiff(root, mine)), randomUUID(), "local", false, undefined, undefined, true, false);
       const children = parseJsonReply<{ children?: { desc: string; priority?: string; size?: string; notes?: string }[] }>(out.output)?.children?.filter((c) => c?.desc?.trim()) ?? [];
       await syncBase(root, rootBase.base);
       if (children.length >= 2) {
         let ids: string[] | null = null;
-        await publishBooks(root, rootBase.base, `chore(auto): split ${mine.id}`, async () => {
-          ids = await applySplit(root, mine, children);
-          return ids !== null;
-        });
+        await publishBooks(
+          root,
+          rootBase.base,
+          `chore(auto): split ${mine.id}`,
+          async () => {
+            ids = await applySplit(root, mine, children, cfg.evidenceDir);
+            return ids !== null;
+          },
+          { dirs: repoDirsOf(cfg) },
+        );
         alert(ctx, { kind: "task-split", task: mine.id, message: `${mine.id} was split into ${(ids ?? []).join(", ")} — approve the new tasks.` });
       } else {
         const q = `${mine.id} failed ${next} times and could not be split automatically — last: ${reason}. How should it be handled?`;

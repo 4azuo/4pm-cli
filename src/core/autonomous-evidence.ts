@@ -1,10 +1,11 @@
 /**
  * Book evidence in the repo (ADR-0404). Files attached to book rows live at
- * `.4pm/evidence/<BOOK>/<ROW-ID>/<k>-<name>` and are referenced from the cells as plain markdown links.
+ * `<evidenceDir>/<BOOK>/<ROW-ID>/<k>-<name>` (default `.4pm/evidence`; configurable — ADR-0418, links under an
+ * earlier root keep working) and are referenced from the cells as plain markdown links.
  * This module stages an uploaded file in the profile dir (outside the repo) until a `bookSave` commits it,
  * moves staged files into the books' worktree, prunes files no book references any more, carries a finished
  * task's evidence from AI_TODO to AI_DONE, lists the agent's own evidence on a task branch, and reads one
- * file for the web (`origin/<base>` → task branch → working tree).
+ * file for the web (`origin/<base>` → task branch → working tree) — an evidence file or an intake mockup (ADR-0418).
  */
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -16,8 +17,9 @@ import {
   EVIDENCE_BOOK_DIR,
   EVIDENCE_MAX_BYTES,
   EVIDENCE_PATH_RE,
-  EVIDENCE_ROOT,
   evidenceLinks,
+  isEvidencePath,
+  isSafeRepoDir,
   evidenceMarkdown,
   type EvidenceBookKey,
 } from "@4pm/dto";
@@ -84,17 +86,19 @@ export async function stageEvidence(profileDir: string, contentBase64: string): 
 
 /**
  * Move the staged files of a `bookSave` into the books' worktree `dir`. Each path must be a valid evidence
- * path under the saved book's own folder; a missing stage aborts the save (nothing half-committed).
+ * path under the saved book's own folder of the configured evidence root `evRoot` (ADR-0418); a missing
+ * stage aborts the save (nothing half-committed).
  */
 export async function applyStagedEvidence(
   dir: string,
   profileDir: string,
   book: EvidenceBookKey,
   items: { stageId: string; path: string }[],
+  evRoot: string,
 ): Promise<string | null> {
-  const folder = `${EVIDENCE_ROOT}/${EVIDENCE_BOOK_DIR[book]}/`;
+  const folder = `${evRoot}/${EVIDENCE_BOOK_DIR[book]}/`;
   for (const it of items) {
-    if (!isStageId(it.stageId) || !EVIDENCE_PATH_RE.test(it.path) || !it.path.startsWith(folder)) return `invalid evidence path ${it.path}`;
+    if (!isStageId(it.stageId) || !isEvidencePath(it.path) || !it.path.startsWith(folder)) return `invalid evidence path ${it.path}`;
     if (!existsSync(join(profileDir, STAGE_DIR, it.stageId))) return `staged evidence expired: ${it.path}`;
   }
   for (const it of items) {
@@ -125,6 +129,24 @@ async function removeEmptyDirs(root: string, rel: string): Promise<void> {
   if ((await readdir(join(root, rel)).catch(() => ["x"])).length === 0) await rmdir(join(root, rel)).catch(() => undefined);
 }
 
+/**
+ * The intake UI mockups (ADR-0418): `.html` files under `mockupDir` on `origin/<base>` (else the working tree),
+ * as repo paths, sorted.
+ */
+export async function listMockups(root: string, base: string | null, mockupDir: string): Promise<string[]> {
+  const keep = (paths: string[]): string[] =>
+    paths.filter((p) => p.startsWith(`${mockupDir}/`) && p.toLowerCase().endsWith(".html") && isSafeRepoDir(p)).sort();
+  if (base) {
+    try {
+      const { stdout } = await run("git", ["ls-tree", "-r", "--name-only", `origin/${base}`, "--", `${mockupDir}/`], { cwd: root });
+      return keep(stdout.split("\n").map((l) => l.trim()).filter(Boolean));
+    } catch {
+      // No remote base — fall back to the working tree.
+    }
+  }
+  return keep(await listFiles(root, mockupDir));
+}
+
 /** The text of every book in `dir` (missing ⇒ empty), joined — a file is "referenced" when its path appears. */
 async function allBooksText(dir: string): Promise<string> {
   const texts = await Promise.all(BOOK_FILES.map((f) => readFile(join(dir, f), "utf8").catch(() => "")));
@@ -140,50 +162,69 @@ export async function pruneEvidence(dir: string, book: EvidenceBookKey, prev: st
   if (book === "aiDone") return;
   const removed = evidenceLinks(prev)
     .map((l) => l.path)
-    .filter((p) => EVIDENCE_PATH_RE.test(p) && !next.includes(p));
+    .filter((p) => isEvidencePath(p) && !next.includes(p));
   if (removed.length === 0) return;
   const text = await allBooksText(dir);
   for (const f of new Set(removed)) {
     if (!text.includes(f)) await rm(join(dir, f), { force: true });
   }
-  await removeEmptyDirs(dir, `${EVIDENCE_ROOT}/${EVIDENCE_BOOK_DIR[book]}`);
+  // Each root a removed file lived under (evidence may sit under an earlier `evidenceDir` — ADR-0418).
+  for (const root of new Set(removed.map(rootOf))) await removeEmptyDirs(dir, `${root}/${EVIDENCE_BOOK_DIR[book]}`);
+}
+
+/** The evidence root of an evidence path (`<root>/<BOOK>/<ID>/<file>` → `<root>`). */
+function rootOf(path: string): string {
+  return EVIDENCE_PATH_RE.exec(path)?.[1] ?? "";
+}
+
+/** Every evidence root a task's AI_TODO files may sit under: the configured one + any linked from the books. */
+async function taskRoots(root: string, taskId: string, evRoot: string): Promise<string[]> {
+  const text = await allBooksText(root);
+  const linked = evidenceLinks(text)
+    .map((l) => l.path)
+    .filter((p) => isEvidencePath(p) && p.includes(`/AI_TODO/${taskId}/`))
+    .map(rootOf);
+  return [...new Set([evRoot, ...linked])].filter(isSafeRepoDir);
 }
 
 /**
- * Carry a finished (or split) task's attachments from `AI_TODO/<TSK>/` to `AI_DONE/<TSK>/` and rewrite the
- * links in every book; returns the moved paths (new locations). No folder ⇒ nothing to do.
+ * Carry a finished (or split) task's attachments from `<root>/AI_TODO/<TSK>/` to `<root>/AI_DONE/<TSK>/` and
+ * rewrite the links in every book; returns the moved paths (new locations). Each evidence root the task uses is
+ * handled in place (ADR-0418). No folder ⇒ nothing to do.
  */
-export async function moveTaskEvidence(root: string, taskId: string): Promise<string[]> {
-  const from = `${EVIDENCE_ROOT}/AI_TODO/${taskId}`;
-  const to = `${EVIDENCE_ROOT}/AI_DONE/${taskId}`;
-  const files = await listFiles(root, from);
-  if (files.length === 0) return [];
+export async function moveTaskEvidence(root: string, taskId: string, evRoot: string): Promise<string[]> {
   const moved: string[] = [];
-  for (const f of files) {
-    const dest = `${to}/${f.slice(from.length + 1)}`;
-    await mkdir(dirname(join(root, dest)), { recursive: true });
-    await rename(join(root, f), join(root, dest));
-    moved.push(dest);
-  }
-  await removeEmptyDirs(root, `${EVIDENCE_ROOT}/AI_TODO`);
-  for (const b of BOOK_FILES) {
-    const p = join(root, b);
-    const text = await readFile(p, "utf8").catch(() => null);
-    if (text !== null && text.includes(`${from}/`)) await writeFile(p, text.replaceAll(`${from}/`, `${to}/`), "utf8");
+  for (const evr of await taskRoots(root, taskId, evRoot)) {
+    const from = `${evr}/AI_TODO/${taskId}`;
+    const to = `${evr}/AI_DONE/${taskId}`;
+    const files = await listFiles(root, from);
+    if (files.length === 0) continue;
+    for (const f of files) {
+      const dest = `${to}/${f.slice(from.length + 1)}`;
+      await mkdir(dirname(join(root, dest)), { recursive: true });
+      await rename(join(root, f), join(root, dest));
+      moved.push(dest);
+    }
+    await removeEmptyDirs(root, `${evr}/AI_TODO`);
+    for (const b of BOOK_FILES) {
+      const p = join(root, b);
+      const text = await readFile(p, "utf8").catch(() => null);
+      if (text !== null && text.includes(`${from}/`)) await writeFile(p, text.replaceAll(`${from}/`, `${to}/`), "utf8");
+    }
   }
   return moved;
 }
 
-/** Rewrite a task's AI_TODO evidence links to their AI_DONE location (for in-memory copies of a cell). */
+/** Rewrite a task's AI_TODO evidence links (under any root) to their AI_DONE location (in-memory copies of a cell). */
 export function rehomeTaskLinks(text: string, taskId: string): string {
-  return text.replaceAll(`${EVIDENCE_ROOT}/AI_TODO/${taskId}/`, `${EVIDENCE_ROOT}/AI_DONE/${taskId}/`);
+  return text.replaceAll(`/AI_TODO/${taskId}/`, `/AI_DONE/${taskId}/`);
 }
 
-/** The agent's own evidence committed on the task branch (`AI_DONE/<TSK>/…` at HEAD of `cwd`). */
-export async function agentEvidence(cwd: string, taskId: string): Promise<string[]> {
+/** The agent's own evidence committed on the task branch (`<evRoot>/AI_DONE/<TSK>/…` at HEAD of `cwd`). */
+export async function agentEvidence(cwd: string, taskId: string, evRoot: string): Promise<string[]> {
   try {
-    const { stdout } = await run("git", ["ls-tree", "-r", "--name-only", "HEAD", "--", `${EVIDENCE_ROOT}/AI_DONE/${taskId}/`], { cwd });
-    return stdout.split("\n").map((l) => l.trim()).filter((l) => EVIDENCE_PATH_RE.test(l));
+    const { stdout } = await run("git", ["ls-tree", "-r", "--name-only", "HEAD", "--", `${evRoot}/AI_DONE/${taskId}/`], { cwd });
+    return stdout.split("\n").map((l) => l.trim()).filter((l) => isEvidencePath(l));
   } catch {
     return [];
   }
@@ -205,11 +246,18 @@ async function showBytes(root: string, rev: string, path: string): Promise<Buffe
 }
 
 /**
- * Read one evidence file for the web (machine-0073): `origin/<base>` first, then `origin/<ref>` (a task
- * branch whose PR is not merged yet), then the working tree.
+ * Read one evidence file — or an intake mockup (`<mockupDir>/….html`, ADR-0418) — for the web (machine-0073):
+ * `origin/<base>` first, then `origin/<ref>` (a task branch whose PR is not merged yet), then the working tree.
  */
-export async function readEvidenceFile(root: string, base: string | null, path: string, ref?: string): Promise<AutonomousEvidenceReply> {
-  if (!EVIDENCE_PATH_RE.test(path)) return { error: "invalid evidence path" };
+export async function readEvidenceFile(
+  root: string,
+  base: string | null,
+  path: string,
+  ref: string | undefined,
+  mockupDir: string,
+): Promise<AutonomousEvidenceReply> {
+  const mockup = isSafeRepoDir(path) && path.startsWith(`${mockupDir}/`) && path.toLowerCase().endsWith(".html");
+  if (!isEvidencePath(path) && !mockup) return { error: "invalid evidence path" };
   if (ref && !/^[A-Za-z0-9._/-]{1,200}$/.test(ref)) return { error: "invalid ref" };
   let bytes: Buffer | null = null;
   if (base) bytes = await showBytes(root, `origin/${base}`, path);

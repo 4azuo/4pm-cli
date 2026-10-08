@@ -379,8 +379,9 @@ export interface ProjectAiScopeSettings {
  * Per-project git-auth method for the worker (ADR-0192 §4). `self` = the worker uses its own
  * gh/glab credentials (self-host default); `deploy-key` = legacy alias of `self` (ADR-0221);
  * `github-app` = the server mints per-job GitHub-App installation tokens from the project's App
- * credential (ADR-0356, stored in its own table — never in settings); `gitlab-group-token` stays
- * disabled (no mint backend).
+ * credential (ADR-0356, stored in its own table — never in settings); `gitlab-group-token` = the
+ * server serves the project's stored GitLab group token to the worker's git helper / `glab` shim
+ * (ADR-0382, stored encrypted in its own table — never in settings; served as-is, not minted).
  */
 export const GIT_AUTH_METHODS = ["self", "deploy-key", "gitlab-group-token", "github-app"] as const;
 export type GitAuthMethod = (typeof GIT_AUTH_METHODS)[number];

@@ -352,6 +352,32 @@ export interface WorkerCliUpdateError {
   at: string;
 }
 
+/** One worker a bulk cli update pushed `cli.update` to (ADR-0413). */
+export interface CliUpdateAllTarget {
+  /** Machine-link id (web, machine-0074) or pool user id (admin, admin-0140/0141). */
+  id: string;
+  /** Display name (username / alias). */
+  label: string;
+}
+
+/** Why an online, outdated worker was not pushed by a bulk cli update (ADR-0413). */
+export type CliUpdateAllSkipReason = "autonomous" | "failed";
+
+/** One online, outdated worker a bulk cli update skipped (ADR-0413). */
+export interface CliUpdateAllSkip extends CliUpdateAllTarget {
+  reason: CliUpdateAllSkipReason;
+}
+
+/**
+ * Result of a bulk "Update all CLIs" (machine-0074, admin-0140/0141 — ADR-0413): the workers that were
+ * online + behind the latest release and got `cli.update`, plus the ones skipped. Empty `queued` = no
+ * online worker needs an update.
+ */
+export interface CliUpdateAllResponse {
+  queued: CliUpdateAllTarget[];
+  skipped: CliUpdateAllSkip[];
+}
+
 /**
  * Project the last cli self-update FAILURE from a machine link's `usageSnapshot` JSON (ADR-0305).
  * Returns null when there is none. Callers gate on `cliOutdated` so a stale failure disappears once
@@ -1023,16 +1049,39 @@ export interface TaskApproveBatchResponse {
 export const EVIDENCE_MAX_BYTES = 5 * 1024 * 1024;
 /** Max new evidence files committed by one book save. */
 export const EVIDENCE_MAX_PER_SAVE = 20;
-/** Repo-relative root of every book evidence file. */
+/** Default repo-relative root of book evidence files (configurable per worker — `evidenceDir`, ADR-0418). */
 export const EVIDENCE_ROOT = ".4pm/evidence";
+/** Default repo-relative folder of intake UI mockups (`mockupDir`, ADR-0418). */
+export const MOCKUP_ROOT = ".4pm/mockups";
 /** The evidence folder of each book (by its `bookSave` key). */
 export const EVIDENCE_BOOK_DIR = { userTodo: "USER_TODO", userQa: "USER_QA", aiTodo: "AI_TODO", aiDone: "AI_DONE" } as const;
 export type EvidenceBookKey = keyof typeof EVIDENCE_BOOK_DIR;
-/** A valid evidence path: `.4pm/evidence/<BOOK>/<ROW-ID>/<file>` (groups: book, row id, file). */
+/**
+ * A safe repo-relative folder (`evidenceDir` / `mockupDir`, ADR-0418): `[A-Za-z0-9._-]` segments separated by
+ * `/`, no `.`/`..` segment, no leading/trailing `/`, not inside `.git`.
+ */
+export function isSafeRepoDir(dir: string): boolean {
+  if (!/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(dir) || dir.length > 200) return false;
+  const segs = dir.split("/");
+  return !segs.some((s) => s === "." || s === "..") && segs[0] !== ".git";
+}
+/** A safe repo-relative file path (machine-0073 query): a safe folder + a file name. */
+export const SAFE_REPO_PATH_RE = /^(?!\.git\/)(?!.*(?:^|\/)\.{1,2}\/)[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+){0,15}$/;
+/**
+ * A valid evidence path under ANY root (ADR-0418 — links keep working after `evidenceDir` changes):
+ * `<root>/<BOOK>/<ROW-ID>/<file>` (groups: root, book, row id, file).
+ */
 export const EVIDENCE_PATH_RE =
-  /^\.4pm\/evidence\/(USER_TODO|USER_QA|AI_TODO|AI_DONE)\/([A-Z]+-\d{4}-\d{4})\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
-/** A markdown link / image whose target is an evidence path (groups: `!`, label, path). */
-const EVIDENCE_LINK_RE = /(!?)\[([^\]\n]*)\]\(<?(\.4pm\/evidence\/[^)>\s]+)>?\)/g;
+  /^((?:[A-Za-z0-9._-]+\/){0,8}?[A-Za-z0-9._-]+)\/(USER_TODO|USER_QA|AI_TODO|AI_DONE)\/([A-Z]+-\d{4}-\d{4})\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
+/** A markdown link / image whose target is an evidence path under any root (groups: `!`, label, path). */
+const EVIDENCE_LINK_RE =
+  /(!?)\[([^\]\n]*)\]\(<?((?:[A-Za-z0-9._-]+\/){1,9}(?:USER_TODO|USER_QA|AI_TODO|AI_DONE)\/[A-Z]+-\d{4}-\d{4}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})>?\)/g;
+
+/** True when `path` is an evidence path that is safe to read/write (any root, no `..` / `.git`). */
+export function isEvidencePath(path: string): boolean {
+  const m = EVIDENCE_PATH_RE.exec(path);
+  return Boolean(m && isSafeRepoDir(m[1] ?? ""));
+}
 
 /** One evidence link found in a cell. */
 export interface EvidenceLink {
@@ -1056,9 +1105,9 @@ export function evidenceSlug(name: string): string {
   return (s || "file").slice(-100);
 }
 
-/** The repo path of the `k`-th evidence file of a row. */
-export function evidencePath(book: EvidenceBookKey, rowId: string, k: number, name: string): string {
-  return `${EVIDENCE_ROOT}/${EVIDENCE_BOOK_DIR[book]}/${rowId}/${k}-${evidenceSlug(name)}`;
+/** The repo path of the `k`-th evidence file of a row under the evidence `root` (ADR-0418). */
+export function evidencePath(root: string, book: EvidenceBookKey, rowId: string, k: number, name: string): string {
+  return `${root}/${EVIDENCE_BOOK_DIR[book]}/${rowId}/${k}-${evidenceSlug(name)}`;
 }
 
 /** The markdown for an evidence file — an image link for images, a plain link otherwise. */
@@ -1090,7 +1139,8 @@ export function nextEvidenceNumber(text: string, folder: string): number {
 
 /** Query GET /machines/:id/autonomous/evidence — read one committed evidence file (machine-0073). */
 export const autonomousEvidenceQuerySchema = z.object({
-  path: z.string().regex(EVIDENCE_PATH_RE),
+  // Any safe repo path — the cli decides what may be read (an evidence path or a mockup — ADR-0418).
+  path: z.string().max(400).regex(SAFE_REPO_PATH_RE),
   // A task branch to fall back to (an AI Done row whose PR is not merged yet).
   ref: z.string().regex(/^[A-Za-z0-9._/-]{1,200}$/).optional(),
 });

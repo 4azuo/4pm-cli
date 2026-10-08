@@ -181,6 +181,7 @@
   "autoRun.timeout": "Chu kỳ tự động vượt quá giới hạn thời gian — đang hủy.",
   "autoRun.authFailed": "Xác thực kênh điều khiển thất bại — daemon từ chối token.",
   "autonomous.settingsInvalidCron": "Lịch cron không hợp lệ — hãy dùng biểu thức 5 trường chuẩn (vd. */10 * * * *).",
+  "autonomous.settingsInvalidDir": "Thư mục không hợp lệ — dùng đường dẫn tương đối trong repo như .4pm/evidence (chữ, số, . _ -, không có '..', không nằm trong .git).",
   "autonomous.settingsInvalidJson": "Cấu hình tự hành không phải JSON hợp lệ.",
   "config.notObject": "config.json phải là một đối tượng JSON.",
   "config.invalidJson": "JSON không hợp lệ: {message}"

@@ -19,7 +19,7 @@ import { attachSubmoduleBranches } from "./submodule-branch";
 const run = promisify(execFile);
 
 /**
- * The book files + sidecars — with the evidence folder (`addEvidence`, ADR-0404) the ONLY paths ever pushed
+ * The book files + sidecars — with the evidence / mockup folders (`addRepoDirs`, ADR-0404/0418) the ONLY paths ever pushed
  * straight to `<base>` (ADR-0371 §1).
  */
 export const BOOK_PATHS = [
@@ -34,12 +34,15 @@ export const BOOK_PATHS = [
 ];
 
 /**
- * Stage the book evidence folder (ADR-0404) — additions, edits and deletions. Separate from `BOOK_PATHS`
- * so an absent folder (nothing to commit) never fails the books' own `git add`.
+ * Stage the folders committed with the books — the evidence roots (ADR-0404/0418) and the intake mockups
+ * (ADR-0418): additions, edits and deletions. Separate from `BOOK_PATHS` so an absent folder (nothing to
+ * commit) never fails the books' own `git add`. `dirs` defaults to the default evidence root.
  */
-async function addEvidence(root: string): Promise<void> {
-  const tracked = (await gitQuiet(root, ["ls-files", "--", EVIDENCE_ROOT])).trim();
-  if (tracked || existsSync(join(root, EVIDENCE_ROOT))) await gitQuiet(root, ["add", "-A", "--", EVIDENCE_ROOT]);
+async function addRepoDirs(root: string, dirs: string[] = [EVIDENCE_ROOT]): Promise<void> {
+  for (const d of dirs) {
+    const tracked = (await gitQuiet(root, ["ls-files", "--", d])).trim();
+    if (tracked || existsSync(join(root, d))) await gitQuiet(root, ["add", "-A", "--", d]);
+  }
 }
 
 /** Run git; throws (with stderr in the message) on failure. */
@@ -162,7 +165,7 @@ export async function publishBooks(
   base: string,
   message: string,
   change: () => Promise<boolean>,
-  opts: { detach?: boolean } = {},
+  opts: { detach?: boolean; dirs?: string[] } = {},
 ): Promise<PublishResult> {
   for (let attempt = 1; attempt <= 5; attempt++) {
     await git(root, ["fetch", "-q", "origin", base]).catch(() => undefined);
@@ -173,7 +176,7 @@ export async function publishBooks(
     }
     if (!(await change())) return "aborted";
     await gitQuiet(root, ["add", "--", ...BOOK_PATHS.filter((p) => existsSync(join(root, p)))]);
-    await addEvidence(root);
+    await addRepoDirs(root, opts.dirs);
     const staged = (await gitQuiet(root, ["diff", "--cached", "--name-only"])).trim();
     if (!staged) return "unchanged";
     await git(root, ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "commit", "-q", "-m", message]);
@@ -194,9 +197,10 @@ export async function publishBooks(
  * on a rejection rebase onto the fresh `<base>` once more; a conflict aborts and discards this intake
  * (it re-runs next cycle).
  */
-export async function publishIntake(root: string, base: string, message: string): Promise<PublishResult> {
+export async function publishIntake(root: string, base: string, message: string, dirs?: string[]): Promise<PublishResult> {
   await gitQuiet(root, ["add", "--", ...BOOK_PATHS.filter((p) => existsSync(join(root, p)))]);
-  await addEvidence(root);
+  // The evidence roots + the mockup folder the intake agent may write (ADR-0418).
+  await addRepoDirs(root, dirs);
   const staged = (await gitQuiet(root, ["diff", "--cached", "--name-only"])).trim();
   // Anything else the agent touched is not intake — drop it (intake edits the books only).
   await gitQuiet(root, ["checkout", "--", "."]);
@@ -284,13 +288,19 @@ export async function deliverPr(cwd: string, url: string, branch: string, base: 
  * temporary detached worktree of `origin/<base>` runs `publishBooks`, then is removed. `fn` edits the
  * books under the given dir and returns false to abort. Returns "unchanged" when `<base>` has no remote.
  */
-export async function mutateBooksOnBase(root: string, base: string, message: string, fn: (dir: string) => Promise<boolean>): Promise<PublishResult> {
+export async function mutateBooksOnBase(
+  root: string,
+  base: string,
+  message: string,
+  fn: (dir: string) => Promise<boolean>,
+  dirs?: string[],
+): Promise<PublishResult> {
   await git(root, ["fetch", "-q", "origin", base]).catch(() => undefined);
   if (!(await hasRemoteBranch(root, base))) return "unchanged";
   const dir = join(root, ".git", `4pm-books-${process.pid}-${Date.now()}`);
   await git(root, ["worktree", "add", "-q", "--detach", dir, `origin/${base}`]);
   try {
-    return await publishBooks(dir, base, message, () => fn(dir), { detach: true });
+    return await publishBooks(dir, base, message, () => fn(dir), { detach: true, dirs });
   } finally {
     await gitQuiet(root, ["worktree", "remove", "--force", dir]);
     await gitQuiet(root, ["worktree", "prune"]);

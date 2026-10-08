@@ -4,10 +4,13 @@
  * `~/.4pm/profiles/<name>/autonomous.config.json` — the **profile dir**, next to `config.json` and
  * OUTSIDE any project repo, so the autonomous *parameters* never ship in a checkout and the *logic*
  * lives only in this cli. Read by the daemon each cycle; edited from the web Autonomous → Settings tab.
+ * ADR-0418: `evidenceDir` / `mockupDir` folders; the old `model` knob is gone (each AI profile's model applies)
+ * and is dropped on the next save.
  */
 import { readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { EVIDENCE_ROOT, MOCKUP_ROOT, isSafeRepoDir } from "@4pm/dto";
 
 /** The autonomous knobs (parameters only — no logic). */
 export interface AutonomousConfig {
@@ -23,8 +26,6 @@ export interface AutonomousConfig {
   stopOnConsecutiveFailures: number;
   /** Delete per-day tick logs older than N days (0 = keep forever). */
   logRetentionDays: number;
-  /** Empty = the AI CLI's default model; else an id to force for the loop. */
-  model: string;
   /** Skip the cycle when the 5h-session utilization is at/over this % (ADR-0321 quota gate). */
   maxSessionPct: number;
   /** Skip the cycle when the 7-day utilization is at/over this % (ADR-0321 quota gate). */
@@ -37,6 +38,10 @@ export interface AutonomousConfig {
   maxTaskAttempts: number;
   /** Indicative S/M size hints for intake (ADR-0371 §6) — guidance for the agent, not hard caps. */
   taskSizeHints: { sMaxFiles: number; sMaxLines: number; mMaxFiles: number; mMaxLines: number };
+  /** Repo-relative folder of new book evidence files (ADR-0418; default `.4pm/evidence`). */
+  evidenceDir: string;
+  /** Repo-relative folder of the intake UI mockups (ADR-0418; default `.4pm/mockups`). */
+  mockupDir: string;
 }
 
 /** Defaults when the file is absent or a field is missing. */
@@ -47,13 +52,14 @@ export const DEFAULT_AUTONOMOUS_CONFIG: AutonomousConfig = {
   maxTicksPerDay: -1,
   stopOnConsecutiveFailures: 3,
   logRetentionDays: 14,
-  model: "",
   maxSessionPct: 80,
   maxWeeklyPct: 90,
   claimTtlHours: 6,
   claimCheckMinutes: 10,
   maxTaskAttempts: 5,
   taskSizeHints: { sMaxFiles: 5, sMaxLines: 300, mMaxFiles: 20, mMaxLines: 1500 },
+  evidenceDir: EVIDENCE_ROOT,
+  mockupDir: MOCKUP_ROOT,
 };
 
 /** The config file path under a profile dir. */
@@ -67,6 +73,11 @@ function coerce(raw: unknown): AutonomousConfig {
   const d = DEFAULT_AUTONOMOUS_CONFIG;
   const num = (v: unknown, def: number): number => (typeof v === "number" && Number.isFinite(v) ? v : def);
   const str = (v: unknown, def: string): string => (typeof v === "string" ? v : def);
+  // A folder must be a safe repo-relative path (ADR-0418); anything else falls back to the default.
+  const dir = (v: unknown, def: string): string => {
+    const t = typeof v === "string" ? v.trim().replace(/\/+$/, "") : "";
+    return t && isSafeRepoDir(t) ? t : def;
+  };
   return {
     paused: typeof o.paused === "boolean" ? o.paused : d.paused,
     cronSchedule: str(o.cronSchedule, d.cronSchedule),
@@ -74,7 +85,6 @@ function coerce(raw: unknown): AutonomousConfig {
     maxTicksPerDay: num(o.maxTicksPerDay, d.maxTicksPerDay),
     stopOnConsecutiveFailures: num(o.stopOnConsecutiveFailures, d.stopOnConsecutiveFailures),
     logRetentionDays: num(o.logRetentionDays, d.logRetentionDays),
-    model: str(o.model, d.model),
     maxSessionPct: num(o.maxSessionPct, d.maxSessionPct),
     maxWeeklyPct: num(o.maxWeeklyPct, d.maxWeeklyPct),
     claimTtlHours: Math.max(1, num(o.claimTtlHours, d.claimTtlHours)),
@@ -90,6 +100,8 @@ function coerce(raw: unknown): AutonomousConfig {
         mMaxLines: num(h.mMaxLines, dh.mMaxLines),
       };
     })(),
+    evidenceDir: dir(o.evidenceDir, d.evidenceDir),
+    mockupDir: dir(o.mockupDir, d.mockupDir),
   };
 }
 
@@ -131,6 +143,11 @@ export async function writeAutonomousConfig(profileDir: string, raw: unknown): P
 export async function pauseAutonomous(profileDir: string): Promise<void> {
   const cfg = await readAutonomousConfig(profileDir);
   if (!cfg.paused) await writeAutonomousConfig(profileDir, { ...cfg, paused: true });
+}
+
+/** The repo folders the cli commits with the books: every evidence root in use + the mockup folder (ADR-0418). */
+export function repoDirsOf(cfg: Pick<AutonomousConfig, "evidenceDir" | "mockupDir">): string[] {
+  return [...new Set([EVIDENCE_ROOT, cfg.evidenceDir, cfg.mockupDir])];
 }
 
 /** True when `now` (local) falls inside the `HH:MM-HH:MM` quiet-hours window (supports crossing midnight). */

@@ -19,16 +19,18 @@ import type {
   AutonomousWriteReply,
   AutonomousWriteRequest,
 } from "@4pm/ws";
+import { isSafeRepoDir } from "@4pm/dto";
 import {
   readAutonomousConfig,
   readAutonomousConfigSync,
   readAutonomousConfigText,
+  repoDirsOf,
   writeAutonomousConfig,
 } from "./autonomous-config";
 import { readHistories } from "./autonomous-history";
 import { ATTEMPTS_REL, findTables, replaceRows } from "./autonomous-books";
 import { mutateBooksOnBase, readBaseFile, resolveBases } from "./autonomous-git";
-import { applyStagedEvidence, pruneEvidence, readEvidenceFile, stageEvidence } from "./autonomous-evidence";
+import { applyStagedEvidence, listMockups, pruneEvidence, readEvidenceFile, stageEvidence } from "./autonomous-evidence";
 import { isValidCronSchedule, reloadAutonomousSchedule } from "./autonomous-scheduler";
 import { t } from "../i18n";
 
@@ -170,18 +172,21 @@ export async function readAutonomous(root: string, profileDir: string): Promise<
     const remote = base ? await readBaseFile(root, base, rel) : null;
     return remote === null ? readText(join(root, rel), fallback) : remote || fallback;
   };
-  const [settings, approvals, authors, attempts, status, ...books] = await Promise.all([
+  const cfg = await readAutonomousConfig(profileDir);
+  const [settings, approvals, authors, attempts, mockups, status, ...books] = await Promise.all([
     readAutonomousConfigText(profileDir),
     read(APPROVALS_REL, "{}"),
     read(AUTHORS_REL, "{}"),
     read(ATTEMPTS_REL, "{}"),
+    // Intake UI mockups (ADR-0418) — the AI Todo rows offer a viewer for their group's files.
+    listMockups(root, base || null, cfg.mockupDir).catch(() => [] as string[]),
     getAutonomousStatus(root, profileDir),
     ...Object.values(BOOK_FILES).map((f) => read(f)),
   ]);
   const keys = Object.keys(BOOK_FILES) as (keyof AutonomousBooks)[];
   const bookMap = {} as AutonomousBooks;
   keys.forEach((k, i) => (bookMap[k] = books[i] ?? ""));
-  return { settings, status, books: bookMap, approvals, authors, attempts };
+  return { settings, status, books: bookMap, approvals, authors, attempts, mockups };
 }
 
 /** autonomous.logs — tail one day's tick log (default today). */
@@ -254,7 +259,7 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
       const file = BOOK_FILES[req.book];
       // Evidence (ADR-0404): move the staged files in first — a missing/invalid one aborts the whole save.
       if (req.evidence?.length) {
-        const bad = await applyStagedEvidence(dir, profileDir, req.book, req.evidence);
+        const bad = await applyStagedEvidence(dir, profileDir, req.book, req.evidence, (await readAutonomousConfig(profileDir)).evidenceDir);
         if (bad) return { ok: false, error: bad };
       }
       // AI Done is cli-written history (ADR-0400): the web only saves its `AI verify` verdicts there — no
@@ -307,6 +312,11 @@ export async function writeAutonomous(
       if (typeof parsed.cronSchedule === "string" && !isValidCronSchedule(parsed.cronSchedule)) {
         return { ok: false, error: t("autonomous.settingsInvalidCron") };
       }
+      // Evidence / mockup folders must be safe repo-relative paths (ADR-0418); empty ⇒ the default.
+      for (const k of ["evidenceDir", "mockupDir"] as const) {
+        const v = typeof parsed[k] === "string" ? (parsed[k] as string).trim().replace(/\/+$/, "") : "";
+        if (v && !isSafeRepoDir(v)) return { ok: false, error: t("autonomous.settingsInvalidDir") };
+      }
       await writeAutonomousConfig(profileDir, parsed);
       await reloadAutonomousSchedule(); // a schedule change takes effect at once (ADR-0392)
     } else if (req.kind === "evidenceStage") {
@@ -320,10 +330,16 @@ export async function writeAutonomous(
       const base = (await resolveBases(root).catch(() => null))?.root.base ?? "";
       let res: WebWrite | undefined;
       const pub = base
-        ? await mutateBooksOnBase(root, base, `chore(web): ${req.kind} by ${req.byLabel ?? by}`, async (dir) => {
-            res = await applyWebWrite(dir, profileDir, req, by);
-            return res.ok;
-          })
+        ? await mutateBooksOnBase(
+            root,
+            base,
+            `chore(web): ${req.kind} by ${req.byLabel ?? by}`,
+            async (dir) => {
+              res = await applyWebWrite(dir, profileDir, req, by);
+              return res.ok;
+            },
+            repoDirsOf(await readAutonomousConfig(profileDir)),
+          )
         : "unchanged";
       if (res === undefined) res = await applyWebWrite(root, profileDir, req, by); // no remote base ⇒ working tree
       else if (pub === "failed") return { ok: false, error: "could not push the change to the base branch (retry)" };
@@ -336,11 +352,12 @@ export async function writeAutonomous(
   }
 }
 
-/** Read one committed book evidence file for the web (machine-0073, ADR-0404). */
-export async function readAutonomousEvidence(root: string, req: AutonomousEvidenceRequest): Promise<AutonomousEvidenceReply> {
+/** Read one committed book evidence file — or an intake mockup (ADR-0418) — for the web (machine-0073, ADR-0404). */
+export async function readAutonomousEvidence(root: string, profileDir: string, req: AutonomousEvidenceRequest): Promise<AutonomousEvidenceReply> {
   try {
     const base = (await resolveBases(root).catch(() => null))?.root.base ?? null;
-    return await readEvidenceFile(root, base, req.path, req.ref);
+    const { mockupDir } = await readAutonomousConfig(profileDir);
+    return await readEvidenceFile(root, base, req.path, req.ref, mockupDir);
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };
   }
