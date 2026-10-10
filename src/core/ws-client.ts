@@ -67,6 +67,9 @@ import { configureGitAuth } from "./git/git-auth";
 import { setPromptOverrides } from "./ai/prompt-overrides";
 import { setMcpServers } from "../utils/agent-mcp";
 import { loadApprovalTrust, setApprovalTrust } from "./autonomous/autonomous-approvals";
+import { egressCapability, setEgressEndpoints, setEgressMcpUrls, setEgressRepos, setNetworkPolicy } from "./network/egress-state";
+import { startEgressProxy } from "./network/egress-proxy";
+import { setEgressEventSink } from "./network/egress-events";
 import { startGitSnapshots } from "./git/git-snapshot";
 import { projectFolder, readProfileConfig, writeProfileConfig } from "../config/profile";
 import { detectWorkerTools } from "./worker/worker-tools";
@@ -298,6 +301,14 @@ export class WsClient {
     // Signed approvals (ADR-0438): enforce the last received server keys from the first tick on, even
     // before this process connects.
     loadApprovalTrust(context.profileDir);
+    // Networks (ADR-0439): the loopback egress proxy every agent process is pointed at, and the sink of
+    // its aggregated decisions (sent only while connected — buffered otherwise).
+    void startEgressProxy();
+    setEgressEventSink((payload) => {
+      if (!this.socket || !this.sessionKey) return false;
+      this.send(WsChannels.NETWORK_EVENTS, payload, null);
+      return true;
+    });
     this.updateScheduler = new UpdateScheduler(
       context.credential.serverUrl,
       context.profileDir,
@@ -663,6 +674,10 @@ export class WsClient {
         // Signed approvals (ADR-0438): the server's public keys + the served project bound into each
         // signature; absent ⇒ keep the stored trust (never a downgrade).
         setApprovalTrust(token.approvalKeys, token.approvalProjectId, this.context.profileDir);
+        // Networks (ADR-0439): the served project's egress policy + what counts as a system host.
+        setNetworkPolicy(token.network);
+        setEgressMcpUrls(mcpRemoteUrls(token.mcpServers));
+        setEgressRepos((token.repos ?? []).map((r) => r.url ?? ""));
         // Admin-edited overrides for cli-built prompts (ADR-0381): apply override-or-built-in on each
         // prompt build. Platform-wide; refreshed every ws_token, cleared when the server sends none.
         setPromptOverrides(token.promptOverrides ?? null);
@@ -702,6 +717,7 @@ export class WsClient {
         // `replace(/^http/,"ws")` maps http→ws / https→wss and is a no-op on a ws(s):// base.
         const wsBase = this.credential.wsUrl ?? this.credential.serverUrl;
         const wsUrl = wsBase.replace(/^http/, "ws") + "/ws";
+        setEgressEndpoints([this.credential.serverUrl, wsBase]);
         // Plaintext WS to a non-local host ⇒ the ws_token + session travel unauthenticated
         // (the ECDH handshake doesn't authenticate the server — ADR-0194 finding #1). Hard-block
         // and stop for good (no reconnect loop over an insecure link); opt out only on a trusted
@@ -1059,6 +1075,11 @@ export class WsClient {
       aiAccounts: aiAccountLabels(config),
       // Update-locked image (ADR-0432/0434) — the web Locked badge + the server's update gate.
       cliUpdateLocked: cliUpdateLocked(),
+      // Egress enforcement (ADR-0439): `container` when the launcher installed the agent-uid rules.
+      ...(() => {
+        const cap = egressCapability();
+        return { egress: cap.egress, ...(cap.reason ? { egressReason: cap.reason } : {}) };
+      })(),
     });
   }
 
@@ -1359,4 +1380,9 @@ export class WsClient {
     deleteCredential(this.context.profileDir);
     this.bus.log(t("error.linkInvalid", { reason }), "error");
   }
+}
+
+/** The URLs of the approved http/sse MCP servers (system egress hosts — ADR-0439). */
+function mcpRemoteUrls(list: { definition: unknown }[] | undefined): string[] {
+  return (list ?? []).map((m) => (m.definition as { url?: unknown } | null)?.url).filter((u): u is string => typeof u === "string");
 }

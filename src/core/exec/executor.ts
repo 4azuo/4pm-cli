@@ -14,6 +14,7 @@ import {
 import { endGitScope, JOB_ID_ENV } from "../git/git-auth";
 import { agentProcessEnv, agentSpawnArgs } from "../agent/agent-spawn";
 import { agentUser } from "../../utils/agent-user";
+import { egressEnv } from "../network/egress-env";
 
 /** Grace period after SIGTERM before a hard SIGKILL when a run is timed out. @adr 0243 */
 const KILL_GRACE_MS = 5_000;
@@ -77,7 +78,9 @@ export async function runCommand(
   let child: ReturnType<typeof spawn>;
   try {
     // FOURPM_JOB_ID scopes the git helper / gh shim tokens to this run (ADR-0356).
-    const env = { ...(opts?.baseEnv ?? process.env), ...dispatch.env, [JOB_ID_ENV]: dispatch.commandId };
+    const env0 = { ...(opts?.baseEnv ?? process.env), ...dispatch.env, [JOB_ID_ENV]: dispatch.commandId };
+    // Egress (ADR-0439): this run's own proxy token, so its connections are logged under its id.
+    const env = { ...env0, ...egressEnv(env0, { runId: dispatch.commandId }) };
     // Uid separation (ADR-0430): every dispatched command — AI run, raw Console command, Git-tab op — runs
     // as the agent user; a raw command's env is allow-listed like an AI run's. No-op when separation is off.
     const run = agentUser()

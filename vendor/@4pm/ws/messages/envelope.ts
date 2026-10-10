@@ -1603,6 +1603,8 @@ export interface NetworkPolicyPush {
   deny: { target: string; port: number | null }[];
   /** Org denylist alone — applied to the cli's project-less runs (support, FAQ, research…). */
   orgDeny: { target: string; port: number | null }[];
+  /** The served project the policy belongs to (events are attributed to it); null = none. */
+  projectId: string | null;
 }
 
 /** One aggregated egress decision (per run × host × port × decision × minute). @adr 0439 */

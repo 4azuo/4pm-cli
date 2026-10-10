@@ -120,7 +120,7 @@ function runOnce(
       "default",
     ];
     // Allow-listed env (ADR-0421): the cli's own secrets never reach the agent.
-    const env = agentEnv(extraEnv, profile ? { CLAUDE_CONFIG_DIR: profile.dir } : undefined);
+    const env = agentEnv(extraEnv, profile ? { CLAUDE_CONFIG_DIR: profile.dir } : undefined, { kind: "projectless" });
     // The AI CLI always runs as the agent user when uid separation is on (ADR-0430).
     const run = agentSpawnArgs(cmd, args, env);
     const child = spawn(run.cmd, run.args, { stdio: ["pipe", "pipe", "pipe"], cwd, env: run.env });

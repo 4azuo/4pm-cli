@@ -33,6 +33,7 @@ import { setMcpServers } from "../../../utils/agent-mcp";
 import { logger } from "../../../common/logger/logger";
 import type { WsHandlerCtx } from "../context";
 import { t } from "../../../i18n";
+import { setEgressMcpUrls, setNetworkPolicy } from "../../network/egress-state";
 
 /** Route the project-lifecycle channels; returns true when the message was handled. */
 export function handleProjectChannels(
@@ -110,7 +111,12 @@ export function handleProjectChannels(
       // an older server that doesn't send it ⇒ leave git-auth as the last ws_token set it.
       if (tokens.gitAuth !== undefined) applyGitAuth(ctx, tokens.gitAuth, tokens.gitAuthHost ?? null);
       // MCP allowlist (ADR-0427): `undefined` = an older server ⇒ keep the list the ws_token set.
-      if (tokens.mcpServers !== undefined) setMcpServers(tokens.mcpServers, ctx.profileDir);
+      if (tokens.mcpServers !== undefined) {
+        setMcpServers(tokens.mcpServers, ctx.profileDir);
+        setEgressMcpUrls(tokens.mcpServers.map((m) => (m.definition as { url?: unknown }).url).filter((u): u is string => typeof u === "string"));
+      }
+      // Networks (ADR-0439): a saved policy / org denylist applies to the next connection.
+      setNetworkPolicy(tokens.network);
       logger.info("project.tokens.applied", {
         aiRunTimeoutSec: tokens.aiRunTimeoutSec ?? 0,
         autoClearIdleMinutes: tokens.autoClearIdleMinutes ?? 0,

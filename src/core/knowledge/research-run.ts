@@ -130,7 +130,7 @@ function runClaudeOnce(
           ]
         : []),
     ];
-    const env = agentEnv(extraEnv, profile ? { CLAUDE_CONFIG_DIR: profile.dir } : undefined);
+    const env = agentEnv(extraEnv, profile ? { CLAUDE_CONFIG_DIR: profile.dir } : undefined, { kind: "research" });
     const cleanup = (): void => {
       try {
         unregisterAgentRoot(cwd);

@@ -12,6 +12,7 @@ import { runStart } from "./commands/start";
 import { runAttach } from "./commands/attach";
 import { runAutoRun } from "./commands/auto-run";
 import { runGitCredential, runGitToken } from "./commands/git-credential";
+import { runNetConnect } from "./commands/net-connect";
 import { runAiLogin } from "./commands/ai-login";
 import { importCredentialFromEnv, runCredentialExport } from "./commands/credential";
 import { runUnlink } from "./commands/unlink";
@@ -131,6 +132,11 @@ async function main(): Promise<void> {
     case "git-credential": {
       // git credential helper for GitHub-App git-auth (ADR-0356) — configured by the daemon, not users.
       await runGitCredential(rest[0]);
+      break;
+    }
+    case "net-connect": {
+      // ssh ProxyCommand through the egress proxy (ADR-0439) — set on agent processes, not run by users.
+      await runNetConnect(rest[0], rest[1]);
       break;
     }
     case "git-token": {

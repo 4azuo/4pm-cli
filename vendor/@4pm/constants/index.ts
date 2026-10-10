@@ -3,6 +3,7 @@
  */
 export * from "./ai-prompts";
 export * from "./billing";
+export * from "./egress";
 export * from "./error-codes";
 export * from "./machine";
 export * from "./preferences";

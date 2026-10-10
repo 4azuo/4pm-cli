@@ -347,7 +347,7 @@ function runClaudeOnce(
     // Select the signed-in account (the fix): without CLAUDE_CONFIG_DIR claude falls
     // back to its default config, whose token is unrelated to the operator's configured profiles.
     // Allow-listed env only — the cli's own secrets never reach the agent.
-    const env = agentEnv(extraEnv, profile ? { CLAUDE_CONFIG_DIR: profile.dir } : undefined);
+    const env = agentEnv(extraEnv, profile ? { CLAUDE_CONFIG_DIR: profile.dir } : undefined, { kind: "projectless" });
     // Run in an empty throwaway dir (the docs are in the prompt) so there is nothing to read nearby.
     const cwd = makeAgentTempDir("4pm-support-");
     const cleanup = (): void => {

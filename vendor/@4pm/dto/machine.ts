@@ -218,7 +218,7 @@ export interface WsTokenResponse {
    * no rules. `null` mode fields never occur — an idle link gets the org part with mode `audit`.
    * @adr 0439
    */
-  network?: NetworkPolicy & { orgDeny: NetworkPolicyRule[] };
+  network?: NetworkPolicy & { orgDeny: NetworkPolicyRule[]; projectId: string | null };
   /**
    * Mask the worker's AI account labels — `true` when the link's user is a platform-pool
    * (rented) machine user. The cli then shows every renter-visible credential label as `AI account #N`

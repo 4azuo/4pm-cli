@@ -6,6 +6,8 @@
  * could read it.
  * @adr 0346 @adr 0421
  */
+import { egressEnv } from "../network/egress-env";
+import type { EgressRun } from "../network/egress-state";
 
 /** Exact env names the AI CLI legitimately needs (runtime, locale, TLS/proxy, Windows basics). */
 const ENV_ALLOW = new Set([
@@ -52,18 +54,31 @@ const ENV_ALLOW = new Set([
 /** Env prefixes the AI CLI legitimately needs (locale, XDG dirs, provider auth/config). `AWS_` is NOT a prefix. */
 const ENV_ALLOW_PREFIXES = ["LC_", "XDG_", "ANTHROPIC_", "CLAUDE_", "CODEX_", "OPENAI_", "GOOGLE_", "CLOUD_ML_", "VERTEX_"];
 
-/**
- * Build the AI CLI child's environment from an allow-list of the cli's own env, plus the profile's
- * configured `aiEnv` and the account selector (e.g. `CLAUDE_CONFIG_DIR`). Everything else — notably
- * `FOURPM_*` secrets — is dropped.
- */
-export function agentEnv(extraEnv?: Record<string, string>, overrides?: Record<string, string>): NodeJS.ProcessEnv {
+/** The allow-listed part of the cli's own env (no proxy variables yet). */
+function allowListedEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined) continue;
     if (ENV_ALLOW.has(key) || ENV_ALLOW_PREFIXES.some((p) => key.startsWith(p))) env[key] = value;
   }
-  return { ...env, ...extraEnv, ...overrides };
+  return env;
+}
+
+/**
+ * Build the AI CLI child's environment from an allow-list of the cli's own env, plus the profile's
+ * configured `aiEnv` and the account selector (e.g. `CLAUDE_CONFIG_DIR`). Everything else — notably
+ * `FOURPM_*` secrets — is dropped. The egress proxy variables (ADR-0439) go on last, so neither the host's
+ * proxy settings nor `aiEnv` can route around the proxy; `egressRun` picks the run's policy (project-less
+ * / research runs).
+ * @adr 0439
+ */
+export function agentEnv(
+  extraEnv?: Record<string, string>,
+  overrides?: Record<string, string>,
+  egressRun?: Partial<EgressRun>,
+): NodeJS.ProcessEnv {
+  const env = { ...allowListedEnv(), ...extraEnv, ...overrides };
+  return { ...env, ...egressEnv(env, egressRun) };
 }
 
 /**
@@ -110,12 +125,13 @@ const PROJECT_ENV_ALLOW_PREFIXES = ["GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"];
  * `aiEnv` + account selector on top; everything else (notably `FOURPM_PAIR_TOKEN`) is dropped.
  */
 export function projectAgentEnv(): NodeJS.ProcessEnv {
-  const env = agentEnv();
+  const env = allowListedEnv();
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined) continue;
     if (PROJECT_ENV_ALLOW.has(key) || PROJECT_ENV_ALLOW_PREFIXES.some((p) => key.startsWith(p))) env[key] = value;
   }
-  return env;
+  // Egress proxy last (ADR-0439): it extends the deploy-key GIT_SSH_COMMAND with the proxy hop.
+  return { ...env, ...egressEnv(env) };
 }
 
 /**

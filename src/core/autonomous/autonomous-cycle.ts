@@ -64,6 +64,7 @@ import { readProfileConfig } from "../../config/profile";
 import { activeProvider, claudeHomeDirs } from "../../utils/ai-cli";
 import { checkClaudeUsage } from "../ai/claude-usage";
 import { readFileInRoot } from "../../utils/safe-path";
+import { withEgressRun } from "../network/egress-env";
 
 // ── Prompts (the agent's parts only) ──────────────────────────────────────────────────────────────
 
@@ -450,7 +451,8 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       const mockups = group ? (await listMockups(root, rootBase.base, cfg.mockupDir).catch(() => [])).filter((m) => m.split("/").pop()?.startsWith(`${group}--`)) : [];
       const prompt = buildImplementPrompt(mine, subs.map((s) => ({ dir: s.sub.dir, branch: s.branch })), resumed || hadWork, cfg, mockups);
       // No model override: each AI profile's own model applies (ADR-0418).
-      out = await runAiPrompt(ctx, prompt, commandId, "local", false, undefined, undefined, false, true);
+      // Egress (ADR-0439): the run's connections are logged under this task.
+      out = await withEgressRun({ taskId: mine.id }, () => runAiPrompt(ctx, prompt, commandId, "local", false, undefined, undefined, false, true));
     } finally {
       clearInterval(timer);
     }
