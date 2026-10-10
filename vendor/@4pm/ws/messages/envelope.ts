@@ -92,6 +92,13 @@ export interface MachineStatusPayload {
    * @adr 0432 @adr 0434
    */
   cliUpdateLocked?: boolean;
+  /**
+   * Egress enforcement of this cli (ADR-0439): `container` = the launcher installed the agent-uid firewall
+   * rules (the proxy is the agent's only way out); `none` = proxy environment only (Audit only), with
+   * `egressReason` (e.g. `no NET_ADMIN`). Persisted on `MachineLink.egress` / `egressReason`.
+   */
+  egress?: "container" | "none";
+  egressReason?: string;
 }
 
 /** Where a command originated: server-dispatched (web) or cli-local (TUI). @adr 0057 */
@@ -1577,6 +1584,46 @@ export interface ProjectTokensPayload {
    * @adr 0427
    */
   mcpServers?: McpServerPush[];
+  /**
+   * The project's effective network policy — mirrors `ws_token.network`. `undefined` (an older server) ⇒
+   * the cli keeps its current policy.
+   * @adr 0439
+   */
+  network?: NetworkPolicyPush;
+}
+
+/**
+ * A network egress policy pushed to the cli — structurally mirrors `@4pm/dto` `NetworkPolicy` (the org
+ * denylist already merged into `deny`). `port` null = any port.
+ * @adr 0439
+ */
+export interface NetworkPolicyPush {
+  mode: "off" | "audit" | "enforce";
+  allow: { target: string; port: number | null }[];
+  deny: { target: string; port: number | null }[];
+  /** Org denylist alone — applied to the cli's project-less runs (support, FAQ, research…). */
+  orgDeny: { target: string; port: number | null }[];
+}
+
+/** One aggregated egress decision (per run × host × port × decision × minute). @adr 0439 */
+export interface NetworkEventAggregate {
+  host: string;
+  port: number;
+  decision: "allowed" | "would_block" | "blocked" | "denied";
+  mode: "off" | "audit" | "enforce";
+  count: number;
+  firstAt: string;
+  lastAt: string;
+  /** null = a project-less run (support, research…). */
+  projectId: string | null;
+  runId?: string;
+  taskId?: string;
+}
+
+/** network.events — cli → server (one-way): aggregated decisions + how many were dropped offline. @adr 0439 */
+export interface NetworkEventsPayload {
+  events: NetworkEventAggregate[];
+  dropped?: number;
 }
 
 /**

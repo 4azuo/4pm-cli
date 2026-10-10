@@ -9,6 +9,7 @@ import { baseRequestSchema, deletedFilterSchema, pinnedFilterSchema } from "./ba
 import type { UserResponse } from "./user";
 import { TEMPLATE_KINDS, type ProjectTemplateSelection, type TemplateKind } from "./template";
 import { readMcpServers, type McpApprovedServer } from "./mcp";
+import { readProjectNetworkSettings, DEFAULT_NETWORK_MODE, type ProjectNetworkSettings } from "./network";
 
 /** Lightweight project-manager (PM) summary shown in list/detail rows. */
 export interface ProjectManagerSummary {
@@ -477,6 +478,8 @@ export interface ProjectSettings {
   alerts: ProjectAlertRule[];
   /** Approved, hash-pinned MCP servers — empty ⇒ no MCP server runs. @adr 0427 */
   mcp: { servers: McpApprovedServer[] };
+  /** Network egress policy of the project's AI runs. @adr 0439 */
+  network: ProjectNetworkSettings;
 }
 
 /** Defaults applied when a project settings key is absent. @adr 0081 @adr 0082 @adr 0113 */
@@ -489,6 +492,7 @@ export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
   gitAuth: { method: "self" },
   alerts: [],
   mcp: { servers: [] },
+  network: { mode: DEFAULT_NETWORK_MODE, allow: [], deny: [], logRetentionDays: null },
   outboundReview: {
     enabled: false,
     ruleCheck: false,
@@ -604,6 +608,7 @@ export function readProjectSettings(
     templates,
     alerts: readProjectAlertRules(settings),
     mcp: { servers: readMcpServers(settings?.mcp) },
+    network: readProjectNetworkSettings(settings?.network),
     memory: {
       mode: PROJECT_MEMORY_MODES.includes(memory.mode as ProjectMemoryMode)
         ? (memory.mode as ProjectMemoryMode)

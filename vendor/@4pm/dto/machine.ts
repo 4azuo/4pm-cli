@@ -4,6 +4,7 @@
  */
 import type { McpServerDefinition } from "./mcp";
 import type { ApprovalPublicKey } from "./autonomous-approval";
+import type { NetworkPolicy, NetworkPolicyRule } from "./network";
 import { z } from "zod";
 import type {
   MachineLinkScope,
@@ -211,6 +212,13 @@ export interface WsTokenResponse {
    * @adr 0438
    */
   approvalProjectId?: string | null;
+  /**
+   * Network egress policy for the cli's proxy: the served project's policy (org deny merged into `deny`)
+   * + the org denylist alone for project-less runs. Absent from an older server ⇒ the cli keeps Audit with
+   * no rules. `null` mode fields never occur — an idle link gets the org part with mode `audit`.
+   * @adr 0439
+   */
+  network?: NetworkPolicy & { orgDeny: NetworkPolicyRule[] };
   /**
    * Mask the worker's AI account labels — `true` when the link's user is a platform-pool
    * (rented) machine user. The cli then shows every renter-visible credential label as `AI account #N`

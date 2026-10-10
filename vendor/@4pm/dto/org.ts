@@ -11,6 +11,7 @@ import {
 } from "./storage";
 import { z } from "zod";
 import { PaymentProvider } from "@4pm/constants";
+import { DEFAULT_NETWORK_LOG_RETENTION_DAYS, readOrgNetworkSettings, type OrgNetworkSettings } from "./network";
 
 /**
  * Pending paid-plan checkout recorded at register, stored under
@@ -223,6 +224,8 @@ export interface OrgSettings {
    * @adr 0284
    */
   aiPoolId: string | null;
+  /** Org network egress rules: the denylist every project inherits + the network-log retention. @adr 0439 */
+  network: OrgNetworkSettings;
 }
 
 /** Defaults applied when a settings key is absent. */
@@ -248,6 +251,7 @@ export const DEFAULT_ORG_SETTINGS: OrgSettings = {
   storageAlerts: [],
   storageAutoClear: DEFAULT_STORAGE_AUTO_CLEAR,
   aiPoolId: null,
+  network: { deny: [], logRetentionDays: DEFAULT_NETWORK_LOG_RETENTION_DAYS },
 };
 
 /** Read a numeric TTL, clamping out-of-range values back to `def`. @adr 0056 */
@@ -402,6 +406,7 @@ export function readOrgSettings(settings: Record<string, unknown> | null | undef
     storageAlerts: readStorageAlerts(settings?.storageAlerts),
     storageAutoClear: readStorageAutoClear(settings?.storageAutoClear),
     aiPoolId: typeof settings?.aiPoolId === "string" && settings.aiPoolId ? settings.aiPoolId : d.aiPoolId,
+    network: readOrgNetworkSettings(settings?.network),
   };
 }
 

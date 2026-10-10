@@ -165,6 +165,9 @@ export const WsChannels = {
   // cli → server (one-way): an autonomous condition the project's managers must see (ADR-0371) —
   // protected base, lost claim, attempt limit, task split, task question. The server notifies them.
   AUTONOMOUS_ALERT: "autonomous.alert",
+  // cli → server (one-way): a batch of aggregated network egress decisions of the cli's egress proxy
+  // (ADR-0439) — stored as NetworkEgressEvent rows (the Networks log).
+  NETWORK_EVENTS: "network.events",
   USAGE_REPORT: "usage.report",
   // cli → server: Claude subscription usage snapshot (5h / weekly — ADR-0072)
   MACHINE_USAGE: "machine.usage",

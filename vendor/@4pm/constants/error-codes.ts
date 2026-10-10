@@ -179,6 +179,14 @@ export const ErrorCode = {
   // Signed approvals (ADR-0438): the row changed after the approver read it — its content hash no longer
   // matches the book the approval targets; reload and approve again. meta.id = the row.
   APPROVAL_STALE: "APPROVAL_STALE",
+  // Networks (ADR-0439): a deny rule / block request names a system host (always allowed).
+  NETWORK_RULE_SYSTEM_HOST: "NETWORK_RULE_SYSTEM_HOST",
+  // An allow request / approval matches the org denylist, which a project cannot override.
+  NETWORK_ORG_DENIED: "NETWORK_ORG_DENIED",
+  // The network request was already decided or cancelled.
+  NETWORK_REQUEST_NOT_PENDING: "NETWORK_REQUEST_NOT_PENDING",
+  // A non-ADMIN tried to approve their own network request.
+  NETWORK_REQUEST_SELF: "NETWORK_REQUEST_SELF",
   CLI_VERSION_UNSUPPORTED: "CLI_VERSION_UNSUPPORTED",
   // The worker runs an update-locked image (ADR-0432/0434): a cli update is refused — pull a newer image.
   CLI_UPDATE_LOCKED: "CLI_UPDATE_LOCKED",

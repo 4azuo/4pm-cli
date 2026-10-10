@@ -10,6 +10,7 @@ export * from "./git-overview";
 export * from "./machine";
 export * from "./mcp";
 export * from "./meta";
+export * from "./network";
 export * from "./org";
 export * from "./project";
 export * from "./storage";
