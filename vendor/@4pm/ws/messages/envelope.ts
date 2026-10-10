@@ -631,6 +631,11 @@ export interface ApprovalEntry {
   sig?: string;
 }
 
+/** approval.keys — server → cli: the published approval-signing public keys (SPKI DER, base64). @adr 0440 */
+export interface ApprovalKeysPayload {
+  keys: { kid: string; publicKey: string }[];
+}
+
 /** Verification state of one approval — mirrors `@4pm/dto` `ApprovalState`. @adr 0438 */
 export type ApprovalState = "approved" | "unsigned" | "invalid" | "stale";
 

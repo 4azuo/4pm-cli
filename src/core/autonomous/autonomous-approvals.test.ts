@@ -13,6 +13,7 @@ import {
   approvalStates,
   buildApprovalEntries,
   loadApprovalTrust,
+  replaceApprovalKeys,
   resetApprovalTrustForTest,
   setApprovalTrust,
   verifiedApprovedIds,
@@ -101,5 +102,19 @@ describe("buildApprovalEntries", () => {
   it("falls back to a legacy entry from an older server", () => {
     const r = buildApprovalEntries(["TSK-0001-0001"], undefined, books, "u1", "a@b");
     expect(r.ok && r.entries["TSK-0001-0001"]).toMatchObject({ approved: true, by: "u1", byLabel: "a@b" });
+  });
+});
+
+describe("live key push (ADR-0440)", () => {
+  it("replaces the keys, keeps the project, and ignores an empty list", () => {
+    setApprovalTrust([{ kid: "k1", publicKey: pub }], "p1", dir);
+    const map = { "TSK-0001-0001": signed("TSK-0001-0001", AI_TODO) };
+    const other = generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "der" }).toString("base64");
+    replaceApprovalKeys([{ kid: "k2", publicKey: other }], dir);
+    expect(approvalStates(map, books)).toEqual({ "TSK-0001-0001": "invalid" });
+    replaceApprovalKeys([{ kid: "k2", publicKey: other }, { kid: "k1", publicKey: pub }], dir);
+    expect(approvalStates(map, books)).toEqual({ "TSK-0001-0001": "approved" });
+    replaceApprovalKeys([], dir);
+    expect(approvalStates(map, books)).toEqual({ "TSK-0001-0001": "approved" });
   });
 });

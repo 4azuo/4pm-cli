@@ -23,6 +23,7 @@ import { readCommandOutput } from "../../exec/command-output-store";
 import { evaluateReview } from "../../agent/outbound-review";
 import { readRecentLogLines } from "../../../common/logger/logger";
 import type { WsHandlerCtx } from "../context";
+import { replaceApprovalKeys } from "../../autonomous/autonomous-approvals";
 
 /** Route the assorted single channels; returns true when the message was handled. */
 export function handleMiscChannels(
@@ -31,6 +32,13 @@ export function handleMiscChannels(
   payload: Record<string, unknown>,
 ): boolean {
   switch (message.channel) {
+    case WsChannels.APPROVAL_KEYS: {
+      // server → cli (ADR-0440): the published approval-signing keys changed (rotate / revoke / resync) —
+      // replace the trusted list now instead of at the next ws_token. No reply.
+      const keys = (payload as { keys?: { kid: string; publicKey: string }[] }).keys;
+      replaceApprovalKeys(Array.isArray(keys) ? keys : [], ctx.profileDir);
+      return true;
+    }
     case WsChannels.CLI_UPDATE: {
       // server → cli (ADR-0289): update to latest now (idle-aware self-update + re-exec). No reply.
       ctx.updateCliNow();

@@ -64,6 +64,16 @@ export function setApprovalTrust(keys: ApprovalPublicKey[] | undefined, projectI
   }
 }
 
+/**
+ * Replace only the keys (a live `approval.keys` push), keeping the served project id. An empty list is
+ * ignored — never a downgrade to the legacy rule.
+ * @adr 0440
+ */
+export function replaceApprovalKeys(keys: ApprovalPublicKey[], profileDir: string): void {
+  if (keys.length === 0) return;
+  setApprovalTrust(keys, trust?.projectId ?? null, profileDir);
+}
+
 /** True once server keys are known — approvals must then be signed. */
 export function approvalTrustActive(): boolean {
   return trust !== null;

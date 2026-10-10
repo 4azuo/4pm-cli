@@ -179,6 +179,9 @@ export const ErrorCode = {
   // Signed approvals (ADR-0438): the row changed after the approver read it — its content hash no longer
   // matches the book the approval targets; reload and approve again. meta.id = the row.
   APPROVAL_STALE: "APPROVAL_STALE",
+  // ADR-0440: the approval could not be signed (KMS unreachable, no active / readable key) — never written
+  // unsigned once keys are published.
+  APPROVAL_SIGNING_UNAVAILABLE: "APPROVAL_SIGNING_UNAVAILABLE",
   // Networks (ADR-0439): a deny rule / block request names a system host (always allowed).
   NETWORK_RULE_SYSTEM_HOST: "NETWORK_RULE_SYSTEM_HOST",
   // An allow request / approval matches the org denylist, which a project cannot override.
