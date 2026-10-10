@@ -10,7 +10,7 @@ import {
   type StorageKindBytes,
 } from "./storage";
 import { z } from "zod";
-import { PaymentProvider } from "@4pm/constants";
+import { MfaPolicy, PaymentProvider } from "@4pm/constants";
 import { DEFAULT_NETWORK_LOG_RETENTION_DAYS, readOrgNetworkSettings, type OrgNetworkSettings } from "./network";
 
 /**
@@ -52,6 +52,12 @@ export interface OrgSecuritySettings {
    * @adr 0044
    */
   ipAllowlist: string[];
+  /**
+   * Who must have a second factor (TOTP / passkey): `off` | `admins` (default) | `all`. MACHINE
+   * users are exempt; root is always required.
+   * @adr 0446
+   */
+  mfaPolicy: MfaPolicy;
 }
 
 /** General/regional org policy, stored under `settings.general`. @adr 0039 */
@@ -230,7 +236,7 @@ export interface OrgSettings {
 
 /** Defaults applied when a settings key is absent. */
 export const DEFAULT_ORG_SETTINGS: OrgSettings = {
-  security: { allowSubAccountWithoutEmail: false, ipAllowlist: [] },
+  security: { allowSubAccountWithoutEmail: false, ipAllowlist: [], mfaPolicy: MfaPolicy.ADMINS },
   general: {
     timezone: "UTC",
     pageSize: DEFAULT_PAGE_SIZE,
@@ -302,6 +308,9 @@ export function readOrgSettings(settings: Record<string, unknown> | null | undef
       ipAllowlist: Array.isArray(security.ipAllowlist)
         ? security.ipAllowlist
         : d.security.ipAllowlist,
+      mfaPolicy: (Object.values(MfaPolicy) as string[]).includes(security.mfaPolicy as string)
+        ? (security.mfaPolicy as MfaPolicy)
+        : d.security.mfaPolicy,
     },
     general: {
       timezone:

@@ -13,6 +13,7 @@ import { createFrameParser, encodeFrame, type ControlClientFrame, type ControlSe
 import { issueGitToken } from "./git-auth";
 import { prepareAgentRunDir, readOnlyForAgent } from "../../utils/agent-user";
 import { logger } from "../../common/logger/logger";
+import { listenPrivateSocket } from "../../utils/private-socket";
 
 /** Env var naming the socket for the helper / shims (allow-listed into agent processes). */
 export const GIT_TOKEN_SOCKET_ENV = "FOURPM_GIT_TOKEN_SOCKET";
@@ -65,7 +66,7 @@ export function startGitTokenServer(profileDir: string): () => void {
     sock.on("error", () => sock.destroy());
   });
   server.on("error", (err) => logger.warn("git.token.socket.error", { error: String(err) }));
-  server.listen(socketPath, () => {
+  listenPrivateSocket(server, socketPath, 0o660, () => {
     try {
       // Connect needs write on the inode: owner + the shared group (the agent), nobody else.
       chmodSync(socketPath, 0o660);

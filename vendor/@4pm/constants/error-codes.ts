@@ -45,6 +45,18 @@ export const ErrorCode = {
   IDENTITY_REQUIRED: "IDENTITY_REQUIRED",
   MFA_CODE_INVALID: "MFA_CODE_INVALID",
   MFA_CODE_EXPIRED: "MFA_CODE_EXPIRED",
+  /** The chosen second-factor method is not available for this challenge/user. @adr 0446 */
+  MFA_METHOD_UNAVAILABLE: "MFA_METHOD_UNAVAILABLE",
+  /** The passkey assertion/registration did not verify. @adr 0446 */
+  MFA_PASSKEY_INVALID: "MFA_PASSKEY_INVALID",
+  /** TOTP needs the server secret box (`SECRETS_ENC_KEY`), which is not configured. @adr 0446 */
+  MFA_TOTP_UNAVAILABLE: "MFA_TOTP_UNAVAILABLE",
+  /** No pending TOTP setup to confirm (expired or never started). @adr 0446 */
+  MFA_TOTP_NOT_PENDING: "MFA_TOTP_NOT_PENDING",
+  /** TOTP is already enrolled — remove it before setting up a new one. @adr 0446 */
+  MFA_TOTP_ALREADY_ENROLLED: "MFA_TOTP_ALREADY_ENROLLED",
+  /** Can't remove the last second factor while the org policy requires MFA. @adr 0446 */
+  MFA_LAST_FACTOR: "MFA_LAST_FACTOR",
   // org · user · team · project
   USER_NOT_FOUND: "USER_NOT_FOUND",
   TEAM_NOT_FOUND: "TEAM_NOT_FOUND",

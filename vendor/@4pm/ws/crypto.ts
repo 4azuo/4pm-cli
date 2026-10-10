@@ -69,7 +69,7 @@ export interface EncryptedPayload {
  */
 export function encryptPayload(key: Buffer, data: unknown): EncryptedPayload {
   const nonce = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", key, nonce);
+  const cipher = createCipheriv("aes-256-gcm", key, nonce, { authTagLength: 16 });
   const plaintext = Buffer.from(JSON.stringify(data), "utf8");
   const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const withTag = Buffer.concat([encrypted, cipher.getAuthTag()]);
@@ -86,9 +86,11 @@ export function decryptPayload<T>(
 ): T {
   const raw = Buffer.from(payloadBase64, "base64");
   const nonce = Buffer.from(nonceBase64, "base64");
+  if (raw.length < 16) throw new Error("payload too short");
   const tag = raw.subarray(raw.length - 16);
   const ciphertext = raw.subarray(0, raw.length - 16);
-  const decipher = createDecipheriv("aes-256-gcm", key, nonce);
+  // Full 16-byte tag only — a truncated tag would weaken the integrity check. @adr 0447
+  const decipher = createDecipheriv("aes-256-gcm", key, nonce, { authTagLength: 16 });
   decipher.setAuthTag(tag);
   const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
   return JSON.parse(plaintext.toString("utf8")) as T;

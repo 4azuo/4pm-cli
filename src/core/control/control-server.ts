@@ -19,6 +19,7 @@ import {
 } from "./control-protocol";
 import { controlTokenPath, tokenMatches, writeControlToken } from "./control-token";
 import { issueGitToken } from "../git/git-auth";
+import { listenPrivateSocket } from "../../utils/private-socket";
 
 /** Start the control socket; returns a stop() that closes it + removes the socket file. */
 export function startControlServer(
@@ -123,7 +124,7 @@ export function startControlServer(
   server.on("error", () => {
     /* listen error (e.g. perms) — the daemon still runs without an attach channel */
   });
-  server.listen(socketPath, () => {
+  listenPrivateSocket(server, socketPath, 0o600, () => {
     // Owner-only socket (ADR-0320): connect() needs write on the inode, so 0600 blocks other users
     // regardless of umask. Best-effort — a fs that rejects chmod still runs (the token gate remains).
     try {
