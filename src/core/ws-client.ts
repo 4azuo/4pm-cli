@@ -66,6 +66,7 @@ import { probeNetwork } from "./worker/network-probe";
 import { configureGitAuth } from "./git/git-auth";
 import { setPromptOverrides } from "./ai/prompt-overrides";
 import { setMcpServers } from "../utils/agent-mcp";
+import { loadApprovalTrust, setApprovalTrust } from "./autonomous/autonomous-approvals";
 import { startGitSnapshots } from "./git/git-snapshot";
 import { projectFolder, readProfileConfig, writeProfileConfig } from "../config/profile";
 import { detectWorkerTools } from "./worker/worker-tools";
@@ -294,6 +295,9 @@ export class WsClient {
 
   constructor(private readonly context: WsClientContext) {
     this.credential = context.credential;
+    // Signed approvals (ADR-0438): enforce the last received server keys from the first tick on, even
+    // before this process connects.
+    loadApprovalTrust(context.profileDir);
     this.updateScheduler = new UpdateScheduler(
       context.credential.serverUrl,
       context.profileDir,
@@ -656,6 +660,9 @@ export class WsClient {
         // MCP allowlist (ADR-0427): the approved servers of the served project; absent (older server)
         // or idle ⇒ none — every claude run is `--strict-mcp-config` either way.
         setMcpServers(token.mcpServers, this.context.profileDir);
+        // Signed approvals (ADR-0438): the server's public keys + the served project bound into each
+        // signature; absent ⇒ keep the stored trust (never a downgrade).
+        setApprovalTrust(token.approvalKeys, token.approvalProjectId, this.context.profileDir);
         // Admin-edited overrides for cli-built prompts (ADR-0381): apply override-or-built-in on each
         // prompt build. Platform-wide; refreshed every ws_token, cleared when the server sends none.
         setPromptOverrides(token.promptOverrides ?? null);

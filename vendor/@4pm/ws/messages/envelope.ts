@@ -609,6 +609,24 @@ export interface AutonomousStatus {
   baseProtected?: string | null;
 }
 
+/**
+ * One signed approvals-file entry — structurally mirrors `@4pm/dto` `ApprovalEntry` (the cli writes it
+ * verbatim; `h`/`kid`/`sig` are absent on a legacy entry).
+ * @adr 0438
+ */
+export interface ApprovalEntry {
+  approved: true;
+  by: string;
+  byLabel?: string;
+  at: string;
+  h?: string;
+  kid?: string;
+  sig?: string;
+}
+
+/** Verification state of one approval — mirrors `@4pm/dto` `ApprovalState`. @adr 0438 */
+export type ApprovalState = "approved" | "unsigned" | "invalid" | "stale";
+
 /** Raw text of the 5 autonomous "books" (the web parses them). */
 export interface AutonomousBooks {
   userTodo: string;
@@ -635,6 +653,12 @@ export interface AutonomousReadReply {
   attempts?: string;
   /** Intake UI mockups — repo paths of the `.html` files under `mockupDir` on `<base>`. @adr 0418 */
   mockups?: string[];
+  /**
+   * Verification state per approved row id (signature + content binding). Absent from an older cli;
+   * an id without an entry in the approvals file is absent here too.
+   * @adr 0438
+   */
+  approvalStates?: Record<string, ApprovalState>;
 }
 
 /** autonomous.logs — tail one day's tick log. */
@@ -655,9 +679,28 @@ export type AutonomousWriteRequest =
   | { kind: "settings"; settings: string }
   // Approvals also carry `byIsAdmin` (server-filled from the approver's role) so the cli can enforce
   // separation of duties — a non-ADMIN can't approve a row they wrote (ADR-0320).
-  | { kind: "approvals"; taskId: string; approved: boolean; by: string; byLabel?: string; byIsAdmin?: boolean }
+  // `signed` (ADR-0438): the server-signed entries to write for the approved ids, keyed by id. The cli
+  // re-hashes each row on `<base>` (or in the saved content) and refuses a mismatch (`APPROVAL_STALE`).
+  // Absent (an older server) ⇒ the cli writes an unsigned legacy entry.
+  | {
+      kind: "approvals";
+      taskId: string;
+      approved: boolean;
+      by: string;
+      byLabel?: string;
+      byIsAdmin?: boolean;
+      signed?: Record<string, ApprovalEntry>;
+    }
   // Batched approvals (ADR-0311): commit many approve/unapprove ids in one approvals-file write.
-  | { kind: "approvalsBatch"; approve: string[]; unapprove: string[]; by: string; byLabel?: string; byIsAdmin?: boolean }
+  | {
+      kind: "approvalsBatch";
+      approve: string[];
+      unapprove: string[];
+      by: string;
+      byLabel?: string;
+      byIsAdmin?: boolean;
+      signed?: Record<string, ApprovalEntry>;
+    }
   | { kind: "userTodo"; content: string; by: string; byLabel?: string }
   // Traced book save (ADR-0320): the cli diffs rows by id against the current book and stamps
   // `.autonomous.authors.json` (author = `by`/`byLabel`) for added/edited rows, so authorship can't be
@@ -671,6 +714,12 @@ export type AutonomousWriteRequest =
       by: string;
       byLabel?: string;
       evidence?: { stageId: string; path: string }[];
+      // Approvals committed in the same write (ADR-0438) — applied after this save's authorship stamp,
+      // so the editor counts as the author for separation of duties (`byIsAdmin` lifts it).
+      approve?: string[];
+      unapprove?: string[];
+      signed?: Record<string, ApprovalEntry>;
+      byIsAdmin?: boolean;
     }
   // Stage one evidence file in the profile dir until a `bookSave` commits it (ADR-0404). Server-built
   // from the multipart upload (machine-0072).
@@ -1673,7 +1722,14 @@ export interface ReviewResultPayload {
 }
 
 /** The autonomous conditions a manager must see. @adr 0371 §9 */
-export type AutonomousAlertKind = "base-protected" | "claim-lost" | "task-failed-limit" | "task-split" | "task-question";
+export type AutonomousAlertKind =
+  | "base-protected"
+  | "claim-lost"
+  | "task-failed-limit"
+  | "task-split"
+  | "task-question"
+  // An agent run edited the cli-owned sidecars (approvals / authors / attempts); the edit was reverted (ADR-0438).
+  | "sidecar-tamper";
 
 /** autonomous.alert — cli → server (one-way): notify the project's managers (deduplicated per day). */
 export interface AutonomousAlertPayload {

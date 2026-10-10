@@ -3,6 +3,7 @@
  * (21-api/machine-0001…0013).
  */
 import type { McpServerDefinition } from "./mcp";
+import type { ApprovalPublicKey } from "./autonomous-approval";
 import { z } from "zod";
 import type {
   MachineLinkScope,
@@ -197,6 +198,19 @@ export interface WsTokenResponse {
    * @adr 0427
    */
   mcpServers?: { name: string; definition: McpServerDefinition }[];
+  /**
+   * The server's approval-signing public keys — the cli persists them and from then on counts an
+   * autonomous approval only when its signature verifies. Absent (older server / no signing key) ⇒ the
+   * cli keeps its last stored keys, or the unsigned legacy behaviour when it never had any.
+   * @adr 0438
+   */
+  approvalKeys?: ApprovalPublicKey[];
+  /**
+   * The project the link serves — bound into every approval signature, so an entry signed for one
+   * project never verifies in another. `null` for an orchestrator / idle link; absent from an older server.
+   * @adr 0438
+   */
+  approvalProjectId?: string | null;
   /**
    * Mask the worker's AI account labels — `true` when the link's user is a platform-pool
    * (rented) machine user. The cli then shows every renter-visible credential label as `AI account #N`
@@ -1096,20 +1110,6 @@ export const taskApproveEntrySchema = z.object({
 });
 export type TaskApproveEntry = z.infer<typeof taskApproveEntrySchema>;
 
-/**
- * Body POST /machines/:id/tasks/approve-batch — commit a Save's pending approvals atomically.
- * `approvals` are the tasks to approve (with their tags), `unapprovals` the
- * ids to drop. A tag action (e.g. `UpdateSpecFromDB`) targets the project root — the root IS the repo
- * (single-repo). The server runs every tag action first and, only on full success, writes
- * the approvals batch; any action failure ⇒ nothing is written (the user re-approves). Gated by
- * `project.task_approve`.
- * @api machine-0063 @adr 0311 @adr 0314
- */
-export const taskApproveBatchRequestSchema = z.object({
-  approvals: z.array(taskApproveEntrySchema).max(500).default([]),
-  unapprovals: z.array(z.string().min(1).max(64)).max(500).default([]),
-});
-export type TaskApproveBatchRequestBody = z.infer<typeof taskApproveBatchRequestSchema>;
 
 /** Data POST /machines/:id/tasks/approve-batch — the batch outcome. @api machine-0063 @adr 0311 */
 export interface TaskApproveBatchResponse {
@@ -1152,6 +1152,36 @@ export const SAFE_REPO_PATH_RE = /^(?!\.git\/)(?!.*(?:^|\/)\.{1,2}\/)[A-Za-z0-9.
  */
 export const EVIDENCE_PATH_RE =
   /^((?:[A-Za-z0-9._-]+\/){0,8}?[A-Za-z0-9._-]+)\/(USER_TODO|USER_QA|AI_TODO|AI_DONE)\/([A-Z]+-\d{4}-\d{4})\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
+
+/**
+ * Body POST /machines/:id/tasks/approve-batch — commit a Save's pending approvals atomically.
+ * `approvals` are the tasks to approve (with their tags), `unapprovals` the
+ * ids to drop. A tag action (e.g. `UpdateSpecFromDB`) targets the project root — the root IS the repo
+ * (single-repo). The server runs every tag action first and, only on full success, writes
+ * the approvals batch; any action failure ⇒ nothing is written (the user re-approves). Gated by
+ * `project.task_approve`.
+ * @api machine-0063 @adr 0311 @adr 0314
+ */
+export const taskApproveBatchRequestSchema = z.object({
+  approvals: z.array(taskApproveEntrySchema).max(500).default([]),
+  unapprovals: z.array(z.string().min(1).max(64)).max(500).default([]),
+  /**
+   * The `AI_TODO.md` being saved with these approvals — written in the SAME cli write, so each
+   * approval is signed over the content the approver saved and the editor counts as a row's author
+   * for separation of duties. Absent ⇒ approvals only, signed over the current `<base>` book.
+   * @adr 0438
+   */
+  book: z
+    .object({
+      content: z.string().max(256 * 1024),
+      evidence: z
+        .array(z.object({ stageId: z.string().guid(), path: z.string().regex(EVIDENCE_PATH_RE) }))
+        .max(EVIDENCE_MAX_PER_SAVE)
+        .optional(),
+    })
+    .optional(),
+});
+export type TaskApproveBatchRequestBody = z.infer<typeof taskApproveBatchRequestSchema>;
 /** A markdown link / image whose target is an evidence path under any root (groups: `!`, label, path). */
 const EVIDENCE_LINK_RE =
   /(!?)\[([^\]\n]*)\]\(<?((?:[A-Za-z0-9._-]+\/){1,9}(?:USER_TODO|USER_QA|AI_TODO|AI_DONE)\/[A-Z]+-\d{4}-\d{4}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})>?\)/g;
@@ -1262,6 +1292,10 @@ export const autonomousWriteRequestSchema = z.discriminatedUnion("kind", [
       .array(z.object({ stageId: z.string().guid(), path: z.string().regex(EVIDENCE_PATH_RE) }))
       .max(EVIDENCE_MAX_PER_SAVE)
       .optional(),
+    // Approvals committed with this save (ADR-0438): signed by the server over the saved content; the
+    // cli applies them only after stamping this save's authorship (the editor is the author for SoD).
+    approve: z.array(z.string().min(1).max(64)).max(500).optional(),
+    unapprove: z.array(z.string().min(1).max(64)).max(500).optional(),
   }),
   // (The `cron` install/uninstall kind was retired by ADR-0392 — the cli daemon schedules ticks itself.)
 ]);

@@ -13,6 +13,7 @@ import * as B from "./autonomous-books";
 import { isMerged, type RepoBase } from "./autonomous-git";
 import { evidenceCell, moveTaskEvidence, rehomeTaskLinks } from "./autonomous-evidence";
 import { readFileInRoot } from "../../utils/safe-path";
+import { verifiedApprovedIds } from "./autonomous-approvals";
 
 /** The approvals sidecar. */
 const APPROVALS_REL = ".claude/.autonomous.approvals.json";
@@ -72,11 +73,20 @@ function doneBranch(notes: string): string | null {
   return /branch:\s*([^\s;]+)/.exec(notes)?.[1] ?? null;
 }
 
-/** Approved ids from the approvals sidecar. */
+/**
+ * Approved ids from the approvals sidecar — only entries whose server signature verifies and whose row
+ * content is unchanged count (the legacy `approved: true` rule before this cli ever received keys).
+ * @adr 0438
+ */
 export async function approvedIds(root: string): Promise<Set<string>> {
   try {
-    const map = JSON.parse(await readFileInRoot(root, join(root, APPROVALS_REL), "utf8")) as Record<string, { approved?: boolean }>;
-    return new Set(Object.entries(map).filter(([, v]) => v?.approved === true).map(([k]) => k));
+    const map = JSON.parse(await readFileInRoot(root, join(root, APPROVALS_REL), "utf8")) as Record<string, unknown>;
+    const [userTodo, userQa, aiTodo] = await Promise.all([
+      B.readBook(root, "USER_TODO.md"),
+      B.readBook(root, "USER_QA.md"),
+      B.readBook(root, "AI_TODO.md"),
+    ]);
+    return verifiedApprovedIds(map, { userTodo, userQa, aiTodo });
   } catch {
     return new Set();
   }

@@ -29,6 +29,7 @@ import {
 } from "./autonomous-config";
 import { readHistories } from "./autonomous-history";
 import { ATTEMPTS_REL, findTables, replaceRows } from "./autonomous-books";
+import { approvalStates, buildApprovalEntries, type ApprovalBooks } from "./autonomous-approvals";
 import { mutateBooksOnBase, readBaseFile, resolveBases } from "./autonomous-git";
 import { applyStagedEvidence, listMockups, pruneEvidence, readEvidenceFile, stageEvidence } from "./autonomous-evidence";
 import { isValidCronSchedule, reloadAutonomousSchedule } from "./autonomous-scheduler";
@@ -193,7 +194,13 @@ export async function readAutonomous(root: string, profileDir: string): Promise<
   const keys = Object.keys(BOOK_FILES) as (keyof AutonomousBooks)[];
   const bookMap = {} as AutonomousBooks;
   keys.forEach((k, i) => (bookMap[k] = books[i] ?? ""));
-  return { settings, status, books: bookMap, approvals, authors, attempts, mockups };
+  // Per-id verification (ADR-0438) so the web can mark unsigned / changed-after-approval rows.
+  const approvalStatesById = approvalStates(parseJson(approvals) ?? {}, {
+    userTodo: bookMap.userTodo,
+    userQa: bookMap.userQa,
+    aiTodo: bookMap.aiTodo,
+  });
+  return { settings, status, books: bookMap, approvals, authors, attempts, mockups, approvalStates: approvalStatesById };
 }
 
 /** autonomous.logs — tail one day's tick log (default today). */
@@ -205,7 +212,22 @@ export async function readAutonomousLogs(root: string, date?: string): Promise<A
 }
 
 /** Result of a web book write before it is published. */
-type WebWrite = { ok: boolean; code?: "APPROVAL_SELF"; failedId?: string; error?: string; added?: number };
+type WebWrite = { ok: boolean; code?: "APPROVAL_SELF" | "APPROVAL_STALE"; failedId?: string; error?: string; added?: number };
+
+/** The approval-targetable books as they are in `dir` (USER_TODO / USER_QA / AI_TODO). */
+async function approvalBooksIn(dir: string): Promise<ApprovalBooks> {
+  const [userTodo, userQa, aiTodo] = await Promise.all([
+    readText(dir, join(dir, BOOK_FILES.userTodo)),
+    readText(dir, join(dir, BOOK_FILES.userQa)),
+    readText(dir, join(dir, BOOK_FILES.aiTodo)),
+  ]);
+  return { userTodo, userQa, aiTodo };
+}
+
+/** A stale-row refusal (ADR-0438): the row changed after the approver read it. */
+function stale(id: string): WebWrite {
+  return { ok: false, code: "APPROVAL_STALE", failedId: id, error: "approval stale" };
+}
 
 /**
  * Apply one web book edit (approvals / batch / posted request / traced book save)
@@ -221,8 +243,12 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
         if (entryBy(authors, req.taskId) === by) return { ok: false, code: "APPROVAL_SELF", failedId: req.taskId, error: "self-approval blocked" };
       }
       const map = parseJson(await readText(dir, join(dir, APPROVALS_REL), "{}")) ?? {};
-      if (req.approved) map[req.taskId] = { approved: true, by, byLabel: req.byLabel ?? by, at: new Date().toISOString() };
-      else delete map[req.taskId];
+      if (req.approved) {
+        // The server-signed entry, checked against the row as it is on `<base>` now (ADR-0438).
+        const built = buildApprovalEntries([req.taskId], req.signed, await approvalBooksIn(dir), by, req.byLabel ?? by);
+        if (!built.ok) return stale(built.staleId);
+        Object.assign(map, built.entries);
+      } else delete map[req.taskId];
       await writeFileInRoot(dir, join(dir, APPROVALS_REL), JSON.stringify(map, null, 2) + "\n");
       return { ok: true };
     }
@@ -235,9 +261,9 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
       }
       // Commit many approve/unapprove ids in ONE write so a Save's coupled batch is atomic.
       const map = parseJson(await readText(dir, join(dir, APPROVALS_REL), "{}")) ?? {};
-      const at = new Date().toISOString();
-      const byLabel = req.byLabel ?? by;
-      for (const taskId of req.approve) map[taskId] = { approved: true, by, byLabel, at };
+      const built = buildApprovalEntries(req.approve, req.signed, await approvalBooksIn(dir), by, req.byLabel ?? by);
+      if (!built.ok) return stale(built.staleId);
+      Object.assign(map, built.entries);
       for (const taskId of req.unapprove) delete map[taskId];
       await writeFileInRoot(dir, join(dir, APPROVALS_REL), JSON.stringify(map, null, 2) + "\n");
       return { ok: true };
@@ -265,6 +291,25 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
       // Traced book save: write the md and stamp the authors sidecar for every row this save
       // ADDED or EDITED (diff by id vs the book on <base>) — authorship is server-filled, not a cell.
       const file = BOOK_FILES[req.book];
+      // Approvals riding on this save (ADR-0438) are checked BEFORE anything is written: SoD counts this
+      // save's edits (the editor becomes the row's author), and each signed entry must match the saved row.
+      const approving = req.book !== "aiDone" ? (req.approve ?? []) : [];
+      const touchesApprovals = req.book !== "aiDone" && (approving.length > 0 || (req.unapprove?.length ?? 0) > 0);
+      let approvalEntries: Record<string, unknown> = {};
+      if (touchesApprovals && req.book !== "aiDone") {
+        const prevRows = tableRowsById(await readText(dir, join(dir, file)));
+        const nextRows = tableRowsById(req.content);
+        const authorsNow = await readJsonMap(dir, join(dir, AUTHORS_REL));
+        if (!req.byIsAdmin) {
+          const self = approving.find((id) => (prevRows.get(id) !== nextRows.get(id) ? by : entryBy(authorsNow, id)) === by);
+          if (self) return { ok: false, code: "APPROVAL_SELF", failedId: self, error: "self-approval blocked" };
+        }
+        const books = await approvalBooksIn(dir);
+        books[req.book as keyof ApprovalBooks] = req.content;
+        const built = buildApprovalEntries(approving, req.signed, books, by, req.byLabel ?? by);
+        if (!built.ok) return stale(built.staleId);
+        approvalEntries = built.entries;
+      }
       // Evidence (ADR-0404): move the staged files in first — a missing/invalid one aborts the whole save.
       if (req.evidence?.length) {
         const bad = await applyStagedEvidence(dir, profileDir, req.book, req.evidence, (await readAutonomousConfig(profileDir)).evidenceDir);
@@ -289,6 +334,12 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
       }
       await writeFileInRoot(dir, join(dir, file), req.content);
       await writeFileInRoot(dir, join(dir, AUTHORS_REL), JSON.stringify(authors, null, 2) + "\n");
+      if (touchesApprovals) {
+        const map = parseJson(await readText(dir, join(dir, APPROVALS_REL), "{}")) ?? {};
+        Object.assign(map, approvalEntries);
+        for (const id of req.unapprove ?? []) delete map[id];
+        await writeFileInRoot(dir, join(dir, APPROVALS_REL), JSON.stringify(map, null, 2) + "\n");
+      }
       // Files whose link this save removed (and no book still references) go in the same commit (ADR-0404).
       await pruneEvidence(dir, req.book, prevText, req.content);
       return { ok: true, added };

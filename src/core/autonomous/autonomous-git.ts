@@ -36,6 +36,56 @@ export const BOOK_PATHS = [
 ];
 
 /**
+ * The cli-owned sidecars — written only by the cli's own code (web writes, claim/finish/release/split/fold),
+ * never by an agent run: an agent's edits are reverted on intake and stripped from task branches.
+ * @adr 0438
+ */
+export const SIDECAR_PATHS = [".claude/.autonomous.approvals.json", ".claude/.autonomous.authors.json", ATTEMPTS_REL];
+
+/**
+ * Put the sidecars back to their version at `ref` in the working tree + index — tracked ones restored,
+ * ones absent at `ref` removed. Returns the paths that differed (an agent edited them).
+ * @adr 0438
+ */
+async function restoreSidecars(root: string, ref: string): Promise<string[]> {
+  const changed: string[] = [];
+  for (const p of SIDECAR_PATHS) {
+    const atRef = (await gitQuiet(root, ["ls-tree", "--name-only", ref, "--", p])).trim() !== "";
+    if (atRef) {
+      const diff = (await gitQuiet(root, ["diff", "--name-only", ref, "--", p])).trim();
+      if (!diff) continue;
+      await gitQuiet(root, ["checkout", ref, "--", p]);
+      changed.push(p);
+    } else if (existsSync(join(root, p))) {
+      await gitQuiet(root, ["rm", "-q", "--cached", "--ignore-unmatch", "--", p]);
+      await gitQuiet(root, ["clean", "-fq", "--", p]);
+      changed.push(p);
+    }
+  }
+  return changed;
+}
+
+/**
+ * Remove an agent's sidecar changes from a task branch before it is pushed: restore the sidecars to the
+ * branch's fork point with `origin/<base>` (not the base tip — the cli keeps publishing books there, and
+ * a restore to the tip would make the PR rewrite them) and commit the restore when anything differed, so
+ * neither the branch nor its PR carries sidecar changes. Returns the reverted paths.
+ * @adr 0438
+ */
+export async function stripSidecarsFromBranch(root: string, base: string, taskId: string): Promise<string[]> {
+  if (!(await hasRemoteBranch(root, base))) return [];
+  const fork = (await gitQuiet(root, ["merge-base", "HEAD", `origin/${base}`])).trim();
+  if (!fork) return [];
+  const changed = await restoreSidecars(root, fork);
+  if (changed.length === 0) return [];
+  // Commit only the restored paths (a pathspec naming a file git does not know fails the commit).
+  if ((await gitQuiet(root, ["diff", "--cached", "--name-only", "--", ...changed])).trim()) {
+    await git(root, ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "commit", "-q", "-m", `chore(${taskId}): restore autonomous sidecars (4PM)`, "--", ...changed]);
+  }
+  return changed;
+}
+
+/**
  * Stage the folders committed with the books — the evidence roots and the intake mockups:
  * additions, edits and deletions. Separate from `BOOK_PATHS` so an absent folder (nothing to
  * commit) never fails the books' own `git add`. `dirs` defaults to the default evidence root.
@@ -128,9 +178,19 @@ export async function currentBranch(cwd: string): Promise<string> {
   return b === "HEAD" ? "" : b;
 }
 
-/** Commit everything in `cwd` as a work-in-progress snapshot; true when something was committed. */
+/**
+ * Commit everything in `cwd` as a work-in-progress snapshot; true when something was committed. The
+ * cli-owned sidecars are never part of it (an agent's edits to them are discarded).
+ * @adr 0438
+ */
 export async function wipCommit(cwd: string, message: string): Promise<boolean> {
   await gitQuiet(cwd, ["add", "-A"]);
+  for (const p of SIDECAR_PATHS) {
+    if ((await gitQuiet(cwd, ["ls-files", "--", p])).trim()) {
+      await gitQuiet(cwd, ["reset", "-q", "--", p]);
+      await gitQuiet(cwd, ["checkout", "--", p]);
+    }
+  }
   const staged = (await gitQuiet(cwd, ["diff", "--cached", "--name-only"])).trim();
   if (!staged) return false;
   await git(cwd, ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "commit", "-q", "-m", message]).catch(() => undefined);
@@ -200,7 +260,19 @@ export async function publishBooks(
  * on a rejection rebase onto the fresh `<base>` once more; a conflict aborts and discards this intake
  * (it re-runs next cycle).
  */
-export async function publishIntake(root: string, base: string, message: string, dirs?: string[]): Promise<PublishResult> {
+export async function publishIntake(
+  root: string,
+  base: string,
+  message: string,
+  dirs?: string[],
+  onGuard?: (reverted: string[]) => void | Promise<void>,
+): Promise<PublishResult> {
+  // Guard (ADR-0438): drop any commit the agent made (only the staged books below are published) and
+  // put the cli-owned sidecars back — an intake agent never approves, authors or counts attempts.
+  const ref = (await hasRemoteBranch(root, base)) ? `origin/${base}` : "HEAD";
+  if (ref !== "HEAD") await gitQuiet(root, ["reset", "-q", ref]);
+  const reverted = await restoreSidecars(root, ref);
+  if (reverted.length && onGuard) await onGuard(reverted);
   await gitQuiet(root, ["add", "--", ...BOOK_PATHS.filter((p) => existsSync(join(root, p)))]);
   // The evidence roots + the mockup folder the intake agent may write (ADR-0418).
   await addRepoDirs(root, dirs);

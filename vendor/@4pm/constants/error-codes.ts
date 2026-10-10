@@ -176,6 +176,9 @@ export const ErrorCode = {
   // Separation of duties (ADR-0320): a non-ADMIN tried to approve a row they wrote — the writer can't
   // be the approver of their own row (ADMIN may self-approve).
   APPROVAL_SELF: "APPROVAL_SELF",
+  // Signed approvals (ADR-0438): the row changed after the approver read it — its content hash no longer
+  // matches the book the approval targets; reload and approve again. meta.id = the row.
+  APPROVAL_STALE: "APPROVAL_STALE",
   CLI_VERSION_UNSUPPORTED: "CLI_VERSION_UNSUPPORTED",
   // The worker runs an update-locked image (ADR-0432/0434): a cli update is refused — pull a newer image.
   CLI_UPDATE_LOCKED: "CLI_UPDATE_LOCKED",
@@ -383,6 +386,7 @@ export const CLI_ERROR_CODE_MAP: Record<string, { code: ErrorCode; status: numbe
   "Unknown git host — no pull request opened.": { code: ErrorCode.GIT_UNKNOWN_HOST, status: 422 },
   "could not push the change to the base branch (retry)": { code: ErrorCode.AUTONOMOUS_BASE_PUSH_FAILED, status: 422 },
   "self-approval blocked": { code: ErrorCode.APPROVAL_SELF, status: 409 },
+  "approval stale": { code: ErrorCode.APPROVAL_STALE, status: 409 },
 };
 
 /** Resolve a cli reply's `error` string to its ErrorCode + status, or `null` when unmapped. */

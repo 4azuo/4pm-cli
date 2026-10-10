@@ -35,6 +35,7 @@ import {
   pushBranch,
   remoteBook,
   resolveBases,
+  stripSidecarsFromBranch,
   syncBase,
   wipCommit,
   type RepoBase,
@@ -46,6 +47,7 @@ import {
   applyQuestion,
   applyRelease,
   applySplit,
+  approvedIds,
   claimState,
   foldTaskAnswers,
   hasIntakeWork,
@@ -65,24 +67,31 @@ import { readFileInRoot } from "../../utils/safe-path";
 
 // ── Prompts (the agent's parts only) ──────────────────────────────────────────────────────────────
 
-/** Shared books preamble for the intake agent. */
-const BOOKS_INTRO = `The five "book" files at the project root — \`USER_TODO.md\`, \`USER_QA.md\`, \`AI_TODO.md\`,
+/**
+ * Shared books preamble for the intake agent. The approved ids come from the cli's own verification
+ * (signed + unchanged rows), never from the agent reading the approvals file; the sidecars are off-limits.
+ * @adr 0438
+ */
+function booksIntro(approved: readonly string[]): string {
+  const list = approved.length ? approved.join(", ") : "(none)";
+  return `The five "book" files at the project root — \`USER_TODO.md\`, \`USER_QA.md\`, \`AI_TODO.md\`,
 \`AI_PROGRESS.md\`, \`AI_DONE.md\` — have canonical templates in \`.claude/templates/\` (\`<NAME>.empty.md\`
 = EMPTY, \`<NAME>.sample.md\` = example WITH DATA). When clearing a book, overwrite it with EXACTLY the
-empty template. The single source of truth for approval is \`.claude/.autonomous.approvals.json\`
-(\`{ "<ID>": { "approved": true, … } }\`); a row is APPROVED only when its id has \`"approved": true\`.
-NEVER act on an unapproved row.`;
+empty template. The APPROVED rows are exactly these ids (verified by 4PM): ${list}.
+NEVER act on any other row. NEVER edit \`.claude/.autonomous.approvals.json\`, \`.claude/.autonomous.authors.json\`
+or \`.claude/.autonomous.attempts.json\` — 4PM reverts such edits and alerts the project managers.`;
+}
 
 /**
  * Intake: analyse approved `USER_TODO` requests and answered intake questions into
  * sized tasks. Books only — no git, no code.
  * @adr 0371 phase 3
  */
-export function buildIntakePrompt(cfg: AutonomousConfig): string {
+export function buildIntakePrompt(cfg: AutonomousConfig, approved: readonly string[]): string {
   const h = cfg.taskSizeHints;
   // Admin override (ADR-0381) for `cli.autonomous.intake`, else the shared registry default.
   return resolveCliPrompt("cli.autonomous.intake", {
-    booksIntro: BOOKS_INTRO,
+    booksIntro: booksIntro(approved),
     evidenceDir: cfg.evidenceDir,
     mockupDir: cfg.mockupDir,
     sMaxFiles: h.sMaxFiles,
@@ -205,8 +214,18 @@ function subBranches(subs: RepoBase[], taskId: string, rootFrom: string | null):
     .map((s) => ({ sub: s, branch: taskBranch(s.base, taskId), from: fromTask ? taskBranch(s.base, fromTask) : null }));
 }
 
+/**
+ * Report a reverted sidecar edit by an agent run (ADR-0438): a `[guard]` line in the tick log + a
+ * `sidecar-tamper` alert to the project's managers.
+ */
+async function reportSidecarTamper(ctx: WsHandlerCtx, root: string, files: string[], task?: string): Promise<void> {
+  if (files.length === 0) return;
+  await dayLog(root, `[guard] ${task ? `${task}: ` : ""}agent edited ${files.join(", ")} — reverted`);
+  alert(ctx, { kind: "sidecar-tamper", ...(task ? { task } : {}), message: `An agent run edited ${files.join(", ")}; the change was reverted.` });
+}
+
 /** Save + push the work in progress of a task (root + submodules) — no PR. Best-effort. */
-async function pushWip(root: string, mine: LocalClaim, subs: { sub: RepoBase; branch: string }[], note: string): Promise<void> {
+async function pushWip(ctx: WsHandlerCtx, root: string, mine: LocalClaim, subs: { sub: RepoBase; branch: string }[], note: string): Promise<void> {
   for (const s of subs) {
     const abs = join(root, s.sub.dir);
     if ((await currentBranch(abs)) !== s.branch) continue;
@@ -215,6 +234,7 @@ async function pushWip(root: string, mine: LocalClaim, subs: { sub: RepoBase; br
   }
   if ((await currentBranch(root)) === mine.branch) {
     await wipCommit(root, `wip(${mine.id}): ${note}`);
+    await reportSidecarTamper(ctx, root, await stripSidecarsFromBranch(root, mine.base, mine.id), mine.id);
     await pushBranch(root, mine.branch).catch(() => undefined);
   }
 }
@@ -360,14 +380,16 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       if (intakeBlocked) await log("[cap] monthly AI_TODO/USER_QA limit reached — intake skipped this cycle");
       else if (await hasIntakeWork(root)) {
         const before = await cappedBookIds(root);
-        const out = await runAiPrompt(ctx, buildIntakePrompt(cfg), randomUUID(), "local", false, undefined, undefined, false, true);
+        const out = await runAiPrompt(ctx, buildIntakePrompt(cfg, [...(await approvedIds(root))].filter((id) => !id.startsWith("TSK-")).sort()), randomUUID(), "local", false, undefined, undefined, false, true);
         if (out.exhausted) {
           await gitQuiet(root, ["checkout", "--", "."]);
           await log("[skip] usage limit during intake");
           ctx.bus.autonomousDone(false, "usage limit");
           return;
         }
-        const res = await publishIntake(root, rootBase.base, "chore(auto): intake requests into tasks", dirs);
+        const res = await publishIntake(root, rootBase.base, "chore(auto): intake requests into tasks", dirs, (files) =>
+          reportSidecarTamper(ctx, root, files),
+        );
         await log(`[intake] ${res}`);
         if (res === "pushed") await reportNewBookRows(ctx, root, before);
         await syncBase(root, rootBase.base);
@@ -458,7 +480,7 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     const status = out.cancelled ? "failed" : out.exitCode !== 0 ? "failed" : (reply?.status ?? "failed");
 
     if (status === "needs-input") {
-      await pushWip(root, mine, subs, "waiting for an answer");
+      await pushWip(ctx, root, mine, subs, "waiting for an answer");
       await syncBase(root, rootBase.base);
       const question = reply?.question?.trim() || reply?.summary?.trim() || "The agent needs a decision to continue.";
       let qaId: string | null = null;
@@ -496,7 +518,7 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     }
     let delivered: { files: string; notes: string; evidence: string[] };
     try {
-      delivered = await deliver(root, rootBase, subs, mine, reply?.summary ?? "", cfg.evidenceDir);
+      delivered = await deliver(ctx, root, rootBase, subs, mine, reply?.summary ?? "", cfg.evidenceDir);
     } catch (err) {
       const reason = `delivery failed: ${String(err instanceof Error ? err.message : err)}`;
       await releaseTask(ctx, root, rootBase, bases.subs, mine, reason, cfg);
@@ -536,6 +558,7 @@ async function remoteClaimLost(root: string, mine: LocalClaim): Promise<boolean>
  * @adr 0371 phase 7
  */
 async function deliver(
+  ctx: WsHandlerCtx,
   root: string,
   rootBase: RepoBase,
   subs: { sub: RepoBase; branch: string }[],
@@ -557,6 +580,8 @@ async function deliver(
   }
   // Root: pointer bumps + any uncommitted leftovers, then push + PR.
   await wipCommit(root, `feat(${mine.id}): ${summary || mine.task.desc}`.slice(0, 200));
+  // The agent's own commits may carry sidecar edits — restore them before the push / PR (ADR-0438).
+  await reportSidecarTamper(ctx, root, await stripSidecarsFromBranch(root, rootBase.base, mine.id), mine.id);
   const files = (await gitQuiet(root, ["diff", "--name-only", `origin/${rootBase.base}...${mine.branch}`])).split("\n").filter(Boolean);
   // The agent's own evidence on the task branch (ADR-0404) — listed in AI Done's Evidence column.
   const evidence = await agentEvidence(root, mine.id, evRoot);
@@ -581,7 +606,7 @@ async function deliver(
  */
 async function releaseTask(ctx: WsHandlerCtx, root: string, rootBase: RepoBase, allSubs: RepoBase[], mine: LocalClaim, reason: string, cfg: AutonomousConfig): Promise<void> {
   const subs = subBranches(allSubs, mine.id, null);
-  await pushWip(root, mine, subs, reason.slice(0, 80));
+  await pushWip(ctx, root, mine, subs, reason.slice(0, 80));
   await syncBase(root, rootBase.base); // the books (and attempts) as on the remote
   const attempts = await B.readAttempts(root);
   const next = (attempts[mine.id]?.count ?? 0) + 1;
@@ -700,25 +725,14 @@ async function recordRun(
   await writeHistories(root, hist);
 }
 
-/** Read a project JSON object — symlink-safe; `{}` on any error. @adr 0430 */
-async function readJsonObject(root: string, path: string): Promise<Record<string, unknown>> {
-  try {
-    return JSON.parse(await readFileInRoot(root, path, "utf8")) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
-}
-
 /**
  * "Has work": at least one APPROVED row present in a book — an approved `REQ-` in
  * USER_TODO, an approved `QA-` in USER_QA, an approved `TSK-` in AI_TODO — or AI_PROGRESS carries a task.
- * @adr 0319 @adr 0321
+ * @adr 0319 @adr 0321 @adr 0438
  */
 async function hasWork(root: string): Promise<boolean> {
-  const approvals = await readJsonObject(root, join(root, ".claude/.autonomous.approvals.json"));
-  const approved = Object.entries(approvals)
-    .filter(([, v]) => v && typeof v === "object" && (v as { approved?: boolean }).approved === true)
-    .map(([k]) => k);
+  // Verified approvals only (ADR-0438) — a forged or edited entry is no work.
+  const approved = [...(await approvedIds(root))];
   const read = (f: string): Promise<string> => readFileInRoot(root, join(root, f), "utf8").catch(() => "");
   const [userTodo, userQa, aiTodo, aiProgress] = await Promise.all([
     read("USER_TODO.md"),
