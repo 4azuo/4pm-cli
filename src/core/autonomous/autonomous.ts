@@ -224,7 +224,7 @@ async function approvalBooksIn(dir: string): Promise<ApprovalBooks> {
   return { userTodo, userQa, aiTodo };
 }
 
-/** A stale-row refusal (ADR-0438): the row changed after the approver read it. */
+/** A stale-row refusal: the row changed after the approver read it. */
 function stale(id: string): WebWrite {
   return { ok: false, code: "APPROVAL_STALE", failedId: id, error: "approval stale" };
 }

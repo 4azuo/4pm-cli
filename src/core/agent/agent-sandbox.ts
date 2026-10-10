@@ -67,7 +67,7 @@ function allowListedEnv(): NodeJS.ProcessEnv {
 /**
  * Build the AI CLI child's environment from an allow-list of the cli's own env, plus the profile's
  * configured `aiEnv` and the account selector (e.g. `CLAUDE_CONFIG_DIR`). Everything else — notably
- * `FOURPM_*` secrets — is dropped. The egress proxy variables (ADR-0439) go on last, so neither the host's
+ * `FOURPM_*` secrets — is dropped. The egress proxy variables go on last, so neither the host's
  * proxy settings nor `aiEnv` can route around the proxy; `egressRun` picks the run's policy (project-less
  * / research runs).
  * @adr 0439

@@ -216,7 +216,7 @@ function subBranches(subs: RepoBase[], taskId: string, rootFrom: string | null):
 }
 
 /**
- * Report a reverted sidecar edit by an agent run (ADR-0438): a `[guard]` line in the tick log + a
+ * Report a reverted sidecar edit by an agent run: a `[guard]` line in the tick log + a
  * `sidecar-tamper` alert to the project's managers.
  */
 async function reportSidecarTamper(ctx: WsHandlerCtx, root: string, files: string[], task?: string): Promise<void> {
