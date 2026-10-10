@@ -169,8 +169,8 @@ export interface WsTokenResponse {
   aiRestrictToFolder: boolean;
   /**
    * Git-auth method of the project this link serves (ADR-0192 §4) — tells the worker how to
-   * authenticate git (`self`/`deploy-key` need no token config; `gitlab-group-token`/`github-app`
-   * configure an injected/minted token for HTTPS). `null` for orchestrator/idle links or `self`.
+   * authenticate git (`self`/`deploy-key` need no token config; the GitLab methods /`github-app`
+   * configure an injected/minted token for HTTPS — ADR-0382/0435/0356). `null` for orchestrator/idle links or `self`.
    */
   gitAuth: GitAuthMethod | null;
   /**
