@@ -10,7 +10,7 @@ import { spawn } from "node:child_process";
 import { logger } from "../common/logger/logger";
 import { CLI_VERSION } from "../version";
 import { readProfileConfig } from "../config/profile";
-import { updateToLatest } from "./update";
+import { CLI_UPDATE_LOCKED_REASON, reexecArgv, updateToLatest } from "./update";
 import { autoUpdateFlaggedTools, resolveInstallTimeoutMs } from "./worker-tools";
 import type { SessionBus } from "./session-bus";
 import { t } from "../i18n";
@@ -171,6 +171,22 @@ export class UpdateScheduler {
       await this.updateFlaggedTools();
       this.bus.log(t("update.scheduledChecking"));
       const result = await updateToLatest(this.serverUrl, force);
+      if (result.action === "locked") {
+        // Update-locked image (ADR-0432): the daily window stays quiet (tools above still updated); an
+        // operator push gets the reason back so the web "Update" modal explains it instead of spinning.
+        logger.info("update.scheduled.locked", { version: result.version, latest: result.latest });
+        if (force) {
+          this.bus.log(t("update.scheduledFailed", { error: CLI_UPDATE_LOCKED_REASON }), "warn");
+          this.onUpdateResult?.({
+            ok: false,
+            message: CLI_UPDATE_LOCKED_REASON,
+            fromVersion: CLI_VERSION,
+            toVersion: result.latest,
+            at: new Date().toISOString(),
+          });
+        }
+        return;
+      }
       if (result.action === "already-latest") {
         logger.info("update.scheduled.latest", { version: result.version });
         return;
@@ -193,7 +209,7 @@ export class UpdateScheduler {
       // (FOURPM_NO_UPDATE=1 skips the redundant startup check on the child).
       logger.info("update.scheduled.updated", { version: result.version });
       this.bus.log(t("update.scheduledUpdated", { version: result.version ?? "" }));
-      const child = spawn(process.execPath, process.argv.slice(1), {
+      const child = spawn(process.execPath, reexecArgv(), {
         stdio: "inherit",
         env: { ...process.env, FOURPM_NO_UPDATE: "1" },
       });

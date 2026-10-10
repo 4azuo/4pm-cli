@@ -4,10 +4,10 @@
  * attributed to that machine-user. Push still uses whatever gh/glab account the worker is
  * already logged in with. Never throws — a failure just leaves git's existing config.
  */
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { execInProject } from "./agent-spawn";
 
-const run = promisify(execFile);
+// Project git runs as the agent user when uid separation is on (ADR-0430); unchanged otherwise.
+const run = execInProject;
 
 /**
  * Set the local git commit author name for `cwd` to `machineUsername` (best-effort).

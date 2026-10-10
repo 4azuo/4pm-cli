@@ -14,9 +14,8 @@
 import { spawn } from "node:child_process";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import type {
   ChecklistAuthorReply,
@@ -34,6 +33,9 @@ import { createAiStreamParser, estimateTokens, type AiUsage } from "./ai-stream"
 import type { ResolvedClaudeProfile } from "../utils/ai-cli";
 import { agentEnv, gitAuthArgs } from "./agent-sandbox";
 import { denySettingsArgs } from "../utils/agent-deny";
+import { strictMcpArgs } from "../utils/agent-mcp";
+import { agentSpawnArgs } from "./agent-spawn";
+import { makeAgentTempDir, unregisterAgentRoot } from "../utils/agent-user";
 
 /** Zero usage — the fallback when a run captured no token counts. */
 const NO_USAGE: AiUsage = { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
@@ -161,7 +163,10 @@ function collectDocs(dir: string): string {
     for (const entry of readdirSync(current)) {
       if (entry === ".git" || entry === "node_modules") continue;
       const full = join(current, entry);
-      const st = statSync(full);
+      // Never follow a link out of the KB clone into the worker's files (ADR-0430) — the docs go into a
+      // prompt that answers guests.
+      const st = lstatSync(full);
+      if (st.isSymbolicLink()) continue;
       if (st.isDirectory()) {
         walk(full);
       } else if (DOC_EXTENSIONS.some((ext) => entry.toLowerCase().endsWith(ext))) {
@@ -184,7 +189,8 @@ function buildPrompt(docs: string, question: string, askerRole: "admin" | "user"
     askerRole === "admin"
       ? "The asker is a platform admin."
       : "The asker is a regular user — do NOT reveal admin-only features.";
-  // Admin override (ADR-0381) for `cli.support.answer`, else the shared registry default.
+  // Admin override (ADR-0381) for `cli.support.answer`, else the shared registry default; `question` is
+  // wrapped as the asker's request by the registry (ADR-0421).
   return resolveCliPrompt("cli.support.answer", { roleNote, docs, question });
 }
 
@@ -249,7 +255,8 @@ function imageExt(mime: string): string {
 function materializeImages(images: SupportAnswerImage[], question: string): { dir: string; question: string } {
   // A throwaway folder under the OS temp dir — NOT under the cli profile (`~/.4pm/`), which the
   // ADR-0347 deny rules block for every agent read.
-  const dir = mkdtempSync(join(tmpdir(), "4pm-help-images-"));
+  // Shared with the agent user when uid separation is on (ADR-0430) — it reads the images.
+  const dir = makeAgentTempDir("4pm-help-images-");
   let rewritten = question;
   images.forEach((img, i) => {
     const file = join(dir, `attachment-${i + 1}.${imageExt(img.mime)}`);
@@ -322,6 +329,8 @@ function runClaudeOnce(
       // (empty) working dir and any added dir; anywhere else they would need an approval a headless
       // run never gets.
       // Secret-path deny rules (ADR-0347) — reads are not confined to the working dir.
+      // No MCP server on this run (ADR-0427): repo/user MCP config is ignored.
+      ...strictMcpArgs(cmd),
       ...denySettingsArgs(cmd, [...denyDirs, profile?.dir]),
       ...(isClaude ? ["--disallowedTools", ...DENIED_TOOLS] : []),
       // When the question references pasted images (ADR-0273), add the materialized folder so the
@@ -333,15 +342,18 @@ function runClaudeOnce(
     // Allow-listed env only — the cli's own secrets never reach the agent (ADR-0346).
     const env = agentEnv(extraEnv, profile ? { CLAUDE_CONFIG_DIR: profile.dir } : undefined);
     // Run in an empty throwaway dir (the docs are in the prompt) so there is nothing to read nearby.
-    const cwd = mkdtempSync(join(tmpdir(), "4pm-support-"));
+    const cwd = makeAgentTempDir("4pm-support-");
     const cleanup = (): void => {
+      unregisterAgentRoot(cwd);
       try {
         rmSync(cwd, { recursive: true, force: true });
       } catch {
         // best-effort — an empty leftover temp dir is harmless
       }
     };
-    const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], env, cwd });
+    // The AI CLI always runs as the agent user when uid separation is on (ADR-0430).
+    const run = agentSpawnArgs(cmd, args, env);
+    const child = spawn(run.cmd, run.args, { stdio: ["pipe", "pipe", "pipe"], env: run.env, cwd });
     // Parse claude stream-json → readable text + usage; a non-json cmd passes text through verbatim.
     const parser = createAiStreamParser(cmd);
     let out = "";
@@ -480,6 +492,7 @@ export async function runSupportAnswer(
   } finally {
     if (imageDir) {
       try {
+        unregisterAgentRoot(imageDir);
         rmSync(imageDir, { recursive: true, force: true });
       } catch {
         // best-effort cleanup — a leftover throwaway image folder is harmless

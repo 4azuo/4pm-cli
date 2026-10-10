@@ -5,12 +5,11 @@
  * runs in the **background** (a `.installing` marker + `install.log`); the web polls the status.
  * WSL/Linux assumed (the autonomous engine's environment). Never throws — errors map to a reply.
  */
-import { readFile, writeFile, statfs, mkdir } from "node:fs/promises";
+import { statfs } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { totalmem, cpus } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import type {
   RagIndex,
   RagInstallReply,
@@ -20,8 +19,11 @@ import type {
   RagReindexReply,
   RagStatusReply,
 } from "@4pm/ws";
+import { mkdirInRoot, PathEscapeError, readFileInRoot, writeFileInRoot } from "../utils/safe-path";
+import { execInProject, projectSpawnArgs } from "./agent-spawn";
 
-const run = promisify(execFile);
+// Project python runs as the agent user when uid separation is on (ADR-0430).
+const run = execInProject;
 const RAG_REL = ".claude/rag";
 
 /** Run a command; return `{ ok, out }` (never throws). */
@@ -46,7 +48,7 @@ async function detectPython(): Promise<{ bin: string; found: boolean; version: s
 /** Read `install.log` tail (last ~200 lines). */
 async function installLog(root: string): Promise<string[]> {
   try {
-    const text = await readFile(join(root, RAG_REL, "install.log"), "utf8");
+    const text = await readFileInRoot(root, join(root, RAG_REL, "install.log"), "utf8");
     return text.split("\n").filter((l) => l.length > 0).slice(-200);
   } catch {
     return [];
@@ -116,7 +118,7 @@ export async function ragStatus(root: string): Promise<RagStatusReply> {
   // Installed = deps present + a model marker written by a successful install.
   let modelName: string;
   try {
-    modelName = (await readFile(join(root, RAG_REL, ".installed"), "utf8")).trim();
+    modelName = (await readFileInRoot(root, join(root, RAG_REL, ".installed"), "utf8")).trim();
   } catch {
     modelName = "";
   }
@@ -138,7 +140,7 @@ export async function ragStatus(root: string): Promise<RagStatusReply> {
 async function readIndexMeta(root: string): Promise<RagIndex> {
   const indexing = existsSync(join(root, RAG_REL, ".indexing"));
   try {
-    const m = JSON.parse(await readFile(join(root, RAG_REL, ".index.json"), "utf8")) as {
+    const m = JSON.parse(await readFileInRoot(root, join(root, RAG_REL, ".index.json"), "utf8")) as {
       chunks?: number;
       indexedAt?: string;
     };
@@ -160,6 +162,13 @@ async function readIndexMeta(root: string): Promise<RagIndex> {
 const RAG_ENGINE_PY = `import sys, os, json, glob, sqlite3, datetime
 BASE = os.path.join(".claude", "rag")
 DB = os.path.join(BASE, "index.db")
+ROOT = os.path.realpath(".")
+def inside(p):
+    # Symlink-safe (ADR-0430): only files/folders whose real path stays inside the project.
+    real = os.path.realpath(p)
+    return real == ROOT or real.startswith(ROOT + os.sep)
+if os.path.lexists(BASE) and not inside(BASE):
+    sys.exit("rag folder leads outside the project")
 def model_name():
     return open(os.path.join(BASE, ".installed"), encoding="utf-8").read().strip()
 def connect():
@@ -179,6 +188,7 @@ def reindex():
     for p in glob.glob("**/*.md", recursive=True):
         parts = p.split(os.sep)
         if "node_modules" in parts or ".git" in parts: continue
+        if not inside(p): continue
         try: txt = open(p, encoding="utf-8").read()
         except Exception: continue
         for i in range(0, len(txt), 800):
@@ -215,8 +225,8 @@ if __name__ == "__main__":
 
 /** Ensure the RAG engine script exists on the worker (self-healing). */
 async function ensureEngine(root: string): Promise<void> {
-  await mkdir(join(root, RAG_REL), { recursive: true }).catch(() => undefined);
-  await writeFile(join(root, RAG_REL, "rag_engine.py"), RAG_ENGINE_PY, "utf8");
+  // Symlink-safe (ADR-0430): a linked `.claude/rag` cannot redirect the engine (or what it writes) outside.
+  await writeFileInRoot(root, join(root, RAG_REL, "rag_engine.py"), RAG_ENGINE_PY);
 }
 
 /** rag.reindex — (re)build the vector index in the background. Returns started. */
@@ -232,9 +242,11 @@ touch "${RAG_REL}/.indexing"
 { echo "[reindex] $(date)"; "$RAG_PY" "${RAG_REL}/rag_engine.py" reindex 2>&1; } >> "${RAG_REL}/index.log" 2>&1
 rm -f "${RAG_REL}/.indexing"
 `;
-  const child = spawn("bash", ["-c", script], {
+  // The background job runs in the project ⇒ as the agent user when uid separation is on (ADR-0430).
+  const job = projectSpawnArgs("bash", ["-c", script], root, { ...process.env, RAG_PY: py.bin });
+  const child = spawn(job.cmd, job.args, {
     cwd: root,
-    env: { ...process.env, RAG_PY: py.bin },
+    env: job.env,
     detached: true,
     stdio: "ignore",
   });
@@ -273,9 +285,10 @@ export async function ragInstall(root: string, model: string): Promise<RagInstal
   if (!py.found) return { ok: false, started: false, error: "python3 not found on the worker" };
   if (existsSync(join(root, RAG_REL, ".installing"))) return { ok: true, started: true };
   try {
-    await mkdir(join(root, RAG_REL), { recursive: true });
-  } catch {
-    // ignore
+    await mkdirInRoot(root, join(root, RAG_REL));
+  } catch (err) {
+    // A linked rag folder leading outside the project is refused (ADR-0430); other errors are ignored.
+    if (err instanceof PathEscapeError) return { ok: false, started: false, error: err.message };
   }
   // Background: mark installing, pip the deps, warm (download) the model, then clear the marker.
   const script = `
@@ -291,9 +304,11 @@ rm -f "${RAG_REL}/.installed"
 } >> "${RAG_REL}/install.log" 2>&1
 rm -f "${RAG_REL}/.installing"
 `;
-  const child = spawn("bash", ["-c", script], {
+  // The background job runs in the project ⇒ as the agent user when uid separation is on (ADR-0430).
+  const job = projectSpawnArgs("bash", ["-c", script], root, { ...process.env, RAG_PY: py.bin, RAG_MODEL: model });
+  const child = spawn(job.cmd, job.args, {
     cwd: root,
-    env: { ...process.env, RAG_PY: py.bin, RAG_MODEL: model },
+    env: job.env,
     detached: true,
     stdio: "ignore",
   });

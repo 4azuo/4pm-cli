@@ -12,6 +12,7 @@ import { runAttach } from "./commands/attach";
 import { runAutoRun } from "./commands/auto-run";
 import { runGitCredential, runGitToken } from "./commands/git-credential";
 import { runAiLogin } from "./commands/ai-login";
+import { importCredentialFromEnv, runCredentialExport } from "./commands/credential";
 import { runUnlink } from "./commands/unlink";
 import { runUpdate } from "./commands/update";
 import { runVersion } from "./commands/version";
@@ -99,6 +100,9 @@ async function main(): Promise<void> {
       // Container/pool boot (ADR-0192 §6): no linked profile yet + a provisioning token present ⇒
       // headlessly pair first, so `docker run -e FOURPM_SERVER -e FOURPM_PAIR_TOKEN 4pm-cli` (which
       // defaults to `start`) self-provisions with no interactive step.
+      // Ephemeral container without a volume (ECS — ADR-0428): restore the exported identity first, so
+      // the single-use provisioning token is never needed again after the first pairing.
+      importCredentialFromEnv(explicitProfile);
       const bootToken = process.env.FOURPM_PAIR_TOKEN || null;
       if (bootToken && listProfiles().filter((p) => p.linked).length === 0) {
         const serverUrl =
@@ -152,6 +156,16 @@ async function main(): Promise<void> {
       await runAiLogin(profileDir(name), name, flagValue(rest, "ai") ?? null);
       break;
     }
+    case "credential-export": {
+      // Print a profile's identity as one FOURPM_CREDENTIAL value for a secret store (ADR-0428).
+      const name = await pickLinkedProfile(explicitProfile, "credential-export");
+      if (!name) {
+        process.exitCode = 1;
+        break;
+      }
+      runCredentialExport(profileDir(name), name);
+      break;
+    }
     case "unlink": {
       const name = await pickLinkedProfile(explicitProfile, "unlink");
       if (!name) {
@@ -185,6 +199,8 @@ async function main(): Promise<void> {
           "  4pm attach    Open the TUI against a running headless daemon (ADR-0192)",
           "  4pm auto-run  Run one autonomous cycle now via the running daemon (ADR-0319/0392)",
           "  4pm ai-login  Log into a profile's AI CLI (claude/codex) in place (ADR-0199)",
+          "  4pm credential-export  Print the profile's identity as one FOURPM_CREDENTIAL",
+          "                value for a secret store (ephemeral containers — ADR-0428)",
           "  4pm unlink    Delete a link (pick a profile if several)",
           "  4pm version   Show the installed version (+ latest from the server)",
           "  4pm update    Update to the latest version now",
@@ -209,6 +225,8 @@ async function main(): Promise<void> {
           "Environment:",
           "  FOURPM_SERVER     Default server URL when --server is omitted (link/version/",
           "                    update). Fallback when unset: http://localhost:42001.",
+          "  FOURPM_CREDENTIAL On start, restore a profile from a `credential-export` value",
+          "                    when it has no .cre yet (no volume needed — ADR-0428).",
           "",
           "Profiles: named after the paired account (e.g. mcacc1); when several exist,",
           "start/unlink show a picker (↑↓ + Enter) — no --profile needed.",

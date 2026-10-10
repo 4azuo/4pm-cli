@@ -11,8 +11,12 @@ import { spawn } from "node:child_process";
 import { reportToolResult } from "./tool-health";
 import { ONE_SHOT_DISALLOWED_CLAUDE_TOOLS, type ResolvedClaudeProfile } from "../utils/ai-cli";
 import { denySettingsArgs } from "../utils/agent-deny";
+import { strictMcpArgs } from "../utils/agent-mcp";
+import { agentEnv } from "./agent-sandbox";
+import { stripUntrustedMarkers } from "@4pm/constants";
 import { resolveCliPrompt } from "./prompt-overrides";
 import type { AiUsage } from "./ai-stream";
+import { agentSpawnArgs } from "./agent-spawn";
 
 /** How to run the AI CLI for a compaction (resolved by the caller from the profile config). */
 export interface MemoryCompactAi {
@@ -78,6 +82,7 @@ const COMPACT_TIMEOUT_MS = 60_000;
 /** Build the compaction prompt fed to the AI CLI over stdin. */
 function buildPrompt(input: MemoryCompactInput): string {
   // Admin override (ADR-0381) for `cli.memory.compact`, else the shared registry default.
+  // The old memory + exchange are wrapped as untrusted data by the registry (ADR-0421).
   return resolveCliPrompt("cli.memory.compact", {
     budgetChars: input.budgetChars,
     oldMemory: input.oldMemory || "(empty)",
@@ -104,6 +109,8 @@ function runOnce(
       "json",
       ...(profile?.model ? ["--model", profile.model] : []),
       // Secret-path deny rules (ADR-0347) — before the variadic `--disallowedTools`.
+      // No MCP server on this run (ADR-0427): repo/user MCP config is ignored.
+      ...strictMcpArgs(cmd),
       ...denySettingsArgs(cmd, [...denyDirs, profile?.dir]),
       "--max-turns=1",
       "--disallowedTools",
@@ -111,12 +118,11 @@ function runOnce(
       "--permission-mode",
       "default",
     ];
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      ...extraEnv,
-      ...(profile ? { CLAUDE_CONFIG_DIR: profile.dir } : {}),
-    };
-    const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], cwd, env });
+    // Allow-listed env (ADR-0421): the cli's own secrets never reach the agent.
+    const env = agentEnv(extraEnv, profile ? { CLAUDE_CONFIG_DIR: profile.dir } : undefined);
+    // The AI CLI always runs as the agent user when uid separation is on (ADR-0430).
+    const run = agentSpawnArgs(cmd, args, env);
+    const child = spawn(run.cmd, run.args, { stdio: ["pipe", "pipe", "pipe"], cwd, env: run.env });
     let out = "";
     let err = "";
     const timer = setTimeout(() => {
@@ -157,9 +163,11 @@ export async function runMemoryCompaction(
       const profile = attempts[i]!;
       const { code, out } = await runOnce(ai.cmd, profile, prompt, cwd, ai.env, ai.profiles.map((p) => p.dir));
       const parsed = code === 0 ? parseJsonResult(out) : null;
-      if (parsed && parsed.text.trim()) {
+      // Drop any marker the model echoed from the wrapped inputs (ADR-0421) so the memory never grows them.
+      const memory = parsed ? stripUntrustedMarkers(parsed.text).trim() : "";
+      if (parsed && memory) {
         reportToolResult(ai.cmd, true);
-        return { memory: parsed.text.trim().slice(0, input.budgetChars), usage: parsed.usage, dir: profile?.dir ?? null };
+        return { memory: memory.slice(0, input.budgetChars), usage: parsed.usage, dir: profile?.dir ?? null };
       }
       if (i === attempts.length - 1) break;
     } catch {

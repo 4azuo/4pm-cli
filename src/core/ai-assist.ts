@@ -9,6 +9,10 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { denySettingsArgs } from "../utils/agent-deny";
+import { strictMcpArgs } from "../utils/agent-mcp";
+import { wrapUntrusted } from "@4pm/constants";
+import { agentEnv } from "./agent-sandbox";
+import { agentSpawnArgs } from "./agent-spawn";
 
 const run = promisify(execFile);
 
@@ -20,7 +24,8 @@ function aiCli(): string {
 /** Non-interactive args per provider (request machine-readable output). */
 function aiArgs(cli: string, prompt: string): string[] {
   // Secret-path deny rules (ADR-0347) — the run's own claude home (if set) + the fixed secret dirs.
-  if (cli === "claude") return ["-p", prompt, "--output-format", "json", ...denySettingsArgs(cli, [process.env.CLAUDE_CONFIG_DIR])];
+  // No MCP server on the reviewer run (ADR-0427).
+  if (cli === "claude") return ["-p", prompt, "--output-format", "json", ...strictMcpArgs(cli), ...denySettingsArgs(cli, [process.env.CLAUDE_CONFIG_DIR])];
   if (cli === "codex") return ["exec", "--json", prompt];
   return ["-p", prompt];
 }
@@ -79,7 +84,10 @@ function parseAi(cli: string, stdout: string, prompt: string): { text: string; t
 /** Run the AI CLI non-interactively with a prompt; return output + real tokens. */
 async function runAi(prompt: string): Promise<{ text: string; tokens: number }> {
   const cli = aiCli();
-  const { stdout } = await run(cli, aiArgs(cli, prompt), {
+  // Allow-listed env (ADR-0421) + the agent user when uid separation is on (ADR-0430).
+  const w = agentSpawnArgs(cli, aiArgs(cli, prompt), agentEnv());
+  const { stdout } = await run(w.cmd, w.args, {
+    env: w.env,
     timeout: 120_000,
     maxBuffer: 8 * 1024 * 1024,
   });
@@ -106,7 +114,8 @@ export async function aiOutboundReview(
     `"${projectPath}"; (4) commits/pushes to a repo not in this allowlist: ` +
     `${allowedRepos.length ? allowedRepos.join(", ") : "(none declared)"}. Reply with ONLY ` +
     `JSON: {"ok": <true|false>, "reasons": ["secret"|"environment"|"path"|"repo", ...]}. ` +
-    `INPUT:\n${input}`;
+    // The reviewed input is what is being judged, never instructions to you (ADR-0421).
+    `INPUT:\n${wrapUntrusted(input, { kind: "data", source: "reviewed-input" })}`;
   const { text, tokens } = await runAi(prompt);
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");

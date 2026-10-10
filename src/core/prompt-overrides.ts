@@ -6,7 +6,7 @@
  * `AI_PROMPTS`, whose text lives in `ai-prompt-defaults.json`). Platform-wide; refreshed on each
  * (re)connect, so an older server (no field) simply leaves the built-in default in place.
  */
-import { AI_PROMPTS, renderPrompt } from "@4pm/constants";
+import { AI_PROMPTS, renderCatalogPrompt } from "@4pm/constants";
 import { getLocale } from "../i18n";
 
 /** The current overrides map ({ "<key>": { "<locale>": "content" } }); empty until a ws_token sets it. */
@@ -30,5 +30,6 @@ function getPromptOverride(key: string): string | null {
  */
 export function resolveCliPrompt(key: string, vars: Record<string, string | number>): string {
   const template = getPromptOverride(key) ?? AI_PROMPTS[key]?.defaultTemplate ?? "";
-  return renderPrompt(template, vars);
+  // Untrusted vars are wrapped per the registry (ADR-0421), override or default alike.
+  return renderCatalogPrompt(key, template, vars);
 }

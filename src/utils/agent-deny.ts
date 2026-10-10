@@ -6,7 +6,10 @@
  * (the `Read(...)` rules) and Edit/Write (the `Edit(...)` rules) on:
  *
  * - every configured AI profile dir (`CLAUDE_CONFIG_DIR` / `CODEX_HOME` targets) and the run's own,
- * - the cli's profile store `~/.4pm/` (config.json with the `ws_token`, `.cre`, logs),
+ * - the cli's profile store `~/.4pm/profiles/` (config.json with the `ws_token`, `.cre`, logs, sockets), the
+ *   default-profile pointer and the gh/glab login dirs a container keeps in `~/.4pm/` — but NOT
+ *   `~/.4pm/workspaces/`, where the served projects live (ADR-0430; denying all of `~/.4pm` also hid the
+ *   agent's own project from claude),
  * - `~/.ssh/`, `~/.config/gh/`, `~/.git-credentials`, and `~/.claude*` (default claude homes/config).
  *
  * Deny rules win over allow rules and are enforced in every permission mode (incl. bypassPermissions).
@@ -19,7 +22,10 @@ import { isAbsolute, resolve } from "node:path";
 
 /** Home-relative secret locations denied to every agent run (claude `~/` rule syntax). */
 const HOME_SECRET_PATTERNS = [
-  "~/.4pm/**",
+  "~/.4pm/profiles/**",
+  "~/.4pm/default",
+  "~/.4pm/gh/**",
+  "~/.4pm/glab/**",
   "~/.ssh/**",
   "~/.config/gh/**",
   "~/.git-credentials",

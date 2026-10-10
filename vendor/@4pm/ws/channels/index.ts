@@ -81,6 +81,8 @@ export const WsChannels = {
   // .claude/settings.json (shared) or .claude/settings.local.json (per-cli local)
   AGENT_TOOLS_READ: "agentTools.read",
   AGENT_TOOLS_WRITE: "agentTools.write",
+  // MCP server allowlist (ADR-0427): parse the repo `.mcp.json` files for the approve/drift view
+  MCP_SCAN: "mcp.scan",
   // docs & code dependency graph (ADR-0155): build a {nodes,edges,orphans} graph per mode
   GRAPH_BUILD: "graph.build",
   // RAG capability + install (ADR-0156): probe the worker + install a worker-tuned model

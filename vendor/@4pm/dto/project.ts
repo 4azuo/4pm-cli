@@ -8,6 +8,7 @@ import { ipAllowlistSchema } from "@4pm/validation";
 import { baseRequestSchema, deletedFilterSchema, pinnedFilterSchema } from "./base";
 import type { UserResponse } from "./user";
 import { TEMPLATE_KINDS, type ProjectTemplateSelection, type TemplateKind } from "./template";
+import { readMcpServers, type McpApprovedServer } from "./mcp";
 
 /** Lightweight project-manager (PM) summary shown in list/detail rows. */
 export interface ProjectManagerSummary {
@@ -381,10 +382,17 @@ export interface ProjectAiScopeSettings {
  * `github-app` = the server mints per-job GitHub-App installation tokens from the project's App
  * credential (ADR-0356, stored in its own table — never in settings); `gitlab-group-token` = the
  * server serves the project's stored GitLab group token to the worker's git helper / `glab` shim
- * (ADR-0382, stored encrypted in its own table — never in settings; served as-is, not minted).
+ * (ADR-0382, stored encrypted in its own table — never in settings; served as-is, not minted);
+ * `gitlab-service-account` = the server holds a GitLab service account's PAT and creates a short-lived
+ * project access token per job (ADR-0435, same credential table, `kind: service-account`).
  */
-export const GIT_AUTH_METHODS = ["self", "deploy-key", "gitlab-group-token", "github-app"] as const;
+export const GIT_AUTH_METHODS = ["self", "deploy-key", "gitlab-group-token", "gitlab-service-account", "github-app"] as const;
 export type GitAuthMethod = (typeof GIT_AUTH_METHODS)[number];
+
+/** True for both GitLab methods (group token — ADR-0382; service account — ADR-0435). */
+export function isGitLabMethod(method: GitAuthMethod | string | null | undefined): boolean {
+  return method === "gitlab-group-token" || method === "gitlab-service-account";
+}
 
 /** Per-project git-auth policy (ADR-0192 §4) — method only; credentials live out of settings. */
 export interface ProjectGitAuthSettings {
@@ -442,6 +450,8 @@ export interface ProjectSettings {
   gitAuth: ProjectGitAuthSettings;
   /** Project usage-alert rules (ADR-0220) — empty when none configured. */
   alerts: ProjectAlertRule[];
+  /** Approved, hash-pinned MCP servers (ADR-0427) — empty ⇒ no MCP server runs. */
+  mcp: { servers: McpApprovedServer[] };
 }
 
 /** Defaults applied when a project settings key is absent (ADR-0081/0082/0113). */
@@ -453,6 +463,7 @@ export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
   packages: { autoUpdate: false },
   gitAuth: { method: "self" },
   alerts: [],
+  mcp: { servers: [] },
   outboundReview: {
     enabled: false,
     ruleCheck: false,
@@ -563,6 +574,7 @@ export function readProjectSettings(
   return {
     templates,
     alerts: readProjectAlertRules(settings),
+    mcp: { servers: readMcpServers(settings?.mcp) },
     memory: {
       mode: PROJECT_MEMORY_MODES.includes(memory.mode as ProjectMemoryMode)
         ? (memory.mode as ProjectMemoryMode)

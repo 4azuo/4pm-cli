@@ -56,6 +56,11 @@ export async function runUpdate(
     case "dev-build":
       console.log(t("update.devBuild", { version: result.version }));
       break;
+    case "locked":
+      // Update-locked image (ADR-0432): a newer cli only comes with a newer image.
+      console.error(t("update.locked", { version: result.version }));
+      process.exitCode = 1;
+      break;
     case "already-latest":
       console.log(t("update.alreadyLatest", { version: result.version }));
       break;

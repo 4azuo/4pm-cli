@@ -13,13 +13,18 @@ import { readProfileConfig } from "../config/profile";
 import { isUsableCredential, profileEnvVar, resolveHomePath } from "../utils/ai-cli";
 import type { AiCredential } from "../utils/ai-cli";
 import { initI18n, t } from "../i18n";
+import { agentSpawnArgs } from "../core/agent-spawn";
+import { agentEnv } from "../core/agent-sandbox";
 
 /** Spawn one provider CLI interactively with its config-dir env var set; resolve on exit. */
 function runProviderLogin(cmd: string, envVar: string, dir: string): Promise<number> {
   return new Promise((resolve) => {
-    const child = spawn(cmd, [], {
+    // Allow-listed env (ADR-0421) + the agent user when uid separation is on (ADR-0430), so the login
+    // lands in a credential dir the agent can use and the cli's secrets stay out of the provider CLI.
+    const run = agentSpawnArgs(cmd, [], agentEnv(undefined, { [envVar]: dir }));
+    const child = spawn(run.cmd, run.args, {
       stdio: "inherit",
-      env: { ...process.env, [envVar]: dir },
+      env: run.env,
     });
     child.on("error", (err) => {
       console.error(t("aiLogin.launchFailed", { cmd, message: (err as Error).message }));

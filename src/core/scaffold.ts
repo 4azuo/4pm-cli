@@ -7,13 +7,11 @@
  * submodules** are attached under the root (`git submodule add` + commit + push) after the primary —
  * submodules are attach-only (no scaffold); only the primary is scaffolded.
  */
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { execFile } from "node:child_process";
+import { cp, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 import type {
   ProjectAddPayload,
   ProjectCreatePayload,
@@ -26,8 +24,40 @@ import { SCAFFOLD_TRACKING_FILES } from "@4pm/dto";
 import type { AiTaskRunner } from "./ai-task";
 import { resolveCliPrompt } from "./prompt-overrides";
 import { attachSubmoduleBranches } from "./submodule-branch";
+import { lexicalInRoot, PathEscapeError, readFileInRoot, resolveForRead, writeFileInRoot } from "../utils/safe-path";
+import { projectFolder } from "../config/profile";
+import { execInProject } from "./agent-spawn";
 
-const run = promisify(execFile);
+/**
+ * Refuse a scaffold copy into `dir` when any path the sample template would write already exists there
+ * as a link (or under a linked folder) that really leads outside `dir` (ADR-0430) — `cp` would follow it.
+ */
+function assertNoEscapingLinks(dir: string, sample: string): void {
+  const walk = (rel: string): void => {
+    for (const e of readdirSync(join(sample, rel), { withFileTypes: true })) {
+      const child = rel ? join(rel, e.name) : e.name;
+      const dest = lexicalInRoot(dir, child);
+      if (!dest) throw new PathEscapeError(child);
+      if (existsSync(dest) || isLinkSync(dest)) {
+        if (!resolveForRead(dir, dest)) throw new PathEscapeError(child);
+      }
+      if (e.isDirectory()) walk(child);
+    }
+  };
+  walk("");
+}
+
+/** True when `p` is a symlink (never follows it). */
+function isLinkSync(p: string): boolean {
+  try {
+    return lstatSync(p).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+// Project git runs as the agent user when uid separation is on (ADR-0430); unchanged otherwise.
+const run = execInProject;
 
 /** Emit a progress step to the server (project.progress channel). */
 export type ProgressEmitter = (p: ProjectProgressPayload) => void;
@@ -326,7 +356,7 @@ export async function publishScaffold(
 ): Promise<ScaffoldPublishResult> {
   let repos: RepoDecl[] = [];
   try {
-    const spec = JSON.parse(await readFile(join(root, "project.spec.json"), "utf8")) as Record<string, unknown>;
+    const spec = JSON.parse(await readFileInRoot(root, join(root, "project.spec.json"), "utf8")) as Record<string, unknown>;
     repos = reposOf(spec);
   } catch {
     // No/invalid spec file — fall back to what git knows (no submodules).
@@ -528,7 +558,7 @@ function sampleDir(): string {
 }
 
 /**
- * project.create — scaffold into `<profileDir>/<projectName>` (folder = project name,
+ * project.create — scaffold into `~/.4pm/workspaces/<profile>/<projectName>` (folder = project name,
  * ADR-0064/0080; no user-chosen path). ADR-0314: the root **is** the single repo — clone it at the
  * root, then fully scaffold it (template + spec + AI init). Returns the resolved path (the root).
  */
@@ -548,9 +578,9 @@ export async function scaffoldProject(
     onProgress?.({ projectId: payload.projectId, step, message });
   };
   try {
-    // The folder lives inside the cli profile (ADR-0080); allow SCAFFOLD_ROOT override.
-    const root = process.env.SCAFFOLD_ROOT ? resolve(process.env.SCAFFOLD_ROOT) : resolve(profileDir);
-    const target = join(root, payload.projectName);
+    // The folder lives in the profile's workspace, outside the profile dir (ADR-0430); SCAFFOLD_ROOT overrides.
+    const target = projectFolder(profileDir, payload.projectName);
+    if (!target) throw new Error("invalid project name");
     await mkdir(target, { recursive: true });
     // Every project declares exactly one repo (ADR-0314); the spec schema enforces it — guard here too.
     const repo = singleRepo(reposOf(payload.spec));
@@ -606,12 +636,15 @@ async function scaffoldRepo(
   // or a repo that committed the old `.claude`). `add` never resets (opts.resetClaude falsy).
   if (opts.resetClaude) await resetTemplateManagedClaude(dir, label, emit);
   emit("copy", `Copying the sample template into ${label}…`);
+  // Symlink-safe (ADR-0430): a cloned repo whose links would route the sample copy outside the project
+  // is refused before anything is written.
+  assertNoEscapingLinks(dir, sampleDir());
   // force:false ⇒ keep any files the clone already has instead of clobbering them.
   await cp(sampleDir(), dir, { recursive: true, force: false, errorOnExist: false });
   if (spec) {
     await applyDefaultModel(dir, spec, emit);
     emit("spec", `Writing project.spec.json into ${label}…`);
-    await writeFile(join(dir, "project.spec.json"), JSON.stringify(spec, null, 2), "utf8");
+    await writeFileInRoot(dir, join(dir, "project.spec.json"), JSON.stringify(spec, null, 2));
     // AI init (ADR-0080): subagent files + README + the project's guide file from the spec.
     await aiInit(dir, spec, emit, opts.ai);
   }
@@ -662,10 +695,8 @@ async function resetTrackingFiles(target: string, emit: (step: string, message: 
  * project's stamped version can't drift from the server's "latest". Best-effort within the scaffold.
  */
 async function writeTemplateMarker(target: string): Promise<void> {
-  const dir = join(target, ".4pm");
-  await mkdir(dir, { recursive: true });
   const marker = { templateVersion: PROJECT_TEMPLATE.version, scaffoldedAt: new Date().toISOString() };
-  await writeFile(join(dir, ".4pm.json"), JSON.stringify(marker, null, 2) + "\n", "utf8");
+  await writeFileInRoot(target, join(target, ".4pm", ".4pm.json"), JSON.stringify(marker, null, 2) + "\n");
 }
 
 /** One declared subagent of a spec (loose read from the jsonb). */
@@ -701,10 +732,10 @@ async function applyDefaultModel(dir: string, spec: Record<string, unknown>, emi
   const provider = readSpecField(spec, "ai_provider").trim() || "claude";
   if (provider !== "claude") return;
   try {
-    const settings = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    const settings = JSON.parse(await readFileInRoot(dir, path, "utf8")) as Record<string, unknown>;
     if (!model || model === "default") delete settings.model;
     else settings.model = model;
-    await writeFile(path, JSON.stringify(settings, null, 2) + "\n", "utf8");
+    await writeFileInRoot(dir, path, JSON.stringify(settings, null, 2) + "\n");
     emit("copy", `Default AI model: ${model && model !== "default" ? model : "CLI default"}.`);
   } catch {
     emit("copy", "Could not apply the default AI model to .claude/settings.json — kept as is.");
@@ -831,13 +862,14 @@ async function generateFile(
   try {
     const text = generate ? await generate(prompt, label) : null;
     if (text && text.trim()) {
-      await writeFile(path, text.trim() + "\n", "utf8");
+      // Root-level files (README / guide / AI_SECURITY.md): symlink-safe under their folder (ADR-0430).
+      await writeFileInRoot(dirname(path), path, text.trim() + "\n");
       return;
     }
   } catch {
-    // AI CLI missing/unauthenticated — fall through to the fallback (if any).
+    // AI CLI missing/unauthenticated (or a refused link) — fall through to the fallback (if any).
   }
-  if (fallback && fallback.trim()) await writeFile(path, fallback.trim() + "\n", "utf8");
+  if (fallback && fallback.trim()) await writeFileInRoot(dirname(path), path, fallback.trim() + "\n");
 }
 
 /**
@@ -863,8 +895,9 @@ export async function addProject(
     onProgress?.({ projectId: payload.projectId, step, message });
   };
   try {
-    const root = process.env.SCAFFOLD_ROOT ? resolve(process.env.SCAFFOLD_ROOT) : resolve(profileDir);
-    const target = join(root, payload.projectName);
+    // The folder lives in the profile's workspace, outside the profile dir (ADR-0430); SCAFFOLD_ROOT overrides.
+    const target = projectFolder(profileDir, payload.projectName);
+    if (!target) throw new Error("invalid project name");
     await mkdir(target, { recursive: true });
     const repo = singleRepo((payload.repos ?? []) as RepoDecl[]);
     // Clone + push with the project's CURRENT git-auth (ADR-0368/0393): an add, a provision of a worker

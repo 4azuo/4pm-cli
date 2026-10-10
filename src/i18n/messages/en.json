@@ -184,5 +184,11 @@
   "autonomous.settingsInvalidDir": "Invalid folder — use a repo-relative path like .4pm/evidence (letters, digits, . _ -, no '..', not inside .git).",
   "autonomous.settingsInvalidJson": "The autonomous settings are not valid JSON.",
   "config.notObject": "config.json must be a JSON object.",
-  "config.invalidJson": "Invalid JSON: {message}"
+  "config.invalidJson": "Invalid JSON: {message}",
+  "credential.exportNotLinked": "Profile \"{profile}\" is not linked — nothing to export.",
+  "credential.importInvalid": "FOURPM_CREDENTIAL is not a valid `4pm credential-export` value — ignored.",
+  "credential.imported": "✔ Restored profile \"{profile}\" from FOURPM_CREDENTIAL.",
+  "update.lockedMandatory": "This image is update-locked (:full-locked) and cli {current} is below the minimum supported {min} — pull a newer image and recreate the container.",
+  "update.lockedAvailable": "A newer cli ({latest}) is available, but this image is update-locked (:full-locked) — pull a newer image to upgrade from {current}.",
+  "update.locked": "This image is update-locked (:full-locked) — the cli ({version}) cannot update itself. Pull a newer image and recreate the container."
 }

@@ -9,12 +9,11 @@
  */
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { readCredential, writeCredential } from "../core/credential";
 import { collectFingerprint } from "../core/fingerprint";
 import { confirmPairing, pairWithToken } from "../services/api";
-import { ensureProfileConfig, profileDir, writeDefaultProfile } from "../config/profile";
+import { ensureProfileConfig, prepareWorkspaces, profileDir, projectFolder, writeDefaultProfile } from "../config/profile";
 import { assertSecureRemoteUrl } from "../utils/secure-url";
 import { initI18n, t } from "../i18n";
 
@@ -78,7 +77,9 @@ export async function runLink(
   // MEMO#9 — scaffold the physic project folder inside the profile when the MACHINE
   // user already belongs to a project (folder = project name — ADR-0064).
   if (projectName && scope === "project") {
-    const folder = join(dir, projectName);
+    prepareWorkspaces(dir); // shared with the agent user under uid separation (ADR-0430)
+    const folder = projectFolder(dir, projectName);
+    if (!folder) return;
     mkdirSync(folder, { recursive: true });
     console.log(t("link.createdFolder", { folder }));
   }

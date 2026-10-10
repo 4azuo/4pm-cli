@@ -6,17 +6,17 @@
  * `dev/<base>/<GROUP>/<TSK>` in the root and each submodule, save work in progress, and deliver
  * (push + PR into each repo's base).
  */
-import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import { EVIDENCE_ROOT } from "@4pm/dto";
 import { ATTEMPTS_REL } from "./autonomous-books";
 import { openPullRequest, prStateOf } from "./git-host";
 import { attachSubmoduleBranches } from "./submodule-branch";
+import { readFileInRoot } from "../utils/safe-path";
+import { execInProject } from "./agent-spawn";
 
-const run = promisify(execFile);
+// Project git runs as the agent user when uid separation is on (ADR-0430); unchanged otherwise.
+const run = execInProject;
 
 /**
  * The book files + sidecars — with the evidence / mockup folders (`addRepoDirs`, ADR-0404/0418) the ONLY paths ever pushed
@@ -89,7 +89,7 @@ export async function resolveBases(root: string): Promise<{ root: RepoBase; subs
   let declared = "";
   let url = "";
   try {
-    const spec = JSON.parse(await readFile(join(root, "project.spec.json"), "utf8")) as { repos?: { primary?: boolean; branch?: string; url?: string }[] };
+    const spec = JSON.parse(await readFileInRoot(root, join(root, "project.spec.json"), "utf8")) as { repos?: { primary?: boolean; branch?: string; url?: string }[] };
     const primary = spec.repos?.find((r) => r.primary) ?? spec.repos?.[0];
     declared = primary?.branch?.trim() ?? "";
     url = primary?.url?.trim() ?? "";

@@ -9,5 +9,5 @@
     "allow": [],
     "deny": []
   },
-  "enableAllProjectMcpServers": true
+  "enableAllProjectMcpServers": false
 }

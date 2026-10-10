@@ -6,9 +6,7 @@
  * the cli's serving physic-project root; a `repo` subdir escaping the root is clamped back.
  * Never throws — failures map to empty results.
  */
-import { execFile } from "node:child_process";
 import { resolve, sep } from "node:path";
-import { promisify } from "node:util";
 import type {
   GitCommitFile,
   GitCommitReply,
@@ -17,8 +15,10 @@ import type {
   GitLogReply,
   GitReposReply,
 } from "@4pm/ws";
+import { execInProject } from "./agent-spawn";
 
-const run = promisify(execFile);
+// Project git runs as the agent user when uid separation is on (ADR-0430); unchanged otherwise.
+const run = execInProject;
 /** Unit separator + record separator — safe field/line delimiters for `git --pretty`. */
 const FS = "\x1f";
 const RS = "\x1e";

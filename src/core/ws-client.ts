@@ -64,8 +64,9 @@ import { isAutonomousRunning } from "./autonomous";
 import { probeNetwork } from "./network-probe";
 import { configureGitAuth } from "./git-auth";
 import { setPromptOverrides } from "./prompt-overrides";
+import { setMcpServers } from "../utils/agent-mcp";
 import { startGitSnapshots } from "./git-snapshot";
-import { readProfileConfig, writeProfileConfig } from "../config/profile";
+import { projectFolder, readProfileConfig, writeProfileConfig } from "../config/profile";
 import { detectWorkerTools } from "./worker-tools";
 import { logger, readLogUpload } from "../common/logger/logger";
 import { CLI_VERSION } from "../version";
@@ -83,6 +84,7 @@ import { handleResearchChannels } from "./ws-client/handlers/research";
 import { handleSupportChannels } from "./ws-client/handlers/support";
 import { handleToolsChannels } from "./ws-client/handlers/tools";
 import { handleWorkerChannels } from "./ws-client/handlers/worker";
+import { cliUpdateLocked } from "./update";
 
 const HEARTBEAT_MS = 30_000;
 /** How often to poll the Claude subscription usage API (ADR-0072). */
@@ -633,6 +635,9 @@ export class WsClient {
         // Folder-scope hardening (project aiScope): when on, prepend a guard to every AI
         // prompt so the agent only uses content inside the served project folder.
         this.restrictToFolder = token.aiRestrictToFolder === true;
+        // MCP allowlist (ADR-0427): the approved servers of the served project; absent (older server)
+        // or idle ⇒ none — every claude run is `--strict-mcp-config` either way.
+        setMcpServers(token.mcpServers, this.context.profileDir);
         // Admin-edited overrides for cli-built prompts (ADR-0381): apply override-or-built-in on each
         // prompt build. Platform-wide; refreshed every ws_token, cleared when the server sends none.
         setPromptOverrides(token.promptOverrides ?? null);
@@ -989,8 +994,8 @@ export class WsClient {
    * null for an empty name.
    */
   private physicFolderPath(projectName: string): string | null {
-    const safe = projectName.replace(/[/\\]/g, "_").replace(/\.\./g, "_").trim();
-    return safe ? join(this.context.profileDir, safe) : null;
+    // Workspaces live outside the profile dir (ADR-0430) — see `projectFolder`.
+    return projectFolder(this.context.profileDir, projectName);
   }
 
   /**
@@ -1023,6 +1028,8 @@ export class WsClient {
       // The configured AI accounts (emails when readable) — admin-only visibility of which AI
       // account a (rented) machine runs on + the shared-account check (ADR-0354).
       aiAccounts: aiAccountLabels(config),
+      // Update-locked image (ADR-0432/0434) — the web Locked badge + the server's update gate.
+      cliUpdateLocked: cliUpdateLocked(),
     });
   }
 

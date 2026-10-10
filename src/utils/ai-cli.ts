@@ -9,11 +9,14 @@
  * appended AFTER the hardcoded required args (ADR-0158) — they can add options but never
  * strip the token-metering flags — plus an optional `model`. Pure helper.
  */
-import { readFileSync } from "node:fs";
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { logger } from "../common/logger/logger";
 import { denySettingsArgs } from "./agent-deny";
+import { projectMcpArgs, strictMcpArgs } from "./agent-mcp";
+import { readAgentFile } from "./agent-user";
+import { effectiveCredentialDir } from "./ai-cred-mount";
 
 /**
  * REQUIRED pre-prompt args per known AI CLI (ADR-0158) — **hardcoded in source and always
@@ -341,13 +344,14 @@ export function claudeCredentialKeys(config: AiCliConfig): string[] {
 }
 
 /**
- * Resolve a config path: absolute stays as-is; "~/x" and a bare name (e.g.
- * ".claude-1") resolve under $HOME.
+ * Resolve a profile (credential) dir path: absolute stays as-is; "~/x" and a bare name (e.g.
+ * ".claude-1") resolve under $HOME. Under uid separation a host-mounted login (`~/ai-creds/…`) resolves
+ * to its imported copy (ADR-0433), so every consumer — runs, labels, keys, deny rules — sees one dir.
  */
 export function resolveHomePath(value: string): string {
-  if (value.startsWith("~")) return join(homedir(), value.slice(1).replace(/^[/\\]/, ""));
-  if (isAbsolute(value)) return value;
-  return join(homedir(), value);
+  if (value.startsWith("~")) return effectiveCredentialDir(join(homedir(), value.slice(1).replace(/^[/\\]/, "")));
+  if (isAbsolute(value)) return effectiveCredentialDir(value);
+  return effectiveCredentialDir(join(homedir(), value));
 }
 
 /** Normalize a profile list into a resolved dir list (dropping blank/disabled entries). */
@@ -474,6 +478,10 @@ function buildRunArgs(
     ...extras,
     ...modelArgs,
     ...overrideArgs(cmd, override),
+    // MCP allowlist (ADR-0427): every run is `--strict-mcp-config`; only a full-agent run (not one-shot /
+    // read-only) gets the approved servers' generated `--mcp-config` — variadic, so the single-value
+    // `--settings` below terminates it.
+    ...(oneShot || readOnly ? strictMcpArgs(cmd) : projectMcpArgs(cmd)),
     // Secret-path deny rules (ADR-0347) — every configured credential dir + ~/.4pm, ~/.ssh, gh, git
     // credentials, ~/.claude*. A single-value flag, placed before the mode caps so their non-variadic
     // terminator still bounds `--disallowedTools`.
@@ -552,17 +560,27 @@ export function credentialDisplayLabel(label: string | undefined, dir: string): 
   return explicit && !maskConfigReader ? explicit : profileDisplayLabel(dir);
 }
 
+/** Last account email read per `.claude.json`, keyed by its mtime (the read may spawn — ADR-0430). */
+const accountEmailCache = new Map<string, { mtimeMs: number; email: string | null }>();
+
 /**
  * The signed-in account email of a claude profile dir (`<dir>/.claude.json`
  * `oauthAccount.emailAddress`), or null when missing/unreadable (or not a claude profile).
+ * Under uid separation the file is the agent's (`0600`) and is read through the agent (ADR-0430
+ * phase 3); the result is cached until the file changes.
  */
 function profileAccountEmail(dir: string): string | null {
+  const file = join(dir, ".claude.json");
   try {
-    const raw = JSON.parse(readFileSync(join(dir, ".claude.json"), "utf8")) as {
+    const { mtimeMs } = statSync(file);
+    const cached = accountEmailCache.get(file);
+    if (cached && cached.mtimeMs === mtimeMs) return cached.email;
+    const raw = JSON.parse(readAgentFile(file)) as {
       oauthAccount?: { emailAddress?: string };
     };
-    const email = raw.oauthAccount?.emailAddress?.trim();
-    return email ? email : null;
+    const email = raw.oauthAccount?.emailAddress?.trim() || null;
+    accountEmailCache.set(file, { mtimeMs, email });
+    return email;
   } catch {
     // Best-effort — no readable account.
     return null;

@@ -10,21 +10,20 @@
  * command (`http.extraHeader`) and to `gh` only — it is never written into the clone (whose remote URL
  * stays token-free) nor visible to the agent. The clone is deleted afterwards.
  */
-import { spawn, execFile } from "node:child_process";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { promisify } from "node:util";
 import type { FaqComposeReply, FaqComposeRequest, FaqTicket, FaqTicketResult } from "@4pm/ws";
 import { logger } from "../common/logger/logger";
 import { createAiStreamParser, estimateTokens, type AiUsage } from "./ai-stream";
 import type { ResolvedClaudeProfile } from "../utils/ai-cli";
 import { agentEnv, gitAuthArgs } from "./agent-sandbox";
 import { denySettingsArgs } from "../utils/agent-deny";
+import { strictMcpArgs } from "../utils/agent-mcp";
 import { resolveCliPrompt } from "./prompt-overrides";
+import { agentSpawnArgs, execInProject } from "./agent-spawn";
+import { makeAgentTempDir, unregisterAgentRoot } from "../utils/agent-user";
 
-const execFileAsync = promisify(execFile);
 
 /** Zero usage — the fallback when a run captured no token counts. */
 const NO_USAGE: AiUsage = { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
@@ -59,7 +58,8 @@ function buildPrompt(tickets: FaqTicket[], customPrompt?: string): string {
   const customInstruction = customPrompt?.trim()
     ? `\n\nAdditional instruction from the operator (follow it too):\n${customPrompt.trim()}`
     : "";
-  // Admin override (ADR-0381) for `cli.faq.compose`, else the shared registry default.
+  // Admin override (ADR-0381) for `cli.faq.compose`, else the shared registry default; the ticket
+  // `transcript` is wrapped as untrusted data by the registry (ADR-0421), the operator's instruction is not.
   return resolveCliPrompt("cli.faq.compose", { transcript, ticketJsonSkeleton, customInstruction });
 }
 
@@ -111,6 +111,8 @@ function runClaudeOnce(
       ...(isClaude ? ["--output-format", "stream-json", "--verbose"] : []),
       // Secret-path deny rules (ADR-0347): reads are not confined to the clone, so the credential
       // dirs / cli profile / ssh / gh / git credentials are explicitly denied.
+      // No MCP server on this run (ADR-0427): repo/user MCP config is ignored.
+      ...strictMcpArgs(cmd),
       ...denySettingsArgs(cmd, [...denyDirs, profile?.dir]),
       // Edit-only headless agent (ADR-0346): file edits are auto-accepted, everything else (Bash, web)
       // is denied, since the prompt carries untrusted ticket text. git/PR are done by this module.
@@ -121,7 +123,9 @@ function runClaudeOnce(
     ];
     // Allow-listed env only — the cli's own secrets never reach the agent (ADR-0346).
     const env = agentEnv(extraEnv, profile ? { CLAUDE_CONFIG_DIR: profile.dir } : undefined);
-    const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], cwd, env });
+    // The AI CLI always runs as the agent user when uid separation is on (ADR-0430).
+    const run = agentSpawnArgs(cmd, args, env);
+    const child = spawn(run.cmd, run.args, { stdio: ["pipe", "pipe", "pipe"], cwd, env: run.env });
     const parser = createAiStreamParser(cmd);
     let out = "";
     let err = "";
@@ -173,37 +177,39 @@ const MAX_OUTPUT_CHARS = 8_000;
  */
 export async function runFaqCompose(req: FaqComposeRequest, ai: FaqComposeAi): Promise<FaqComposeReply> {
   if (!req.repo.token) return { prUrl: "", error: "no write token" };
-  const workDir = join(tmpdir(), "4pm-faq-sync", randomUUID());
+  // A throwaway folder shared with the agent user (ADR-0430): the clone, the agent's edits and every git /
+  // gh step in it run as the agent, so a hook planted in the clone never executes as the cli.
+  const base = makeAgentTempDir("4pm-faq-sync-");
+  const workDir = join(base, "repo");
   const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
   // Per-command auth (ADR-0346): the token rides a header on clone/push only; the clone's remote URL
   // and config stay token-free, so the agent working in it cannot read the token.
   const auth = gitAuthArgs("x-access-token", req.repo.token);
   try {
-    mkdirSync(workDir, { recursive: true });
-    await execFileAsync("git", [...auth, "clone", "--depth", "1", "--branch", req.repo.branch, req.repo.url, workDir], { env: gitEnv });
+    await execInProject("git", [...auth, "clone", "--depth", "1", "--branch", req.repo.branch, req.repo.url, workDir], { cwd: base, env: gitEnv });
     // A 4PM commit identity (the token authorizes the push; identity is cosmetic).
-    await execFileAsync("git", ["-C", workDir, "config", "user.name", "4PM FAQ Bot"], { env: gitEnv });
-    await execFileAsync("git", ["-C", workDir, "config", "user.email", "faq-bot@4pm.app"], { env: gitEnv });
-    await execFileAsync("git", ["-C", workDir, "checkout", "-b", req.headBranch], { env: gitEnv });
+    await execInProject("git", ["-C", workDir, "config", "user.name", "4PM FAQ Bot"], { env: gitEnv });
+    await execInProject("git", ["-C", workDir, "config", "user.email", "faq-bot@4pm.app"], { env: gitEnv });
+    await execInProject("git", ["-C", workDir, "checkout", "-b", req.headBranch], { env: gitEnv });
 
     const { usage, text } = await runClaudeWithFailover(buildPrompt(req.tickets, req.customPrompt), workDir, ai);
     const output = text.slice(0, MAX_OUTPUT_CHARS);
     const perTicket = parsePerTicket(text);
 
-    await execFileAsync("git", ["-C", workDir, "add", "-A"], { env: gitEnv });
+    await execInProject("git", ["-C", workDir, "add", "-A"], { env: gitEnv });
     // Nothing staged ⇒ the agent judged there was no reusable FAQ value; a successful no-op run.
-    const staged = await execFileAsync("git", ["-C", workDir, "diff", "--cached", "--name-only"], { env: gitEnv });
+    const staged = await execInProject("git", ["-C", workDir, "diff", "--cached", "--name-only"], { env: gitEnv });
     if (!staged.stdout.trim()) {
       return { prUrl: "", output, perTicket, tokens: usage.tokens || estimateTokens(text), finishedAt: new Date().toISOString() };
     }
 
-    await execFileAsync("git", ["-C", workDir, "commit", "-m", "docs(faq): synthesize from support tickets (4PM)"], { env: gitEnv });
-    await execFileAsync("git", [...auth, "-C", workDir, "push", "-u", "origin", req.headBranch], { env: gitEnv });
+    await execInProject("git", ["-C", workDir, "commit", "-m", "docs(faq): synthesize from support tickets (4PM)"], { env: gitEnv });
+    await execInProject("git", [...auth, "-C", workDir, "push", "-u", "origin", req.headBranch], { env: gitEnv });
     // Open the PR with `gh` (the same token authenticates it); best-effort — a failed PR still leaves
     // the pushed branch, so surface the branch even when PR creation fails.
     let prUrl = "";
     try {
-      const pr = await execFileAsync(
+      const pr = await execInProject(
         "gh",
         ["pr", "create", "--fill", "--head", req.headBranch, "--base", req.repo.branch],
         { cwd: workDir, env: { ...gitEnv, GH_TOKEN: req.repo.token } },
@@ -229,9 +235,10 @@ export async function runFaqCompose(req: FaqComposeRequest, ai: FaqComposeAi): P
     return { prUrl: "", error: String(err) };
   } finally {
     // Wipe the throwaway clone (token-free, but nothing of the job should linger).
-    if (existsSync(workDir)) {
+    unregisterAgentRoot(base);
+    if (existsSync(base)) {
       try {
-        rmSync(workDir, { recursive: true, force: true });
+        rmSync(base, { recursive: true, force: true });
       } catch {
         // best-effort — a leftover throwaway clone is cleaned on the next boot's tmp sweep
       }

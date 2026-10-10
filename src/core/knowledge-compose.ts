@@ -10,6 +10,9 @@ import type { KnowledgeComposeReply, KnowledgeComposeRequest } from "@4pm/ws";
 import { reportToolResult } from "./tool-health";
 import type { ResolvedClaudeProfile } from "../utils/ai-cli";
 import { denySettingsArgs } from "../utils/agent-deny";
+import { strictMcpArgs } from "../utils/agent-mcp";
+import { agentEnv } from "./agent-sandbox";
+import { agentSpawnArgs } from "./agent-spawn";
 
 /** How to run the AI CLI for a compose (resolved by the caller from the profile config). */
 export interface KnowledgeComposeAi {
@@ -48,13 +51,12 @@ function runOnce(
 ): Promise<{ code: number; out: string; err: string }> {
   return new Promise((resolve, reject) => {
     // Secret-path deny rules (ADR-0347): the agent reads the project but never the worker's secrets.
-    const args = ["-p", ...(profile?.model ? ["--model", profile.model] : []), ...denySettingsArgs(cmd, [...denyDirs, profile?.dir])];
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      ...extraEnv,
-      ...(profile ? { CLAUDE_CONFIG_DIR: profile.dir } : {}),
-    };
-    const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], cwd, env });
+    const args = ["-p", ...(profile?.model ? ["--model", profile.model] : []), ...strictMcpArgs(cmd), ...denySettingsArgs(cmd, [...denyDirs, profile?.dir])];
+    // Allow-listed env (ADR-0421): the cli's own secrets never reach the agent.
+    const env = agentEnv(extraEnv, profile ? { CLAUDE_CONFIG_DIR: profile.dir } : undefined);
+    // The AI CLI always runs as the agent user when uid separation is on (ADR-0430).
+    const run = agentSpawnArgs(cmd, args, env);
+    const child = spawn(run.cmd, run.args, { stdio: ["pipe", "pipe", "pipe"], cwd, env: run.env });
     let out = "";
     let err = "";
     const timer = setTimeout(() => {

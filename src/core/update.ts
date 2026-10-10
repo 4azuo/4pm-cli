@@ -9,7 +9,7 @@
  */
 import { execSync } from "node:child_process";
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -75,6 +75,37 @@ function runningInstallRoot(): string {
 }
 
 /**
+ * Where a self-download update lands (ADR-0428): the running install root when it is writable; else,
+ * under a read-only container root (`/app`), the writable runtime dir named by `FOURPM_CLI_RUNTIME_DIR`
+ * (the image's `4pm` launcher prefers it). Falls back to the running root (the extract then reports the
+ * real error) when neither applies.
+ */
+function updateTargetRoot(): string {
+  const running = runningInstallRoot();
+  try {
+    accessSync(running, fsConstants.W_OK);
+    return running;
+  } catch {
+    return process.env.FOURPM_CLI_RUNTIME_DIR || running;
+  }
+}
+
+/** The root the last successful update was applied to (null until an update ran in this process). */
+let appliedRoot: string | null = null;
+
+/**
+ * The argv for re-executing into the freshly updated cli: the same args, but pointing at the root the
+ * update landed in (a read-only container root updates into the runtime dir — ADR-0428).
+ */
+export function reexecArgv(): string[] {
+  const args = process.argv.slice(1);
+  if (appliedRoot && appliedRoot !== runningInstallRoot()) {
+    args[0] = join(appliedRoot, "dist", "index.js");
+  }
+  return args;
+}
+
+/**
  * Was the CLI invoked via an npm-global bin? — the invoked path lives in node_modules.
  * Kept on `process.argv[1]` (the invoked bin), NOT the resolved module path: a bin
  * symlink lands outside node_modules ⇒ the reliable self-download path is chosen (it
@@ -91,7 +122,7 @@ function installedViaNpm(): boolean {
  */
 function readInstalledVersion(): string {
   try {
-    const pkgPath = join(runningInstallRoot(), "package.json");
+    const pkgPath = join(appliedRoot ?? runningInstallRoot(), "package.json");
     return (JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: string }).version ?? "0.0.0";
   } catch {
     return "0.0.0";
@@ -195,8 +226,19 @@ async function updateViaDownload(
   const tmp = join(mkdtempSync(join(tmpdir(), "4pm-update-")), "cli.tgz");
   writeFileSync(tmp, buf);
   // Extract over the RUNNING install root (parent of dist/ — resolved from
-  // import.meta.url so it matches where CLI_VERSION is read, not a symlinked bin path).
-  const installRoot = runningInstallRoot();
+  // import.meta.url so it matches where CLI_VERSION is read, not a symlinked bin path) — or, when that
+  // root is read-only (hardened container — ADR-0428), over a fresh copy of it in the runtime dir, so
+  // the copied node_modules back the new bundle exactly as they back the running one.
+  const installRoot = updateTargetRoot();
+  if (installRoot !== runningInstallRoot()) {
+    try {
+      rmSync(installRoot, { recursive: true, force: true });
+      mkdirSync(installRoot, { recursive: true });
+      cpSync(runningInstallRoot(), installRoot, { recursive: true });
+    } catch (err) {
+      throw new Error(`Failed to stage the update in ${installRoot}: ${String(err)}`, { cause: err });
+    }
+  }
   // Extract in-process with the bundled `tar` library (ADR-0305) instead of shelling out to the
   // system `tar` — a minimal worker container may have busybox `tar` (no `--strip-components`) or
   // none at all, which failed with an opaque "Command failed" that hid the real cause. The library
@@ -206,11 +248,26 @@ async function updateViaDownload(
   } catch (err) {
     throw new Error(`Failed to extract the update tarball into ${installRoot}: ${String(err)}`, { cause: err });
   }
+  appliedRoot = installRoot;
 }
+
+/**
+ * True when this worker runs an update-locked image (`:full-locked` — ADR-0432): the cli never replaces
+ * itself; a newer cli comes only from pulling a newer image. Worker tools stay updatable.
+ */
+export function cliUpdateLocked(): boolean {
+  return process.env.FOURPM_UPDATE_LOCKED === "1";
+}
+
+/** The reason reported to the web when a locked worker is asked to update (ADR-0432). */
+export const CLI_UPDATE_LOCKED_REASON =
+  "This worker runs an update-locked image (:full-locked) — the cli cannot update itself. Pull a newer image and recreate the container.";
 
 /** Result of a manual `4pm update` (distinguishes failure from already-latest). */
 export type ManualUpdateResult =
   | { action: "dev-build"; version: string }
+  // An update-locked image (ADR-0432) — `latest` when the server told us which version is newest.
+  | { action: "locked"; version: string; latest: string | null }
   | { action: "already-latest"; version: string }
   | { action: "updated"; version: string }
   // `toVersion` (the resolved latest we tried to reach) is carried so the caller can report the
@@ -235,6 +292,8 @@ export async function updateToLatest(serverUrl: string, force = false): Promise<
   if (!force && !shouldUpdateTo(CLI_VERSION, meta.latest)) {
     return { action: "already-latest", version: CLI_VERSION };
   }
+  // Update-locked image (ADR-0432): never replace the cli — the caller reports why.
+  if (cliUpdateLocked()) return { action: "locked", version: CLI_VERSION, latest: meta.latest };
   console.log(t("update.updating", { from: CLI_VERSION, to: meta.latest }));
   try {
     if (installedViaNpm()) {
@@ -258,7 +317,7 @@ export async function updateToLatest(serverUrl: string, force = false): Promise<
       action: "failed",
       error:
         `update ran but the installed version is still ${installed} (expected ${meta.latest}) — ` +
-        `it did not apply to the running install at ${runningInstallRoot()}.`,
+        `it did not apply to the running install at ${appliedRoot ?? runningInstallRoot()}.`,
       toVersion: meta.latest,
     };
   }
@@ -299,6 +358,16 @@ export async function checkAndUpdate(
   }
   const outdated = shouldUpdateTo(CLI_VERSION, meta.latest);
   if (!outdated) return { action: "none" };
+  // Update-locked image (ADR-0432): a mandatory version gap blocks start (pull a newer image); an
+  // optional one is only reported.
+  if (cliUpdateLocked()) {
+    if (mandatory) {
+      console.error(t("update.lockedMandatory", { current: CLI_VERSION, min: meta.minSupported }));
+      return { action: "blocked", minSupported: meta.minSupported };
+    }
+    console.warn(t("update.lockedAvailable", { current: CLI_VERSION, latest: meta.latest }));
+    return { action: "none" };
+  }
   if (!mandatory && !autoUpdate) {
     console.warn(t("update.newVersionAutoUpdateOff", { latest: meta.latest, current: CLI_VERSION }));
     return { action: "none" };

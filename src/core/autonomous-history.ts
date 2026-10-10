@@ -5,8 +5,8 @@
  * records. Runtime state → kept at `<root>/.claude/.autonomous.histories.json` (gitignored). Never
  * throws — a missing/corrupt file initializes the default skeleton.
  */
-import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { readFileInRoot, writeFileInRoot } from "../utils/safe-path";
 
 const HISTORIES_REL = ".claude/.autonomous.histories.json";
 const MAX_RECORDS = 50;
@@ -37,7 +37,7 @@ function historiesPath(root: string): string {
 /** Read the histories (default skeleton on any error). Tolerates the legacy snake_case keys. */
 export async function readHistories(root: string): Promise<Histories> {
   try {
-    const d = JSON.parse(await readFile(historiesPath(root), "utf8")) as Record<string, unknown>;
+    const d = JSON.parse(await readFileInRoot(root, historiesPath(root), "utf8")) as Record<string, unknown>;
     const ticks = (d.ticks ?? {}) as { day?: string; count?: number };
     return {
       cronApplied: typeof d.cronApplied === "string" ? d.cronApplied : typeof d.cron_applied === "string" ? d.cron_applied : "",
@@ -53,7 +53,7 @@ export async function readHistories(root: string): Promise<Histories> {
 /** Persist the histories (atomic-ish write). Never throws. */
 export async function writeHistories(root: string, h: Histories): Promise<void> {
   try {
-    await writeFile(historiesPath(root), JSON.stringify(h, null, 2) + "\n", "utf8");
+    await writeFileInRoot(root, historiesPath(root), JSON.stringify(h, null, 2) + "\n");
   } catch {
     /* best-effort — a read-only mount just loses history */
   }

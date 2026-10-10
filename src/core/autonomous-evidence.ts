@@ -7,12 +7,10 @@
  * task's evidence from AI_TODO to AI_DONE, lists the agent's own evidence on a task branch, and reads one
  * file for the web (`origin/<base>` → task branch → working tree) — an evidence file or an intake mockup (ADR-0418).
  */
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, join, posix } from "node:path";
-import { promisify } from "node:util";
 import {
   EVIDENCE_BOOK_DIR,
   EVIDENCE_MAX_BYTES,
@@ -24,8 +22,11 @@ import {
   type EvidenceBookKey,
 } from "@4pm/dto";
 import type { AutonomousEvidenceReply } from "@4pm/ws";
+import { mkdirInRoot, readFileInRoot, resolveEntry, resolveForRead, writeFileInRoot } from "../utils/safe-path";
+import { execInProject } from "./agent-spawn";
 
-const run = promisify(execFile);
+// Project git runs as the agent user when uid separation is on (ADR-0430); unchanged otherwise.
+const run = execInProject;
 
 /** Staged uploads live here (per profile), swept after this age. */
 const STAGE_DIR = "evidence-stage";
@@ -102,9 +103,8 @@ export async function applyStagedEvidence(
     if (!existsSync(join(profileDir, STAGE_DIR, it.stageId))) return `staged evidence expired: ${it.path}`;
   }
   for (const it of items) {
-    const target = join(dir, it.path);
-    await mkdir(dirname(target), { recursive: true });
-    await writeFile(target, await readFile(join(profileDir, STAGE_DIR, it.stageId)));
+    // Symlink-safe (ADR-0430): a linked evidence folder cannot redirect the write outside the project.
+    await writeFileInRoot(dir, join(dir, it.path), await readFile(join(profileDir, STAGE_DIR, it.stageId)));
     await rm(join(profileDir, STAGE_DIR, it.stageId), { force: true });
   }
   return null;
@@ -113,7 +113,9 @@ export async function applyStagedEvidence(
 /** Every file under `rel` (repo-relative, posix), recursively. */
 async function listFiles(root: string, rel: string): Promise<string[]> {
   const out: string[] = [];
-  for (const e of await readdir(join(root, rel), { withFileTypes: true }).catch(() => [])) {
+  // Symlink-safe (ADR-0430): only list a folder that really is inside the project.
+  const real = resolveForRead(root, join(root, rel));
+  for (const e of real ? await readdir(real, { withFileTypes: true }).catch(() => []) : []) {
     const child = posix.join(rel, e.name);
     if (e.isDirectory()) out.push(...(await listFiles(root, child)));
     else out.push(child);
@@ -123,6 +125,8 @@ async function listFiles(root: string, rel: string): Promise<string[]> {
 
 /** Remove now-empty folders under `rel` (deepest first). */
 async function removeEmptyDirs(root: string, rel: string): Promise<void> {
+  // Never walk (or rmdir) through a linked folder that leads outside the project (ADR-0430).
+  if (!resolveForRead(root, join(root, rel)) || !resolveEntry(root, join(root, rel))) return;
   for (const e of await readdir(join(root, rel), { withFileTypes: true }).catch(() => [])) {
     if (e.isDirectory()) await removeEmptyDirs(root, posix.join(rel, e.name));
   }
@@ -149,7 +153,7 @@ export async function listMockups(root: string, base: string | null, mockupDir: 
 
 /** The text of every book in `dir` (missing ⇒ empty), joined — a file is "referenced" when its path appears. */
 async function allBooksText(dir: string): Promise<string> {
-  const texts = await Promise.all(BOOK_FILES.map((f) => readFile(join(dir, f), "utf8").catch(() => "")));
+  const texts = await Promise.all(BOOK_FILES.map((f) => readFileInRoot(dir, join(dir, f), "utf8").catch(() => "")));
   return texts.join("\n");
 }
 
@@ -166,7 +170,10 @@ export async function pruneEvidence(dir: string, book: EvidenceBookKey, prev: st
   if (removed.length === 0) return;
   const text = await allBooksText(dir);
   for (const f of new Set(removed)) {
-    if (!text.includes(f)) await rm(join(dir, f), { force: true });
+    if (!text.includes(f)) {
+      const target = resolveEntry(dir, join(dir, f));
+      if (target) await rm(target, { force: true });
+    }
   }
   // Each root a removed file lived under (evidence may sit under an earlier `evidenceDir` — ADR-0418).
   for (const root of new Set(removed.map(rootOf))) await removeEmptyDirs(dir, `${root}/${EVIDENCE_BOOK_DIR[book]}`);
@@ -201,15 +208,18 @@ export async function moveTaskEvidence(root: string, taskId: string, evRoot: str
     if (files.length === 0) continue;
     for (const f of files) {
       const dest = `${to}/${f.slice(from.length + 1)}`;
-      await mkdir(dirname(join(root, dest)), { recursive: true });
-      await rename(join(root, f), join(root, dest));
+      const src = resolveEntry(root, join(root, f));
+      const dst = resolveEntry(root, join(root, dest));
+      if (!src || !dst) continue;
+      await mkdirInRoot(root, dirname(dst));
+      await rename(src, dst);
       moved.push(dest);
     }
     await removeEmptyDirs(root, `${evr}/AI_TODO`);
     for (const b of BOOK_FILES) {
       const p = join(root, b);
-      const text = await readFile(p, "utf8").catch(() => null);
-      if (text !== null && text.includes(`${from}/`)) await writeFile(p, text.replaceAll(`${from}/`, `${to}/`), "utf8");
+      const text = await readFileInRoot(root, p, "utf8").catch(() => null);
+      if (text !== null && text.includes(`${from}/`)) await writeFileInRoot(root, p, text.replaceAll(`${from}/`, `${to}/`));
     }
   }
   return moved;
@@ -262,7 +272,7 @@ export async function readEvidenceFile(
   let bytes: Buffer | null = null;
   if (base) bytes = await showBytes(root, `origin/${base}`, path);
   if (!bytes && ref) bytes = await showBytes(root, `origin/${ref}`, path);
-  if (!bytes) bytes = await readFile(join(root, path)).catch(() => null);
+  if (!bytes) bytes = await readFileInRoot(root, join(root, path)).catch(() => null);
   if (!bytes) return { error: "evidence not found" };
   // The reply rides one WS frame (8 MB): base64 of the 5 MB evidence cap fits, a bigger file is refused.
   if (bytes.length > EVIDENCE_MAX_BYTES) return { error: "evidence file too large" };

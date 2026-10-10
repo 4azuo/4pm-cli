@@ -8,6 +8,7 @@
 import { readdir } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import type { FsListReply } from "@4pm/ws";
+import { resolveForRead } from "../utils/safe-path";
 
 /**
  * List a directory on the worker (within `root`), dirs first then files, sorted by
@@ -20,8 +21,11 @@ export async function listDir(path: string, root: string | null): Promise<FsList
   // Resolve within the root; clamp anything that escapes (e.g. "..") back to it.
   const requested = resolve(base, path && path.trim() ? path : ".");
   const target = requested === base || requested.startsWith(base + sep) ? requested : base;
+  // Symlink-safe (ADR-0430): a linked folder that really points outside the root is not listed.
+  const real = resolveForRead(root, target);
+  if (!real) return { path: target, entries: [] };
   try {
-    const dirents = await readdir(target, { withFileTypes: true });
+    const dirents = await readdir(real, { withFileTypes: true });
     const entries = dirents.map((d) => ({
       name: d.name,
       type: d.isDirectory() ? ("dir" as const) : ("file" as const),

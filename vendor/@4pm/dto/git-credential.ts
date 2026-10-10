@@ -98,18 +98,27 @@ export const putGitCredentialRequestSchema = z
   });
 export type PutGitCredentialRequest = z.infer<typeof putGitCredentialRequestSchema>;
 
-// ── GitLab group/project access token (ADR-0382) ───────────────────────────────────────────────────
+// ── GitLab group/project access token (ADR-0382) / service account (ADR-0435) ─────────────────────
+
+/**
+ * What the stored GitLab token is: a group/project access token served as-is (ADR-0382), or a service
+ * account's PAT the server creates per-job project access tokens with (ADR-0435).
+ */
+export const GITLAB_CREDENTIAL_KINDS = ["group-token", "service-account"] as const;
+export type GitLabCredentialKind = (typeof GITLAB_CREDENTIAL_KINDS)[number];
 
 /** Data — GET /projects/:id/gitlab-credential (project-0078); `null` when none is saved. */
 export interface GitLabCredentialResponse {
   provider: "gitlab-token";
+  /** `group-token` (served as-is — ADR-0382) or `service-account` (per-job tokens — ADR-0435). */
+  kind: GitLabCredentialKind;
   host: string;
   group: string;
   apiBaseUrl: string | null;
   hasCaCert: boolean;
   /** SHA-256 of the token ("SHA256:<base64>") — shown instead of the token. */
   tokenFingerprint: string;
-  /** Whether `settings.gitAuth.method` is `gitlab-group-token`. */
+  /** Whether `settings.gitAuth.method` is the GitLab method matching `kind`. */
   active: boolean;
   updatedAt: string;
   updatedBy: string | null;
@@ -117,6 +126,8 @@ export interface GitLabCredentialResponse {
 
 /** Body — PUT /projects/:id/gitlab-credential (project-0079). */
 export const putGitLabCredentialRequestSchema = z.object({
+  /** Default `group-token`; changing the kind requires a new token. */
+  kind: z.enum(GITLAB_CREDENTIAL_KINDS).optional(),
   host: hostSchema.optional(),
   group: z.string().trim().min(1).max(200),
   /** The access token; omit to keep the stored one (required on first save — enforced server-side). */
@@ -128,8 +139,9 @@ export type PutGitLabCredentialRequest = z.infer<typeof putGitLabCredentialReque
 
 /** One step of a GitLab connection test (project-0081). */
 export interface GitLabCredentialTestStep {
-  /** `api` — the primary repo read through the REST API (`read_api`, ADR-0398). */
-  step: "connect" | "authenticate" | "scope" | "api";
+  /** `api` — the primary repo read through the REST API (`read_api`, ADR-0398); `mint` — a service
+   *  account created + revoked a project access token on the primary repo (ADR-0435). */
+  step: "connect" | "authenticate" | "scope" | "api" | "mint";
   ok: boolean;
   message: string | null;
 }

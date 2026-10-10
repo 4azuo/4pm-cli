@@ -181,6 +181,8 @@ export interface UserListItemResponse extends UserResponse {
   /** Rented users only (ADR-0363): cut-off date + admin note of the running version; null otherwise. */
   machineCliUnsupportedFrom: string | null;
   machineCliVersionNote: string | null;
+  /** Rented users only: true when the pool worker runs an update-locked image (ADR-0432/0434); null otherwise. */
+  machineCliUpdateLocked?: boolean | null;
 }
 
 /**

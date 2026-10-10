@@ -8,7 +8,7 @@
  * claim is re-verified during the run and on reconnect; a lost claim stops the run without pushing.
  */
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
+import { appendFile, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { WsHandlerCtx } from "./ws-client/context";
 import { cancelActiveRun, runAiPrompt, type AiPromptOutcome } from "./ws-client/command-dispatch";
@@ -61,6 +61,7 @@ import { branchProtection } from "./git-host";
 import { readProfileConfig } from "../config/profile";
 import { activeProvider, claudeHomeDirs } from "../utils/ai-cli";
 import { checkClaudeUsage } from "./claude-usage";
+import { readFileInRoot } from "../utils/safe-path";
 
 // ── Prompts (the agent's parts only) ──────────────────────────────────────────────────────────────
 
@@ -112,6 +113,7 @@ function buildImplementPrompt(
     taskId: mine.id,
     group: mine.task.group,
     attempt: mine.attempt,
+    // `desc`/`notes` are wrapped as the request by the registry (ADR-0421).
     desc: mine.task.desc,
     notes: mine.task.notes || "(none)",
     resumedNote,
@@ -129,6 +131,7 @@ function buildSplitPrompt(mine: LocalClaim, reasons: string, diff: string): stri
   // Admin override (ADR-0381) for `cli.autonomous.split`, else the shared registry default.
   return resolveCliPrompt("cli.autonomous.split", {
     taskId: mine.id,
+    // Task text = request, failure reasons + WIP diff = data — wrapped by the registry (ADR-0421).
     desc: mine.task.desc,
     notes: mine.task.notes || "(none)",
     reasons: reasons || "(unknown)",
@@ -692,10 +695,10 @@ async function recordRun(
   await writeHistories(root, hist);
 }
 
-/** Read a JSON object (`{}` on any error). */
-async function readJsonObject(path: string): Promise<Record<string, unknown>> {
+/** Read a project JSON object — symlink-safe (ADR-0430); `{}` on any error. */
+async function readJsonObject(root: string, path: string): Promise<Record<string, unknown>> {
   try {
-    return JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    return JSON.parse(await readFileInRoot(root, path, "utf8")) as Record<string, unknown>;
   } catch {
     return {};
   }
@@ -706,11 +709,11 @@ async function readJsonObject(path: string): Promise<Record<string, unknown>> {
  * USER_TODO, an approved `QA-` in USER_QA, an approved `TSK-` in AI_TODO — or AI_PROGRESS carries a task.
  */
 async function hasWork(root: string): Promise<boolean> {
-  const approvals = await readJsonObject(join(root, ".claude/.autonomous.approvals.json"));
+  const approvals = await readJsonObject(root, join(root, ".claude/.autonomous.approvals.json"));
   const approved = Object.entries(approvals)
     .filter(([, v]) => v && typeof v === "object" && (v as { approved?: boolean }).approved === true)
     .map(([k]) => k);
-  const read = (f: string): Promise<string> => readFile(join(root, f), "utf8").catch(() => "");
+  const read = (f: string): Promise<string> => readFileInRoot(root, join(root, f), "utf8").catch(() => "");
   const [userTodo, userQa, aiTodo, aiProgress] = await Promise.all([
     read("USER_TODO.md"),
     read("USER_QA.md"),

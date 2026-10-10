@@ -9,25 +9,15 @@
  * project-relative paths, never out of the served root.
  */
 import { readFile } from "node:fs/promises";
-import { execFile } from "node:child_process";
-import { basename, dirname, resolve, sep } from "node:path";
-import { promisify } from "node:util";
+import { basename, dirname } from "node:path";
 import { FS_TRANSFER_MAX_BYTES } from "@4pm/dto";
 import type { GitDiffReply } from "@4pm/ws";
 import { guessMime } from "./fs-transfer";
+import { lexicalInRoot, resolveForRead } from "../utils/safe-path";
+import { execInProject } from "./agent-spawn";
 
-const run = promisify(execFile);
-
-/**
- * Resolve `relPath` inside `root`; return null when there is no root or the path escapes it.
- * Accepts a relative path (the web) or an absolute path already inside the root (older clients).
- */
-function resolveInRoot(root: string | null, relPath: string): string | null {
-  if (!root) return null;
-  const base = resolve(root);
-  const target = resolve(base, relPath || ".");
-  return target === base || target.startsWith(base + sep) ? target : null;
-}
+// Project git runs as the agent user when uid separation is on (ADR-0430); unchanged otherwise.
+const run = execInProject;
 
 /** Heuristic (git's own): a NUL byte in the first chunk ⇒ treat the file as binary. */
 function looksBinary(buf: Buffer): boolean {
@@ -42,8 +32,10 @@ function cappedBase64(buf: Buffer | null): string {
 
 /** Read HEAD vs working-tree content for one file (relative to the physic root). Never throws. */
 export async function gitDiff(root: string | null, path: string): Promise<GitDiffReply> {
-  const target = resolveInRoot(root, path);
-  if (!target) {
+  const target = lexicalInRoot(root, path);
+  // Symlink-safe (ADR-0430): a link (or a linked folder) that really leads outside the root shows nothing.
+  const real = resolveForRead(root, path);
+  if (!target || !real) {
     return { path, oldContent: "", newContent: "", isBinary: false };
   }
   const dir = dirname(target);
@@ -52,7 +44,7 @@ export async function gitDiff(root: string | null, path: string): Promise<GitDif
   // Working-tree bytes (missing/unreadable for a deleted file ⇒ null).
   let newBuf: Buffer | null = null;
   try {
-    newBuf = await readFile(target);
+    newBuf = await readFile(real);
   } catch {
     // missing/unreadable ⇒ no new content
   }

@@ -40,6 +40,8 @@ export const ErrorCode = {
   PASSWORD_POLICY_VIOLATION: "PASSWORD_POLICY_VIOLATION",
   PASSWORD_CONFIRM_MISMATCH: "PASSWORD_CONFIRM_MISMATCH",
   PASSWORD_CURRENT_INVALID: "PASSWORD_CURRENT_INVALID",
+  /** The new password appears in a known data breach (Have I Been Pwned — ADR-0426). */
+  PASSWORD_BREACHED: "PASSWORD_BREACHED",
   IDENTITY_REQUIRED: "IDENTITY_REQUIRED",
   MFA_CODE_INVALID: "MFA_CODE_INVALID",
   MFA_CODE_EXPIRED: "MFA_CODE_EXPIRED",
@@ -175,6 +177,8 @@ export const ErrorCode = {
   // be the approver of their own row (ADMIN may self-approve).
   APPROVAL_SELF: "APPROVAL_SELF",
   CLI_VERSION_UNSUPPORTED: "CLI_VERSION_UNSUPPORTED",
+  // The worker runs an update-locked image (ADR-0432/0434): a cli update is refused — pull a newer image.
+  CLI_UPDATE_LOCKED: "CLI_UPDATE_LOCKED",
   // Admin cli version policy rejected (ADR-0363) — meta.reason: minAboveLatest | latestNotBlockable |
   // deadlinePast | invalidVersion.
   CLI_VERSION_POLICY_INVALID: "CLI_VERSION_POLICY_INVALID",

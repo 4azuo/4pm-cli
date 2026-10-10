@@ -6,7 +6,6 @@
  * ADR-0117) project with streamed progress.
  */
 import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
-import { join } from "node:path";
 import {
   WsChannels,
   type PhysicDeletePayload,
@@ -28,7 +27,8 @@ import { pauseAutonomous } from "../../autonomous-config";
 import { manageSshKey } from "../../git-ssh-key";
 import { createAiTaskRunner } from "../../ai-task";
 import { addProject, publishScaffold, scaffoldProject } from "../../scaffold";
-import { writeProfileConfig } from "../../../config/profile";
+import { projectFolder, writeProfileConfig } from "../../../config/profile";
+import { setMcpServers } from "../../../utils/agent-mcp";
 import { logger } from "../../../common/logger/logger";
 import type { WsHandlerCtx } from "../context";
 import { t } from "../../../i18n";
@@ -41,20 +41,22 @@ export function handleProjectChannels(
 ): boolean {
   switch (message.channel) {
     case WsChannels.PHYSIC_SYNC: {
-      // Attach / rename ⇒ (re)create the physic folder inside the profile (folder = project
-      // name — ADR-0064). A rename PRESERVES the folder's cloned repos by moving it, instead
-      // of deleting + recreating empty (ADR-0288); the repos are re-provisioned separately.
+      // Attach / rename ⇒ (re)create the physic folder in the profile's workspace (folder = project
+      // name — ADR-0064, outside the profile dir — ADR-0430). A rename PRESERVES the folder's cloned
+      // repos by moving it, instead of deleting + recreating empty (ADR-0288); the repos are
+      // re-provisioned separately.
       const sync = payload as unknown as PhysicSyncPayload;
       const oldName = sync.oldName;
-      const oldPath = oldName ? join(ctx.profileDir, oldName) : null;
-      const newPath = join(ctx.profileDir, sync.newName);
-      if (oldPath && oldName !== sync.newName && existsSync(oldPath) && !existsSync(newPath)) {
+      const oldPath = oldName ? projectFolder(ctx.profileDir, oldName) : null;
+      const newPath = projectFolder(ctx.profileDir, sync.newName);
+      if (!newPath) return true;
+      if (oldPath && oldPath !== newPath && existsSync(oldPath) && !existsSync(newPath)) {
         // Rename in place — keep the cloned repos + local work (ADR-0288).
         renameSync(oldPath, newPath);
       } else {
         // No old folder to move (fresh attach), or the target already exists: drop a stale old
         // folder and ensure the new one exists (empty until provisioning clones the repos).
-        if (oldPath && oldName !== sync.newName && existsSync(oldPath)) rmSync(oldPath, { recursive: true, force: true });
+        if (oldPath && oldPath !== newPath && existsSync(oldPath)) rmSync(oldPath, { recursive: true, force: true });
         mkdirSync(newPath, { recursive: true });
       }
       ctx.physicRoot = ctx.physicFolderPath(sync.newName); // browse root follows the rename
@@ -66,7 +68,7 @@ export function handleProjectChannels(
       return true;
     }
     case WsChannels.PHYSIC_DELETE: {
-      // Project deleted ⇒ delete the physic folder inside the profile. The cli keeps
+      // Project deleted ⇒ delete the physic folder in the profile's workspace. The cli keeps
       // its pairing and goes idle (ADR-0068).
       const del = payload as unknown as PhysicDeletePayload;
       // Guard: an empty name would resolve to the profile dir itself — never delete that.
@@ -75,7 +77,8 @@ export function handleProjectChannels(
         // to this cli must start paused — no orphan ticks. (A rename needs nothing: the scheduler reads
         // the served root live.)
         void pauseAutonomous(ctx.profileDir).catch(() => undefined);
-        rmSync(join(ctx.profileDir, del.name), { recursive: true, force: true });
+        const folder = projectFolder(ctx.profileDir, del.name);
+        if (folder) rmSync(folder, { recursive: true, force: true });
         ctx.bus.log(t("project.folderDeleted", { name: del.name }));
       }
       // Scrub the ssh deploy key whenever the worker leaves a project — the key granted
@@ -105,6 +108,8 @@ export function handleProjectChannels(
       // Git-auth method/host (ADR-0368): re-scope the credential helper + gh shim live. `undefined` =
       // an older server that doesn't send it ⇒ leave git-auth as the last ws_token set it.
       if (tokens.gitAuth !== undefined) applyGitAuth(ctx, tokens.gitAuth, tokens.gitAuthHost ?? null);
+      // MCP allowlist (ADR-0427): `undefined` = an older server ⇒ keep the list the ws_token set.
+      if (tokens.mcpServers !== undefined) setMcpServers(tokens.mcpServers, ctx.profileDir);
       logger.info("project.tokens.applied", {
         aiRunTimeoutSec: tokens.aiRunTimeoutSec ?? 0,
         autoClearIdleMinutes: tokens.autoClearIdleMinutes ?? 0,

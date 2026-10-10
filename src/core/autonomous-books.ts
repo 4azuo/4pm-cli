@@ -5,7 +5,7 @@
  * sidecar. Cells are matched by header name, so a legacy 3-column `AI_PROGRESS` still parses. Rewrites
  * touch only the table rows — the prose around the table is kept byte-for-byte.
  */
-import { readFile, writeFile } from "node:fs/promises";
+import { readFileInRoot, writeFileInRoot } from "../utils/safe-path";
 import { join } from "node:path";
 
 /** A Markdown table found in a document: its line span, header and data rows (cells, unescaped). */
@@ -313,7 +313,7 @@ export interface AttemptEntry {
 /** Read the attempts map (`{}` on any error). */
 export async function readAttempts(root: string): Promise<Record<string, AttemptEntry>> {
   try {
-    return JSON.parse(await readFile(join(root, ATTEMPTS_REL), "utf8")) as Record<string, AttemptEntry>;
+    return JSON.parse(await readFileInRoot(root, join(root, ATTEMPTS_REL), "utf8")) as Record<string, AttemptEntry>;
   } catch {
     return {};
   }
@@ -322,7 +322,7 @@ export async function readAttempts(root: string): Promise<Record<string, Attempt
 /** Write the attempts map (sorted, pretty). */
 export async function writeAttempts(root: string, map: Record<string, AttemptEntry>): Promise<void> {
   const sorted = Object.fromEntries(Object.entries(map).sort(([a], [b]) => a.localeCompare(b)));
-  await writeFile(join(root, ATTEMPTS_REL), `${JSON.stringify(sorted, null, 2)}\n`, "utf8");
+  await writeFileInRoot(root, join(root, ATTEMPTS_REL), `${JSON.stringify(sorted, null, 2)}\n`);
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────────────────────────
@@ -338,16 +338,16 @@ export function parseStamp(v: string): number {
   return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(iso) ? iso : `${iso}Z`);
 }
 
-/** Read a root-relative file ("" when missing). */
+/** Read a root-relative file ("" when missing or — ADR-0430 — a link leading outside the root). */
 export async function readBook(root: string, rel: string): Promise<string> {
   try {
-    return await readFile(join(root, rel), "utf8");
+    return await readFileInRoot(root, join(root, rel), "utf8");
   } catch {
     return "";
   }
 }
 
-/** Write a root-relative file. */
+/** Write a root-relative file — symlink-safe (ADR-0430). */
 export async function writeBook(root: string, rel: string, text: string): Promise<void> {
-  await writeFile(join(root, rel), text, "utf8");
+  await writeFileInRoot(root, join(root, rel), text);
 }

@@ -9,7 +9,7 @@
 import { basename } from "node:path";
 import { randomUUID as randomCommandId } from "node:crypto";
 import { looksLikeJsonOrCode } from "@4pm/utils";
-import { UsageMetric } from "@4pm/constants";
+import { UsageMetric, wrapUntrusted } from "@4pm/constants";
 import {
   COMMAND_CANCELLED_EXIT_CODE,
   WsChannels,
@@ -441,7 +441,9 @@ async function runAiPromptInner(
     resume = ctx.sessionIdByKey;
   } else if (memCfg.enabled && ctx.aiMemory) {
     // Native session reset (new/failed-over profile, or memory cleared) → seed with the memory.
-    effectivePrompt = `${MEMORY_SEED_HEADER}\n${ctx.aiMemory}\n\n${guardedPrompt}`;
+    // The memory is model-written from earlier exchanges (ADR-0421): seeded as untrusted data.
+    const memoryBlock = wrapUntrusted(ctx.aiMemory, { kind: "data", source: "ai-memory" });
+    effectivePrompt = `${MEMORY_SEED_HEADER}\n${memoryBlock}\n\n${guardedPrompt}`;
   }
   const plan = planAiRun(effectivePrompt, config, hint, resume, oneShot, aiConfig, readOnly, bypass);
   // On-use self-install (ADR-0396): a missing AI CLI is installed before the first attempt spawns.

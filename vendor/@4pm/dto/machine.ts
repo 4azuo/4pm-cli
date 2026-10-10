@@ -2,6 +2,7 @@
  * DTO for the machine link + worker + physic project domain
  * (21-api/machine-0001…0013).
  */
+import type { McpServerDefinition } from "./mcp";
 import { z } from "zod";
 import type {
   MachineLinkScope,
@@ -179,6 +180,12 @@ export interface WsTokenResponse {
    */
   gitAuthHost?: string | null;
   /**
+   * Approved MCP servers of the project this link serves (ADR-0427) — the cli writes them to its
+   * generated `--mcp-config` and runs every claude spawn with `--strict-mcp-config`. Empty for
+   * orchestrator/idle links; absent from an older server (⇒ no MCP server runs).
+   */
+  mcpServers?: { name: string; definition: McpServerDefinition }[];
+  /**
    * Mask the worker's AI account labels (ADR-0395) — `true` when the link's user is a platform-pool
    * (rented) machine user. The cli then shows every renter-visible credential label as `AI account #N`
    * instead of the account email. Absent (older server) ⇒ treated as `false`.
@@ -286,6 +293,8 @@ export interface MachineLinkResponse {
   cliUnsupportedFrom?: string | null;
   /** The admin's note for the running version (ADR-0363); null/omitted when none. */
   cliVersionNote?: string | null;
+  /** True when the worker runs an update-locked image (ADR-0432/0434) — a cli update is refused. */
+  cliUpdateLocked?: boolean;
   /** Latest worker network probe (ADR-0221) — the machine-user page shows outbound/inbound posture
    *  and warns when it's open. Null when the cli hasn't reported one yet (old clients / offline). */
   network?: WorkerNetworkProbe | null;
@@ -361,7 +370,7 @@ export interface CliUpdateAllTarget {
 }
 
 /** Why an online, outdated worker was not pushed by a bulk cli update (ADR-0413). */
-export type CliUpdateAllSkipReason = "autonomous" | "failed";
+export type CliUpdateAllSkipReason = "autonomous" | "failed" | "locked";
 
 /** One online, outdated worker a bulk cli update skipped (ADR-0413). */
 export interface CliUpdateAllSkip extends CliUpdateAllTarget {
@@ -571,6 +580,8 @@ export interface MachineUsageStatus {
   cliUnsupportedFrom?: string | null;
   /** The admin's note for the running version (ADR-0363); null/omitted when none. */
   cliVersionNote?: string | null;
+  /** True when the worker runs an update-locked image (ADR-0432/0434) — a cli update is refused. */
+  cliUpdateLocked?: boolean;
   /** The latest cli release version (for the "please update" hint); null if not resolved. */
   latestCliVersion?: string | null;
   /** The minimum cli version the server still accepts (for the "unsupported" red hint); null if

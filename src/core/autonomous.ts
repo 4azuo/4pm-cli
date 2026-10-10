@@ -6,8 +6,8 @@
  * scheduler (ADR-0392 — no OS crontab), so on/off is just the `paused` flag. Never throws — errors map
  * to a failing reply.
  */
-import { readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
+import { readFileInRoot, resolveForRead, writeFileInRoot } from "../utils/safe-path";
 import { join } from "node:path";
 import type {
   AutonomousBooks,
@@ -47,10 +47,13 @@ const BOOK_FILES: Record<keyof AutonomousBooks, string> = {
   userQa: "USER_QA.md",
 };
 
-/** Read a file as UTF-8; a fallback string when it is missing/unreadable. */
-async function readText(path: string, fallback = ""): Promise<string> {
+/**
+ * Read a project file as UTF-8 — symlink-safe under `base` (ADR-0430: a linked book never surfaces a file
+ * from outside the project); a fallback string when it is missing/unreadable/outside.
+ */
+async function readText(base: string, path: string, fallback = ""): Promise<string> {
   try {
-    return await readFile(path, "utf8");
+    return await readFileInRoot(base, path, "utf8");
   } catch {
     return fallback;
   }
@@ -72,8 +75,8 @@ function tableCell(value: string): string {
 }
 
 /** Read a JSON object map (`{}` on any error). */
-async function readJsonMap(path: string): Promise<Record<string, unknown>> {
-  return (parseJson(await readText(path, "{}")) ?? {}) as Record<string, unknown>;
+async function readJsonMap(base: string, path: string): Promise<Record<string, unknown>> {
+  return (parseJson(await readText(base, path, "{}")) ?? {}) as Record<string, unknown>;
 }
 
 /** The `by` recorded for a row id in an authors/approvals map, or null. */
@@ -119,7 +122,7 @@ const CAPPED_BOOK_FILES = { USER_TODO: "USER_TODO.md", USER_QA: "USER_QA.md", AI
 export async function cappedBookIds(root: string): Promise<Record<keyof typeof CAPPED_BOOK_FILES, Set<string>>> {
   const out = {} as Record<keyof typeof CAPPED_BOOK_FILES, Set<string>>;
   for (const [book, file] of Object.entries(CAPPED_BOOK_FILES) as [keyof typeof CAPPED_BOOK_FILES, string][]) {
-    out[book] = new Set(tableRowsById(await readText(join(root, file))).keys());
+    out[book] = new Set(tableRowsById(await readText(root, join(root, file))).keys());
   }
   return out;
 }
@@ -151,7 +154,9 @@ export async function getAutonomousStatus(root: string, profileDir: string): Pro
 export function isAutonomousRunning(root: string, profileDir: string): boolean {
   try {
     if (readAutonomousConfigSync(profileDir).paused) return false;
-    const h = JSON.parse(readFileSync(join(root, ".claude/.autonomous.histories.json"), "utf8")) as {
+    const histPath = resolveForRead(root, join(root, ".claude/.autonomous.histories.json"));
+    if (!histPath) throw new Error("outside the project");
+    const h = JSON.parse(readFileSync(histPath, "utf8")) as {
       records?: { ts?: string }[];
     };
     const ts = h.records?.[h.records.length - 1]?.ts;
@@ -170,7 +175,7 @@ export async function readAutonomous(root: string, profileDir: string): Promise<
   const base = (await resolveBases(root).catch(() => null))?.root.base ?? "";
   const read = async (rel: string, fallback = ""): Promise<string> => {
     const remote = base ? await readBaseFile(root, base, rel) : null;
-    return remote === null ? readText(join(root, rel), fallback) : remote || fallback;
+    return remote === null ? readText(root, join(root, rel), fallback) : remote || fallback;
   };
   const cfg = await readAutonomousConfig(profileDir);
   const [settings, approvals, authors, attempts, mockups, status, ...books] = await Promise.all([
@@ -192,7 +197,7 @@ export async function readAutonomous(root: string, profileDir: string): Promise<
 /** autonomous.logs — tail one day's tick log (default today). */
 export async function readAutonomousLogs(root: string, date?: string): Promise<AutonomousLogsReply> {
   const day = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : new Date().toISOString().slice(0, 10);
-  const text = await readText(join(root, LOG_DIR_REL, `autonomous-tick-${day}.log`));
+  const text = await readText(root, join(root, LOG_DIR_REL, `autonomous-tick-${day}.log`));
   const lines = text ? text.split("\n").filter((l) => l.length > 0).slice(-500) : [];
   return { date: day, lines };
 }
@@ -209,35 +214,35 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
     case "approvals": {
       // Separation of duties (ADR-0320): a non-ADMIN may not approve a row they wrote.
       if (req.approved && !req.byIsAdmin) {
-        const authors = await readJsonMap(join(dir, AUTHORS_REL));
+        const authors = await readJsonMap(dir, join(dir, AUTHORS_REL));
         if (entryBy(authors, req.taskId) === by) return { ok: false, code: "APPROVAL_SELF", failedId: req.taskId, error: "self-approval blocked" };
       }
-      const map = parseJson(await readText(join(dir, APPROVALS_REL), "{}")) ?? {};
+      const map = parseJson(await readText(dir, join(dir, APPROVALS_REL), "{}")) ?? {};
       if (req.approved) map[req.taskId] = { approved: true, by, byLabel: req.byLabel ?? by, at: new Date().toISOString() };
       else delete map[req.taskId];
-      await writeFile(join(dir, APPROVALS_REL), JSON.stringify(map, null, 2) + "\n", "utf8");
+      await writeFileInRoot(dir, join(dir, APPROVALS_REL), JSON.stringify(map, null, 2) + "\n");
       return { ok: true };
     }
     case "approvalsBatch": {
       // SoD (ADR-0320): reject the WHOLE batch if any approved id was written by this non-ADMIN user.
       if (!req.byIsAdmin) {
-        const authors = await readJsonMap(join(dir, AUTHORS_REL));
+        const authors = await readJsonMap(dir, join(dir, AUTHORS_REL));
         const selfId = req.approve.find((id) => entryBy(authors, id) === by);
         if (selfId) return { ok: false, code: "APPROVAL_SELF", failedId: selfId, error: "self-approval blocked" };
       }
       // Commit many approve/unapprove ids in ONE write (ADR-0311) so a Save's coupled batch is atomic.
-      const map = parseJson(await readText(join(dir, APPROVALS_REL), "{}")) ?? {};
+      const map = parseJson(await readText(dir, join(dir, APPROVALS_REL), "{}")) ?? {};
       const at = new Date().toISOString();
       const byLabel = req.byLabel ?? by;
       for (const taskId of req.approve) map[taskId] = { approved: true, by, byLabel, at };
       for (const taskId of req.unapprove) delete map[taskId];
-      await writeFile(join(dir, APPROVALS_REL), JSON.stringify(map, null, 2) + "\n", "utf8");
+      await writeFileInRoot(dir, join(dir, APPROVALS_REL), JSON.stringify(map, null, 2) + "\n");
       return { ok: true };
     }
     case "userTodo": {
       // USER_TODO is a content-only `| ID | Group | Depends | Request |` table (ADR-0320): append the posted
       // request with a fresh `REQ-{group}-{req}` id (group = the largest seen + 1) and stamp the writer.
-      const cur = await readText(join(dir, BOOK_FILES.userTodo));
+      const cur = await readText(dir, join(dir, BOOK_FILES.userTodo));
       const ids = [...cur.matchAll(/REQ-(\d{4})-(\d{4})/g)];
       const maxGroup = ids.reduce((m, g) => Math.max(m, Number(g[1])), 0);
       const id = `REQ-${String(maxGroup + 1).padStart(4, "0")}-0001`;
@@ -247,10 +252,10 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
       const next = table
         ? replaceRows(cur, table, [...table.rows, table.header.map((h) => (h.toLowerCase() === "id" ? id : /request/i.test(h) ? req.content : ""))])
         : cur.replace(/\s*$/, "\n") + `| ${id} | | | ${tableCell(req.content)} |\n`;
-      await writeFile(join(dir, BOOK_FILES.userTodo), next, "utf8");
-      const authors = await readJsonMap(join(dir, AUTHORS_REL));
+      await writeFileInRoot(dir, join(dir, BOOK_FILES.userTodo), next);
+      const authors = await readJsonMap(dir, join(dir, AUTHORS_REL));
       authors[id] = { by, byLabel: req.byLabel ?? by, at: new Date().toISOString() };
-      await writeFile(join(dir, AUTHORS_REL), JSON.stringify(authors, null, 2) + "\n", "utf8");
+      await writeFileInRoot(dir, join(dir, AUTHORS_REL), JSON.stringify(authors, null, 2) + "\n");
       return { ok: true, added: 1 };
     }
     case "bookSave": {
@@ -265,13 +270,13 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
       // AI Done is cli-written history (ADR-0400): the web only saves its `AI verify` verdicts there — no
       // authorship to stamp and no capped rows to count.
       if (req.book === "aiDone") {
-        await writeFile(join(dir, file), req.content, "utf8");
+        await writeFileInRoot(dir, join(dir, file), req.content);
         return { ok: true, added: 0 };
       }
-      const prevText = await readText(join(dir, file));
+      const prevText = await readText(dir, join(dir, file));
       const prev = tableRowsById(prevText);
       const next = tableRowsById(req.content);
-      const authors = await readJsonMap(join(dir, AUTHORS_REL));
+      const authors = await readJsonMap(dir, join(dir, AUTHORS_REL));
       const at = new Date().toISOString();
       const byLabel = req.byLabel ?? by;
       let added = 0;
@@ -279,8 +284,8 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
         if (prev.get(id) !== cells) authors[id] = { by, byLabel, at };
         if (!prev.has(id)) added += 1;
       }
-      await writeFile(join(dir, file), req.content, "utf8");
-      await writeFile(join(dir, AUTHORS_REL), JSON.stringify(authors, null, 2) + "\n", "utf8");
+      await writeFileInRoot(dir, join(dir, file), req.content);
+      await writeFileInRoot(dir, join(dir, AUTHORS_REL), JSON.stringify(authors, null, 2) + "\n");
       // Files whose link this save removed (and no book still references) go in the same commit (ADR-0404).
       await pruneEvidence(dir, req.book, prevText, req.content);
       return { ok: true, added };

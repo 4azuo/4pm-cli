@@ -5,8 +5,9 @@
  * to a safe file stem so a request can never escape the `.claude/` tree. Never throws — errors map
  * to a failing reply.
  */
-import { readFile, writeFile, mkdir, readdir, rm } from "node:fs/promises";
+import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { readFileInRoot, resolveEntry, resolveForRead, writeFileInRoot } from "../utils/safe-path";
 import type {
   AgentReadReply,
   AgentSummary,
@@ -24,13 +25,19 @@ function safeName(name: string): string {
   return name.replace(/[^\w.-]+/g, "-").replace(/^[-.]+|[-.]+$/g, "");
 }
 
-/** Read a file as UTF-8; fallback when missing. */
-async function readText(path: string, fallback = ""): Promise<string> {
+/** Read a project file as UTF-8 — symlink-safe (ADR-0430); fallback when missing or outside the root. */
+async function readText(root: string, path: string, fallback = ""): Promise<string> {
   try {
-    return await readFile(path, "utf8");
+    return await readFileInRoot(root, path, "utf8");
   } catch {
     return fallback;
   }
+}
+
+/** List a project folder only when it really is inside the root (ADR-0430); [] otherwise. */
+async function listInRoot(root: string, dir: string): Promise<import("node:fs").Dirent[]> {
+  const real = resolveForRead(root, dir);
+  return real ? readdir(real, { withFileTypes: true }) : [];
 }
 
 /** Extract `name`/`description` from a `---`-delimited frontmatter block. */
@@ -47,18 +54,18 @@ export async function listAgents(root: string): Promise<AgentsListReply> {
   const subagents: AgentSummary[] = [];
   const skills: AgentSummary[] = [];
   try {
-    for (const e of await readdir(join(root, AGENTS_REL), { withFileTypes: true })) {
+    for (const e of await listInRoot(root, join(root, AGENTS_REL))) {
       if (!e.isFile() || !e.name.endsWith(".md") || MEMORY_DIRS.has(e.name)) continue;
-      const fm = frontmatter(await readText(join(root, AGENTS_REL, e.name)));
+      const fm = frontmatter(await readText(root, join(root, AGENTS_REL, e.name)));
       subagents.push({ name: e.name.replace(/\.md$/, ""), description: fm.description });
     }
   } catch {
     // no agents dir ⇒ empty
   }
   try {
-    for (const e of await readdir(join(root, SKILLS_REL), { withFileTypes: true })) {
+    for (const e of await listInRoot(root, join(root, SKILLS_REL))) {
       if (!e.isDirectory()) continue;
-      const fm = frontmatter(await readText(join(root, SKILLS_REL, e.name, "SKILL.md")));
+      const fm = frontmatter(await readText(root, join(root, SKILLS_REL, e.name, "SKILL.md")));
       skills.push({ name: e.name, description: fm.description });
     }
   } catch {
@@ -83,12 +90,12 @@ export async function readAgent(
   kind: "subagent" | "skill",
   name: string,
 ): Promise<AgentReadReply> {
-  const content = await readText(itemPath(root, kind, name));
+  const content = await readText(root, itemPath(root, kind, name));
   if (kind !== "subagent") return { content };
   const n = safeName(name);
   const [short, long] = await Promise.all([
-    readText(join(root, AGENTS_REL, "short-memory", `${n}.md`)),
-    readText(join(root, AGENTS_REL, "long-memory", `${n}.md`)),
+    readText(root, join(root, AGENTS_REL, "short-memory", `${n}.md`)),
+    readText(root, join(root, AGENTS_REL, "long-memory", `${n}.md`)),
   ]);
   return { content, memory: { short, long } };
 }
@@ -99,14 +106,15 @@ export async function writeAgent(root: string, req: AgentWriteRequest): Promise<
   if (!n) return { ok: false, error: "invalid name" };
   try {
     if (req.action === "delete") {
-      if (req.kind === "subagent") await rm(itemPath(root, "subagent", n), { force: true });
-      else await rm(join(root, SKILLS_REL, n), { recursive: true, force: true });
+      // Symlink-safe (ADR-0430): removes the entry itself, never a link's target.
+      const target = resolveEntry(root, req.kind === "subagent" ? itemPath(root, "subagent", n) : join(root, SKILLS_REL, n));
+      if (!target) return { ok: false, error: "path escapes the project root" };
+      await rm(target, { recursive: true, force: true });
       return { ok: true };
     }
     if (req.content === undefined) return { ok: false, error: "content is required" };
     const path = itemPath(root, req.kind, n);
-    await mkdir(join(path, ".."), { recursive: true });
-    await writeFile(path, req.content, "utf8");
+    await writeFileInRoot(root, path, req.content);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };

@@ -7,15 +7,17 @@
  * but never touch the worker or other systems. Usage is captured so the handler meters it to the org.
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ResearchAttachmentPayload } from "@4pm/ws";
 import { createAiStreamParser, estimateTokens, type AiUsage } from "./ai-stream";
 import { agentEnv } from "./agent-sandbox";
 import { denySettingsArgs } from "../utils/agent-deny";
+import { strictMcpArgs } from "../utils/agent-mcp";
 import { resolveCliPrompt } from "./prompt-overrides";
 import type { ResolvedClaudeProfile } from "../utils/ai-cli";
+import { agentSpawnArgs } from "./agent-spawn";
+import { makeAgentTempDir, unregisterAgentRoot } from "../utils/agent-user";
 
 /** Max time a research run may take (ms) — it may search/read several pages before answering. */
 const RESEARCH_TIMEOUT_MS = 9 * 60 * 1000;
@@ -65,7 +67,8 @@ export interface ResearchAi {
  * research-guard) for a disallowed question.
  */
 export function buildResearchPrompt(question: string): string {
-  // Admin override (ADR-0381) for `cli.research.policy`, else the shared registry default.
+  // Admin override (ADR-0381) for `cli.research.policy`, else the shared registry default; `question` is
+  // wrapped as the member's request by the registry (ADR-0421).
   return resolveCliPrompt("cli.research.policy", { question });
 }
 
@@ -83,7 +86,8 @@ function runClaudeOnce(
     const isClaude = cmd.includes("claude");
     // Empty throwaway dir (the per-run scratch — ADR-0385): attachments are written here and the agent's
     // Read is confined to it, so a project-less run never touches a project folder or the wider machine.
-    const cwd = mkdtempSync(join(tmpdir(), "4pm-research-"));
+    // Shared with the agent user when uid separation is on (ADR-0430) — it reads the attachments here.
+    const cwd = makeAgentTempDir("4pm-research-");
     const hasAttachments = attachments.length > 0;
     let finalPrompt = prompt;
     if (hasAttachments) {
@@ -106,6 +110,8 @@ function runClaudeOnce(
       ...(profile?.model ? ["--model", profile.model] : []),
       ...(isClaude ? ["--output-format", "stream-json", "--verbose"] : []),
       // Secret-path deny rules (ADR-0347) — reads are not confined to the working dir.
+      // No MCP server on this run (ADR-0427): repo/user MCP config is ignored.
+      ...strictMcpArgs(cmd),
       ...denySettingsArgs(cmd, [...denyDirs, profile?.dir]),
       // Web-only agent (+ Read/Glob of the scratch dir when attachments are present): allow the tool set,
       // deny everything else, bound the loop. `--permission-mode default` is the non-variadic terminator
@@ -125,12 +131,15 @@ function runClaudeOnce(
     const env = agentEnv(extraEnv, profile ? { CLAUDE_CONFIG_DIR: profile.dir } : undefined);
     const cleanup = (): void => {
       try {
+        unregisterAgentRoot(cwd);
         rmSync(cwd, { recursive: true, force: true });
       } catch {
         // best-effort — an empty leftover temp dir is harmless
       }
     };
-    const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], env, cwd });
+    // The AI CLI always runs as the agent user when uid separation is on (ADR-0430).
+    const run = agentSpawnArgs(cmd, args, env);
+    const child = spawn(run.cmd, run.args, { stdio: ["pipe", "pipe", "pipe"], env: run.env, cwd });
     const parser = createAiStreamParser(cmd);
     let out = "";
     let err = "";

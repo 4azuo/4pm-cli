@@ -6,10 +6,11 @@
  * approximate (name-based, not a precise call graph). Orphans = nodes nothing links to (unused).
  * Never throws — errors map to an empty graph.
  */
-import { readFile, readdir } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { join, relative, dirname, resolve, extname, basename } from "node:path";
 import type { GraphBuildReply, GraphEdge, GraphNode } from "@4pm/ws";
+import { readFileInRoot } from "../utils/safe-path";
 
 const MAX_FILES = 2000;
 const MAX_NODES = 3000;
@@ -64,7 +65,7 @@ async function buildDocs(root: string): Promise<GraphBuildReply> {
     const rel = relative(root, f).split("\\").join("/");
     let text: string;
     try {
-      text = await readFile(f, "utf8");
+      text = await readFileInRoot(root, f, "utf8"); // symlink-safe (ADR-0430)
     } catch {
       continue;
     }
@@ -111,7 +112,7 @@ async function buildCode(root: string): Promise<GraphBuildReply> {
     const rel = relative(root, f).split("\\").join("/");
     let text: string;
     try {
-      text = await readFile(f, "utf8");
+      text = await readFileInRoot(root, f, "utf8"); // symlink-safe (ADR-0430)
     } catch {
       continue;
     }

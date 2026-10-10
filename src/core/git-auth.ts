@@ -13,9 +13,10 @@
 import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpsRequest } from "node:https";
 import { delimiter, dirname, join, resolve } from "node:path";
-import { githubHostKind, type GitAuthMethod } from "@4pm/dto";
+import { githubHostKind, isGitLabMethod, type GitAuthMethod } from "@4pm/dto";
 import type { GitTokenReply, GitTokenRequest } from "@4pm/ws";
 import { logger } from "../common/logger/logger";
+import { prepareAgentRunDir, readOnlyForAgent } from "../utils/agent-user";
 
 /** Env var carrying the job scope to the helper / shim (set per dispatched process). */
 export const JOB_ID_ENV = "FOURPM_JOB_ID";
@@ -142,7 +143,8 @@ export function configureGitAuth(
   transport: GitTokenTransport,
 ): boolean {
   try {
-    const isGitlab = method === "gitlab-group-token";
+    // Both GitLab methods (group token — ADR-0382; service account per-job tokens — ADR-0435).
+    const isGitlab = isGitLabMethod(method);
     const active = (method === "github-app" || isGitlab) && !!host;
     if (!active || (state.host && state.host !== host)) {
       if (state.host) void revokeAll();
@@ -184,12 +186,16 @@ export function configureGitAuth(
     // Tool shim (POSIX only) — first on PATH so the agent's `gh` (GitHub) / `glab` (GitLab) picks up
     // the token. The other tool's stale shim is removed when the method switches.
     if (process.platform !== "win32") {
-      const shimDir = join(profileDir, "bin");
+      // Under uid separation the shims sit in the cli-owned run dir the agent can execute but not change
+      // (ADR-0430 phase 2) — the cli's own PATH uses them too, so the agent must never be able to edit them.
+      const runDir = prepareAgentRunDir(profileDir);
+      const shimDir = join(runDir ?? profileDir, "bin");
       const toolName = isGitlab ? "glab" : "gh";
       const otherTool = isGitlab ? "gh" : "glab";
       const realTool = isGitlab ? findRealGlab(state.baseEnv.path, shimDir) : findRealGh(state.baseEnv.path, shimDir);
       if (realTool) {
         mkdirSync(shimDir, { recursive: true });
+        if (runDir) readOnlyForAgent(shimDir, 0o2750);
         const shim = join(shimDir, toolName);
         const shimContent = isGitlab ? glabShimScript(realTool, cliInvocation()) : shimScript(realTool, cliInvocation());
         writeFileSync(shim, shimContent, { encoding: "utf8", mode: 0o755 });
@@ -232,7 +238,10 @@ export async function issueGitToken(scope: string, host: string, path: string): 
     const reply = await state.transport({ op: "issue", scope: s, repo: { host, path } });
     if (!reply.token) return null;
     const list = state.scopes.get(s) ?? [];
-    if (!list.some((t) => t.token === reply.token)) list.push({ token: reply.token, apiBase: reply.apiBase ?? "" });
+    // Only a GitHub token is revoked here (`DELETE /installation/token`); GitLab per-job tokens are revoked
+    // by the server when the scope ends (ADR-0435), and a GitLab group token is never revoked by the cli.
+    const apiBase = reply.hostKind === "gitlab" ? "" : (reply.apiBase ?? "");
+    if (!list.some((t) => t.token === reply.token)) list.push({ token: reply.token, apiBase });
     state.scopes.set(s, list);
     if (s === DEFAULT_SCOPE) touchDefaultScope();
     return reply.token;

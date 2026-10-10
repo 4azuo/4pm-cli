@@ -184,5 +184,11 @@
   "autonomous.settingsInvalidDir": "フォルダーが無効です — .4pm/evidence のようなリポジトリ相対パスを使用してください（英数字と . _ -、'..' 不可、.git 内は不可）。",
   "autonomous.settingsInvalidJson": "自律設定が有効な JSON ではありません。",
   "config.notObject": "config.json は JSON オブジェクトである必要があります。",
-  "config.invalidJson": "無効な JSON: {message}"
+  "config.invalidJson": "無効な JSON: {message}",
+  "credential.exportNotLinked": "プロファイル「{profile}」はリンクされていません — エクスポートするものはありません。",
+  "credential.importInvalid": "FOURPM_CREDENTIAL は有効な `4pm credential-export` の値ではありません — 無視します。",
+  "credential.imported": "✔ FOURPM_CREDENTIAL からプロファイル「{profile}」を復元しました。",
+  "update.lockedMandatory": "このイメージは更新がロックされています（:full-locked）。cli {current} は最低サポートバージョン {min} 未満です — 新しいイメージを pull してコンテナを作り直してください。",
+  "update.lockedAvailable": "新しい cli（{latest}）がありますが、このイメージは更新がロックされています（:full-locked）— {current} からアップグレードするには新しいイメージを pull してください。",
+  "update.locked": "このイメージは更新がロックされています（:full-locked）— cli（{version}）は自己更新できません。新しいイメージを pull してコンテナを作り直してください。"
 }

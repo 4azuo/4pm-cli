@@ -5,21 +5,11 @@
  * A path escaping the root is refused outright (never redirected) so the browser can only touch the
  * project it serves. Binary the text-only fs.read/fs.write can't carry.
  */
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, resolve, sep } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { basename, extname } from "node:path";
 import { FS_TRANSFER_MAX_BYTES } from "@4pm/dto";
 import type { FsDownloadReply, FsUploadReply } from "@4pm/ws";
-
-/**
- * Resolve `relPath` inside `root`; return null when there is no root or the path escapes it (a
- * transfer to an out-of-root path is refused, mirroring `fs-write.ts`).
- */
-function resolveInRoot(root: string | null, relPath: string): string | null {
-  if (!root) return null;
-  const base = resolve(root);
-  const target = resolve(base, relPath || ".");
-  return target === base || target.startsWith(base + sep) ? target : null;
-}
+import { lexicalInRoot, resolveForRead, writeFileInRoot } from "../utils/safe-path";
 
 /** Minimal extension → MIME map for the download save dialog; unknown ⇒ octet-stream. */
 const MIME_BY_EXT: Record<string, string> = {
@@ -55,8 +45,8 @@ export async function uploadBinaryFile(
   relPath: string,
   contentBase64: string,
 ): Promise<FsUploadReply> {
-  const target = resolveInRoot(root, relPath);
-  if (!target) {
+  const target = lexicalInRoot(root, relPath);
+  if (!root || !target) {
     return { ok: false, path: relPath, bytes: 0, error: "path escapes the project root" };
   }
   let buf: Buffer;
@@ -69,8 +59,8 @@ export async function uploadBinaryFile(
     return { ok: false, path: target, bytes: 0, error: `file too large (max ${FS_TRANSFER_MAX_BYTES} bytes)` };
   }
   try {
-    await mkdir(dirname(target), { recursive: true });
-    await writeFile(target, buf);
+    // Symlink-safe (ADR-0430): never writes through a link or a linked folder.
+    await writeFileInRoot(root, target, buf);
     return { ok: true, path: target, bytes: buf.byteLength };
   } catch (err) {
     return { ok: false, path: target, bytes: 0, error: err instanceof Error ? err.message : String(err) };
@@ -85,7 +75,8 @@ export async function downloadBinaryFile(
   root: string | null,
   relPath: string,
 ): Promise<FsDownloadReply> {
-  const target = resolveInRoot(root, relPath);
+  // Symlink-safe (ADR-0430): a link to a file outside the project downloads nothing.
+  const target = resolveForRead(root, relPath);
   if (!target) return { error: "path escapes the project root" };
   try {
     const info = await stat(target);

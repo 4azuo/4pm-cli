@@ -11,15 +11,21 @@ import { join } from "node:path";
 import { CONTROL_SOCKET_FILE, createFrameParser, encodeFrame, type ControlServerFrame } from "../core/control-protocol";
 import { readControlToken } from "../core/control-token";
 import { GIT_HOST_ENV, GIT_HOST_KIND_ENV, JOB_ID_ENV, PROFILE_DIR_ENV } from "../core/git-auth";
+import { GIT_TOKEN_SOCKET_ENV } from "../core/git-token-server";
 
 /** Give up on the daemon after this long (git would otherwise hang on the helper). */
 const REQUEST_TIMEOUT_MS = 20_000;
 
-/** Ask the daemon for a token for `host`/`path`; null when unavailable. */
+/**
+ * Ask the daemon for a token for `host`/`path`; null when unavailable. Under uid separation (ADR-0430) the
+ * helper runs as the agent and uses the token-only socket (no control token — the group is the gate);
+ * otherwise the control socket with its per-run token.
+ */
 function requestToken(host: string, path: string): Promise<string | null> {
+  const tokenSocket = process.env[GIT_TOKEN_SOCKET_ENV];
   const profileDir = process.env[PROFILE_DIR_ENV];
-  if (!profileDir) return Promise.resolve(null);
-  const token = readControlToken(profileDir);
+  if (!tokenSocket && !profileDir) return Promise.resolve(null);
+  const token = tokenSocket ? null : readControlToken(profileDir!);
   return new Promise((resolve) => {
     let done = false;
     const finish = (value: string | null): void => {
@@ -29,12 +35,12 @@ function requestToken(host: string, path: string): Promise<string | null> {
       socket.destroy();
       resolve(value);
     };
-    const socket = connect(join(profileDir, CONTROL_SOCKET_FILE));
+    const socket = connect(tokenSocket ?? join(profileDir!, CONTROL_SOCKET_FILE));
     socket.setEncoding("utf8");
     const timer = setTimeout(() => finish(null), REQUEST_TIMEOUT_MS);
     socket.on("connect", () => {
       try {
-        socket.write(encodeFrame({ t: "auth", token: token ?? "", rpc: true }));
+        if (!tokenSocket) socket.write(encodeFrame({ t: "auth", token: token ?? "", rpc: true }));
         socket.write(encodeFrame({ t: "gitToken", scope: process.env[JOB_ID_ENV] ?? "", host, path }));
       } catch {
         finish(null);

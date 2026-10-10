@@ -7,6 +7,7 @@ export * from "./command";
 export * from "./git-credential";
 export * from "./git-overview";
 export * from "./machine";
+export * from "./mcp";
 export * from "./meta";
 export * from "./org";
 export * from "./project";

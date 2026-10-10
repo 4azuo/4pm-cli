@@ -5,10 +5,8 @@
  * Reports are debounced (≥ 15 s apart), skipped while an AI run is active, sent on connect, after
  * settled git/AI/scaffold/provision work, and every `gitSnapshotIntervalMin` (fetching first).
  */
-import { execFile } from "node:child_process";
 import { stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { promisify } from "node:util";
 import {
   GIT_SNAPSHOT_LIMITS,
   type GitFileChange,
@@ -23,8 +21,10 @@ import { readProfileConfig } from "../config/profile";
 import { logger } from "../common/logger/logger";
 import { gitRepos } from "./git-history";
 import { activeAiRunCount } from "./ws-client/command-dispatch";
+import { execInProject } from "./agent-spawn";
 
-const run = promisify(execFile);
+// Project git runs as the agent user when uid separation is on (ADR-0430); unchanged otherwise.
+const run = execInProject;
 /** Field / record separators used in git format strings. */
 const US = "\x1f";
 const RS = "\x1e";

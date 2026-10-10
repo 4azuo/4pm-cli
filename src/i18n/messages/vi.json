@@ -184,5 +184,11 @@
   "autonomous.settingsInvalidDir": "Thư mục không hợp lệ — dùng đường dẫn tương đối trong repo như .4pm/evidence (chữ, số, . _ -, không có '..', không nằm trong .git).",
   "autonomous.settingsInvalidJson": "Cấu hình tự hành không phải JSON hợp lệ.",
   "config.notObject": "config.json phải là một đối tượng JSON.",
-  "config.invalidJson": "JSON không hợp lệ: {message}"
+  "config.invalidJson": "JSON không hợp lệ: {message}",
+  "credential.exportNotLinked": "Hồ sơ \"{profile}\" chưa được liên kết — không có gì để xuất.",
+  "credential.importInvalid": "FOURPM_CREDENTIAL không phải giá trị hợp lệ của `4pm credential-export` — bỏ qua.",
+  "credential.imported": "✔ Đã khôi phục hồ sơ \"{profile}\" từ FOURPM_CREDENTIAL.",
+  "update.lockedMandatory": "Image này bị khóa cập nhật (:full-locked) và cli {current} thấp hơn phiên bản tối thiểu {min} — hãy pull image mới và tạo lại container.",
+  "update.lockedAvailable": "Đã có cli mới hơn ({latest}), nhưng image này bị khóa cập nhật (:full-locked) — hãy pull image mới để nâng cấp từ {current}.",
+  "update.locked": "Image này bị khóa cập nhật (:full-locked) — cli ({version}) không tự cập nhật được. Hãy pull image mới và tạo lại container."
 }

@@ -7,8 +7,9 @@
  * these never throw — errors map to a failing reply.
  */
 import { createHash } from "node:crypto";
-import { readFile, writeFile, mkdir, readdir, rm, stat } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { readdir, rm, lstat } from "node:fs/promises";
+import { readFileInRoot, resolveEntry, writeFileInRoot } from "../utils/safe-path";
+import { join, relative } from "node:path";
 import type {
   InstalledPackageState,
   PackagePayloadFile,
@@ -39,10 +40,10 @@ function safeName(name: string): string {
   return name.replace(/[^\w.-]+/g, "-").replace(/^[-.]+|[-.]+$/g, "");
 }
 
-/** Read a file as UTF-8; null when missing. */
-async function readMaybe(path: string): Promise<Buffer | null> {
+/** Read a project file — symlink-safe (ADR-0430: a linked file never gets packed/published); null when missing. */
+async function readMaybe(root: string, path: string): Promise<Buffer | null> {
   try {
-    return await readFile(path);
+    return await readFileInRoot(root, path);
   } catch {
     return null;
   }
@@ -72,16 +73,16 @@ async function listFilesRel(dir: string): Promise<string[]> {
 async function readArtifactFiles(root: string, kind: Kind, slug: string): Promise<PackagePayloadFile[]> {
   const files: PackagePayloadFile[] = [];
   if (kind === "subagent") {
-    const agent = await readMaybe(join(root, AGENTS_REL, `${slug}.md`));
+    const agent = await readMaybe(root, join(root, AGENTS_REL, `${slug}.md`));
     if (agent) files.push({ path: "agent.md", contentBase64: agent.toString("base64") });
-    const short = await readMaybe(join(root, AGENTS_REL, "short-memory", `${slug}.md`));
+    const short = await readMaybe(root, join(root, AGENTS_REL, "short-memory", `${slug}.md`));
     if (short) files.push({ path: "short-memory.md", contentBase64: short.toString("base64") });
-    const long = await readMaybe(join(root, AGENTS_REL, "long-memory", `${slug}.md`));
+    const long = await readMaybe(root, join(root, AGENTS_REL, "long-memory", `${slug}.md`));
     if (long) files.push({ path: "long-memory.md", contentBase64: long.toString("base64") });
   } else {
     const base = join(root, SKILLS_REL, slug);
     for (const rel of await listFilesRel(base)) {
-      const buf = await readMaybe(join(base, rel));
+      const buf = await readMaybe(root, join(base, rel));
       if (buf) files.push({ path: rel.split("\\").join("/"), contentBase64: buf.toString("base64") });
     }
   }
@@ -105,7 +106,7 @@ async function artifactSha256(root: string, kind: Kind, slug: string): Promise<s
 async function artifactExists(root: string, kind: Kind, slug: string): Promise<boolean> {
   const target = kind === "subagent" ? join(root, AGENTS_REL, `${slug}.md`) : join(root, SKILLS_REL, slug);
   try {
-    await stat(target);
+    await lstat(target);
     return true;
   } catch {
     return false;
@@ -114,7 +115,7 @@ async function artifactExists(root: string, kind: Kind, slug: string): Promise<b
 
 /** Read the install manifest (empty when absent/corrupt). */
 async function readManifest(root: string): Promise<Manifest> {
-  const buf = await readMaybe(join(root, MANIFEST_REL));
+  const buf = await readMaybe(root, join(root, MANIFEST_REL));
   if (!buf) return {};
   try {
     return JSON.parse(buf.toString("utf8")) as Manifest;
@@ -125,9 +126,7 @@ async function readManifest(root: string): Promise<Manifest> {
 
 /** Write the install manifest. */
 async function writeManifest(root: string, manifest: Manifest): Promise<void> {
-  const path = join(root, MANIFEST_REL);
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(manifest, null, 2), "utf8");
+  await writeFileInRoot(root, join(root, MANIFEST_REL), JSON.stringify(manifest, null, 2));
 }
 
 /** Write a downloaded payload file set into the artifact's on-disk location. */
@@ -140,27 +139,17 @@ async function writeArtifactFiles(
   const byPath = new Map(files.map((f) => [f.path, Buffer.from(f.contentBase64, "base64")]));
   if (kind === "subagent") {
     const agent = byPath.get("agent.md");
-    if (agent) {
-      await mkdir(join(root, AGENTS_REL), { recursive: true });
-      await writeFile(join(root, AGENTS_REL, `${slug}.md`), agent);
-    }
+    // Symlink-safe writes (ADR-0430) — a linked `.claude` folder cannot redirect an install.
+    if (agent) await writeFileInRoot(root, join(root, AGENTS_REL, `${slug}.md`), agent);
     const short = byPath.get("short-memory.md");
-    if (short) {
-      await mkdir(join(root, AGENTS_REL, "short-memory"), { recursive: true });
-      await writeFile(join(root, AGENTS_REL, "short-memory", `${slug}.md`), short);
-    }
+    if (short) await writeFileInRoot(root, join(root, AGENTS_REL, "short-memory", `${slug}.md`), short);
     const long = byPath.get("long-memory.md");
-    if (long) {
-      await mkdir(join(root, AGENTS_REL, "long-memory"), { recursive: true });
-      await writeFile(join(root, AGENTS_REL, "long-memory", `${slug}.md`), long);
-    }
+    if (long) await writeFileInRoot(root, join(root, AGENTS_REL, "long-memory", `${slug}.md`), long);
   } else {
     const base = join(root, SKILLS_REL, slug);
     for (const [rel, buf] of byPath) {
       if (rel.includes("..") || rel.startsWith("/")) continue;
-      const dest = join(base, rel);
-      await mkdir(dirname(dest), { recursive: true });
-      await writeFile(dest, buf);
+      await writeFileInRoot(root, join(base, rel), buf);
     }
   }
 }
@@ -232,11 +221,14 @@ export async function removePackage(root: string, slug: string): Promise<Package
     const entry = manifest[n];
     if (!entry) return { ok: false, error: "not installed" };
     if (entry.kind === "subagent") {
-      await rm(join(root, AGENTS_REL, `${n}.md`), { force: true });
-      await rm(join(root, AGENTS_REL, "short-memory", `${n}.md`), { force: true });
-      await rm(join(root, AGENTS_REL, "long-memory", `${n}.md`), { force: true });
+      // Symlink-safe removal (ADR-0430): the entry itself, never a link's target.
+      for (const p of [join(root, AGENTS_REL, `${n}.md`), join(root, AGENTS_REL, "short-memory", `${n}.md`), join(root, AGENTS_REL, "long-memory", `${n}.md`)]) {
+        const target = resolveEntry(root, p);
+        if (target) await rm(target, { force: true });
+      }
     } else {
-      await rm(join(root, SKILLS_REL, n), { recursive: true, force: true });
+      const target = resolveEntry(root, join(root, SKILLS_REL, n));
+      if (target) await rm(target, { recursive: true, force: true });
     }
     delete manifest[n];
     await writeManifest(root, manifest);

@@ -8,6 +8,7 @@
  */
 import { COMMAND_CANCELLED_EXIT_CODE } from "@4pm/ws";
 import { runCommand } from "./executor";
+import { projectAgentEnv } from "./agent-sandbox";
 import { reportToolResult } from "./tool-health";
 import { resolveApiKey } from "./resolve-api-key";
 import type { AiPlan } from "../utils/ai-cli";
@@ -101,7 +102,9 @@ function runAttempt(
         if (out.chunk) onChunk(out.chunk);
         if (out.done) resolve(out.exitCode ?? -1);
       },
-      { stdin, ...(timeoutMs > 0 ? { timeoutMs } : {}), ...(signal ? { signal } : {}) },
+      // Allow-listed base env (ADR-0421): the cli's own secrets (FOURPM_PAIR_TOKEN, …) never reach the
+      // agent; the plan's `env` (aiEnv + account selector + API key) is layered on top by the executor.
+      { stdin, baseEnv: projectAgentEnv(), ...(timeoutMs > 0 ? { timeoutMs } : {}), ...(signal ? { signal } : {}) },
     ).catch(() => resolve(-1));
   });
 }

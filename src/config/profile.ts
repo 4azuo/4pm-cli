@@ -7,16 +7,18 @@
  */
 import {
   existsSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { Locale } from "@4pm/constants";
 import { ensureDir } from "../common/io/ensure-dir";
 import type { AiCredential, AiProfile } from "../utils/ai-cli";
+import { agentUser, registerAgentRoot, shareWithAgent, traversableByAgent } from "../utils/agent-user";
 
 /** Legacy default profile name (pre-ADR-0047 fallback). */
 export const DEFAULT_PROFILE = "default";
@@ -42,7 +44,7 @@ export function defaultProfileName(): string {
 
 /** Point the default profile at a MACHINE userId (written on `4pm link` sans --profile). */
 export function writeDefaultProfile(userId: string): void {
-  ensureDir(join(homedir(), ".4pm"), 0o700);
+  ensureDir(join(homedir(), ".4pm"), fourpmHomeMode());
   writeFileSync(defaultPointerPath(), userId, "utf8");
 }
 
@@ -248,6 +250,55 @@ export function listProfiles(): ProfileEntry[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * Mode of `~/.4pm`: owner-only, except under uid separation (ADR-0430) where the shared group may
+ * traverse it (`0710` — no listing) to reach `workspaces/`; the profiles inside stay `0700`.
+ */
+function fourpmHomeMode(): number {
+  return agentUser() ? 0o710 : 0o700;
+}
+
+/**
+ * Prepare the workspace of a profile for uid separation (ADR-0430), at `start`/`link`: `umask 007` (files
+ * the cli and the agent create in a project stay group-writable), `~/.4pm` traversable by the shared group,
+ * `~/.4pm/workspaces/<profile>` shared (`2770`) and registered so every process run in it runs as the
+ * agent. No-op when separation is off.
+ */
+export function prepareWorkspaces(profileDirPath: string): void {
+  if (!agentUser()) return;
+  process.umask(0o007);
+  ensureDir(join(homedir(), ".4pm"), fourpmHomeMode());
+  traversableByAgent(join(homedir(), ".4pm"));
+  const root = workspaceRoot(profileDirPath);
+  mkdirSync(root, { recursive: true });
+  const parent = join(root, "..");
+  if (parent !== resolve(homedir(), ".4pm")) shareWithAgent(parent);
+  shareWithAgent(root);
+  registerAgentRoot(root);
+}
+
+/**
+ * Where a profile's served projects live (ADR-0430): `~/.4pm/workspaces/<profile>/` — OUTSIDE the profile
+ * dir, so the profile (`.cre`, config, logs, sockets) can stay owner-only while the project tree is shared
+ * with the agent user, and the claude deny rules on `~/.4pm/profiles/**` never cover the project itself.
+ * `SCAFFOLD_ROOT` overrides it (tests / custom layouts).
+ */
+export function workspaceRoot(profileDirPath: string): string {
+  if (process.env.SCAFFOLD_ROOT) return resolve(process.env.SCAFFOLD_ROOT);
+  return join(homedir(), ".4pm", "workspaces", basename(profileDirPath));
+}
+
+/** A filesystem-safe project folder name (no separators, no `..`); "" when nothing usable is left. */
+export function safeProjectFolderName(projectName: string): string {
+  return projectName.replace(/[/\\]/g, "_").replace(/\.\./g, "_").trim();
+}
+
+/** The folder a project is served from (folder = sanitized project name — ADR-0064/0430); null when unusable. */
+export function projectFolder(profileDirPath: string, projectName: string): string | null {
+  const safe = safeProjectFolderName(projectName);
+  return safe ? join(workspaceRoot(profileDirPath), safe) : null;
 }
 
 /**

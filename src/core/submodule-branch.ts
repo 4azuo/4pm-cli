@@ -4,12 +4,12 @@
  * when it sits exactly on the `.gitmodules` branch's tip. This helper only **names** the position — it never
  * moves HEAD or rewrites a branch that holds other commits — so it is safe after any submodule update.
  */
-import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { promisify } from "node:util";
+import { execInProject } from "./agent-spawn";
 
-const execFileP = promisify(execFile);
+// Runs as the agent user when uid separation is on (ADR-0430).
+const execFileP = execInProject;
 
 /** Run git in `cwd` and return stdout, or "" on any failure (callers treat "" as "no"). */
 async function gitQuiet(cwd: string, args: string[]): Promise<string> {

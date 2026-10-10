@@ -184,5 +184,11 @@
   "autonomous.settingsInvalidDir": "文件夹无效 — 请使用仓库相对路径，例如 .4pm/evidence（字母、数字、. _ -，不能包含 '..'，不能位于 .git 内）。",
   "autonomous.settingsInvalidJson": "自主设置不是有效的 JSON。",
   "config.notObject": "config.json 必须是 JSON 对象。",
-  "config.invalidJson": "无效的 JSON：{message}"
+  "config.invalidJson": "无效的 JSON：{message}",
+  "credential.exportNotLinked": "配置文件 “{profile}” 未链接 — 没有可导出的内容。",
+  "credential.importInvalid": "FOURPM_CREDENTIAL 不是有效的 `4pm credential-export` 值 — 已忽略。",
+  "credential.imported": "✔ 已从 FOURPM_CREDENTIAL 恢复配置文件 “{profile}”。",
+  "update.lockedMandatory": "此镜像已锁定更新（:full-locked），且 cli {current} 低于最低支持版本 {min} — 请拉取新镜像并重新创建容器。",
+  "update.lockedAvailable": "有更新的 cli（{latest}）可用，但此镜像已锁定更新（:full-locked）— 请拉取新镜像以从 {current} 升级。",
+  "update.locked": "此镜像已锁定更新（:full-locked）— cli（{version}）无法自我更新。请拉取新镜像并重新创建容器。"
 }

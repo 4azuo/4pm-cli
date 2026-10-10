@@ -11,6 +11,8 @@ import {
   type CommandOutputPayload,
 } from "@4pm/ws";
 import { endGitScope, JOB_ID_ENV } from "./git-auth";
+import { agentProcessEnv, agentSpawnArgs } from "./agent-spawn";
+import { agentUser } from "../utils/agent-user";
 
 /** Grace period after SIGTERM before a hard SIGKILL when a run is timed out (ADR-0243). */
 const KILL_GRACE_MS = 5_000;
@@ -36,6 +38,12 @@ export interface RunCommandOptions {
    * the run settles with exit {@link COMMAND_CANCELLED_EXIT_CODE} (130).
    */
   signal?: AbortSignal;
+  /**
+   * Base environment for the child instead of the cli's whole `process.env` (ADR-0421). AI runs pass
+   * the allow-listed `projectAgentEnv()` so the cli's own secrets never reach the agent; omitted ⇒
+   * `process.env` (non-AI console commands). `dispatch.env` + `FOURPM_JOB_ID` are layered on top.
+   */
+  baseEnv?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -62,10 +70,16 @@ export async function runCommand(
   // `done` (like the `error` handler) so failover moves on instead of hanging.
   let child: ReturnType<typeof spawn>;
   try {
-    child = spawn(dispatch.cmd, dispatch.args ?? [], {
+    // FOURPM_JOB_ID scopes the git helper / gh shim tokens to this run (ADR-0356).
+    const env = { ...(opts?.baseEnv ?? process.env), ...dispatch.env, [JOB_ID_ENV]: dispatch.commandId };
+    // Uid separation (ADR-0430): every dispatched command — AI run, raw Console command, Git-tab op — runs
+    // as the agent user; a raw command's env is allow-listed like an AI run's. No-op when separation is off.
+    const run = agentUser()
+      ? agentSpawnArgs(dispatch.cmd, dispatch.args ?? [], opts?.baseEnv ? env : agentProcessEnv(env))
+      : { cmd: dispatch.cmd, args: dispatch.args ?? [], env };
+    child = spawn(run.cmd, run.args, {
       cwd: dispatch.path,
-      // FOURPM_JOB_ID scopes the git helper / gh shim tokens to this run (ADR-0356).
-      env: { ...process.env, ...dispatch.env, [JOB_ID_ENV]: dispatch.commandId },
+      env: run.env,
       shell: false,
     });
   } catch (err) {

@@ -20,6 +20,7 @@ import {
   type ConfigWriteReply,
   type ConfigWriteRequest,
   type GraphBuildRequest,
+  type McpScanReply,
   type PackagesInstallRequest,
   type PackagesPackRequest,
   type PackagesRemoveRequest,
@@ -32,6 +33,7 @@ import { readAutonomous, readAutonomousEvidence, readAutonomousLogs, writeAutono
 import { listAgents, readAgent, writeAgent } from "../../agents";
 import { readSecrets, writeSecrets } from "../../secrets";
 import { readAgentTools, writeAgentTools } from "../../agent-tools";
+import { scanMcpJson } from "../../../utils/agent-mcp";
 import { installPackage, listPackages, packPackage, removePackage } from "../../packages";
 import { buildGraph } from "../../graph";
 import { ragInstall, ragQuery, ragReindex, ragStatus } from "../../rag";
@@ -156,6 +158,15 @@ export function handleWorkerChannels(
           ctx.send(WsChannels.AGENT_TOOLS_WRITE, reply, message.id),
         );
       }
+      return true;
+    }
+    case WsChannels.MCP_SCAN: {
+      // Request/reply (machine-0075, ADR-0427): parse + hash the repo `.mcp.json` files. Read-only —
+      // nothing is started; the web compares the hashes with the approved list.
+      const reply: McpScanReply = ctx.physicRoot
+        ? { files: scanMcpJson(ctx.physicRoot) }
+        : { files: [], error: "no project" };
+      ctx.send(WsChannels.MCP_SCAN, reply, message.id);
       return true;
     }
     case WsChannels.PACKAGES_PACK: {

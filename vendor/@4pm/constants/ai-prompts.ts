@@ -15,6 +15,7 @@
  * validated against this so a save can never drop a variable the builder needs.
  */
 import defaultTemplates from "./ai-prompt-defaults.json";
+import { wrapUntrusted, type UntrustedKind } from "./untrusted-content";
 
 /** The seed/fallback template per prompt key (from `ai-prompt-defaults.json`). */
 const DEFAULTS = defaultTemplates as Record<string, string>;
@@ -39,6 +40,12 @@ export interface PromptDef {
   description: string;
   /** `{{var}}` placeholders the builder injects — enforced on save (none = a static prompt). */
   requiredVars: string[];
+  /**
+   * Variables carrying third-party text (ADR-0421) and how the model must treat them — wrapped by
+   * {@link renderCatalogPrompt} before substitution. **Required on every entry** (`{}` when none), so a
+   * new prompt must decide; admin template edits cannot drop the marking.
+   */
+  untrustedVars: Readonly<Record<string, UntrustedKind>>;
   /** The built-in base-locale (English) template: seed default + forward-safe fallback. */
   defaultTemplate: string;
 }
@@ -54,6 +61,24 @@ export function renderPrompt(template: string, vars: Record<string, string | num
   return template.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (match, name: string) =>
     Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : match,
   );
+}
+
+/**
+ * Render a catalog prompt (ADR-0421): wrap each non-empty value the entry's `untrustedVars` names with
+ * {@link wrapUntrusted} (source `<key>.<var>`), then substitute with {@link renderPrompt}. Every
+ * resolver (web / cli / server) renders through this, so the marking holds for admin overrides too.
+ * An unknown key renders as plain {@link renderPrompt}.
+ */
+export function renderCatalogPrompt(key: string, template: string, vars: Record<string, string | number>): string {
+  const untrusted = AI_PROMPTS[key]?.untrustedVars ?? {};
+  const wrapped: Record<string, string | number> = { ...vars };
+  for (const [name, kind] of Object.entries(untrusted)) {
+    const value = vars[name];
+    if (typeof value === "string" && value.trim()) {
+      wrapped[name] = wrapUntrusted(value, { kind, source: `${key}.${name}` });
+    }
+  }
+  return renderPrompt(template, wrapped);
 }
 
 /** Collect the `{{var}}` placeholder names used in a template (deduplicated, in first-seen order). */
@@ -78,6 +103,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Knowledge distillation",
     description: "Turns a project into a shareable knowledge article (read-only agent in the project folder).",
     requiredVars: ["projectName"],
+    untrustedVars: { focusExtra: "request" },
   },
   {
     key: "cli.research.policy",
@@ -86,6 +112,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "AI Research — system policy",
     description: "System instruction + content policy prepended to an org Research question.",
     requiredVars: ["question"],
+    untrustedVars: { question: "request" },
   },
   {
     key: "cli.memory.compact",
@@ -94,6 +121,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Console memory compaction",
     description: "Merges the latest exchange into the rolling per-project AI memory, budget-bounded.",
     requiredVars: ["budgetChars", "oldMemory", "prompt", "answer"],
+    untrustedVars: { oldMemory: "data", prompt: "data", answer: "data" },
   },
   {
     key: "cli.support.answer",
@@ -102,6 +130,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "AI Help — support answer",
     description: "Answers a user/admin product question from the KB docs, with the inline moderation JSON contract. Edit with care: the response must stay a single JSON object with onTopic/sensitive/reason/answer.",
     requiredVars: ["roleNote", "docs", "question"],
+    untrustedVars: { question: "request" },
   },
   {
     key: "cli.support.reply_draft",
@@ -110,6 +139,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Admin draft — ticket reply",
     description: "Drafts a support-team reply to a ticket (freeform markdown).",
     requiredVars: ["docs", "context"],
+    untrustedVars: {},
   },
   {
     key: "cli.support.outreach_draft",
@@ -118,6 +148,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Admin draft — outreach message",
     description: "Drafts an outreach message to customer orgs (freeform markdown).",
     requiredVars: ["docs", "context"],
+    untrustedVars: {},
   },
   {
     key: "cli.support.legal_draft",
@@ -126,6 +157,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Admin draft — legal document body",
     description: "Drafts/revises a legal document body in a locale, keeping legal {{placeholders}} verbatim.",
     requiredVars: ["docs", "context"],
+    untrustedVars: {},
   },
   {
     key: "cli.faq.compose",
@@ -134,6 +166,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Ticket → FAQ synthesis",
     description: "Agent-write run that distils resolved tickets into FAQ markdown + a per-ticket JSON summary. Keep the required JSON output block and the {{ticketJsonSkeleton}} intact.",
     requiredVars: ["transcript", "ticketJsonSkeleton"],
+    untrustedVars: { transcript: "data" },
   },
   {
     key: "cli.scaffold.readme",
@@ -142,6 +175,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Scaffold — README author",
     description: "Writes the initial README.md for a new project from its spec JSON (on project create).",
     requiredVars: ["specJson"],
+    untrustedVars: { specJson: "data" },
   },
   {
     key: "cli.scaffold.guide",
@@ -150,6 +184,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Scaffold — agent guide author",
     description: "Writes the project's CLAUDE.md / AGENT.md guide from its spec JSON (on project create); includes the mandatory AI_SECURITY.md reference.",
     requiredVars: ["guideFile", "specJson"],
+    untrustedVars: { specJson: "data", guideInstructionsBlock: "request" },
   },
   {
     key: "cli.scaffold.security",
@@ -158,6 +193,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Scaffold — AI security policy author",
     description: "Writes the project's AI_SECURITY.md security policy from its spec JSON (on project create); the static project-sample file is the fallback when the AI is unavailable.",
     requiredVars: ["specJson"],
+    untrustedVars: { specJson: "data" },
   },
   {
     key: "cli.autonomous.intake",
@@ -167,6 +203,7 @@ const PROMPT_META: PromptMeta[] = [
     description:
       "Analyses approved user requests + answered intake questions into sized AI tasks, and writes UI mockups to the mockup folder (ADR-0418) — books + mockups only; no git/code.",
     requiredVars: ["booksIntro", "sMaxFiles", "sMaxLines", "mMaxFiles", "mMaxLines"],
+    untrustedVars: {},
   },
   {
     key: "cli.autonomous.implement",
@@ -175,6 +212,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Autonomous — implement",
     description: "Implements exactly one task on the prepared branches (commit only). Keep the final JSON status block intact.",
     requiredVars: ["taskId", "desc", "branch", "subLines"],
+    untrustedVars: { desc: "request", notes: "request" },
   },
   {
     key: "cli.autonomous.split",
@@ -183,6 +221,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Autonomous — split",
     description: "Read-only: proposes smaller child tasks when a task repeatedly fails. Keep the final JSON children block intact.",
     requiredVars: ["taskId", "desc", "reasons", "branch", "diff"],
+    untrustedVars: { desc: "request", notes: "request", reasons: "data", diff: "data" },
   },
   {
     key: "web.generators",
@@ -191,6 +230,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Content generator",
     description: "Produces a report / estimation / WBS / proposal / feasibility Markdown document from the project spec.",
     requiredVars: ["what", "specContext"],
+    untrustedVars: { paramsBlock: "request", specContext: "data" },
   },
   {
     key: "web.guide",
@@ -199,6 +239,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "AI guide (CLAUDE.md / AGENT.md)",
     description: "Writes/refines the project's agent-guide file from the spec. Keep the mandatory AI_SECURITY.md section.",
     requiredVars: ["file", "specContext"],
+    untrustedVars: { baseBlock: "request", extraBlock: "request", specContext: "data" },
   },
   {
     key: "web.draft_tasks",
@@ -207,6 +248,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Draft tasks from spec",
     description: "Breaks the spec into a JSON array of engineering tasks. Keep the required JSON array output shape.",
     requiredVars: ["specContext"],
+    untrustedVars: { specContext: "data" },
   },
   {
     key: "web.spec.review",
@@ -215,6 +257,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Spec review (advisory)",
     description: "Advises on the whole spec in the fixed ASSESSMENT/ISSUES format (no rewrite). Keep that reply format.",
     requiredVars: ["specContext"],
+    untrustedVars: { specContext: "data" },
   },
   {
     key: "web.spec.compose",
@@ -223,6 +266,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Spec compose (gates create)",
     description: "Revises the spec with minimal edits + judges readiness. GATES project creation — keep the exact JSON object shape (changes/tree/ok/assessment/blockers).",
     requiredVars: ["specContext"],
+    untrustedVars: { specContext: "data" },
   },
   {
     key: "web.spec.suggest",
@@ -231,6 +275,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Spec field suggest (✨)",
     description: "Suggests a value for one spec field. {{shape}} carries the reply-format rule the parser depends on.",
     requiredVars: ["target", "shape", "specContext"],
+    untrustedVars: { seed: "data", instructionBlock: "request", specContext: "data" },
   },
   {
     key: "web.spec.group_suggest",
@@ -239,6 +284,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Spec section suggest",
     description: "Suggests values for a whole wizard section. Keep the single-line JSON object (field id → value) output shape.",
     requiredVars: ["groupKey", "fieldLines", "specContext"],
+    untrustedVars: { instructionBlock: "request", specContext: "data" },
   },
   {
     key: "web.spec.subagents_suggest",
@@ -247,6 +293,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Subagents suggest",
     description: "Proposes the project's AI subagents. Keep the JSON array of {name,description} output shape.",
     requiredVars: ["current", "specContext"],
+    untrustedVars: { current: "data", instructionBlock: "request", specContext: "data" },
   },
   {
     key: "web.spec.subagent_desc",
@@ -255,6 +302,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Subagent description suggest",
     description: "Writes one subagent's description (plain text, no JSON).",
     requiredVars: ["who", "specContext"],
+    untrustedVars: { seed: "data", instructionBlock: "request", specContext: "data" },
   },
   {
     key: "web.template.analyze",
@@ -263,6 +311,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Template update — analyze impact",
     description: "Read-only: reports what a project-template update changes + affected files + risk.",
     requiredVars: ["localVersion", "latestVersion", "changelog"],
+    untrustedVars: { changelog: "data", extras: "request" },
   },
   {
     key: "web.template.update",
@@ -271,6 +320,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Template update — apply (branch + PR)",
     description: "Agent-write: applies the template update on a branch + opens a PR. Keep the branch/PR steps + the final JSON status block.",
     requiredVars: ["latestVersion", "branch", "baseRef", "changelog"],
+    untrustedVars: { changelog: "data", extras: "request" },
   },
   {
     key: "web.checklist.eval",
@@ -279,6 +329,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Checklist evaluate",
     description: "Read-only: verdict (pass/fail/skip/na) per checklist item vs content. Keep the one-line-per-item reply format.",
     requiredVars: ["contextLabel", "name", "lines", "contextText"],
+    untrustedVars: { lines: "data", contextText: "data" },
   },
   {
     key: "web.checklist.author",
@@ -287,6 +338,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Checklist authoring",
     description: "Proposes the full checklist item list from an instruction + current items. Keep the JSON array output shape.",
     requiredVars: ["current", "instruction"],
+    untrustedVars: { current: "data", instruction: "request" },
   },
   {
     key: "web.memo.compose",
@@ -295,6 +347,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Memo → community post",
     description: "Turns a teammate's notes (with [Image#N] tokens) into one forum post. Keep the fenced JSON {title,body} output.",
     requiredVars: ["notes"],
+    untrustedVars: { notes: "data" },
   },
   {
     key: "web.verify",
@@ -303,6 +356,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "AI Verify (book entries)",
     description: "Read-only: answers a question per selected book entry. Keep the one-line-per-entry reply format.",
     requiredVars: ["verifyBook", "entries", "question"],
+    untrustedVars: { entries: "data", question: "request" },
   },
   {
     key: "web.verifyDone",
@@ -312,6 +366,7 @@ const PROMPT_META: PromptMeta[] = [
     description:
       "Read-only: verdict per completed task + optional follow-up proposals (ADR-0400). Keep the `[<ID>]` verdict and `FOLLOWUP [<ID>]` line formats.",
     requiredVars: ["entries", "question"],
+    untrustedVars: { entries: "data", question: "request" },
   },
   {
     key: "web.bookGenerate.aiTodo",
@@ -321,6 +376,7 @@ const PROMPT_META: PromptMeta[] = [
     description:
       "Read-only: drafts AI_TODO engineering tasks from the user's description (ADR-0408). Keep the JSON array output shape ({key, priority, group, depends, description, notes}).",
     requiredVars: ["entries", "description"],
+    untrustedVars: { entries: "data", description: "request" },
   },
   {
     key: "web.bookGenerate.userTodo",
@@ -330,6 +386,7 @@ const PROMPT_META: PromptMeta[] = [
     description:
       "Read-only: drafts USER_TODO requests from the user's description (ADR-0408). Keep the JSON array output shape ({key, group, depends, request}).",
     requiredVars: ["entries", "description"],
+    untrustedVars: { entries: "data", description: "request" },
   },
   {
     key: "web.bookGenerate.userQa",
@@ -339,6 +396,7 @@ const PROMPT_META: PromptMeta[] = [
     description:
       "Read-only: drafts USER_QA questions from the user's description (ADR-0408). Keep the JSON array output shape ({key, group, depends, original, question}).",
     requiredVars: ["entries", "description"],
+    untrustedVars: { entries: "data", description: "request" },
   },
   {
     key: "web.bookEdit.aiTodo",
@@ -348,6 +406,7 @@ const PROMPT_META: PromptMeta[] = [
     description:
       "Read-only: rewrites the selected AI_TODO tasks from the user's instruction (ADR-0417). Keep the JSON array output shape ({id, priority, group, depends, description, notes}).",
     requiredVars: ["entries", "context", "instruction"],
+    untrustedVars: { entries: "data", context: "data", instruction: "request" },
   },
   {
     key: "web.bookEdit.userTodo",
@@ -357,6 +416,7 @@ const PROMPT_META: PromptMeta[] = [
     description:
       "Read-only: rewrites the selected USER_TODO requests from the user's instruction (ADR-0417). Keep the JSON array output shape ({id, group, depends, request}).",
     requiredVars: ["entries", "context", "instruction"],
+    untrustedVars: { entries: "data", context: "data", instruction: "request" },
   },
   {
     key: "web.bookEdit.userQa",
@@ -366,6 +426,7 @@ const PROMPT_META: PromptMeta[] = [
     description:
       "Read-only: rewrites the selected USER_QA questions from the user's instruction (ADR-0417). Keep the JSON array output shape ({id, group, depends, original, question}).",
     requiredVars: ["entries", "context", "instruction"],
+    untrustedVars: { entries: "data", context: "data", instruction: "request" },
   },
   {
     key: "web.bookVerifyLogic.aiTodo",
@@ -375,6 +436,7 @@ const PROMPT_META: PromptMeta[] = [
     description:
       "Read-only: checks Group / Depends / Priority of every AI_TODO task against its content (ADR-0417). Keep the JSON array output shape ({id, issue, group, depends, priority}).",
     requiredVars: ["entries", "focus"],
+    untrustedVars: { entries: "data", focus: "request" },
   },
   {
     key: "web.bookVerifyLogic.userTodo",
@@ -384,6 +446,7 @@ const PROMPT_META: PromptMeta[] = [
     description:
       "Read-only: checks Group / Depends of every USER_TODO request against its content (ADR-0417). Keep the JSON array output shape ({id, issue, group, depends}).",
     requiredVars: ["entries", "focus"],
+    untrustedVars: { entries: "data", focus: "request" },
   },
   {
     key: "web.bookVerifyLogic.userQa",
@@ -393,6 +456,7 @@ const PROMPT_META: PromptMeta[] = [
     description:
       "Read-only: checks Group / Depends of every USER_QA question against its content (ADR-0417). Keep the JSON array output shape ({id, issue, group, depends}).",
     requiredVars: ["entries", "focus"],
+    untrustedVars: { entries: "data", focus: "request" },
   },
   {
     key: "web.git.resolve",
@@ -401,6 +465,7 @@ const PROMPT_META: PromptMeta[] = [
     title: "Git — resolve conflicts",
     description: "Agent: resolves merge conflicts + stages (no commit).",
     requiredVars: ["repoScope"],
+    untrustedVars: {},
   },
 ];
 

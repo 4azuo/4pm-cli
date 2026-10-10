@@ -11,6 +11,7 @@ import { join } from "node:path";
 import * as B from "./autonomous-books";
 import { isMerged, type RepoBase } from "./autonomous-git";
 import { evidenceCell, moveTaskEvidence, rehomeTaskLinks } from "./autonomous-evidence";
+import { readFileInRoot } from "../utils/safe-path";
 
 /** The approvals sidecar. */
 const APPROVALS_REL = ".claude/.autonomous.approvals.json";
@@ -73,7 +74,7 @@ function doneBranch(notes: string): string | null {
 /** Approved ids from the approvals sidecar. */
 export async function approvedIds(root: string): Promise<Set<string>> {
   try {
-    const map = JSON.parse(await readFile(join(root, APPROVALS_REL), "utf8")) as Record<string, { approved?: boolean }>;
+    const map = JSON.parse(await readFileInRoot(root, join(root, APPROVALS_REL), "utf8")) as Record<string, { approved?: boolean }>;
     return new Set(Object.entries(map).filter(([, v]) => v?.approved === true).map(([k]) => k));
   } catch {
     return new Set();

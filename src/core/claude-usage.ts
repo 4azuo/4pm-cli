@@ -9,10 +9,12 @@
  * Fail-safe: returns null on any unrecoverable error.
  */
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { MachineUsagePayload } from "@4pm/ws";
 import { profileDisplayLabel } from "../utils/ai-cli";
+import { agentSpawnArgs } from "./agent-spawn";
+import { agentEnv } from "./agent-sandbox";
+import { readAgentFile } from "../utils/agent-user";
 
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 
@@ -22,10 +24,13 @@ interface Creds {
   subscriptionType?: string;
 }
 
-/** Read + parse one credentials file; null when absent or without a token. */
+/**
+ * Read + parse one credentials file; null when absent or without a token. Under uid separation the file
+ * is the agent's (`0600`) and is read through the agent (ADR-0430 phase 3).
+ */
 function readCreds(dir: string): Creds | null {
   try {
-    const raw = JSON.parse(readFileSync(join(dir, ".credentials.json"), "utf8")) as Record<string, unknown>;
+    const raw = JSON.parse(readAgentFile(join(dir, ".credentials.json"))) as Record<string, unknown>;
     const oauth = (raw.claudeAiOauth ?? raw) as Creds;
     return oauth.accessToken ? oauth : null;
   } catch {
@@ -82,8 +87,10 @@ function runUsageCli(dir: string, aiCli: string): Promise<string> {
     }, 30_000);
     timer.unref?.();
     try {
-      child = spawn(aiCli, ["/usage"], {
-        env: { ...process.env, CLAUDE_CONFIG_DIR: dir },
+      // Allow-listed env (ADR-0421) + the agent user when uid separation is on (ADR-0430).
+      const run = agentSpawnArgs(aiCli, ["/usage"], agentEnv(undefined, { CLAUDE_CONFIG_DIR: dir }));
+      child = spawn(run.cmd, run.args, {
+        env: run.env,
         stdio: ["ignore", "pipe", "ignore"],
       });
       child.stdout?.on("data", (d: Buffer) => {

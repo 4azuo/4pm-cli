@@ -81,6 +81,9 @@ export interface MachineStatusPayload {
    *  when readable, else the credential label / folder name. Persisted on `MachineLink.aiAccounts` so
    *  platform admins can see which AI account a rented machine uses (ADR-0354). */
   aiAccounts?: string[];
+  /** True when the cli runs an update-locked image (`:full-locked` — ADR-0432/0434): it never updates
+   *  itself; persisted on `MachineLink.cliUpdateLocked` (the web Locked badge + the server's update gate). */
+  cliUpdateLocked?: boolean;
 }
 
 /** Where a command originated: server-dispatched (web) or cli-local (TUI — ADR-0057). */
@@ -776,6 +779,25 @@ export interface AgentToolsWriteReply {
 }
 
 /**
+ * One MCP server definition as it travels server ⇄ cli (ADR-0427) — a `.mcp.json` entry, mirroring
+ * `@4pm/dto` `McpServerDefinition` without coupling protocol → dto (validated on each side).
+ */
+export type McpServerDefinitionWire = Record<string, unknown>;
+
+/** An approved MCP server pushed to the cli (`ws_token.mcpServers` / `project.tokens.mcpServers`). */
+export interface McpServerPush {
+  name: string;
+  definition: McpServerDefinitionWire;
+}
+
+/** mcp.scan — parse `.mcp.json` at the served root + each declared repo folder (ADR-0427). */
+export type McpScanRequest = Record<string, never>;
+export interface McpScanReply {
+  files: { path: string; servers: { name: string; definition: McpServerDefinitionWire; hash: string }[]; error?: string }[];
+  error?: string;
+}
+
+/**
  * Skill/subagent marketplace (ADR-0185) — the cli packs a `.claude` artifact into a file set
  * (server zips + stores it), installs a downloaded package version into `.claude/agents|skills`
  * (recording `.4pm-packages.json` with a sha256 for drift), lists what is installed (with the
@@ -1420,6 +1442,11 @@ export interface ProjectTokensPayload {
   gitAuth?: string | null;
   /** GitHub App credential host (mirrors `ws_token.gitAuthHost`); null when not on the App. */
   gitAuthHost?: string | null;
+  /**
+   * Approved MCP servers (ADR-0427) — mirrors `ws_token.mcpServers`. `undefined` (an older server) ⇒
+   * the cli keeps its current list.
+   */
+  mcpServers?: McpServerPush[];
 }
 
 /**

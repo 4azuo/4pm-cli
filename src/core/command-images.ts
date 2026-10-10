@@ -5,11 +5,12 @@
  * lets the agent read it), rewrites the placeholders in the AI prompt to the on-disk paths, and
  * sweeps stale attachment dirs (>24h). Pure I/O helpers — the WS wiring lives in `ws-client`.
  */
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { CommandImageRef, ImageFetchReply } from "@4pm/ws";
 import { commandImageExt } from "@4pm/dto";
 import { logger } from "../common/logger/logger";
+import { mkdirInRootSync, resolveEntry, writeFileInRootSync } from "../utils/safe-path";
 
 /** Attachments live under `<physicRoot>/.4pm/attachments/` — inside the served folder (ADR-0257). */
 export function attachmentsBaseDir(physicRoot: string): string {
@@ -34,7 +35,8 @@ export async function materializeImages(
   const map = new Map<string, string>();
   if (!images.length) return map;
   const dir = join(attachmentsBaseDir(physicRoot), commandId);
-  mkdirSync(dir, { recursive: true });
+  // Symlink-safe (ADR-0430): a linked attachments folder cannot redirect the files outside the project.
+  mkdirInRootSync(physicRoot, dir);
   let n = 0;
   for (const img of images) {
     n += 1;
@@ -46,7 +48,7 @@ export async function materializeImages(
       }
       const ext = commandImageExt(reply.mime ?? img.mime);
       const file = join(dir, `attachment-${n}.${ext}`);
-      writeFileSync(file, Buffer.from(reply.dataBase64, "base64"));
+      writeFileInRootSync(physicRoot, file, Buffer.from(reply.dataBase64, "base64"));
       map.set(img.placeholder, file);
     } catch (err) {
       logger.warn("command.image.fetch.failed", {
@@ -83,9 +85,10 @@ export function sweepOldAttachments(physicRoot: string, maxAgeMs = ATTACHMENT_MA
   let removed = 0;
   try {
     for (const entry of readdirSync(base)) {
-      const dir = join(base, entry);
+      const dir = resolveEntry(physicRoot, join(base, entry));
+      if (!dir) continue;
       try {
-        if (statSync(dir).mtimeMs < cutoff) {
+        if (lstatSync(dir).mtimeMs < cutoff) {
           rmSync(dir, { recursive: true, force: true });
           removed += 1;
         }

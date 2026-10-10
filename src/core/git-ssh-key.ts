@@ -11,6 +11,8 @@ import { readFile, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { GitSshKeyReply } from "@4pm/ws";
+import { copyFileSync, existsSync, rmSync } from "node:fs";
+import { prepareAgentRunDir, readOnlyForAgent } from "../utils/agent-user";
 
 const run = promisify(execFile);
 
@@ -59,6 +61,7 @@ async function generate(profileDir: string): Promise<GitSshKeyReply> {
     timeout: 15_000,
   });
   await configureGit(key);
+  syncAgentSshKey(profileDir);
   return { publicKey: await readPublicKey(pub), fingerprint: await fingerprintOf(pub) };
 }
 
@@ -70,6 +73,7 @@ async function remove(profileDir: string): Promise<GitSshKeyReply> {
   await run("git", ["config", "--global", "--unset", "core.sshCommand"], { timeout: 5000 }).catch(
     () => undefined,
   );
+  syncAgentSshKey(profileDir);
   return { publicKey: null, fingerprint: null };
 }
 
@@ -78,6 +82,31 @@ async function get(profileDir: string): Promise<GitSshKeyReply> {
   const { pub } = keyPaths(profileDir);
   const publicKey = await readPublicKey(pub);
   return { publicKey, fingerprint: publicKey ? await fingerprintOf(pub) : null };
+}
+
+/**
+ * Expose the deploy key to the agent user (ADR-0430 phase 2): the agent's git runs with its own HOME, so
+ * it never sees the cli's `core.sshCommand`. Copy the key into the cli-owned run dir (`0640`, group = the
+ * shared group — readable, not writable, by the agent; ssh accepts a key the running user does not own)
+ * and point `GIT_SSH_COMMAND` at it; drop both when the key is gone. No-op when separation is off.
+ */
+export function syncAgentSshKey(profileDir: string): void {
+  const runDir = prepareAgentRunDir(profileDir);
+  if (!runDir) return;
+  const { key } = keyPaths(profileDir);
+  const copy = join(runDir, "id_4pm");
+  try {
+    if (existsSync(key)) {
+      copyFileSync(key, copy);
+      readOnlyForAgent(copy, 0o640);
+      process.env.GIT_SSH_COMMAND = `ssh -i ${copy} -o IdentitiesOnly=yes`;
+    } else {
+      rmSync(copy, { force: true });
+      if (process.env.GIT_SSH_COMMAND?.includes(copy)) delete process.env.GIT_SSH_COMMAND;
+    }
+  } catch {
+    // best-effort — without the copy the agent's git falls back to its own (no) ssh identity
+  }
 }
 
 /** Handle a git.ssh-key request for the given op. Never throws — errors map to a null key. */

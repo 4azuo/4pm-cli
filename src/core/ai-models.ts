@@ -14,6 +14,8 @@ import { readProfileConfig } from "../config/profile";
 import { claudeHomeDirs } from "../utils/ai-cli";
 import { getWorkingProfile } from "./ai-profile-state";
 import { hasTool, kickInstall, recentInstallFailure } from "./toolchain";
+import { agentSpawnArgs } from "./agent-spawn";
+import { agentEnv } from "./agent-sandbox";
 
 /** How long a successful list is reused. */
 const CACHE_TTL_MS = 60 * 60 * 1000;
@@ -48,8 +50,15 @@ function probeClaude(cmd: string, dir: string | null): Promise<Model[]> {
   return new Promise((resolve, reject) => {
     let out = "";
     let settled = false;
-    const child = spawn(cmd, ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"], {
-      env: { ...process.env, ...(dir ? { CLAUDE_CONFIG_DIR: dir } : {}) },
+    // `--strict-mcp-config` (ADR-0427): the probe never starts an MCP server from any config.
+    // Allow-listed env (ADR-0421) + the agent user when uid separation is on (ADR-0430).
+    const run = agentSpawnArgs(
+      cmd,
+      ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--strict-mcp-config"],
+      agentEnv(undefined, dir ? { CLAUDE_CONFIG_DIR: dir } : undefined),
+    );
+    const child = spawn(run.cmd, run.args, {
+      env: run.env,
       stdio: ["pipe", "pipe", "ignore"],
     });
     /** Settle once, always killing the CLI (it would otherwise wait for a user turn). */

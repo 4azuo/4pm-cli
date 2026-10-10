@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { readCredential } from "../core/credential";
 import { collectFingerprint } from "../core/fingerprint";
 import { fetchWhoami } from "../services/api";
-import { checkAndUpdate } from "../core/update";
+import { checkAndUpdate, reexecArgv } from "../core/update";
 import { WsClient } from "../core/ws-client";
 import { initCommandHistory } from "../core/command-history";
 import { initCommandOutput } from "../core/command-output-store";
@@ -20,6 +20,7 @@ import {
 import {
   backfillProfileConfig,
   ensureProfileConfig,
+  prepareWorkspaces,
   readProfileConfig,
   resolveIdleAutoClearMinutes,
 } from "../config/profile";
@@ -35,6 +36,11 @@ import { runTui } from "../ui/run-tui";
 import type { SessionInfo } from "../ui/session-info";
 import { CLI_VERSION } from "../version";
 import { addToolDirToPath, ensureToolchainAtBoot, setToolchainReporter } from "../core/toolchain";
+import { startGitTokenServer } from "../core/git-token-server";
+import { syncAgentSshKey } from "../core/git-ssh-key";
+import { prepareCredentialDir } from "../utils/ai-cred-mount";
+import { adoptMountedAiLogins } from "../core/ai-mount-profiles";
+import { allAiProfileDirs } from "../utils/ai-cli";
 
 /**
  * Resolve the log level: `--verbose` ⇒ debug (highest priority), else FOURPM_LOG_LEVEL,
@@ -79,6 +85,11 @@ export async function runStart(
   // instead of resolving to "no limit"/"off".
   backfillProfileConfig(profileDir);
 
+  // Uid separation (ADR-0430): share + register this profile's workspace before anything runs in it.
+  prepareWorkspaces(profileDir);
+  // A host login mounted at ~/ai-creds/<provider> with no profile pointing at it becomes one (ADR-0433).
+  adoptMountedAiLogins(profileDir);
+
   // Auto-update before connecting (ADR-0015) — keeps profile/.cre intact
   const config = readProfileConfig(profileDir);
   // Localize the cli's operator-facing messages per the worker config (ADR-0276);
@@ -99,7 +110,7 @@ export async function runStart(
     // Re-exec the new binary with the same original args (keeps the profile)
     logger.info("update.updated", { version: result.version });
     console.log(t("start.restarting"));
-    const child = spawn(process.execPath, process.argv.slice(1), {
+    const child = spawn(process.execPath, reexecArgv(), {
       stdio: "inherit",
       env: { ...process.env, FOURPM_NO_UPDATE: "1" },
     });
@@ -120,6 +131,7 @@ export async function runStart(
   const release = (): void => releaseInstanceLock(profileDir);
   // Control channel (ADR-0192 §2) — declared here so the finally can stop it.
   let stopControl: (() => void) | null = null;
+  let stopGitToken: (() => void) | null = null;
   // Headless idle transcript auto-clear (ADR-0150) — declared here so the finally can stop it.
   let stopIdleClear: (() => void) | null = null;
   process.once("exit", release);
@@ -159,6 +171,13 @@ export async function runStart(
       physicPath: config.physicPath ?? null,
       aiCli: config.aiCli || "claude",
     });
+    // Uid separation (ADR-0430 phase 2): a token-only socket for the agent's git helper / gh shims, and the
+    // deploy key exposed read-only. No-ops when separation is off.
+    stopGitToken = startGitTokenServer(profileDir);
+    syncAgentSshKey(profileDir);
+    // Phase 3: the configured AI credential dirs are the agent's, host-mounted logins imported (ADR-0433);
+    // dirs added later are prepared at spawn.
+    for (const dir of allAiProfileDirs(config)) prepareCredentialDir(dir);
     // Run the WS lifecycle so a thrown error RESTARTS the loop instead of killing the
     // cli — the reconnect loop must survive a server restart (a stray async error used
     // to escape the detached run() and terminate the process). run() returns only on a
@@ -214,6 +233,7 @@ export async function runStart(
     // Revoke any GitHub-App tokens this worker still holds (ADR-0356); the server backstop covers a crash.
     await revokeAll().catch(() => undefined);
     stopControl?.();
+    stopGitToken?.();
     release();
   }
 }
