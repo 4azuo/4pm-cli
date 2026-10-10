@@ -482,6 +482,13 @@ export interface WorkerMachineLinkNode {
   connected: boolean;
   /** null if the cli has no physic project attached. */
   physicProject: PhysicProjectResponse | null;
+  /**
+   * Egress enforcement the cli reported (Networks): `container` = enforced, `none` = Audit only (with
+   * `egressReason`), null = an older cli that does not report it.
+   * @adr 0439
+   */
+  egress?: "container" | "none" | null;
+  egressReason?: string | null;
 }
 
 /**

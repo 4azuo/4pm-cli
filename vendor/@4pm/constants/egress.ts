@@ -36,3 +36,11 @@ export const EGRESS_PROVIDER_HOSTS = {
 
 /** Ports a git host is reachable on (https + ssh). */
 export const EGRESS_GIT_PORTS = [443, 22] as const;
+
+/**
+ * Extra hosts a git host needs beyond its own name (https only): GitHub's API (`gh`, PR / issue calls)
+ * and its content / LFS storage.
+ */
+export const EGRESS_GIT_EXTRA_HOSTS: Readonly<Record<string, readonly string[]>> = {
+  "github.com": ["api.github.com", "*.githubusercontent.com"],
+};

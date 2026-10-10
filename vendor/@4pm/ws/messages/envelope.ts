@@ -93,7 +93,7 @@ export interface MachineStatusPayload {
    */
   cliUpdateLocked?: boolean;
   /**
-   * Egress enforcement of this cli (ADR-0439): `container` = the launcher installed the agent-uid firewall
+   * Egress enforcement of this cli: `container` = the launcher installed the agent-uid firewall
    * rules (the proxy is the agent's only way out); `none` = proxy environment only (Audit only), with
    * `egressReason` (e.g. `no NET_ADMIN`). Persisted on `MachineLink.egress` / `egressReason`.
    */

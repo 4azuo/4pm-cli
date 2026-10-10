@@ -38,8 +38,10 @@ export function egressEnv(base: NodeJS.ProcessEnv = {}, extra?: Partial<EgressRu
   if (!port) return {};
   const token = mintEgressToken(currentRun(extra));
   const url = `http://run:${token}@127.0.0.1:${port}`;
-  const ssh = base.GIT_SSH_COMMAND || "ssh";
-  const java = [base.JAVA_TOOL_OPTIONS, `-Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=${port} -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=${port}`, "-Dhttp.nonProxyHosts=localhost|127.0.0.1"]
+  // Extend (never stack) an existing ssh command / Java options: drop a proxy hop added by an earlier call.
+  const ssh = (base.GIT_SSH_COMMAND || "ssh").replace(/\s+-o ProxyCommand="4pm net-connect %h %p"/g, "").trim() || "ssh";
+  const javaBase = (base.JAVA_TOOL_OPTIONS ?? "").replace(/\s*-Dhttps?\.(?:proxyHost|proxyPort|nonProxyHosts)=\S+/g, "").trim();
+  const java = [javaBase, `-Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=${port} -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=${port}`, "-Dhttp.nonProxyHosts=localhost|127.0.0.1"]
     .filter(Boolean)
     .join(" ");
   return {

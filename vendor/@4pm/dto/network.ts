@@ -327,7 +327,7 @@ export const putProjectNetworkRequestSchema = z.object({
 });
 export type PutProjectNetworkRequest = z.infer<typeof putProjectNetworkRequestSchema>;
 
-/** Body of the org `settings.network` namespace (org-0002). */
+/** Body of the org `settings.network` namespace. */
 export const orgNetworkSettingsInputSchema = z.object({
   deny: ruleListSchema.optional(),
   logRetentionDays: z.number().int().min(1).max(NETWORK_LOG_RETENTION_MAX_DAYS).optional(),

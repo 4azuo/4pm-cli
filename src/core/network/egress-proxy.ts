@@ -79,27 +79,29 @@ interface Verdict {
   reason: string;
 }
 
-/** Decide (and log) one connection of `run` to `host:port`. */
+/** Metadata / link-local addresses (cloud instance credentials) — refused in every mode unless named. */
+const METADATA_CIDRS = ["169.254.0.0/16", "fd00:ec2::254/128"];
+
+/** True when an IP is a metadata / link-local address. */
+export function isMetadataIp(ip: string): boolean {
+  const v4mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
+  const addr = v4mapped ? v4mapped[1]! : ip;
+  return METADATA_CIDRS.some((c) => networkTargetMatches(c, addr));
+}
+
+/**
+ * Decide (and log) one connection of `run` to `host:port`, in two steps. By name first — a name that may
+ * not pass is never resolved, so the proxy cannot become a DNS exfiltration channel for the agent. Then the
+ * resolved address: IP deny rules, and the private-address guard (metadata / link-local always; any other
+ * private address only in Enforce — Off and Audit keep LAN registries and services working). Only an
+ * explicit IP/CIDR allow rule lifts the guard.
+ */
 async function judge(run: EgressRun, host: string, port: number): Promise<Verdict> {
   const policy = policyFor(run.kind);
-  let ip: string | null = isIP(host) ? host : null;
-  if (!ip) {
-    try {
-      ip = (await lookup(host)).address;
-    } catch {
-      ip = null;
-    }
-  }
-  const d = decideEgress(policy, systemHosts(), host, port, ip ?? undefined);
-  let decision: NetworkDecision = d.decision;
-  let pass = d.pass;
-  let reason = d.pass ? "" : `${host} is ${d.decision === "denied" ? "on the denylist" : "not on the allowlist"}`;
-  if (pass && !d.system && ip && isPrivateIp(ip) && !allowRuleNamesIp(policy, ip, port)) {
-    decision = "blocked";
-    pass = false;
-    reason = `${host} resolves to a private address (${ip}); add an allow rule for that IP/CIDR`;
-  }
-  if (d.log || !pass) {
+  const system = systemHosts();
+  const literal = isIP(host) ? host : null;
+  const log = (decision: NetworkDecision, always: boolean, logFlag: boolean): void => {
+    if (!logFlag && !always) return;
     recordEgress({
       host,
       port,
@@ -109,9 +111,39 @@ async function judge(run: EgressRun, host: string, port: number): Promise<Verdic
       ...(run.runId ? { runId: run.runId } : {}),
       ...(run.taskId ? { taskId: run.taskId } : {}),
     });
+  };
+  const first = decideEgress(policy, system, host, port, literal ?? undefined);
+  if (!first.pass) {
+    log(first.decision, true, true);
+    return { pass: false, ip: null, reason: `${host} is ${first.decision === "denied" ? "on the denylist" : "not on the allowlist"}` };
   }
-  if (pass && !ip && !upstreamProxy()) return { pass: false, ip: null, reason: `cannot resolve ${host}` };
-  return { pass, ip, reason };
+  let ip = literal;
+  if (!ip) {
+    try {
+      ip = (await lookup(host)).address;
+    } catch {
+      ip = null;
+    }
+  }
+  let decision: NetworkDecision = first.decision;
+  if (ip && !first.system) {
+    const second = decideEgress(policy, system, host, port, ip);
+    if (!second.pass) {
+      log(second.decision, true, true);
+      return { pass: false, ip: null, reason: `${host} (${ip}) is ${second.decision === "denied" ? "on the denylist" : "not on the allowlist"}` };
+    }
+    if (isPrivateIp(ip) && !allowRuleNamesIp(policy, ip, port)) {
+      if (policy.mode === "enforce" || isMetadataIp(ip)) {
+        log("blocked", true, true);
+        return { pass: false, ip: null, reason: `${host} resolves to a private address (${ip}); add an allow rule for that IP/CIDR` };
+      }
+      // Audit: a private destination would be refused under Enforce — flag it, let it through.
+      if (policy.mode === "audit") decision = "would_block";
+    }
+  }
+  log(decision, false, first.log);
+  if (!ip && !upstreamProxy()) return { pass: false, ip: null, reason: `cannot resolve ${host}` };
+  return { pass: true, ip, reason: "" };
 }
 
 /**

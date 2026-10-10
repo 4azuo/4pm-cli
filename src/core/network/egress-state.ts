@@ -8,7 +8,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { EGRESS_GIT_PORTS, EGRESS_PROVIDER_HOSTS } from "@4pm/constants";
+import { EGRESS_GIT_EXTRA_HOSTS, EGRESS_GIT_PORTS, EGRESS_PROVIDER_HOSTS } from "@4pm/constants";
 import { parseRepoUrl, type NetworkPolicy, type NetworkPolicyRule } from "@4pm/dto";
 import type { NetworkPolicyPush } from "@4pm/ws";
 import { agentUser } from "../../utils/agent-user";
@@ -91,6 +91,7 @@ export function systemHosts(): NetworkPolicyRule[] {
   for (const r of repoUrls) {
     const host = parseRepoUrl(r)?.host ?? null;
     for (const port of EGRESS_GIT_PORTS) add(host, port);
+    for (const extra of (host && EGRESS_GIT_EXTRA_HOSTS[host]) || []) add(extra, 443);
   }
   for (const u of mcpUrls) add(hostOf(u), null);
   return out;

