@@ -11,6 +11,7 @@ import { readFileSync } from "node:fs";
 import { EGRESS_GIT_PORTS, EGRESS_PROVIDER_HOSTS } from "@4pm/constants";
 import { parseRepoUrl, type NetworkPolicy, type NetworkPolicyRule } from "@4pm/dto";
 import type { NetworkPolicyPush } from "@4pm/ws";
+import { agentUser } from "../../utils/agent-user";
 
 /** What kind of run a proxy connection belongs to (selects its policy). */
 export type EgressRunKind = "project" | "projectless" | "research";
@@ -130,7 +131,10 @@ export function egressCapability(): { egress: "container" | "none"; reason?: str
     const s = JSON.parse(readFileSync(EGRESS_STATUS_FILE, "utf8")) as { enforce?: boolean; reason?: string };
     return s.enforce === true ? { egress: "container" } : { egress: "none", reason: s.reason || "egress rules not installed" };
   } catch {
-    return { egress: "none", reason: "egress guard not installed (not the 4PM image, or an older one)" };
+    return {
+      egress: "none",
+      reason: agentUser() ? "egress guard not installed (an older 4PM image)" : "agent user separation is off (the container does not start as root)",
+    };
   }
 }
 
