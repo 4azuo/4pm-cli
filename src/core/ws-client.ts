@@ -67,8 +67,9 @@ import { configureGitAuth } from "./git/git-auth";
 import { setPromptOverrides } from "./ai/prompt-overrides";
 import { setMcpServers } from "../utils/agent-mcp";
 import { loadApprovalTrust, setApprovalTrust } from "./autonomous/autonomous-approvals";
-import { egressCapability, setEgressEndpoints, setEgressMcpUrls, setEgressRepos, setNetworkPolicy } from "./network/egress-state";
+import { egressCapability, kernelEgress, setEgressEndpoints, setEgressMcpUrls, setEgressRepos, setNetworkPolicy } from "./network/egress-state";
 import { startEgressProxy } from "./network/egress-proxy";
+import { startNetguardSync } from "./network/netguard-client";
 import { setEgressEventSink } from "./network/egress-events";
 import { startGitSnapshots } from "./git/git-snapshot";
 import { projectFolder, readProfileConfig, writeProfileConfig } from "../config/profile";
@@ -304,6 +305,8 @@ export class WsClient {
     // Networks (ADR-0439): the loopback egress proxy every agent process is pointed at, and the sink of
     // its aggregated decisions (sent only while connected — buffered otherwise).
     void startEgressProxy();
+    // The agent uid's kernel rules follow the policy through the image's netguard helper (none ⇒ no-op).
+    startNetguardSync(kernelEgress);
     setEgressEventSink((payload) => {
       if (!this.socket || !this.sessionKey) return false;
       this.send(WsChannels.NETWORK_EVENTS, payload, null);

@@ -34,6 +34,18 @@ export const EGRESS_PROVIDER_HOSTS = {
   ],
 } as const satisfies Record<string, readonly EgressSystemHost[]>;
 
+/**
+ * Hosts a 4PM-started RAG install / index / query needs (the Python packages + the embedding model),
+ * granted only to those runs, never to the agent's own work.
+ */
+export const EGRESS_RAG_HOSTS: readonly EgressSystemHost[] = [
+  { target: "pypi.org", port: 443 },
+  { target: "files.pythonhosted.org", port: 443 },
+  { target: "huggingface.co", port: 443 },
+  { target: "*.huggingface.co", port: 443 },
+  { target: "*.hf.co", port: 443 },
+];
+
 /** Ports a git host is reachable on (https + ssh). */
 export const EGRESS_GIT_PORTS = [443, 22] as const;
 

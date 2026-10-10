@@ -21,6 +21,7 @@ import type {
 } from "@4pm/ws";
 import { mkdirInRoot, PathEscapeError, readFileInRoot, writeFileInRoot } from "../../utils/safe-path";
 import { execInProject, projectSpawnArgs } from "../agent/agent-spawn";
+import { withEgressRun } from "../network/egress-env";
 
 // Project python runs as the agent user when uid separation is on (ADR-0430).
 const run = execInProject;
@@ -243,7 +244,8 @@ touch "${RAG_REL}/.indexing"
 rm -f "${RAG_REL}/.indexing"
 `;
   // The background job runs in the project ⇒ as the agent user when uid separation is on (ADR-0430).
-  const job = projectSpawnArgs("bash", ["-c", script], root, { ...process.env, RAG_PY: py.bin });
+  // Egress: the RAG engine's package / model hosts are granted to this 4PM-started job only (ADR-0439).
+  const job = withEgressRun({ grants: ["rag"] }, () => projectSpawnArgs("bash", ["-c", script], root, { ...process.env, RAG_PY: py.bin }));
   const child = spawn(job.cmd, job.args, {
     cwd: root,
     env: job.env,
@@ -261,10 +263,12 @@ export async function ragQuery(root: string, queryText: string, k = 8): Promise<
   if (!existsSync(join(root, RAG_REL, "index.db"))) return { results: [], error: "no index — reindex first" };
   await ensureEngine(root);
   try {
-    const { stdout } = await run(
-      py.bin,
-      [join(RAG_REL, "rag_engine.py"), "query", queryText, String(Math.min(Math.max(k, 1), 20))],
-      { cwd: root, timeout: 30_000, maxBuffer: 4 * 1024 * 1024 },
+    const { stdout } = await withEgressRun({ grants: ["rag"] }, () =>
+      run(py.bin, [join(RAG_REL, "rag_engine.py"), "query", queryText, String(Math.min(Math.max(k, 1), 20))], {
+        cwd: root,
+        timeout: 30_000,
+        maxBuffer: 4 * 1024 * 1024,
+      }),
     );
     const parsed = JSON.parse(stdout.trim() || '{"results":[]}') as RagQueryReply;
     return { results: Array.isArray(parsed.results) ? parsed.results : [] };
@@ -305,7 +309,9 @@ rm -f "${RAG_REL}/.installed"
 rm -f "${RAG_REL}/.installing"
 `;
   // The background job runs in the project ⇒ as the agent user when uid separation is on (ADR-0430).
-  const job = projectSpawnArgs("bash", ["-c", script], root, { ...process.env, RAG_PY: py.bin, RAG_MODEL: model });
+  const job = withEgressRun({ grants: ["rag"] }, () =>
+    projectSpawnArgs("bash", ["-c", script], root, { ...process.env, RAG_PY: py.bin, RAG_MODEL: model }),
+  );
   const child = spawn(job.cmd, job.args, {
     cwd: root,
     env: job.env,

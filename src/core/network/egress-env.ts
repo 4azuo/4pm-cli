@@ -26,7 +26,12 @@ export const EGRESS_PROXY_ENV = "FOURPM_EGRESS_PROXY";
 function currentRun(extra?: Partial<EgressRun>): EgressRun {
   const store = { ...(runCtx.getStore() ?? {}), ...(extra ?? {}) };
   const kind: EgressRunKind = store.kind ?? defaultEgressRun().kind;
-  return { kind, ...(store.runId ? { runId: store.runId } : {}), ...(store.taskId ? { taskId: store.taskId } : {}) };
+  return {
+    kind,
+    ...(store.runId ? { runId: store.runId } : {}),
+    ...(store.taskId ? { taskId: store.taskId } : {}),
+    ...(store.grants?.length ? { grants: store.grants } : {}),
+  };
 }
 
 /**

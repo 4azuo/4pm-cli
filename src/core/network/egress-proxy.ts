@@ -97,7 +97,7 @@ export function isMetadataIp(ip: string): boolean {
  * explicit IP/CIDR allow rule lifts the guard.
  */
 async function judge(run: EgressRun, host: string, port: number): Promise<Verdict> {
-  const policy = policyFor(run.kind);
+  const policy = policyFor(run.kind, run.grants);
   const system = systemHosts();
   const literal = isIP(host) ? host : null;
   const log = (decision: NetworkDecision, always: boolean, logFlag: boolean): void => {

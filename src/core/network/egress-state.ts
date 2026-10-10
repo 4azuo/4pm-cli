@@ -8,19 +8,24 @@
  */
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { EGRESS_GIT_EXTRA_HOSTS, EGRESS_GIT_PORTS, EGRESS_PROVIDER_HOSTS } from "@4pm/constants";
+import { EGRESS_GIT_EXTRA_HOSTS, EGRESS_GIT_PORTS, EGRESS_PROVIDER_HOSTS, EGRESS_RAG_HOSTS } from "@4pm/constants";
 import { parseRepoUrl, type NetworkPolicy, type NetworkPolicyRule } from "@4pm/dto";
 import type { NetworkPolicyPush } from "@4pm/ws";
 import { agentUser } from "../../utils/agent-user";
+import { ipRules, netguardError, requestNetguardSync, type KernelEgress } from "./netguard-client";
 
 /** What kind of run a proxy connection belongs to (selects its policy). */
 export type EgressRunKind = "project" | "projectless" | "research";
+
+/** Extra hosts a 4PM-started operation is granted on top of its policy (`rag` = RAG install / index / query). */
+export type EgressGrant = "rag";
 
 /** One run known to the proxy. */
 export interface EgressRun {
   kind: EgressRunKind;
   runId?: string;
   taskId?: string;
+  grants?: EgressGrant[];
 }
 
 /** The launcher's status file (root-owned, written before the drop to `node`). */
@@ -37,9 +42,19 @@ let mcpUrls: string[] = [];
 /** Per-run tokens → run (pruned after a day). */
 const tokens = new Map<string, EgressRun & { at: number }>();
 
-/** Apply the pushed policy (`undefined` = an older server ⇒ keep the current one). */
+/** Apply the pushed policy (`undefined` = an older server ⇒ keep the current one); resyncs the kernel rules. */
 export function setNetworkPolicy(policy: NetworkPolicyPush | undefined): void {
   if (policy) pushed = policy;
+  requestNetguardSync();
+}
+
+/**
+ * The kernel state for the agent uid: the served project's mode + its IP/CIDR rules (deny includes the org
+ * denylist); an idle cli (no project) is held to Enforce with the org denylist.
+ */
+export function kernelEgress(): KernelEgress {
+  if (pushed && pushed.projectId) return { mode: pushed.mode, allow: ipRules(pushed.allow), deny: ipRules(pushed.deny) };
+  return { mode: "enforce", allow: [], deny: ipRules(pushed?.orgDeny ?? []) };
 }
 
 /** Record the 4PM endpoints (server URL + WS URL). */
@@ -97,12 +112,19 @@ export function systemHosts(): NetworkPolicyRule[] {
   return out;
 }
 
-/** The policy a run of `kind` is held to. */
-export function policyFor(kind: EgressRunKind): NetworkPolicy {
+/** The policy a run of `kind` is held to; `grants` add a 4PM operation's fixed hosts (deny still wins). */
+export function policyFor(kind: EgressRunKind, grants: readonly EgressGrant[] = []): NetworkPolicy {
   const orgDeny = pushed?.orgDeny ?? [];
-  if (kind === "projectless") return { mode: "enforce", allow: [], deny: orgDeny };
-  if (kind === "research") return { mode: "audit", allow: [], deny: orgDeny };
-  return pushed ? { mode: pushed.mode, allow: pushed.allow, deny: pushed.deny } : { mode: "audit", allow: [], deny: [] };
+  const base: NetworkPolicy =
+    kind === "projectless"
+      ? { mode: "enforce", allow: [], deny: orgDeny }
+      : kind === "research"
+        ? { mode: "audit", allow: [], deny: orgDeny }
+        : pushed
+          ? { mode: pushed.mode, allow: pushed.allow, deny: pushed.deny }
+          : { mode: "audit", allow: [], deny: [] };
+  if (!grants.includes("rag")) return base;
+  return { ...base, allow: [...base.allow, ...EGRESS_RAG_HOSTS.map((h) => ({ target: h.target, port: h.port }))] };
 }
 
 /** Mint a proxy token for one run (the proxy maps it back to the run's policy). */
@@ -130,7 +152,9 @@ export function runOfToken(token: string | null): EgressRun | null {
 export function egressCapability(): { egress: "container" | "none"; reason?: string } {
   try {
     const s = JSON.parse(readFileSync(EGRESS_STATUS_FILE, "utf8")) as { enforce?: boolean; reason?: string };
-    return s.enforce === true ? { egress: "container" } : { egress: "none", reason: s.reason || "egress rules not installed" };
+    if (s.enforce !== true) return { egress: "none", reason: s.reason || "egress rules not installed" };
+    const helper = netguardError() ?? (s.reason || null);
+    return helper ? { egress: "container", reason: helper } : { egress: "container" };
   } catch {
     return {
       egress: "none",
