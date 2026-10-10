@@ -329,6 +329,13 @@ export const ErrorCode = {
   /** An origin commit cannot be read server-side (no GitHub App / not GitHub / GitHub refused) — project-0083/0084, ADR-0397. */
   GIT_ORIGIN_UNAVAILABLE: "GIT_ORIGIN_UNAVAILABLE",
   SECRETS_KEY_NOT_CONFIGURED: "SECRETS_KEY_NOT_CONFIGURED",
+  // Git tab Configuration (ADR-0441): another git-config job is running; the requested branch is missing or
+  // protected on the host; a serving worker has a dirty tree (branch switch); the path isn't a declared submodule.
+  GIT_CONFIG_BUSY: "GIT_CONFIG_BUSY",
+  BRANCH_NOT_FOUND: "BRANCH_NOT_FOUND",
+  BRANCH_PROTECTED: "BRANCH_PROTECTED",
+  WORKER_DIRTY: "WORKER_DIRTY",
+  SUBMODULE_NOT_FOUND: "SUBMODULE_NOT_FOUND",
   // Org announcements (ADR-0367): a target outside the sender's PM/TL scope; targets resolving to
   // nobody; the org's daily recipient cap (`announcementDailyRecipients`); unknown history row /
   // draft; the per-user draft cap.

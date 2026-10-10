@@ -25,6 +25,7 @@ import { SCAFFOLD_TRACKING_FILES } from "@4pm/dto";
 import type { AiTaskRunner } from "../ai/ai-task";
 import { resolveCliPrompt } from "../ai/prompt-overrides";
 import { attachSubmoduleBranches } from "../git/submodule-branch";
+import { detachSubmodules, pruneStaleSubmodules } from "../git/submodule-detach";
 import { lexicalInRoot, PathEscapeError, readFileInRoot, resolveForRead, writeFileInRoot } from "../../utils/safe-path";
 import { projectFolder } from "../../config/profile";
 import { execInProject } from "../agent/agent-spawn";
@@ -455,6 +456,12 @@ async function updateRepo(
 ): Promise<void> {
   const b = (branch ?? "").trim();
   emit("git", `Updating repository (fetch + ${b ? `checkout ${b} + ` : ""}fast-forward pull)…`);
+  // Switching to another branch over local changes would carry them along (or fail half-way) — refuse
+  // instead, so a primary-branch change never mixes work across branches (ADR-0441).
+  const current = await gitOut(dir, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  if (b && current && current !== b && (await gitOut(dir, ["status", "--porcelain"]))) {
+    throw new Error(`the repository has uncommitted changes — commit or discard them before switching to ${b}`);
+  }
   await run("git", ["fetch", "origin", "--prune"], { cwd: dir, timeout: 120_000 });
   if (b) await run("git", ["checkout", b], { cwd: dir, timeout: 60_000 });
   await run("git", ["pull", "--ff-only"], { cwd: dir, timeout: 120_000 });
@@ -932,6 +939,12 @@ export async function addProject(
     // action; a plain add (project-0011) omits it ⇒ "clone" (idempotent clone-of-missing).
     const mode: ProvisionMode = payload.mode ?? "clone";
     if (repo) await provisionRepo(target, repo, emit, { mode });
+    if (mode === "sync") {
+      // Git tab Configuration (ADR-0441): remove the submodules asked for, and drop what is left of ones
+      // another worker removed (the pull already took them out of .gitmodules).
+      if (payload.detachSubmodules?.length) await detachSubmodules(target, payload.detachSubmodules, emit);
+      await pruneStaleSubmodules(target, emit);
+    }
     // Scaffold the root when the caller asked (add-with-scaffold); else leave the plain clone.
     if (payload.scaffoldRepos && payload.scaffoldRepos.length > 0) {
       await scaffoldRepo(target, payload.projectName, payload.spec, emit, { ai });

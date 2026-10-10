@@ -1685,6 +1685,12 @@ export interface ProjectAddPayload {
    */
   scaffoldRepos?: string[];
   /**
+   * Submodule paths to **remove** after the sync (`deinit` + `git rm` + commit + push) — the Git tab
+   * Configuration "Remove submodule"; refused when one holds local work.
+   * @adr 0441
+   */
+  detachSubmodules?: string[];
+  /**
    * The project spec. With `scaffoldRepos`: used to scaffold those folders. Without
    * (the Add-existing wizard): written back as the root's `project.spec.json`, then
    * committed + pushed to the declared branch. Absent ⇒ clone only (provision).

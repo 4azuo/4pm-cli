@@ -1238,37 +1238,52 @@ export const addRepoRequestSchema = z
   });
 export type AddRepoRequest = z.infer<typeof addRepoRequestSchema>;
 
+/** A submodule path under the project root: relative, no `..`, no leading/trailing slash. */
+const SUBMODULE_PATH_RE = /^(?!.*(?:^|\/)\.\.?(?:\/|$))[\w.-]+(?:\/[\w.-]+)*$/;
+
 /**
- * Body POST /projects/:id/repos — add ONE repo to a READY project from the Git subtab.
- * The repo is cloned into a new sibling folder and, unless
- * `scaffold` is false (Skip), scaffolded like create (template + spec + AI-init). 4PM never
- * creates repos — the `url` must be an existing repo (https or ssh).
- * @api project-0069 @adr 0299 §4 @adr 0172
+ * Body POST /projects/:id/submodules — add one git submodule to a READY project from the Git tab
+ * Configuration subtab. 4PM never creates repos — `url` must be an existing repo (https or ssh).
+ * @api project-0096 @adr 0441
  */
-export const addProjectRepoRequestSchema = z.object({
-  /** Clone url — `https` or `ssh` (required). */
+export const addSubmoduleRequestSchema = z.object({
+  /** Clone url — `https` or `ssh`. */
   url: z.string().max(500).regex(GIT_URL_RE, "must be an https or ssh git url"),
-  /** Primary branch to clone / check out; empty ⇒ the repo's default branch. @adr 0292 */
+  /** Folder under the root; empty ⇒ derived from the url basename. */
+  subdir: z
+    .union([z.literal(""), z.string().max(120).regex(SUBMODULE_PATH_RE, "must be a relative folder path")])
+    .optional()
+    .default(""),
+  /** An existing branch of the submodule; empty ⇒ its default branch. */
   branch: z.string().max(200).optional().default(""),
-  /** Role label / folder hint (e.g. "docs" / "web"); empty ⇒ derived from the url basename. */
-  role: z.string().max(60).optional().default(""),
-  /** Free-form description of what this repo holds (optional) — stored on the declared spec repo. */
+  /** Free-form description stored on the declared spec repo. */
   desc: z.string().max(500).optional().default(""),
-  /** true = Confirm (clone + scaffold); false = Skip (clone as-is, no template/AI-init). */
-  scaffold: z.boolean(),
 });
-export type AddProjectRepoRequest = z.infer<typeof addProjectRepoRequestSchema>;
+export type AddSubmoduleRequest = z.infer<typeof addSubmoduleRequestSchema>;
+
+/** Query DELETE /projects/:id/submodules — the declared submodule path to remove. @api project-0097 */
+export const removeSubmoduleQuerySchema = z.object({
+  path: z.string().min(1).max(120).regex(SUBMODULE_PATH_RE, "must be a relative folder path"),
+});
+export type RemoveSubmoduleQuery = z.infer<typeof removeSubmoduleQuerySchema>;
+
+/** Body PUT /projects/:id/branch — the primary repo's new branch (must exist on the remote). @api project-0098 */
+export const setPrimaryBranchRequestSchema = z.object({
+  branch: z.string().trim().min(1).max(200),
+});
+export type SetPrimaryBranchRequest = z.infer<typeof setPrimaryBranchRequestSchema>;
+
+/** Data 202 of the Git-tab Configuration changes (project-0096/0097/0098) — the enqueued provision job. */
+export interface GitConfigJobResponse {
+  jobId: string;
+  /** GitHub-App projects: the added submodule isn't covered by the App (warning, not a block). */
+  gitAuthWarning?: string;
+}
 
 /** Data 202 of POST /projects/create|add — the enqueued job + the draft project. */
 export interface ProjectJobAcceptedResponse {
   jobId: string;
   project: ProjectResponse;
-  /**
-   * project-0069 on a GitHub-App project: the added repo's coverage status when the App
-   * does not cover it (`not_installed`/`no_access`/`host_mismatch`) — the web warns; absent otherwise.
-   * @adr 0356
-   */
-  gitAuthWarning?: string;
 }
 
 // AI spec-assist (suggest/review/compose) moved to the console dispatch path (ADR-0100):
