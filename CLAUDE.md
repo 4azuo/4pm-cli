@@ -10,7 +10,8 @@ conventions: [`../CLAUDE.md`](../CLAUDE.md). Directory tree: [`README.md`](../..
   `ai/` (AI CLI runs, streams, profiles, prompt overrides) · `agent/` (agent spawn/sandbox, subagents,
   tool permissions, packages, outbound review) · `autonomous/` (the autonomous engine) · `knowledge/`
   (knowledge/FAQ compose, memory compaction, RAG, research, support answer) · `git/` · `fs/` ·
-  `exec/` (command executor + history/output/images) · `control/` (local control socket) · `worker/`
+  `exec/` (command executor + history/output/images) · `control/` (local control socket) · `network/`
+  (egress proxy, per-run policy + events, netguard client — ADR-0439) · `worker/`
   (metrics, tools, toolchain, health, network probe, secrets, graph) · `profile/` (`.cre`, instance
   lock, config sync, fingerprint, input history) · `session/` (session bus, idle clear) · `project/`
   (scaffold). `ws-client.ts` (+ `ws-client/` handlers) and `update*.ts` stay at the `core/` root —
