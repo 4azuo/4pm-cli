@@ -1,10 +1,11 @@
 /**
- * Git workspace shapes (ADR-0369, arch 0051): a worker's per-repo **git snapshot** (the cli's
+ * Git workspace shapes: a worker's per-repo **git snapshot** (the cli's
  * `git.snapshot` payload, stored latest-only per physic project × repo) and the **overview** served by
  * project-0075 — origin + every serving worker's snapshot + the optional combined graph.
+ * @adr 0369 @arch 0051
  */
 
-/** Snapshot caps (ADR-0369 §5b) — the cli truncates to these and flags `*Truncated`. */
+/** Snapshot caps — the cli truncates to these and flags `*Truncated`. */
 export const GIT_SNAPSHOT_LIMITS = {
   localCommits: 50,
   filesPerCommit: 100,
@@ -16,7 +17,7 @@ export const GIT_SNAPSHOT_LIMITS = {
 export interface GitFileChange {
   status: string;
   path: string;
-  /** A working-tree file's last modification (ISO); null when deleted, absent from an older cli (ADR-0397). */
+  /** A working-tree file's last modification (ISO); null when deleted, absent from an older cli. @adr 0397 */
   mtime?: string | null;
 }
 
@@ -48,7 +49,7 @@ export interface GitSnapshotBranch {
   behind: number;
 }
 
-/** The latest git state of one repo in one worker's clone (ADR-0369). */
+/** The latest git state of one repo in one worker's clone. */
 export interface GitRepoSnapshot {
   /** "" = the primary repo at the project root; else the submodule folder. */
   subdir: string;
@@ -80,7 +81,7 @@ export interface GitSnapshotPayload {
 
 /** Origin of one repo as served by project-0075. */
 export interface GitOrigin {
-  /** `gitlab-token` = read via the project's GitLab token (ADR-0398). */
+  /** `gitlab-token` = read via the project's GitLab token. @adr 0398 */
   source: "github-app" | "gitlab-token" | "worker-fetch" | "none";
   fetchedAt: string | null;
   sourceWorker: { machineLinkId: string; username: string } | null;
@@ -106,7 +107,7 @@ export interface GitGraphRef {
   machineLinkId?: string;
 }
 
-/** One combined-graph row (ADR-0369 §5b). */
+/** One combined-graph row. */
 export interface GitGraphRow {
   /** A commit SHA, or `wip:<machineLinkId>` for a worker's working tree. */
   sha: string;
@@ -126,7 +127,7 @@ export interface GitGraphRow {
 export interface GitOverviewRepo {
   subdir: string;
   remote: string | null;
-  /** The declared base branch (ADR-0370); null = the repo's default branch. */
+  /** The declared base branch; null = the repo's default branch. @adr 0370 */
   branch: string | null;
   origin: GitOrigin;
   workers: GitOverviewWorker[];
@@ -138,32 +139,35 @@ export interface GitOverviewResponse {
   repos: GitOverviewRepo[];
 }
 
-/** One changed file of an origin commit (project-0083): status letter (A/M/D/R/C) + path (+ the old path). */
+/**
+ * One changed file of an origin commit: status letter (A/M/D/R/C) + path (+ the old path).
+ * @api project-0083
+ */
 export interface GitOriginCommitFile {
   status: string;
   path: string;
   /** The old path of a rename/copy, else null. */
   from: string | null;
-  /** Lines added / deleted (ADR-0401) — absent when the provider didn't report them. */
+  /** Lines added / deleted — absent when the provider didn't report them. @adr 0401 */
   additions?: number;
   deletions?: number;
 }
 
-/** project-0083 response `data` — an origin commit's changed files (ADR-0397). */
+/** project-0083 response `data` — an origin commit's changed files. @adr 0397 */
 export interface GitCommitFilesResponse {
   files: GitOriginCommitFile[];
   /** GitHub lists at most 300 files per commit. */
   truncated: boolean;
 }
 
-/** project-0085 response `data` — every file path of an origin commit (ADR-0401). */
+/** project-0085 response `data` — every file path of an origin commit. @adr 0401 */
 export interface GitCommitTreeResponse {
   paths: string[];
   /** The provider's listing was cut (GitHub's recursive-tree limit / the GitLab page cap). */
   truncated: boolean;
 }
 
-/** project-0084 response `data` — one file of an origin commit, first parent ↔ commit (ADR-0397). */
+/** project-0084 response `data` — one file of an origin commit, first parent ↔ commit. @adr 0397 */
 export interface GitCommitDiffResponse {
   original: string;
   modified: string;

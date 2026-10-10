@@ -1,10 +1,11 @@
 /**
- * Console sink — the headless/service consumer of the SessionBus (ADR-0057). When
+ * Console sink — the headless/service consumer of the SessionBus. When
  * there is no TTY the cli keeps its plain `console.*` behavior: it prints the
  * lifecycle log lines (the ones that were previously `console.log/warn/error`) and
  * leaves per-command output to the structured logger / server, exactly as before.
+ * @adr 0057
  */
-import type { SessionBus } from "../core/session-bus";
+import type { SessionBus } from "../core/session/session-bus";
 
 /**
  * Attach a console sink to the bus. Only system lifecycle lines are printed (to

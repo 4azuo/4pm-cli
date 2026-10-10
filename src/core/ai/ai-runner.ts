@@ -1,0 +1,237 @@
+/**
+ * Run an AI-CLI prompt with profile failover: try the plan's profile
+ * attempts in order; on **any** failed attempt move to the next profile (auth / session-limit /
+ * out-of-credits / other), and stop on the first success — or once every profile is exhausted,
+ * surfacing that last failure. Streams readable text through onChunk (parsed from claude
+ * stream-json / codex `exec --json`) and captures the run's real token usage. The
+ * caller reports it to the server + transcript.
+ * @adr 0057 @adr 0240 @adr 0072
+ */
+import { COMMAND_CANCELLED_EXIT_CODE } from "@4pm/ws";
+import { runCommand } from "../exec/executor";
+import { projectAgentEnv } from "../agent/agent-sandbox";
+import { reportToolResult } from "../worker/tool-health";
+import { resolveApiKey } from "./resolve-api-key";
+import type { AiPlan } from "../../utils/ai-cli";
+import { createAiStreamParser, estimateTokens, type AiUsage } from "./ai-stream";
+
+/** Why an attempt was skipped, so the caller can log an accurate reason (ADR-0240: any error fails over). */
+export type AttemptFailReason = "auth" | "limit" | "credits" | "timeout" | "other";
+
+/** The conventional exit code the executor reports for a wall-clock timeout kill. @adr 0243 */
+const TIMEOUT_EXIT = 124;
+
+/** Detect an auth failure in an attempt's output (to decide whether to try the next). */
+export function isAuthFailure(text: string): boolean {
+  return /\b401\b|invalid authentication|authentication credentials|oauth[^]*revoked|not authenticated|please run.*login/i.test(
+    text,
+  );
+}
+
+/**
+ * Detect a Claude session/usage limit hit (e.g. "You've hit your session limit — resets
+ * 2am"). Treated as retryable so failover moves to the next profile.
+ */
+export function isSessionLimit(text: string): boolean {
+  return /hit your (?:session|usage|weekly) limit|(?:session|usage|rate|weekly) limit (?:reached|exceeded)|\b(?:session|usage|weekly) limit\b|usage limit reached/i.test(
+    text,
+  );
+}
+
+/**
+ * Detect an out-of-credits / payment-required failure — e.g. claude's "You're out of
+ * usage credits. Run /usage-credits …" or a `credits_required` / `out_of_credits` marker. Claude
+ * returns **exit 0** for this, so the failover relies on the `result` event's `is_error` flag; this
+ * text check only classifies the reason for an accurate log.
+ * @adr 0249
+ */
+export function isOutOfCredits(text: string): boolean {
+  return /out of (?:usage )?credits|credits[_ ]required|out[_ ]of[_ ]credits|insufficient credits/i.test(
+    text,
+  );
+}
+
+/** Callbacks while running the failover. */
+export interface AiRunHandlers {
+  /** One batched output chunk (verbatim) — forward to transcript + server. */
+  onChunk: (text: string) => void;
+  /**
+   * An attempt is starting (only meaningful when there are multiple profiles). `cmd` is the
+   * attempt's own provider command so a mixed plan logs the right CLI per attempt.
+   * @adr 0197
+   */
+  onAttemptStart: (label: string, index: number, total: number, cmd: string) => void;
+  /** An attempt failed (auth or session-limit) — will try the next profile. */
+  onAttemptFail: (label: string, reason: AttemptFailReason) => void;
+}
+
+/** Result of the failover run. */
+export interface AiRunResult {
+  exitCode: number;
+  /** The profile dir that worked (to remember), or null (default env / none worked). */
+  workedDir: string | null;
+  /** The credential key that worked (unified working memory), or null. @adr 0182 */
+  workedKey: string | null;
+  /** The provider command of the successful attempt (mixed plans vary), or null. @adr 0182 */
+  workedCmd: string | null;
+  /** Real token usage of the successful attempt (estimate fallback). */
+  usage: AiUsage;
+  /** The claude session id of the successful attempt (ADR-0245 native resume); "" when none. */
+  sessionId: string;
+  /** True when the run was stopped via `command.cancel` — exit 130, no failover. @adr 0362 */
+  cancelled?: boolean;
+}
+
+/** Run a single attempt, resolving with its exit code; streams chunks to onChunk. */
+function runAttempt(
+  commandId: string,
+  cmd: string,
+  args: string[],
+  stdin: string,
+  cwd: string,
+  env: Record<string, string>,
+  onChunk: (text: string) => void,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<number> {
+  return new Promise((resolve) => {
+    // The prompt rides stdin, not argv (ADR-0251), so a large review/compose can't exceed
+    // `MAX_ARG_STRLEN`. `.catch` is defence in depth: the executor already guards `spawn` against a
+    // synchronous throw, but should `runCommand` ever reject, settle the attempt as failed (exit -1)
+    // so failover moves on instead of the whole dispatch hanging on an unobserved rejection.
+    runCommand(
+      { commandId, cmd, args, path: cwd, env },
+      (out) => {
+        if (out.chunk) onChunk(out.chunk);
+        if (out.done) resolve(out.exitCode ?? -1);
+      },
+      // Allow-listed base env (ADR-0421): the cli's own secrets (FOURPM_PAIR_TOKEN, …) never reach the
+      // agent; the plan's `env` (aiEnv + account selector + API key) is layered on top by the executor.
+      { stdin, baseEnv: projectAgentEnv(), ...(timeoutMs > 0 ? { timeoutMs } : {}), ...(signal ? { signal } : {}) },
+    ).catch(() => resolve(-1));
+  });
+}
+
+/**
+ * Execute the plan with failover. Returns the final exit code + the working profile
+ * dir (if any) so the caller can remember it for next time. `timeoutMs` caps EACH
+ * attempt's wall-clock — a hung/looping AI CLI is terminated and reported as a failed attempt so
+ * failover still moves on; 0 ⇒ no cap. `signal` stops the run: the current AI process is
+ * killed and NO further profile is tried — the result carries `cancelled` + exit 130.
+ * @adr 0243 @adr 0362
+ */
+export async function runAiFailover(
+  plan: AiPlan,
+  commandId: string,
+  cwd: string,
+  handlers: AiRunHandlers,
+  timeoutMs = 0,
+  signal?: AbortSignal,
+): Promise<AiRunResult> {
+  const total = plan.attempts.length;
+  let finalExit = -1;
+  // Track the last attempt's provider + captured output so a total failure can report the AI
+  // CLI's health to the admin pool (ADR-0223).
+  let lastCmd = plan.attempts[0]?.cmd ?? "claude";
+  let lastCaptured = "";
+  for (let i = 0; i < total; i++) {
+    // Stopped — before this attempt started, or while the previous one ran: no failover.
+    if (signal?.aborted) return cancelledResult();
+    const attempt = plan.attempts[i]!;
+    lastCmd = attempt.cmd;
+    if (total > 1) handlers.onAttemptStart(attempt.label, i, total, attempt.cmd);
+    // Parse claude stream-json / codex `exec --json` → readable text for the transcript +
+    // real usage; any non-event line passes through verbatim. Per-attempt, since a
+    // mixed plan can switch provider between attempts (ADR-0182). `captured` = display text
+    // (used for auth-failure detection + the estimate fallback).
+    const parser = createAiStreamParser(attempt.cmd);
+    let captured = "";
+    const emit = (raw: string): void => {
+      const text = parser.push(raw);
+      if (text) {
+        captured += text;
+        handlers.onChunk(text);
+      }
+    };
+    // Managed API key (ADR-0378): when this profile carries an `apiKey` descriptor, resolve it
+    // (inline / SSM / Secrets Manager) and export ANTHROPIC_API_KEY for this spawn only — so claude
+    // bills via the key. A failed remote fetch resolves to null ⇒ the attempt runs without it (OAuth)
+    // and, if that also fails, failover moves on.
+    const resolvedKey = attempt.apiKey ? await resolveApiKey(attempt.apiKey) : null;
+    const attemptEnv = resolvedKey ? { ...attempt.env, ANTHROPIC_API_KEY: resolvedKey } : attempt.env;
+    finalExit = await runAttempt(commandId, attempt.cmd, attempt.args, attempt.stdin, cwd, attemptEnv, emit, timeoutMs, signal);
+    const tail = parser.flush();
+    if (tail) {
+      captured += tail;
+      handlers.onChunk(tail);
+    }
+    // Killed by a stop: not an AI CLI failure — no failover, no tool-health report.
+    if (signal?.aborted) return cancelledResult();
+    lastCaptured = captured;
+    // A clean exit is NOT enough (ADR-0249): claude returns exit 0 even when out of credits /
+    // rate-limited / not logged in, marking the terminal `result` with `is_error:true`. Treat such
+    // a run as a FAILED attempt so failover moves to the next profile instead of handing the
+    // "out of usage credits" text back as the answer.
+    const apiErr = parser.apiError();
+    if (finalExit === 0 && !apiErr.isError) {
+      const usage = parser.usage();
+      if (usage.tokens === 0) usage.tokens = estimateTokens(captured);
+      reportToolResult(attempt.cmd, true); // AI CLI ran ok (ADR-0223)
+      return {
+        exitCode: 0,
+        workedDir: attempt.dir,
+        workedKey: attempt.key,
+        workedCmd: attempt.cmd,
+        usage,
+        sessionId: parser.sessionId(),
+      };
+    }
+    // Reflect an exit-0-but-errored run as a non-zero exit so the last-attempt return (and the web)
+    // surfaces the streamed error text instead of treating it as success (ADR-0249).
+    if (finalExit === 0 && apiErr.isError) finalExit = apiErr.status && apiErr.status > 0 ? apiErr.status : 1;
+    // Fail over on ANY failed attempt: timeout / auth / session-limit / out-of-credits /
+    // other — classify only for an accurate log. Stop once the last profile is reached (all exhausted).
+    // A wall-clock timeout is classified by its EXIT CODE (124), NOT by the text
+    // heuristics: `captured` is the AI's own generated answer (a full project spec on a compose), and
+    // those regexes are loose enough that the spec's own content — e.g. "authentication credentials"
+    // or "OAuth … revoked" — would false-match `isAuthFailure` and mislabel a timeout as
+    // "failed to authenticate". Exit 124 is unambiguous, so it wins.
+    const reason: AttemptFailReason =
+      finalExit === TIMEOUT_EXIT
+        ? "timeout"
+        : isAuthFailure(captured)
+          ? "auth"
+          : apiErr.status === 429 || isOutOfCredits(captured)
+            ? "credits"
+            : isSessionLimit(captured)
+              ? "limit"
+              : "other";
+    if (i === total - 1) break;
+    handlers.onAttemptFail(attempt.label, reason);
+  }
+  // Every attempt failed — report the AI CLI's health with a short reason (ADR-0223).
+  reportToolResult(lastCmd, false, summarizeAiFailure(lastCaptured, finalExit));
+  return { exitCode: finalExit, workedDir: null, workedKey: null, workedCmd: null, usage: { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, sessionId: "" };
+}
+
+/** The result of a stopped run: exit 130, nothing worked, no usage. @adr 0362 */
+function cancelledResult(): AiRunResult {
+  return {
+    exitCode: COMMAND_CANCELLED_EXIT_CODE,
+    workedDir: null,
+    workedKey: null,
+    workedCmd: null,
+    usage: { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+    sessionId: "",
+    cancelled: true,
+  };
+}
+
+/** A short, human reason for a failed AI run — reused by the tool-health report. @adr 0223 */
+function summarizeAiFailure(captured: string, exitCode: number): string {
+  if (isAuthFailure(captured)) return "Not logged in";
+  if (isOutOfCredits(captured)) return "Out of usage credits";
+  if (isSessionLimit(captured)) return "Usage limit reached";
+  const firstLine = captured.split("\n").map((l) => l.trim()).find((l) => l.length > 0);
+  return firstLine || `exited ${exitCode}`;
+}

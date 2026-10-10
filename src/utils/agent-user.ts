@@ -1,5 +1,5 @@
 /**
- * Agent uid separation (ADR-0430 phase 1). When the image entrypoint has dropped the cli to `node` with
+ * Agent uid separation. When the image entrypoint has dropped the cli to `node` with
  * only `SETUID`/`SETGID` and exported `FOURPM_AGENT_USER` (+ `FOURPM_AGENT_GID`, `FOURPM_AGENT_HOME`), every
  * process that executes in or on a project — AI CLIs, raw Console commands, git/scaffold/build steps — is
  * started as that user through `setpriv` with every capability cleared and `no_new_privs`, so a hook, a
@@ -7,6 +7,7 @@
  *
  * Off (no `FOURPM_AGENT_USER`) ⇒ every helper is a no-op and processes run exactly as before — a host
  * worker, a Kubernetes "restricted" pod, or an image that has not enabled it.
+ * @adr 0430 phase 1
  */
 import { execFileSync } from "node:child_process";
 import {
@@ -155,7 +156,7 @@ export function readOnlyForAgent(path: string, mode: number): void {
 }
 
 /**
- * The cli-owned folder whose contents the agent may use but never change (ADR-0430 phase 2):
+ * The cli-owned folder whose contents the agent may use but never change:
  * `~/.4pm/run/<profile>/` — the git-token socket, the gh/glab shims, the deploy-key copy. Created
  * `2750` (group = shared) under a `0710` `~/.4pm/run`; returns its path, or null when separation is off.
  */
@@ -175,7 +176,7 @@ function within(p: string, base: string): boolean {
 }
 
 /**
- * Why `dir` must never become an agent-writable credential dir, or null when it may (ADR-0430 phase 3):
+ * Why `dir` must never become an agent-writable credential dir, or null when it may:
  * it would contain the cli's home / `~/.4pm` (the agent could rename the cli's identity), or it sits
  * inside the cli's own secrets (profiles, run dir, gh/glab config, ssh).
  */
@@ -275,7 +276,7 @@ function shareExistingContent(dir: string): boolean {
 }
 
 /**
- * Prepare an AI credential dir (`CLAUDE_CONFIG_DIR` / `CODEX_HOME` — ADR-0430 phase 3) for a provider CLI
+ * Prepare an AI credential dir (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`) for a provider CLI
  * running as the agent: create it, share it (`2770`, setgid ⇒ the agent's files keep the shared group),
  * make its ancestors passable and — once per process — hand any file the cli created there before
  * separation to the agent (the agent copies it over itself, so it owns it and the provider can rewrite /
@@ -326,7 +327,7 @@ export function prepareAgentCredentialDir(dirPath: string): void {
 }
 
 /**
- * Read a file the agent owns (a provider's `0600` `.credentials.json` / `.claude.json` — ADR-0430 phase 3).
+ * Read a file the agent owns (a provider's `0600` `.credentials.json` / `.claude.json`).
  * While separation is on it is read BY the agent (`cat` under `setpriv`), never opened by the cli itself,
  * so a symlink the agent planted there can only point the cli at what the agent could read anyway. Off ⇒ a
  * plain read. Throws when unreadable (like `readFileSync`).

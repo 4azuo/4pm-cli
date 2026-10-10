@@ -1,10 +1,11 @@
 /**
- * `4pm auto-run` (ADR-0319) — run ONE autonomous cycle through the already-running `4pm start` daemon,
- * over its per-profile control socket (ADR-0192 §2). Since ADR-0392 the daemon's own scheduler ticks the
- * loop, so this is a manual "run one now" trigger; the cycle rides the daemon's live WS session: profile/quota failover
- * (ADR-0182), token metering (ADR-0072), folder-scope (ADR-0181) and the AI-run timeout (ADR-0243).
+ * `4pm auto-run` — run ONE autonomous cycle through the already-running `4pm start` daemon,
+ * over its per-profile control socket. Since ADR-0392 the daemon's own scheduler ticks the
+ * loop, so this is a manual "run one now" trigger; the cycle rides the daemon's live WS session: profile/quota failover,
+ * token metering, folder-scope and the AI-run timeout.
  * Streams the daemon's transcript to stdout (the tick log captures it) and exits 0 on completion,
  * non-zero when the daemon isn't running or the cycle failed to dispatch.
+ * @adr 0319 @adr 0192 §2 @adr 0182 @adr 0072 @adr 0181 @adr 0243
  */
 import { connect } from "node:net";
 import { join } from "node:path";
@@ -14,8 +15,8 @@ import {
   createFrameParser,
   encodeFrame,
   type ControlServerFrame,
-} from "../core/control-protocol";
-import { readControlToken } from "../core/control-token";
+} from "../core/control/control-protocol";
+import { readControlToken } from "../core/control/control-token";
 import { initI18n, t } from "../i18n";
 
 /** Hard ceiling so a stuck cycle can't hang the cron tick forever (the daemon's own ADR-0243 timeout

@@ -1,12 +1,13 @@
 /**
- * runTui — mount the Ink TUI for `4pm start` (ADR-0057): clear the screen (like the
+ * runTui — mount the Ink TUI for `4pm start`: clear the screen (like the
  * Claude Code CLI on start), render the App, and resolve when the operator quits
  * (Ctrl+C ⇒ useApp().exit). The caller runs the WsClient concurrently, feeding the
  * shared SessionBus.
+ * @adr 0057
  */
 import React from "react";
 import { render } from "ink";
-import type { SessionBus } from "../core/session-bus";
+import type { SessionBus } from "../core/session/session-bus";
 import type { SessionInfo } from "./session-info";
 import { App } from "./app";
 

@@ -1,9 +1,10 @@
 /**
- * CliLogger — structured JSONL logging per profile (ADR-0054), mirroring the server's
- * FileLoggerService (ADR-0004): writes ~/.4pm/profiles/<name>/logs/cli-YYYY-MM-DD.jsonl,
+ * CliLogger — structured JSONL logging per profile, mirroring the server's
+ * FileLoggerService: writes ~/.4pm/profiles/<name>/logs/cli-YYYY-MM-DD.jsonl,
  * level-filtered, daily-rolled with retention. Appends are serialized so lines don't
  * interleave; file errors are swallowed (warn to console) so logging never breaks the
  * cli. NEVER pass secrets (ws_token/hashcode/keys) as fields.
+ * @adr 0054 @adr 0004
  */
 import { appendFile, mkdir, readdir, unlink } from "node:fs/promises";
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -51,7 +52,7 @@ class CliLogger {
     void this.cleanupOldLogs();
   }
 
-  /** Update the retention window at runtime + prune now (ADR-0115). `days<=0` keeps current. */
+  /** Update the retention window at runtime + prune now. `days<=0` keeps current. @adr 0115 */
   setRetentionDays(days: number): void {
     if (days > 0) {
       this.retentionDays = days;
@@ -112,7 +113,7 @@ class CliLogger {
   }
 }
 
-/** Process-wide cli logger — call configure() once at startup (ADR-0054). */
+/** Process-wide cli logger — call configure() once at startup. */
 export const logger = new CliLogger();
 
 /**
@@ -133,21 +134,22 @@ export function readRecentLogLines(dir: string, limit: number): string[] {
   }
 }
 
-/** A snapshot of the cli's logs for server upload (ADR-0122). */
+/** A snapshot of the cli's logs for server upload. @adr 0122 */
 export interface LogUpload {
   fileName: string;
   content: string;
   totalBytes: number;
 }
 
-/** Cap the uploaded content (tail) well under the server's 1 MiB WS frame limit (ADR-0122). */
+/** Cap the uploaded content (tail) well under the server's 1 MiB WS frame limit. @adr 0122 */
 const LOG_UPLOAD_CONTENT_MAX = 512 * 1024;
 
 /**
  * Read the newest cli-*.jsonl file (tail, capped for the WS frame) plus the total byte size of
- * ALL cli log files under `dir` (ADR-0122) — for the periodic upload to the server that keeps the
+ * ALL cli log files under `dir` — for the periodic upload to the server that keeps the
  * machine user's `log` storage footprint. `totalBytes` is always the true full footprint even
  * when the stored `content` is truncated. Returns null when there is no log file / on any error.
+ * @adr 0122
  */
 export function readLogUpload(dir: string): LogUpload | null {
   try {

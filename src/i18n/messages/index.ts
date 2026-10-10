@@ -1,8 +1,9 @@
 /**
- * CLI message catalogs (ADR-0276) — one JSON file per locale (`<locale>.json`), flat dotted
+ * CLI message catalogs — one JSON file per locale (`<locale>.json`), flat dotted
  * keys with `{name}` interpolation tokens, kept as JSON for easy scanning/editing. English is
  * the source of truth + fallback, and its keys define the valid key set. tsup inlines these
  * JSON files into the single bundle, so no runtime file reads are needed.
+ * @adr 0276
  */
 import { Locale } from "@4pm/constants";
 import en from "./en.json";

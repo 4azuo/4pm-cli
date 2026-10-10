@@ -1,9 +1,10 @@
 /**
- * CHECKLIST_AUTHOR payloads (ADR-0376) — the server's org-level "AI author checklist items" request
+ * CHECKLIST_AUTHOR payloads — the server's org-level "AI author checklist items" request
  * and the cli's reply. Request–reply over the `checklist.author` channel: the server picks an idle cli
  * of the org AI pool (ADR-0284 pool designated in Settings) and forwards a ready-built prompt; the
  * worker runs `claude` one-shot (text-in → text-out, no tools — like the support-answer runner) and
  * replies with the raw model output, which the web parses into the draft items. No project is involved.
+ * @adr 0376
  */
 
 /** Server → cli: the ready-built authoring prompt (the web composes it; the cli only runs it). */

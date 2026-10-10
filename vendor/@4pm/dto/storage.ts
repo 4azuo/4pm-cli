@@ -1,7 +1,8 @@
 /**
- * Hosted-storage kinds + self-managed storage DTOs (ADR-0365): the storage-kind catalogue shared by the
+ * Hosted-storage kinds + self-managed storage DTOs: the storage-kind catalogue shared by the
  * meter, manual clear, storage alerts and auto clear; the org settings shapes for alerts / auto clear;
- * the clear request/response bodies; and the plan-caps counters (org-0010).
+ * the clear request/response bodies; and the plan-caps counters.
+ * @api org-0010 @adr 0365
  */
 import { z } from "zod";
 
@@ -253,7 +254,7 @@ export interface CapCounter {
   limit: number | null;
 }
 
-/** Data GET /organizations/me/plan-caps (org-0010). */
+/** Data GET /organizations/me/plan-caps. */
 export interface PlanCapsResponse {
   memoItems: CapCounter;
   autonomousBooks: Record<AutonomousBook, CapCounter>;

@@ -1,7 +1,8 @@
 /**
  * Time-formatting helpers for the transcript. The cli stamps the AI-run start time on the
- * `aireq` marker (ADR-0249) using the org timezone carried by the ws_token (ADR-0132) — a rented
+ * `aireq` marker using the org timezone carried by the ws_token — a rented
  * worker follows its renter's org — so the TUI and the web Console render the same instant.
+ * @adr 0249 @adr 0132
  */
 
 /**

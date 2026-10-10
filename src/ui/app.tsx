@@ -1,15 +1,16 @@
 /**
- * App — the root Ink component of the `4pm start` TUI (ADR-0057). A full-window layout
+ * App — the root Ink component of the `4pm start` TUI. A full-window layout
  * redrawn in place (no <Static>, so no terminal scrollbar accumulates): the **header**
  * (top) carries the live connection status · AI CLI · active profile; the **body** is a
  * fixed-height transcript viewport (follows the tail; PageUp/PageDown to scroll back);
  * the command block is pinned to the bottom; the **footer** is only the hint. Subscribes
  * to the SessionBus and forwards the operator's input.
+ * @adr 0057
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
-import type { SessionBus, SessionStatus, TranscriptEntry } from "../core/session-bus";
-import { appendInputHistory, loadInputHistory } from "../core/input-history";
+import type { SessionBus, SessionStatus, TranscriptEntry } from "../core/session/session-bus";
+import { appendInputHistory, loadInputHistory } from "../core/profile/input-history";
 import { readProfileConfig, resolveIdleAutoClearMinutes } from "../config/profile";
 import type { SessionInfo } from "./session-info";
 import { Banner } from "./banner";
@@ -24,9 +25,10 @@ const CHROME_ROWS = 12;
 /** Cap entries kept in memory. */
 const ENTRY_CAP = 3000;
 /**
- * Coalesce streaming `result`-block updates to ~15fps (ADR-0177). A chatty AI run emits many
+ * Coalesce streaming `result`-block updates to ~15fps. A chatty AI run emits many
  * chunks/sec; re-rendering per chunk — with a full-height Ink frame — repaints the whole screen
  * each time. Batching to one re-render per ~66ms removes the flicker at no readable cost.
+ * @adr 0177
  */
 const UPDATE_FLUSH_MS = 66;
 
@@ -197,7 +199,7 @@ export function App({
   // Highest fold number on screen — `/expand`/`/collapse` with no arg target it (ADR-0108).
   const maxBlock = useMemo(() => lines.reduce((m, l) => Math.max(m, l.blockIndex ?? 0), 0), [lines]);
 
-  /** Toggle a fold's expansion (ADR-0108); `n` defaults to the newest fold. */
+  /** Toggle a fold's expansion; `n` defaults to the newest fold. @adr 0108 */
   const expandFold = (n?: number): void => {
     const target = n ?? maxBlock;
     if (target < 1 || target > maxBlock) return;
@@ -209,7 +211,7 @@ export function App({
     });
   };
 
-  /** Collapse a fold (ADR-0108); `n` defaults to the newest fold. */
+  /** Collapse a fold; `n` defaults to the newest fold. @adr 0108 */
   const collapseFold = (n?: number): void => {
     const target = n ?? maxBlock;
     setExpanded((prev) => {

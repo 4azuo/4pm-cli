@@ -11,6 +11,8 @@ function isLocalHost(hostname: string): boolean {
   return (
     hostname === "localhost" ||
     hostname === "127.0.0.1" ||
+    // WHATWG URL keeps the brackets on an IPv6 host (`new URL("http://[::1]").hostname === "[::1]"`).
+    hostname === "[::1]" ||
     hostname === "::1" ||
     hostname.endsWith(".localhost")
   );

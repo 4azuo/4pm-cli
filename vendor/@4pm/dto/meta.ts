@@ -1,13 +1,13 @@
 /**
- * DTO for the meta domain (21-api/meta-0001 — cli-version, ADR-0015) and the admin cli version policy
- * (admin-0132..0136, ADR-0363).
+ * DTO for the meta domain (21-api/meta-0001 — cli-version) and the admin cli version policy.
+ * @api admin-0132…0136 @adr 0363 @adr 0015
  */
 import { z } from "zod";
 
-/** A cli version's effective support status (ADR-0363) — mirrors `@4pm/utils` CliVersionStatus. */
+/** A cli version's effective support status — mirrors `@4pm/utils` CliVersionStatus. */
 export type CliVersionStatus = "supported" | "warning" | "unsupported";
 
-/** Self-download tarball source for machines without npm (ADR-0015). */
+/** Self-download tarball source for machines without npm. */
 export interface CliDownloadSource {
   tarballUrl: string;
   /** sha256 hex of the tarball — the cli verifies it before replacing. */
@@ -16,14 +16,14 @@ export interface CliDownloadSource {
   signature?: string;
 }
 
-/** Data 200 GET /meta/cli-version (meta-0001). */
+/** Data 200 GET /meta/cli-version. @api meta-0001 */
 export interface CliVersionResponse {
   /** Latest version (semver). */
   latest: string;
-  /** Minimum supported version — admin-set, else env CLI_MIN_SUPPORTED_VERSION (ADR-0363). */
+  /** Minimum supported version — admin-set, else env CLI_MIN_SUPPORTED_VERSION. */
   minSupported: string;
   source: CliDownloadSource;
-  /** Only with `?version=` (ADR-0363): that version's effective status. */
+  /** Only with `?version=`: that version's effective status. */
   status?: CliVersionStatus;
   /** Only with `?version=`: ISO cut-off date of a `warning` version. */
   unsupportedFrom?: string | null;
@@ -31,25 +31,27 @@ export interface CliVersionResponse {
   note?: string | null;
 }
 
-/** Data 200 GET /meta/config (meta-0002). */
+/** Data 200 GET /meta/config. @api meta-0002 */
 export interface MetaConfigResponse {
   /** Public REST origin the cli pairs against — the value for `--server` /
    *  `FOURPM_SERVER` (dev: http://localhost:42001; prod: the deployment's API origin). */
   serverUrl: string;
 }
 
-/** Data 200 GET /meta/public-stats (meta-0003, ADR-0315) — public platform aggregates
- *  for the /login announcement modal (aggregates only, no per-account data). */
+/** Data 200 GET /meta/public-stats — public platform aggregates
+ *  for the /login announcement modal (aggregates only, no per-account data).
+ * @api meta-0003 @adr 0315
+ */
 export interface PublicStatsResponse {
   /** Registered organizations (excludes the platform-pool org). */
   orgCount: number;
   /** Users currently logged in — open web-presence sessions (`UserSession.endedAt IS NULL`). */
   onlineUsers: number;
-  /** Workers connected right now (live WS presence — ADR-0133). */
+  /** Workers connected right now (live WS presence). @adr 0133 */
   workersRunning: number;
 }
 
-/** One admin override of the cli version policy (ADR-0363). */
+/** One admin override of the cli version policy. */
 export interface CliVersionOverrideView {
   version: string;
   status: CliVersionStatus;
@@ -58,7 +60,7 @@ export interface CliVersionOverrideView {
   note: string;
 }
 
-/** One row of the admin CLI versions grid (admin-0132). */
+/** One row of the admin CLI versions grid. @api admin-0132 */
 export interface CliVersionRow {
   version: string;
   /** npm publish time; null for a version not on npm (e.g. a hand build a worker reports). */
@@ -93,7 +95,7 @@ export interface CliVersionPolicyResponse {
   disconnected?: number;
 }
 
-/** One worker running a given cli version (admin-0136). */
+/** One worker running a given cli version. @api admin-0136 */
 export interface CliVersionWorker {
   workerId: string;
   workerName: string;
@@ -104,7 +106,7 @@ export interface CliVersionWorker {
   links: { id: string; username: string; connected: boolean }[];
 }
 
-/** x.y.z with an optional -suffix / +build (ADR-0363). */
+/** x.y.z with an optional -suffix / +build. */
 const cliVersionString = z.string().trim().regex(/^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$/);
 
 /** Body admin-0133 PUT /admin/cli/versions/min. */

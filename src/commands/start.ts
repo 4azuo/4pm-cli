@@ -1,22 +1,23 @@
 /**
- * `4pm start` command — check version/auto-update (ADR-0015), then open a WS
+ * `4pm start` command — check version/auto-update, then open a WS
  * connection to the server and keep the session alive (heartbeat, reconnect,
  * receive dispatch). Requires an existing pairing (`.cre` present in the profile).
+ * @adr 0015
  */
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { readCredential } from "../core/credential";
-import { collectFingerprint } from "../core/fingerprint";
+import { readCredential } from "../core/profile/credential";
+import { collectFingerprint } from "../core/profile/fingerprint";
 import { fetchWhoami } from "../services/api";
 import { checkAndUpdate, reexecArgv } from "../core/update";
 import { WsClient } from "../core/ws-client";
-import { initCommandHistory } from "../core/command-history";
-import { initCommandOutput } from "../core/command-output-store";
+import { initCommandHistory } from "../core/exec/command-history";
+import { initCommandOutput } from "../core/exec/command-output-store";
 import {
   acquireInstanceLock,
   lockHolder,
   releaseInstanceLock,
-} from "../core/instance-lock";
+} from "../core/profile/instance-lock";
 import {
   backfillProfileConfig,
   ensureProfileConfig,
@@ -26,25 +27,26 @@ import {
 } from "../config/profile";
 import { logger, type LogLevel } from "../common/logger/logger";
 import { initI18n, t } from "../i18n";
-import { SessionBus } from "../core/session-bus";
-import { startControlServer } from "../core/control-server";
-import { revokeAll } from "../core/git-auth";
-import { startIdleAutoClear } from "../core/idle-auto-clear";
-import { activeProfileLabel, applyAiAccountMask } from "../core/ai-account-mask";
+import { SessionBus } from "../core/session/session-bus";
+import { startControlServer } from "../core/control/control-server";
+import { revokeAll } from "../core/git/git-auth";
+import { startIdleAutoClear } from "../core/session/idle-auto-clear";
+import { activeProfileLabel, applyAiAccountMask } from "../core/ai/ai-account-mask";
 import { attachConsoleSink } from "../ui/console-sink";
 import { runTui } from "../ui/run-tui";
 import type { SessionInfo } from "../ui/session-info";
 import { CLI_VERSION } from "../version";
-import { addToolDirToPath, ensureToolchainAtBoot, setToolchainReporter } from "../core/toolchain";
-import { startGitTokenServer } from "../core/git-token-server";
-import { syncAgentSshKey } from "../core/git-ssh-key";
+import { addToolDirToPath, ensureToolchainAtBoot, setToolchainReporter } from "../core/worker/toolchain";
+import { startGitTokenServer } from "../core/git/git-token-server";
+import { syncAgentSshKey } from "../core/git/git-ssh-key";
 import { prepareCredentialDir } from "../utils/ai-cred-mount";
-import { adoptMountedAiLogins } from "../core/ai-mount-profiles";
+import { adoptMountedAiLogins } from "../core/ai/ai-mount-profiles";
 import { allAiProfileDirs } from "../utils/ai-cli";
 
 /**
  * Resolve the log level: `--verbose` ⇒ debug (highest priority), else FOURPM_LOG_LEVEL,
- * else info (ADR-0054).
+ * else info.
+ * @adr 0054
  */
 function resolveLogLevel(): LogLevel {
   if (process.argv.includes("--verbose")) return "debug";
@@ -90,7 +92,7 @@ export async function runStart(
   // A host login mounted at ~/ai-creds/<provider> with no profile pointing at it becomes one (ADR-0433).
   adoptMountedAiLogins(profileDir);
 
-  // Auto-update before connecting (ADR-0015) — keeps profile/.cre intact
+  // Auto-update before connecting — keeps profile/.cre intact
   const config = readProfileConfig(profileDir);
   // Localize the cli's operator-facing messages per the worker config (ADR-0276);
   // absent `locale` falls back to FOURPM_LOCALE/LANG, then English.

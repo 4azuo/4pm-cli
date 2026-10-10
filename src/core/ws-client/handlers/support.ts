@@ -1,9 +1,10 @@
 /**
  * AI-compose channel handlers that spawn `claude` with the operator's configured profiles (working-
- * first + failover, ADR-0057): SUPPORT_ANSWER — a support agent answers a "how to use 4PM" question
- * from the shared docs/FAQ repo, isolated from any customer project (ADR-0170); KNOWLEDGE_COMPOSE —
- * distil the served project into a knowledge article, run in its working dir (ADR-0190). Both echo
+ * first + failover): SUPPORT_ANSWER — a support agent answers a "how to use 4PM" question
+ * from the shared docs/FAQ repo, isolated from any customer project; KNOWLEDGE_COMPOSE —
+ * distil the served project into a knowledge article, run in its working dir. Both echo
  * the Q/A into the transcript like a normal AI dispatch so the operator sees it.
+ * @adr 0170 @adr 0190 @adr 0057
  */
 import {
   WsChannels,
@@ -16,12 +17,12 @@ import {
   type WsEnvelope,
 } from "@4pm/ws";
 import { UsageMetric } from "@4pm/constants";
-import { runChecklistAuthor, runSupportAnswer } from "../../support-answer";
-import { runKnowledgeCompose } from "../../knowledge-compose";
-import { runFaqCompose } from "../../faq-compose";
-import { reportToolResult } from "../../tool-health";
-import { getWorkingProfile } from "../../ai-profile-state";
-import { aiProviderOf } from "../../ai-stream";
+import { runChecklistAuthor, runSupportAnswer } from "../../knowledge/support-answer";
+import { runKnowledgeCompose } from "../../knowledge/knowledge-compose";
+import { runFaqCompose } from "../../knowledge/faq-compose";
+import { reportToolResult } from "../../worker/tool-health";
+import { getWorkingProfile } from "../../ai/ai-profile-state";
+import { aiProviderOf } from "../../ai/ai-stream";
 import { resolveClaudeAuthMode, resolveClaudeProfiles } from "../../../utils/ai-cli";
 import { readProfileConfig } from "../../../config/profile";
 import { acquireRunSlot } from "../run-slot";
@@ -35,11 +36,11 @@ export function handleSupportChannels(
 ): boolean {
   switch (message.channel) {
     case WsChannels.SUPPORT_ANSWER: {
-      // Request/reply (ADR-0170): a support agent answers a "how to use 4PM" question by
+      // Request/reply: a support agent answers a "how to use 4PM" question by
       // reading the shared docs/FAQ repo. Isolated from any customer project (own cache dir).
       // Resolve the operator's configured claude profiles (working-first) so claude runs with a
       // signed-in account (CLAUDE_CONFIG_DIR) + its model and fails over on auth/limit — the same
-      // profile handling as the normal AI dispatch (ADR-0057), which a bare `claude` lacked.
+      // profile handling as the normal AI dispatch, which a bare `claude` lacked.
       const req = payload as unknown as SupportAnswerRequest;
       const supportConfig = readProfileConfig(ctx.profileDir);
       const supportCmd = supportConfig.aiCli || "claude";
@@ -77,9 +78,9 @@ export function handleSupportChannels(
     case WsChannels.KNOWLEDGE_COMPOSE: {
       // DEPRECATED (ADR-0362): the server now runs knowledge distill as a command-dispatch AI run and no
       // longer sends this; kept for one release so a newer cli still answers an older server.
-      // Request/reply (ADR-0190): AI-distil this project into a knowledge article, run in the
+      // Request/reply: AI-distil this project into a knowledge article, run in the
       // project's working dir so the model can read the code/docs. Same profile handling as the
-      // normal AI dispatch (ADR-0057). No physic root (idle cli) ⇒ error ⇒ server templates it.
+      // normal AI dispatch. No physic root (idle cli) ⇒ error ⇒ server templates it.
       const kreq = payload as unknown as KnowledgeComposeRequest;
       if (!ctx.physicRoot) {
         ctx.send(WsChannels.KNOWLEDGE_COMPOSE, { bodyMarkdown: "", error: "no project" }, message.id);
@@ -136,7 +137,7 @@ export function handleSupportChannels(
     case WsChannels.CHECKLIST_AUTHOR: {
       // Request/reply (ADR-0376): the org AI pool runs a one-shot "author checklist items" prompt
       // (built by the web) — text-in → text-out, no tools, no project. Same profile handling as the
-      // normal AI dispatch (ADR-0057). The web parses the proposed items from the returned output.
+      // normal AI dispatch. The web parses the proposed items from the returned output.
       const creq = payload as unknown as ChecklistAuthorRequest;
       const ccfg = readProfileConfig(ctx.profileDir);
       const ccmd = ccfg.aiCli || "claude";

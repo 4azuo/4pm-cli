@@ -1,14 +1,15 @@
 /**
- * Scaffold-template (`project-sample`) version + changelog — the single source of truth
- * (ADR-0262). The data lives in the sibling `project-template.json`; this file holds only its types
+ * Scaffold-template (`project-sample`) version + changelog — the single source of truth.
+ * The data lives in the sibling `project-template.json`; this file holds only its types
  * and exposes it as the typed `PROJECT_TEMPLATE`. The cli reads `PROJECT_TEMPLATE.version` (via its
  * vendored copy) to stamp a new project's `.4pm/.4pm.json`; `@4pm/server` serves this constant
- * (project-0054) so the web can compare a created project's version against the latest and drive the
+ * so the web can compare a created project's version against the latest and drive the
  * update flow.
  *
  * Bumping the template: in `project-template.json`, add a newest-first `changelog` entry and raise
  * `version` in the SAME commit that changes the `project-sample` files (submodule) — otherwise
  * created projects can't tell they are behind and the Analyze/Update prompts have nothing to diff.
+ * @api project-0054 @adr 0262
  */
 import templateData from "./project-template.json";
 
@@ -26,7 +27,7 @@ export interface ProjectTemplateChangelogEntry {
   files?: string[];
   /**
    * Whether a project may defer this version's update ("Skip for now"). Default (absent/false) =
-   * mandatory: the Skip control only shows when EVERY pending version is `skippable` (ADR-0262).
+   * mandatory: the Skip control only shows when EVERY pending version is `skippable`.
    */
   skippable?: boolean;
 }
@@ -39,5 +40,5 @@ export interface ProjectTemplate {
   changelog: ProjectTemplateChangelogEntry[];
 }
 
-/** The authoritative scaffold-template version + changelog (ADR-0262). */
+/** The authoritative scaffold-template version + changelog. */
 export const PROJECT_TEMPLATE: ProjectTemplate = templateData;

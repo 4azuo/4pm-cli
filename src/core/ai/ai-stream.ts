@@ -1,0 +1,219 @@
+/**
+ * AI stream parser — turns a claude `--output-format stream-json --verbose`
+ * OR a codex `exec --json` byte stream into human-readable display text while capturing
+ * the **real** token usage (claude: the final `result` event; codex: `turn.completed`).
+ * Degrades gracefully: any line that is not a recognized JSON event is passed through
+ * verbatim, so a plain-text CLI (older claude / codex / a shell) still renders exactly as
+ * before and can never be swallowed.
+ * @adr 0072
+ */
+
+/** Token usage captured from a run (breakdown + total + optional cost). */
+export interface AiUsage {
+  tokens: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheCreation: number;
+  costUsd?: number;
+  /**
+   * claude only: the conversation size after the run — the LAST assistant message's
+   * input + cache read + cache creation + output (what a `--resume` would re-send). Bounds resume;
+   * the `result` totals can't, as they sum every tool turn of the run.
+   * @adr 0339
+   */
+  contextTokens?: number;
+}
+
+/** A stateful, chunk-fed parser for one AI run. */
+export interface AiStreamParser {
+  /** Feed a raw stdout chunk; returns the display text to show (may be empty). */
+  push(raw: string): string;
+  /** Emit any buffered trailing text (call once at end). */
+  flush(): string;
+  /** The usage captured so far (from the `result` event; zeros until seen). */
+  usage(): AiUsage;
+  /** The claude session id seen in the stream (ADR-0245 native resume); "" when none/non-claude. */
+  sessionId(): string;
+  /**
+   * Whether the run reported an API error in its terminal `result` event: claude
+   * returns **exit 0** even when it is out of credits / rate-limited / not logged in, marking the
+   * `result` with `is_error:true` (+ an `api_error_status` like 429). This lets the failover treat
+   * such a run as a FAILED attempt (⇒ try the next profile) instead of a success that hands the
+   * "out of usage credits" text back as the answer. `{ isError:false }` until a `result` says
+   * otherwise (and always for codex, which has no such field).
+   * @adr 0249
+   */
+  apiError(): { isError: boolean; status: number | null };
+}
+
+/** A claude stream-json OR codex `exec --json` event (only the fields we read). */
+interface StreamEvent {
+  type?: string;
+  /** claude: assistant message content parts. */
+  message?: {
+    content?: Array<{ type?: string; text?: string }>;
+    /** claude assistant message: that single API call's usage (context size). @adr 0339 */
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
+  };
+  usage?: {
+    // claude `result` usage
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+    // codex `turn.completed` usage
+    cached_input_tokens?: number;
+    reasoning_output_tokens?: number;
+  };
+  total_cost_usd?: number;
+  /** claude: the session id (carried on `system`/`result` events) — for native `--resume`. @adr 0245 */
+  session_id?: string;
+  /** claude `result`: true when the run ended in an error (out-of-credits/rate-limit/auth) — ADR-0249. */
+  is_error?: boolean;
+  /** claude `result`: HTTP-ish status of that error (e.g. 429 out-of-credits); null when none. */
+  api_error_status?: number | null;
+  /** codex: the completed item (agent_message carries the assistant text). */
+  item?: { type?: string; text?: string };
+}
+
+/** Extract the readable text of an assistant message event. */
+function assistantText(ev: StreamEvent): string {
+  const parts = ev.message?.content ?? [];
+  return parts
+    .filter((p) => p.type === "text" && typeof p.text === "string")
+    .map((p) => p.text)
+    .join("");
+}
+
+/**
+ * Create a parser. `cli` selects the format (claude stream-json / codex `exec --json`);
+ * anything else passes through unchanged (usage stays zero ⇒ the caller falls back to a
+ * length estimate).
+ */
+export function createAiStreamParser(cli: string): AiStreamParser {
+  const isClaude = cli.includes("claude");
+  const isCodex = cli.includes("codex");
+  const isJson = isClaude || isCodex;
+  let buffer = "";
+  const acc: AiUsage = { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+  let sessionId = "";
+  // API-error verdict from the terminal `result` event (ADR-0249); stays false until seen.
+  let apiError: { isError: boolean; status: number | null } = { isError: false, status: null };
+
+  /** Handle one claude stream-json event; returns the display text to show. */
+  function handleClaude(ev: StreamEvent): string {
+    // Any claude event (system/init, assistant, result) may carry the session id (ADR-0245).
+    if (typeof ev.session_id === "string" && ev.session_id) sessionId = ev.session_id;
+    if (ev.type === "result") {
+      // Capture the run's error verdict (ADR-0249): claude exits 0 even when out of credits /
+      // rate-limited / not logged in, flagging it here so the failover can move to the next profile.
+      if (ev.is_error === true) {
+        apiError = {
+          isError: true,
+          status: typeof ev.api_error_status === "number" ? ev.api_error_status : null,
+        };
+      }
+      if (ev.usage) {
+        acc.input = ev.usage.input_tokens ?? 0;
+        acc.output = ev.usage.output_tokens ?? 0;
+        acc.cacheRead = ev.usage.cache_read_input_tokens ?? 0;
+        acc.cacheCreation = ev.usage.cache_creation_input_tokens ?? 0;
+        // Raw total = all 4 disjoint components (ADR-0145/0340) — cache tokens included.
+        acc.tokens = acc.input + acc.output + acc.cacheRead + acc.cacheCreation;
+        if (typeof ev.total_cost_usd === "number") acc.costUsd = ev.total_cost_usd;
+      }
+      return ""; // final text already streamed via assistant events
+    }
+    if (ev.type === "assistant") {
+      // Track the latest call's context size for the bounded resume (ADR-0339).
+      const u = ev.message?.usage;
+      if (u) {
+        acc.contextTokens =
+          (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.output_tokens ?? 0);
+      }
+      const text = assistantText(ev);
+      return text ? `${text}\n` : "";
+    }
+    return ""; // known but non-visual event (system/user/tool) ⇒ show nothing
+  }
+
+  /** Handle one codex `exec --json` event; returns the display text to show. */
+  function handleCodex(ev: StreamEvent): string {
+    // `turn.completed` carries the run's token usage. codex's `input_tokens` already
+    // includes the cached portion (`cached_input_tokens`), so normalise to DISJOINT components
+    // (ADR-0340): input = uncached input, cacheRead = cached; the raw total is then the plain sum.
+    // reasoning tokens are billed as output, so they fold into `output`.
+    if (ev.type === "turn.completed" && ev.usage) {
+      const cached = ev.usage.cached_input_tokens ?? 0;
+      acc.input = Math.max(0, (ev.usage.input_tokens ?? 0) - cached);
+      acc.output = (ev.usage.output_tokens ?? 0) + (ev.usage.reasoning_output_tokens ?? 0);
+      acc.cacheRead = cached;
+      acc.cacheCreation = 0;
+      acc.tokens = acc.input + acc.output + acc.cacheRead;
+      return "";
+    }
+    // `item.completed` with an `agent_message` item carries the assistant's text.
+    if (ev.type === "item.completed" && ev.item?.type === "agent_message") {
+      const text = ev.item.text;
+      return text ? `${text}\n` : "";
+    }
+    return ""; // other codex events (thread/turn/item lifecycle) ⇒ show nothing
+  }
+
+  /** Try to consume one complete line as a JSON event; return display text or null. */
+  function handleLine(line: string): string | null {
+    const trimmed = line.trim();
+    if (!isJson || !trimmed.startsWith("{")) return null; // not an event ⇒ pass through
+    let ev: StreamEvent;
+    try {
+      ev = JSON.parse(trimmed) as StreamEvent;
+    } catch {
+      return null; // not JSON ⇒ pass through verbatim
+    }
+    if (typeof ev.type !== "string") return null;
+    return isCodex ? handleCodex(ev) : handleClaude(ev);
+  }
+
+  return {
+    push(raw: string): string {
+      buffer += raw;
+      let out = "";
+      let nl: number;
+      while ((nl = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 1);
+        const handled = handleLine(line);
+        out += handled === null ? `${line}\n` : handled;
+      }
+      return out;
+    },
+    flush(): string {
+      if (!buffer) return "";
+      const line = buffer;
+      buffer = "";
+      const handled = handleLine(line);
+      return handled === null ? line : handled;
+    },
+    usage: () => ({ ...acc }),
+    sessionId: () => sessionId,
+    apiError: () => ({ ...apiError }),
+  };
+}
+
+/** The AI provider a spawned command belongs to — picks the server's quota weights. @adr 0340 */
+export function aiProviderOf(cmd: string): "claude" | "codex" | "antigravity" {
+  if (cmd.includes("codex")) return "codex";
+  if (cmd.includes("antigravity")) return "antigravity";
+  return "claude";
+}
+
+/** Estimate tokens from output length (~4 chars/token) — fallback when usage is absent. */
+export function estimateTokens(text: string): number {
+  return Math.max(1, Math.ceil(text.length / 4));
+}

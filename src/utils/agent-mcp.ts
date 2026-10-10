@@ -1,10 +1,11 @@
 /**
- * agent-mcp (ADR-0427) — the MCP server allowlist on the worker. Holds the serving project's approved
+ * agent-mcp — the MCP server allowlist on the worker. Holds the serving project's approved
  * MCP servers (from `ws_token.mcpServers` / `project.tokens`), writes them to a generated config file in
  * the profile directory (outside the project folder), and builds the claude args: **every** claude spawn
  * gets `--strict-mcp-config` (repo `.mcp.json`, user-scope `~/.claude.json` and
  * `enableAllProjectMcpServers` are ignored); only full-agent project runs add `--mcp-config <file>`.
  * Also parses + hashes `.mcp.json` files for the web's repo scan. Claude only — other AI CLIs get no args.
+ * @adr 0427
  */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";

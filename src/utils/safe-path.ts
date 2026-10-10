@@ -1,5 +1,5 @@
 /**
- * Symlink-safe access to files under a project root (ADR-0430 phase 0). A lexical `resolve` +
+ * Symlink-safe access to files under a project root. A lexical `resolve` +
  * `startsWith` check is not enough: a symlink committed to the repo (`leak -> ../credential.cre`) or an
  * intermediate symlinked folder would make a read return — or a write overwrite — a file outside the
  * project (the worker's `.cre`, `config.json`…). Every project path the cli reads or writes goes through
@@ -11,6 +11,7 @@
  *   opened with `O_NOFOLLOW`;
  * - **entry** — delete / move / rename act on the entry itself (a link, not its target), so only its
  *   parent folder has to be inside the root.
+ * @adr 0430 phase 0
  */
 import { constants, existsSync, lstatSync, mkdirSync, openSync, closeSync, realpathSync, writeSync } from "node:fs";
 import { lstat, mkdir, open, readFile, realpath } from "node:fs/promises";
@@ -69,7 +70,7 @@ export function lexicalInRoot(root: string | null, rel: string): string | null {
 }
 
 /**
- * Resolve a project path for **reading** (ADR-0430): lexically inside the root AND its real path inside
+ * Resolve a project path for **reading**: lexically inside the root AND its real path inside
  * the root's real path. Returns the real path (read through it — no symlink left to swap), or the lexical
  * path when the target does not exist (the caller's read then fails with ENOENT). Null when it escapes.
  */
@@ -88,7 +89,7 @@ export function resolveForRead(root: string | null, rel: string): string | null 
 }
 
 /**
- * Resolve a project path for **writing** (ADR-0430): lexically inside the root, the nearest existing
+ * Resolve a project path for **writing**: lexically inside the root, the nearest existing
  * ancestor's real path inside the root, and the target not a symlink. Returns the path to write (under the
  * parent's real path). Null when it escapes or the target is a symlink.
  */

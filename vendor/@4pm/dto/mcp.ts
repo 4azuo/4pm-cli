@@ -1,7 +1,8 @@
 /**
- * MCP server allowlist DTOs (ADR-0427) — the approved, hash-pinned MCP servers of a project
+ * MCP server allowlist DTOs — the approved, hash-pinned MCP servers of a project
  * (`project.settings.mcp`), the definition schema mirroring a `.mcp.json` entry, the canonical form the
  * server and the cli hash (sha256, computed by each side with its own crypto), and the repo-scan shapes.
+ * @adr 0427
  */
 import { z } from "zod";
 
@@ -73,14 +74,14 @@ export const putMcpServersRequestSchema = z.object({
 });
 export type PutMcpServersRequest = z.infer<typeof putMcpServersRequestSchema>;
 
-/** One server found in a scanned `.mcp.json` (machine-0075). */
+/** One server found in a scanned `.mcp.json`. @api machine-0075 */
 export interface McpScanServer {
   name: string;
   definition: McpServerDefinition;
   hash: string;
 }
 
-/** One scanned `.mcp.json` file (machine-0075); `error` set when it could not be parsed. */
+/** One scanned `.mcp.json` file; `error` set when it could not be parsed. @api machine-0075 */
 export interface McpScanFile {
   path: string;
   servers: McpScanServer[];

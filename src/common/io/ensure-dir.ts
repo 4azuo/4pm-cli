@@ -1,8 +1,9 @@
 /**
  * ensureDir — mkdir -p with a friendly, actionable error when the mounted home is not
- * writable (ADR-0192). The cli runs as the unprivileged "node" user (uid 1000); a reused
+ * writable. The cli runs as the unprivileged "node" user (uid 1000); a reused
  * root-owned Docker volume or a host bind-mount shadows the image's node-owned home, so a
  * raw `EACCES: mkdir` is opaque. We rethrow with the one-time chown fix instead.
+ * @adr 0192
  */
 import { chmodSync, mkdirSync } from "node:fs";
 

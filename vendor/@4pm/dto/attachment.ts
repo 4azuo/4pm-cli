@@ -1,9 +1,10 @@
 /**
- * Unified composer attachments (ADR-0388) — the ONE limit + MIME set every attach surface shares
+ * Unified composer attachments — the ONE limit + MIME set every attach surface shares
  * (memo, AI-Todo, Console, Help, Research, Support, 4rum post/comment, Messenger). Clients validate
  * against it before staging; every upload endpoint enforces the same values server-side. The older
  * per-surface constants (`COMMAND_IMAGE_*`, `PROJECT_IMAGE_*`, `RESEARCH_ATTACHMENTS_*`, …) are aliases
  * of these.
+ * @adr 0388
  */
 
 /** Max bytes of one attachment (image or file). */

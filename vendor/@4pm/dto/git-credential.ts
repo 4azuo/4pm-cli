@@ -1,7 +1,8 @@
 /**
- * DTOs + pure helpers for a project's GitHub-App git-auth credential (ADR-0356): the credential status
+ * DTOs + pure helpers for a project's GitHub-App git-auth credential: the credential status
  * (never the private key), the set/test requests, and the repo-URL helpers shared by web + server
  * (https check, ssh→https rewrite, host/owner/name parsing, API base + host kind from a host).
+ * @adr 0356
  */
 import { z } from "zod";
 
@@ -34,7 +35,7 @@ export interface GitCredentialRepo {
   checkedAt: string | null;
 }
 
-/** Data — GET /projects/:id/git-credential (project-0070); `null` when none is saved. */
+/** Data — GET /projects/:id/git-credential; `null` when none is saved. @api project-0070 */
 export interface GitCredentialResponse {
   provider: "github-app";
   enterprise: boolean;
@@ -68,13 +69,13 @@ export const gitCredentialRepoInputSchema = z.object({
 });
 export type GitCredentialRepoInput = z.infer<typeof gitCredentialRepoInputSchema>;
 
-/** Body — POST /projects/:id/git-credential/test (project-0073); `repos` optional (wizard). */
+/** Body — POST /projects/:id/git-credential/test; `repos` optional (wizard). @api project-0073 */
 export const testGitCredentialRequestSchema = z.object({
   repos: z.array(gitCredentialRepoInputSchema).max(50).optional(),
 });
 export type TestGitCredentialRequest = z.infer<typeof testGitCredentialRequestSchema>;
 
-/** Body — PUT /projects/:id/git-credential (project-0071). */
+/** Body — PUT /projects/:id/git-credential. @api project-0071 */
 export const putGitCredentialRequestSchema = z
   .object({
     appId: z.string().trim().regex(/^\d{1,20}$/, "App ID must be numeric"),
@@ -101,16 +102,17 @@ export type PutGitCredentialRequest = z.infer<typeof putGitCredentialRequestSche
 // ── GitLab group/project access token (ADR-0382) / service account (ADR-0435) ─────────────────────
 
 /**
- * What the stored GitLab token is: a group/project access token served as-is (ADR-0382), or a service
- * account's PAT the server creates per-job project access tokens with (ADR-0435).
+ * What the stored GitLab token is: a group/project access token served as-is, or a service
+ * account's PAT the server creates per-job project access tokens with.
+ * @adr 0382 @adr 0435
  */
 export const GITLAB_CREDENTIAL_KINDS = ["group-token", "service-account"] as const;
 export type GitLabCredentialKind = (typeof GITLAB_CREDENTIAL_KINDS)[number];
 
-/** Data — GET /projects/:id/gitlab-credential (project-0078); `null` when none is saved. */
+/** Data — GET /projects/:id/gitlab-credential; `null` when none is saved. @api project-0078 */
 export interface GitLabCredentialResponse {
   provider: "gitlab-token";
-  /** `group-token` (served as-is — ADR-0382) or `service-account` (per-job tokens — ADR-0435). */
+  /** `group-token` (served as-is) or `service-account` (per-job tokens). @adr 0382 @adr 0435 */
   kind: GitLabCredentialKind;
   host: string;
   group: string;
@@ -124,7 +126,7 @@ export interface GitLabCredentialResponse {
   updatedBy: string | null;
 }
 
-/** Body — PUT /projects/:id/gitlab-credential (project-0079). */
+/** Body — PUT /projects/:id/gitlab-credential. @api project-0079 */
 export const putGitLabCredentialRequestSchema = z.object({
   /** Default `group-token`; changing the kind requires a new token. */
   kind: z.enum(GITLAB_CREDENTIAL_KINDS).optional(),
@@ -137,28 +139,30 @@ export const putGitLabCredentialRequestSchema = z.object({
 });
 export type PutGitLabCredentialRequest = z.infer<typeof putGitLabCredentialRequestSchema>;
 
-/** One step of a GitLab connection test (project-0081). */
+/** One step of a GitLab connection test. @api project-0081 */
 export interface GitLabCredentialTestStep {
-  /** `api` — the primary repo read through the REST API (`read_api`, ADR-0398); `mint` — a service
-   *  account created + revoked a project access token on the primary repo (ADR-0435). */
+  /** `api` — the primary repo read through the REST API (`read_api`); `mint` — a service
+   * account created + revoked a project access token on the primary repo.
+   * @adr 0435 @adr 0398
+   */
   step: "connect" | "authenticate" | "scope" | "api" | "mint";
   ok: boolean;
   message: string | null;
 }
 
-/** Data — POST /projects/:id/gitlab-credential/test (project-0081). */
+/** Data — POST /projects/:id/gitlab-credential/test. @api project-0081 */
 export interface GitLabCredentialTestResponse {
   steps: GitLabCredentialTestStep[];
 }
 
-/** One step of a connection test (project-0073). */
+/** One step of a connection test. @api project-0073 */
 export interface GitCredentialTestStep {
   step: "connect" | "authenticate" | "installations" | "permissions";
   ok: boolean;
   message: string | null;
 }
 
-/** Data — POST /projects/:id/git-credential/test (project-0073). */
+/** Data — POST /projects/:id/git-credential/test. @api project-0073 */
 export interface GitCredentialTestResponse {
   steps: GitCredentialTestStep[];
   repos: GitCredentialRepo[];
@@ -217,7 +221,7 @@ export function githubApiBase(host: string, override?: string | null): string {
   return `https://${h}/api/v3`;
 }
 
-/** Body — POST /projects/:id/scaffold/publish (project-0074, ADR-0368): optionally pick the worker. */
+/** Body — POST /projects/:id/scaffold/publish: optionally pick the worker. @api project-0074 @adr 0368 */
 export const scaffoldPublishRequestSchema = z.object({
   machineLinkId: z.string().guid().optional(),
 });

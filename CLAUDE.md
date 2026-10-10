@@ -5,11 +5,22 @@ conventions: [`../CLAUDE.md`](../CLAUDE.md). Directory tree: [`README.md`](../..
 
 ## Code organization
 
-- **Orchestration logic** in `src/core/`; **subcommands** in `src/commands/`.
+- **Orchestration logic** in `src/core/`, grouped by concern (file names keep their prefix so a
+  grep for e.g. `autonomous-config` still finds them):
+  `ai/` (AI CLI runs, streams, profiles, prompt overrides) · `agent/` (agent spawn/sandbox, subagents,
+  tool permissions, packages, outbound review) · `autonomous/` (the autonomous engine) · `knowledge/`
+  (knowledge/FAQ compose, memory compaction, RAG, research, support answer) · `git/` · `fs/` ·
+  `exec/` (command executor + history/output/images) · `control/` (local control socket) · `worker/`
+  (metrics, tools, toolchain, health, network probe, secrets, graph) · `profile/` (`.cre`, instance
+  lock, config sync, fingerprint, input history) · `session/` (session bus, idle clear) · `project/`
+  (scaffold). `ws-client.ts` (+ `ws-client/` handlers) and `update*.ts` stay at the `core/` root —
+  `update.ts` derives the install root from its own `import.meta.url`, so don't move it.
+- **Subcommands** in `src/commands/`.
+- **Tests** (`vitest`, `pnpm --filter @4pm/cli test`) sit next to the code as `*.test.ts`.
 - **Server communication** through `src/services/` (uses `@4pm/sdk`).
 - **Shared parts** in `src/common/` (errors, logger, io); pure functions in `src/utils/`.
 - **Interactive TUI** (`4pm start` on a TTY — ADR-0057) in `src/ui/` (Ink/React): banner,
-  transcript, command input; the event bridge is `core/session-bus.ts`. No TTY ⇒ a console
+  transcript, command input; the event bridge is `core/session/session-bus.ts`. No TTY ⇒ a console
   sink (`ui/console-sink.ts`) keeps the old headless behavior.
 - Plus `src/config/`, `src/index.ts`.
 

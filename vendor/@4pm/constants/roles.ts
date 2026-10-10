@@ -39,8 +39,9 @@ export function isValidRoleSet(roles: readonly Role[]): boolean {
 }
 
 /**
- * Account status (ADR-0093): `paused` = org-level pause — the account still
+ * Account status: `paused` = org-level pause — the account still
  * exists/searchable but cannot operate (login/API/token/WS blocked) until resumed.
+ * @adr 0093
  */
 export const UserStatus = {
   ACTIVE: "active",

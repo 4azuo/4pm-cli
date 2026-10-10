@@ -1,12 +1,13 @@
 /**
- * Worker-pool & AI-job constants (ADR-0284). A worker pool is a named group of MACHINE users
+ * Worker-pool & AI-job constants. A worker pool is a named group of MACHINE users
  * given a duty; each AI feature of a project is an `AiJob` that dispatch routes to a pool/machine.
+ * @adr 0284
  */
 
 /**
  * The 13 AI functions inside a project — the "job" a pool/machine can be dedicated to. The caller
- * stamps the job on an AI dispatch (the end user never picks it); routing orders candidates by it
- * (ADR-0284). Values are stable wire strings (do not rename once shipped).
+ * stamps the job on an AI dispatch (the end user never picks it); routing orders candidates by it.
+ * Values are stable wire strings (do not rename once shipped).
  */
 export const AiJob = {
   /** Spec field/section/subagent suggest (one-shot). */
@@ -48,7 +49,7 @@ export function isAiJob(value: unknown): value is AiJob {
   return typeof value === "string" && (AI_JOBS as readonly string[]).includes(value);
 }
 
-/** A project's AI-routing entry kind — a worker pool or a lone MACHINE user (ADR-0284). */
+/** A project's AI-routing entry kind — a worker pool or a lone MACHINE user. */
 export const WorkerRoutingEntryKind = {
   POOL: "pool",
   MACHINE: "machine",

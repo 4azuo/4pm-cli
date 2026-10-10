@@ -1,5 +1,5 @@
 /**
- * The cli's WS client (arch 0011): request ws_token → open WS → ECDH handshake →
+ * The cli's WS client: request ws_token → open WS → ECDH handshake →
  * send machine.status; heartbeat ping every 30s; reconnect with backoff + jitter;
  * LINK_REVOKED/HASHCODE_EXPIRED ⇒ logout (delete .cre). HASHCODE_INVALID is treated
  * as transient (a token re-issue racing a reconnect) and retried (bounded) before
@@ -10,6 +10,7 @@
  * timers, console-sync + worker-metrics leases, and logout. The channel handlers and the
  * AI/command dispatch path are extracted into `./ws-client/*` as pure functions over a
  * `WsHandlerCtx` this class builds (see `buildHandlerCtx`).
+ * @arch 0011
  */
 import { randomUUID } from "node:crypto";
 import { basename, join } from "node:path";
@@ -22,8 +23,8 @@ import {
   type MachineMetricsPayload,
   type WsTokenRepo,
 } from "@4pm/dto";
-import { ensureReposCloned } from "./scaffold";
-import { createWorkerMetricsSampler } from "./worker-metrics";
+import { ensureReposCloned } from "./project/scaffold";
+import { createWorkerMetricsSampler } from "./worker/worker-metrics";
 import {
   createEcdhSession,
   decryptPayload,
@@ -44,38 +45,38 @@ import {
   type WsControlMessage,
   type WsEnvelope,
 } from "@4pm/ws";
-import { deleteCredential, writeCredential, type Credential } from "./credential";
-import type { MachineFingerprint } from "./fingerprint";
-import type { SessionBus } from "./session-bus";
+import { deleteCredential, writeCredential, type Credential } from "./profile/credential";
+import type { MachineFingerprint } from "./profile/fingerprint";
+import type { SessionBus } from "./session/session-bus";
 import { UpdateScheduler } from "./update-scheduler";
 import { CliApiError, requestWsToken } from "../services/api";
-import { getWorkingProfile } from "./ai-profile-state";
+import { getWorkingProfile } from "./ai/ai-profile-state";
 import { INSECURE_URL_BLOCKED, insecureTransportAllowed, isInsecureRemoteUrl } from "../utils/secure-url";
 import { t } from "../i18n";
 import { aiAccountLabels, claudeHomeDirs } from "../utils/ai-cli";
-import { activeProfileLabel, applyAiAccountMask } from "./ai-account-mask";
-import { checkClaudeUsage } from "./claude-usage";
-import { pruneCommandHistoryByAge } from "./command-history";
-import { sweepOldAttachments } from "./command-images";
-import { pruneCommandOutputByAge } from "./command-output-store";
-import { refreshSupportKb } from "./support-answer";
-import { setToolHealthSink } from "./tool-health";
-import { isAutonomousRunning } from "./autonomous";
-import { probeNetwork } from "./network-probe";
-import { configureGitAuth } from "./git-auth";
-import { setPromptOverrides } from "./prompt-overrides";
+import { activeProfileLabel, applyAiAccountMask } from "./ai/ai-account-mask";
+import { checkClaudeUsage } from "./ai/claude-usage";
+import { pruneCommandHistoryByAge } from "./exec/command-history";
+import { sweepOldAttachments } from "./exec/command-images";
+import { pruneCommandOutputByAge } from "./exec/command-output-store";
+import { refreshSupportKb } from "./knowledge/support-answer";
+import { setToolHealthSink } from "./worker/tool-health";
+import { isAutonomousRunning } from "./autonomous/autonomous";
+import { probeNetwork } from "./worker/network-probe";
+import { configureGitAuth } from "./git/git-auth";
+import { setPromptOverrides } from "./ai/prompt-overrides";
 import { setMcpServers } from "../utils/agent-mcp";
-import { startGitSnapshots } from "./git-snapshot";
+import { startGitSnapshots } from "./git/git-snapshot";
 import { projectFolder, readProfileConfig, writeProfileConfig } from "../config/profile";
-import { detectWorkerTools } from "./worker-tools";
+import { detectWorkerTools } from "./worker/worker-tools";
 import { logger, readLogUpload } from "../common/logger/logger";
 import { CLI_VERSION } from "../version";
 import { envReconnectMaxSec, toDtoEntry } from "./ws-client/transcript";
 import type { WsHandlerCtx } from "./ws-client/context";
 import { handleCommandChannels, resetMemorySession, runLocalCommand } from "./ws-client/command-dispatch";
-import { onReconnectVerifyClaim, runAutonomousCycle } from "./autonomous-cycle";
-import { startAutonomousScheduler } from "./autonomous-scheduler";
-import { migrateLegacyCron } from "./autonomous-legacy-cron";
+import { onReconnectVerifyClaim, runAutonomousCycle } from "./autonomous/autonomous-cycle";
+import { startAutonomousScheduler } from "./autonomous/autonomous-scheduler";
+import { migrateLegacyCron } from "./autonomous/autonomous-legacy-cron";
 import { handleFsChannels } from "./ws-client/handlers/fs";
 import { handleGitChannels } from "./ws-client/handlers/git";
 import { handleMiscChannels } from "./ws-client/handlers/misc";
@@ -87,12 +88,12 @@ import { handleWorkerChannels } from "./ws-client/handlers/worker";
 import { cliUpdateLocked } from "./update";
 
 const HEARTBEAT_MS = 30_000;
-/** How often to poll the Claude subscription usage API (ADR-0072). */
+/** How often to poll the Claude subscription usage API. @adr 0072 */
 const USAGE_POLL_MS = 5 * 60_000;
 
-/** How often the cli uploads its own JSONL log to the server (ADR-0122). */
+/** How often the cli uploads its own JSONL log to the server. @adr 0122 */
 const LOG_UPLOAD_MS = 10 * 60_000;
-/** How often a support agent refreshes (git pull) its cloned FAQ/KB repo (ADR-0170). */
+/** How often a support agent refreshes (git pull) its cloned FAQ/KB repo. @adr 0170 */
 const KB_REFRESH_MS = 24 * 60 * 60_000;
 
 /** Base delay (ms) for the exponential reconnect backoff. */
@@ -120,24 +121,27 @@ const OFFLINE_BUFFER_MAX_BYTES = 512 * 1024;
 
 /**
  * While a web Console viewer is attached (console.watch on), re-send a full transcript snapshot
- * this often (ADR-0150) — the self-heal against any dropped add/update/clear event; live edits
+ * this often — the self-heal against any dropped add/update/clear event; live edits
  * stream immediately, so this only bounds worst-case drift.
+ * @adr 0150
  */
 const CONSOLE_SNAPSHOT_INTERVAL_MS = 30_000;
 
 /**
- * console.watch is a renewable **lease** (ADR-0150): the server re-asserts it (~every 15s) while
+ * console.watch is a renewable **lease**: the server re-asserts it (~every 15s) while
  * any viewer is attached; the cli stops syncing if no renewal arrives within this window. A lease
  * (vs an explicit on/off) is multi-instance-safe — no server needs a shared viewer count, and a
  * cli reconnect self-heals on the next renewal.
+ * @adr 0150
  */
 const CONSOLE_WATCH_LEASE_MS = 45_000;
 
 /**
- * Worker resource metrics (ADR-0214): while a viewer has the Workers tab open the server re-asserts
+ * Worker resource metrics: while a viewer has the Workers tab open the server re-asserts
  * `metrics.watch` (~every 15s) and the cli emits a `machine.metrics` sample this often; it stops if
  * no renewal arrives within the lease window. Same lease shape as `console.watch` — viewer-gated so
  * an unwatched cli samples nothing.
+ * @adr 0214
  */
 const METRICS_SAMPLE_INTERVAL_MS = 5_000;
 const METRICS_WATCH_LEASE_MS = 45_000;
@@ -147,7 +151,7 @@ export interface WsClientContext {
   credential: Credential;
   machine: MachineFingerprint;
   profileDir: string;
-  /** Presentation bridge (ADR-0057): lifecycle logs, command I/O, local input. */
+  /** Presentation bridge: lifecycle logs, command I/O, local input. @adr 0057 */
   bus: SessionBus;
 }
 
@@ -168,7 +172,7 @@ export class WsClient {
   /** Signature (fileName + totalBytes) of the last log upload — skip re-sending if unchanged. */
   private lastLogSig: string | null = null;
   private usageSnapshot: MachineUsagePayload | null = null;
-  /** Whether the serving project requires outbound review before each AI spawn (ADR-0082). */
+  /** Whether the serving project requires outbound review before each AI spawn. @adr 0082 */
   private outboundReviewEnabled = false;
   /**
    * Whether the serving project restricts the AI to its worker folder (project aiScope) —
@@ -176,9 +180,10 @@ export class WsClient {
    */
   private restrictToFolder = false;
   /**
-   * Shared AI memory (ADR-0245) cache for the served project: the rolling compacted text (seeded by
+   * Shared AI memory cache for the served project: the rolling compacted text (seeded by
    * `ws_token`, updated after each run) + the last native `session_id` per credential key (for
    * `--resume` on the same profile). Per (project × link) — this cli instance is one link.
+   * @adr 0245
    */
   private aiMemory = "";
   private readonly sessionIdByKey = new Map<string, string>();
@@ -197,25 +202,31 @@ export class WsClient {
   private reconnectEntryId: string | null = null;
   /** Org-configured reconnect cap (seconds) from the last ws_token — overrides env. */
   private orgReconnectMaxSec: number | null = null;
-  /** Org timezone (IANA) from the last ws_token (ADR-0132) — a rented worker follows its renter's
-   *  org; used to stamp the AI-run start time on the `aireq` transcript marker (ADR-0249). */
+  /** Org timezone (IANA) from the last ws_token — a rented worker follows its renter's
+   * org; used to stamp the AI-run start time on the `aireq` transcript marker.
+   * @adr 0132 @adr 0249
+   */
   private orgTimezone = "UTC";
   /** Env override for the reconnect cap (seconds); resolved once at construction. */
   private readonly envReconnectMaxSec = envReconnectMaxSec();
-  /** Process start (ms) — uptime for a web-dispatched `/status` (ADR-0249). */
+  /** Process start (ms) — uptime for a web-dispatched `/status`. @adr 0249 */
   private readonly startedAtMs = Date.now();
   private readonly credential: Credential;
   /** The physic project folder root this cli serves (null = no project) — fs.list is
    *  scoped to it so the web FsPicker can only browse inward, never out. */
   private physicRoot: string | null = null;
-  /** Declared repos of the served project (ADR-0289), from each ws_token — cloned into the physic
-   *  root on connect (and after a PHYSIC_SYNC creates the folder) when any is missing its `.git`. */
+  /** Declared repos of the served project, from each ws_token — cloned into the physic
+   *  root on connect (and after a PHYSIC_SYNC creates the folder) when any is missing its `.git`.
+   * @adr 0289
+   */
   private servingRepos: WsTokenRepo[] = [];
   /** Tail of the serialized clone-on-connect runs — two concurrent runs on one root race (a half-done
    *  clone's `.git` makes the other skip the clone and commit an empty index), so they queue here. */
   private cloneQueue: Promise<void> = Promise.resolve();
-  /** This machine-user's username — the git commit author for this project (ADR-0097).
-   *  Push uses the account already logged in with gh/glab on the worker. */
+  /** This machine-user's username — the git commit author for this project.
+   *  Push uses the account already logged in with gh/glab on the worker.
+   * @adr 0097
+   */
   private machineUsername = "";
   /** Waiters resolved when the session next becomes connected (readiness gate before
    *  running a local prompt). */
@@ -230,11 +241,12 @@ export class WsClient {
   private readonly handledCommands = new Set<string>();
   private offlineBufferBytes = 0;
   /**
-   * Console-sync state (ADR-0150). `consoleWatching` is set by `console.watch` from the server
+   * Console-sync state. `consoleWatching` is set by `console.watch` from the server
    * (a web Console viewer is attached); only then does the cli emit `console.sync`. `consoleRev`
    * is the monotonic revision the web uses to detect a gap; `consoleSnapshotTimer` periodically
    * re-sends a full snapshot to self-heal. Watching resets to false on each reconnect (the server
    * re-asserts it), so a fresh session re-snapshots.
+   * @adr 0150
    */
   private consoleWatching = false;
   private consoleRev = 0;
@@ -242,30 +254,34 @@ export class WsClient {
   /** Lease expiry: stop syncing if the server does not renew `console.watch` in time. */
   private consoleWatchExpiry: NodeJS.Timeout | null = null;
   /**
-   * Worker-metrics state (ADR-0214). `metricsWatching` is set by `metrics.watch` (a viewer has the
+   * Worker-metrics state. `metricsWatching` is set by `metrics.watch` (a viewer has the
    * Workers tab open); only then does the cli sample + emit `machine.metrics`. The sampler holds the
    * CPU-delta baseline; both timers are lease-driven like console-sync and reset on reconnect.
+   * @adr 0214
    */
   private metricsWatching = false;
   private metricsTimer: NodeJS.Timeout | null = null;
   private metricsWatchExpiry: NodeJS.Timeout | null = null;
   /** Lazily created on the first `metrics.watch` (keeps the CPU-delta baseline across samples). */
   private metricsSampler: ReturnType<typeof createWorkerMetricsSampler> | null = null;
-  /** Last over-provision advisory set logged (ADR-0390) — so we WARN only when it changes, not every sample. */
+  /**
+   * Last over-provision advisory set logged — so we WARN only when it changes, not every sample.
+   * @adr 0390
+   */
   private prevMetricsWarnings = "";
-  /** cli → server requests awaiting a reply (quota.check — ADR-0020). */
+  /** cli → server requests awaiting a reply (quota.check). @adr 0020 */
   private readonly pending = new Map<
     string,
     { resolve: (payload: unknown) => void; timer: NodeJS.Timeout }
   >();
 
-  /** Daily scheduled cli auto-update (ADR-0074); policy fed from each ws_token. */
+  /** Daily scheduled cli auto-update; policy fed from each ws_token. @adr 0074 */
   private readonly updateScheduler: UpdateScheduler;
 
   /** The narrow host handed to the extracted channel handlers + command-dispatch (built once). */
   private readonly hctx: WsHandlerCtx;
 
-  /** Shortcut to the presentation bridge (ADR-0057). */
+  /** Shortcut to the presentation bridge. @adr 0057 */
   private get bus(): SessionBus {
     return this.context.bus;
   }
@@ -383,10 +399,11 @@ export class WsClient {
   }
 
   /**
-   * Clone any declared repo missing from the served physic root (ADR-0289) — idempotent (skips a
+   * Clone any declared repo missing from the served physic root — idempotent (skips a
    * repo that already has `.git`). Best-effort: a clone failure never disrupts the session (the web
    * still surfaces "not provisioned"). No-op when idle (no physic root) or no repos declared.
    * Runs are serialized (connect + PHYSIC_SYNC both trigger it): each waits for the previous one.
+   * @adr 0289
    */
   private ensureServingReposCloned(): Promise<void> {
     const next = this.cloneQueue.then(async () => {
@@ -401,7 +418,7 @@ export class WsClient {
     return next;
   }
 
-  /** Report the tools snapshot now (after a toolchain self-install — ADR-0396); no-op when offline. */
+  /** Report the tools snapshot now (after a toolchain self-install); no-op when offline. @adr 0396 */
   reportToolsSnapshot(): void {
     if (this.sessionKey) void this.reportWorkerTools("op");
   }
@@ -449,7 +466,8 @@ export class WsClient {
 
   /**
    * Resolve `true` once the session becomes connected, or `false` after `timeoutMs`.
-   * Used to gate a local prompt on a ready session (correct order — ADR-0064).
+   * Used to gate a local prompt on a ready session (correct order).
+   * @adr 0064
    */
   private awaitConnected(timeoutMs: number): Promise<boolean> {
     if (this.sessionKey && this.bus.status === "connected") return Promise.resolve(true);
@@ -872,9 +890,10 @@ export class WsClient {
   }
 
   /**
-   * Send one envelope (encrypted payload + per-message wsToken — arch 0004).
+   * Send one envelope (encrypted payload + per-message wsToken).
    * When disconnected: the running command's output is held in a buffer (512KB cap,
    * dropping the oldest) then flushed on reconnect.
+   * @arch 0004
    */
   private send(channel: WsChannelName, data: unknown, replyTo: string | null = null): void {
     if (!this.socket || !this.sessionKey) {
@@ -895,7 +914,8 @@ export class WsClient {
 
   /**
    * Send a cli → server request and await the reply by envelope id (15s timeout).
-   * Used for quota.check before spawning an AI cli (ADR-0020).
+   * Used for quota.check before spawning an AI cli.
+   * @adr 0020
    */
   request<T>(channel: WsChannelName, data: unknown): Promise<T> {
     return new Promise<T>((resolve, reject) => {
@@ -925,12 +945,12 @@ export class WsClient {
     });
   }
 
-  /** quota.check before spawning an AI cli (ADR-0020). */
+  /** quota.check before spawning an AI cli. @adr 0020 */
   checkQuota(metric: string, amount = 1): Promise<QuotaCheckReply> {
     return this.request<QuotaCheckReply>(WsChannels.QUOTA_CHECK, { metric, amount });
   }
 
-  /** Fetch a Console prompt image blob from the server to materialize on the worker (ADR-0257). */
+  /** Fetch a Console prompt image blob from the server to materialize on the worker. @adr 0257 */
   imageFetch(commandId: string, imageId: string): Promise<ImageFetchReply> {
     return this.request<ImageFetchReply>(WsChannels.IMAGE_FETCH, {
       commandId,
@@ -938,7 +958,7 @@ export class WsClient {
     } satisfies ImageFetchRequest);
   }
 
-  /** usage.report batched to the server (ADR-0020); tags each event with the AI profile. */
+  /** usage.report batched to the server; tags each event with the AI profile. @adr 0020 */
   reportUsage(events: UsageReportPayload["events"], profile?: string | null): void {
     const tagged = profile ? events.map((e) => ({ ...e, profile })) : events;
     this.send(WsChannels.USAGE_REPORT, { events: tagged } satisfies UsageReportPayload);
@@ -968,8 +988,9 @@ export class WsClient {
 
   /**
    * Ensure the physic project folder exists inside the profile dir (folder = project
-   * name — ADR-0064), covering attach-after-pair where `4pm link` never created it.
+   * name), covering attach-after-pair where `4pm link` never created it.
    * Just the folder — no config change. Best-effort.
+   * @adr 0064
    */
   private ensurePhysicFolder(projectName: string): void {
     const folder = this.physicFolderPath(projectName);
@@ -990,8 +1011,9 @@ export class WsClient {
 
   /**
    * Absolute path of the physic project folder (`<profile>/<name>`, folder = project
-   * name — ADR-0064). Sanitises the name to a single segment (no traversal); returns
+   * name). Sanitises the name to a single segment (no traversal); returns
    * null for an empty name.
+   * @adr 0064
    */
   private physicFolderPath(projectName: string): string | null {
     // Workspaces live outside the profile dir (ADR-0430) — see `projectFolder`.
@@ -1056,9 +1078,10 @@ export class WsClient {
   }
 
   /**
-   * Poll the Claude subscription usage API and push a `machine.usage` snapshot (ADR-0072).
+   * Poll the Claude subscription usage API and push a `machine.usage` snapshot.
    * Fail-safe: the checker returns null when creds/API are unavailable ⇒ we just skip.
    * Only utilization %/reset/plan is sent — the OAuth token never leaves the machine.
+   * @adr 0072
    */
   private async pollUsage(): Promise<void> {
     if (!this.sessionKey) return;
@@ -1072,7 +1095,7 @@ export class WsClient {
       const dirs = working ? [working, ...configured.filter((d) => d !== working)] : configured;
       const profile = working ? basename(working) : dirs[0] ? basename(dirs[0]) : "default";
       // Real windows from the API / `/usage` text; else a placeholder so the active
-      // profile/plan still surface (ADR-0072). Never send the token.
+      // profile/plan still surface. Never send the token.
       const api = await checkClaudeUsage(dirs, aiCli);
       const snapshot: MachineUsagePayload = api ?? {
         plan: "?",
@@ -1102,7 +1125,7 @@ export class WsClient {
     void this.pollUsage(); // one immediate check on (re)connect
   }
 
-  /** Start the periodic upload of the cli's own JSONL log to the server (ADR-0122). */
+  /** Start the periodic upload of the cli's own JSONL log to the server. @adr 0122 */
   private startLogUpload(): void {
     if (this.logUploadTimer) clearInterval(this.logUploadTimer);
     this.logUploadTimer = setInterval(() => this.uploadLog(), LOG_UPLOAD_MS);
@@ -1111,9 +1134,10 @@ export class WsClient {
   }
 
   /**
-   * Start the daily FAQ/KB refresh for a support agent (ADR-0170): pull each KB clone already
+   * Start the daily FAQ/KB refresh for a support agent: pull each KB clone already
    * present in this profile so answers stay current without fetching on each dispatch. A no-op
    * for a normal project cli (no `support-kb` dir), so it is safe to start on every session.
+   * @adr 0170
    */
   private startKbRefresh(): void {
     if (this.kbRefreshTimer) clearInterval(this.kbRefreshTimer);
@@ -1126,9 +1150,10 @@ export class WsClient {
   }
 
   /**
-   * Upload the newest cli log file + the total log footprint to the server (ADR-0122), so it is
+   * Upload the newest cli log file + the total log footprint to the server, so it is
    * stored + retained server-side and counted in the machine user's storage. Skips when nothing
    * changed since the last upload. Best-effort — never disrupts the session.
+   * @adr 0122
    */
   private uploadLog(): void {
     try {
@@ -1144,9 +1169,10 @@ export class WsClient {
   }
 
   /**
-   * Console sync (ADR-0150): emit one incremental `console.sync` event (add/update/clear) — only
+   * Console sync: emit one incremental `console.sync` event (add/update/clear) — only
    * while a web Console viewer is attached (`consoleWatching`); each carries the next `rev` so the
    * web detects a gap. Dropped when disconnected — the next snapshot on (re)attach re-syncs.
+   * @adr 0150
    */
   private emitConsole(
     ev:
@@ -1159,12 +1185,13 @@ export class WsClient {
   }
 
   /**
-   * A `/clear` (or idle auto-clear) wiped the transcript (ADR-0150). Emit it as an absolute empty
+   * A `/clear` (or idle auto-clear) wiped the transcript. Emit it as an absolute empty
    * **snapshot** rather than an incremental `clear` event: a snapshot is applied unconditionally on
    * the web (no `rev`-gap check), so the clear can't be silently dropped when the web's revision
    * drifted during a reconnect flap. No-op while unwatched — the next `console.watch` re-arm
    * snapshots the (now empty) buffer anyway. The history is already emptied before this fires, so
    * the snapshot carries no entries.
+   * @adr 0150
    */
   private emitConsoleClear(): void {
     if (!this.consoleWatching) return;
@@ -1201,7 +1228,7 @@ export class WsClient {
     }
   }
 
-  /** Send a full transcript snapshot (on attach + the periodic self-heal — ADR-0150). */
+  /** Send a full transcript snapshot (on attach + the periodic self-heal). @adr 0150 */
   private sendConsoleSnapshot(): void {
     const entries = this.bus.snapshot().map(toDtoEntry);
     this.send(WsChannels.CONSOLE_SYNC, {
@@ -1212,10 +1239,11 @@ export class WsClient {
   }
 
   /**
-   * Handle `console.watch` (ADR-0150) — a renewable lease. `on` renews it: start mirroring on the
+   * Handle `console.watch` — a renewable lease. `on` renews it: start mirroring on the
    * first assertion (fresh snapshot + arm the periodic snapshot); later renewals just extend the
    * lease (no re-snapshot). No renewal within `CONSOLE_WATCH_LEASE_MS` ⇒ the lease expires and
    * syncing stops. An explicit `on:false` stops immediately.
+   * @adr 0150
    */
   private setConsoleWatching(on: boolean): void {
     if (!on) {
@@ -1250,9 +1278,10 @@ export class WsClient {
   }
 
   /**
-   * Handle `metrics.watch` (ADR-0214) — a renewable lease mirroring `console.watch`. `on` renews it:
+   * Handle `metrics.watch` — a renewable lease mirroring `console.watch`. `on` renews it:
    * on the first assertion the cli samples immediately + starts the ~5s sampler; later renewals just
    * extend the lease. No renewal within `METRICS_WATCH_LEASE_MS` (or an explicit `on:false`) ⇒ stop.
+   * @adr 0214
    */
   private setMetricsWatching(on: boolean): void {
     if (!on) {
@@ -1282,7 +1311,7 @@ export class WsClient {
     }
   }
 
-  /** Sample the worker's live CPU/RAM/disk and push a `machine.metrics` frame (ADR-0214). */
+  /** Sample the worker's live CPU/RAM/disk and push a `machine.metrics` frame. @adr 0214 */
   private async sendMachineMetrics(): Promise<void> {
     if (!this.sessionKey) return;
     try {

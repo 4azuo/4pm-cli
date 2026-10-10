@@ -1,9 +1,10 @@
 /**
- * Research channel handler (ADR-0380) — the org AI Research run. On a `research.ask` request the cli
- * takes an org run slot (ADR-0359/0362), screens the question against the content policy (research-guard
+ * Research channel handler — the org AI Research run. On a `research.ask` request the cli
+ * takes an org run slot, screens the question against the content policy (research-guard
  * backstop), runs `claude` with read-only web tools streaming the answer back over `research.progress`
  * for the live SSE, screens the answer, meters the run to the org (COMMANDS + AI_TOKENS — projectId=null
  * on an org-AI-pool cli), and replies with the markdown answer or a structured refusal.
+ * @adr 0380 @adr 0359 @adr 0362
  */
 import {
   WsChannels,
@@ -15,12 +16,12 @@ import {
 } from "@4pm/ws";
 import { UsageMetric } from "@4pm/constants";
 import { readProfileConfig } from "../../../config/profile";
-import { getWorkingProfile } from "../../ai-profile-state";
-import { aiProviderOf } from "../../ai-stream";
+import { getWorkingProfile } from "../../ai/ai-profile-state";
+import { aiProviderOf } from "../../ai/ai-stream";
 import { resolveClaudeAuthMode, resolveClaudeProfiles } from "../../../utils/ai-cli";
 import { acquireRunSlot } from "../run-slot";
-import { runResearch } from "../../research-run";
-import { screenAnswer, screenQuestion } from "../../research-guard";
+import { runResearch } from "../../knowledge/research-run";
+import { screenAnswer, screenQuestion } from "../../knowledge/research-guard";
 import type { WsHandlerCtx } from "../context";
 
 /** Route the research channel; returns true when the message was handled. */
@@ -58,7 +59,7 @@ async function run(
     return;
   }
 
-  // Take one org run slot (ADR-0359) — research competes with every other AI run.
+  // Take one org run slot — research competes with every other AI run.
   const slot = await acquireRunSlot(ctx, (info) => emit({ message: `queued #${info.position}` }));
   if (slot.kind !== "granted") {
     reply({ error: slot.kind === "denied" ? "storage full" : "no idle run slot" });

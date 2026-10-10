@@ -1,9 +1,10 @@
 /**
- * Current CLI version — read from the package.json shipped next to dist/ (ADR-0052).
+ * Current CLI version — read from the package.json shipped next to dist/.
  * The git tag `cli-vX.Y.Z` is the single source of truth: CI stamps package.json from
  * the tag before build (`npm pkg set version`). npm-global and the self-download
  * tarball both ship package.json at the package root (dist/ underneath), so reading
  * it at runtime works everywhere; `tsx` dev reads the workspace `0.0.0` (dev marker).
+ * @adr 0052
  */
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";

@@ -17,8 +17,9 @@ export interface ProjectManagerSummary {
 }
 
 /**
- * The scaffold's commit → push → pull-request outcome (ADR-0368). Best-effort: `step` + `error` name the
+ * The scaffold's commit → push → pull-request outcome. Best-effort: `step` + `error` name the
  * first failed step; `step = null` means fully published.
+ * @adr 0368
  */
 export interface ScaffoldPublish {
   /** The worker (machine link) the step ran on. */
@@ -29,7 +30,7 @@ export interface ScaffoldPublish {
   prUrl: string | null;
   step: "submodule" | "commit" | "push" | "pr" | null;
   error: string | null;
-  /** Per-submodule attach outcome (ADR-0370); empty when the project has no submodules. */
+  /** Per-submodule attach outcome; empty when the project has no submodules. @adr 0370 */
   submodules: { dir: string; ok: boolean; error: string | null }[];
   /** When this outcome was recorded (ISO). */
   at: string;
@@ -63,23 +64,23 @@ export interface ProjectResponse {
   orgId: string;
   name: string;
   description: string;
-  /** Avatar URL `/projects/:id/avatar` (ADR-0043), or null when none. */
+  /** Avatar URL `/projects/:id/avatar`, or null when none. @adr 0043 */
   avatarUrl: string | null;
   status: ProjectStatus;
-  /** Scaffold failure reason + failing step (ADR-0263) — set when `status=failed`, else null. */
+  /** Scaffold failure reason + failing step — set when `status=failed`, else null. @adr 0263 */
   failReason: string | null;
   failedStep: string | null;
-  /** The scaffold commit → push → PR outcome (ADR-0368, project-0074); null = not recorded. */
+  /** The scaffold commit → push → PR outcome; null = not recorded. @api project-0074 @adr 0368 */
   scaffoldPublish: ScaffoldPublish | null;
-  /** Mid-tier IP allowlist (Org > project > user — ADR-0050); empty = no restriction. */
+  /** Mid-tier IP allowlist (Org > project > user); empty = no restriction. @adr 0050 */
   ipAllowlist: string[];
   /** Messenger conversation retention in days (0 = keep forever) — ADR-0078. */
   messengerRetentionDays: number;
-  /** Typed token settings (ADR-0081) — read via `readProjectSettings`. */
+  /** Typed token settings — read via `readProjectSettings`. @adr 0081 */
   settings: ProjectSettings;
-  /** Nested display group path (ADR-0277) — root→leaf labels; `[]` = ungrouped. */
+  /** Nested display group path — root→leaf labels; `[]` = ungrouped. @adr 0277 */
   groupPath: string[];
-  /** Whether the current user has pinned this project (ADR-0027). */
+  /** Whether the current user has pinned this project. @adr 0027 */
   pinned: boolean;
   /** The project manager (project_managers) — one PM per project (null if none). */
   pm: ProjectManagerSummary | null;
@@ -87,14 +88,16 @@ export interface ProjectResponse {
   teamCount: number;
   /** Number of directly-assigned users (project_users) — total, incl. MACHINE. */
   userCount: number;
-  /** How many of `userCount` are MACHINE (worker) accounts (ADR-0041). Human
-   *  members = userCount - machineCount. */
+  /** How many of `userCount` are MACHINE (worker) accounts. Human
+   *  members = userCount - machineCount.
+   * @adr 0041
+   */
   machineCount: number;
   createdAt: string;
   updatedAt: string;
 }
 
-/** A member of a team as seen inside a project (ADR-0096) — with per-project pause state. */
+/** A member of a team as seen inside a project — with per-project pause state. @adr 0096 */
 export interface ProjectTeamMember {
   id: string;
   username: string;
@@ -103,17 +106,17 @@ export interface ProjectTeamMember {
   phone: string | null;
   /** Avatar-serving URL (`/users/:id/avatar`) or null when the user has no avatar. */
   avatarUrl: string | null;
-  /** Paused for THIS project only via a `project_member_overrides` row (ADR-0096). */
+  /** Paused for THIS project only via a `project_member_overrides` row. */
   paused: boolean;
 }
 
-/** Summary of a team attached to a project (project-0003) + its members & pause state (ADR-0096). */
+/** Summary of a team attached to a project + its members & pause state. @api project-0003 @adr 0096 */
 export interface ProjectTeamSummary {
   id: string;
   name: string;
   /** The team's own avatar-serving URL (`/teams/:id/avatar`) or null when none. */
   avatarUrl: string | null;
-  /** The team's participation in THIS project is paused (`project_teams.status`, ADR-0096). */
+  /** The team's participation in THIS project is paused (`project_teams.status`). */
   paused: boolean;
   /** The team's members (humans + machines), with each member's per-project pause state. */
   members: ProjectTeamMember[];
@@ -125,21 +128,24 @@ export interface ProjectCliInfo {
   /** Scaffolded project root on the worker (null while pending). */
   path: string | null;
   /**
-   * Physic-project status of the serving folder (ADR-0288). `needs_provision` = the folder was
+   * Physic-project status of the serving folder. `needs_provision` = the folder was
    * auto-synced on attach but its repos could not be cloned ⇒ the web shows "not provisioned —
    * update required" instead of reading a missing template marker as "version unknown".
+   * @adr 0288
    */
   status: PhysicProjectStatus;
   /** The paired MACHINE user id (link target for its Settings tab) — null if unknown. */
   userId: string | null;
-  /** The serving MACHINE user is a rented (4PM pool) worker (ADR-0132/0173). */
+  /** The serving MACHINE user is a rented (4PM pool) worker. @adr 0132 @adr 0173 */
   isRented: boolean;
-  /** Latest worker network probe (ADR-0221) — the project page warns when the worker's network is
-   *  left open. Null when the cli hasn't reported one yet (old clients / not connected). */
+  /** Latest worker network probe — the project page warns when the worker's network is
+   *  left open. Null when the cli hasn't reported one yet (old clients / not connected).
+   * @adr 0221
+   */
   network: WorkerNetworkProbe | null;
 }
 
-/** Data GET /projects/:id/members — effective members (direct + via teams), humans only (ADR-0078). */
+/** Data GET /projects/:id/members — effective members (direct + via teams), humans only. @adr 0078 */
 export interface ProjectMembersResponse {
   users: UserResponse[];
 }
@@ -152,31 +158,33 @@ export interface ProjectDetailResponse extends ProjectResponse {
   pm: UserResponse | null;
   /** The worker cli serving this project (null if none assigned). */
   cli: ProjectCliInfo | null;
-  /** Direct members (`project_users`) whose membership is paused (ADR-0093). */
+  /** Direct members (`project_users`) whose membership is paused. @adr 0093 */
   pausedMemberIds: string[];
-  /** Attached teams whose participation in this project is paused (`project_teams.status`, ADR-0096). */
+  /** Attached teams whose participation in this project is paused (`project_teams.status`). @adr 0096 */
   pausedTeamIds: string[];
 }
 
 /** Query of GET /projects — BaseRequest (search by name; sort name/createdAt) + pinned. */
 export const listProjectsQuerySchema = baseRequestSchema.extend({
   pinned: pinnedFilterSchema,
-  /** Only projects this team is attached to (project-0001; the public v1 list — ADR-0364). */
+  /** Only projects this team is attached to (project-0001; the public v1 list). @adr 0364 */
   teamId: z.string().guid().optional(),
-  /** ADMIN-only Trash: list soft-deleted projects (ADR-0109). */
+  /** ADMIN-only Trash: list soft-deleted projects. @adr 0109 */
   deleted: deletedFilterSchema,
 });
 export type ListProjectsQuery = z.infer<typeof listProjectsQuerySchema>;
 
-/** Query GET /projects/recent (project-0017) — limit only. */
+/** Query GET /projects/recent — limit only. @api project-0017 */
 export const recentProjectsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(20).default(5),
 });
 export type RecentProjectsQuery = z.infer<typeof recentProjectsQuerySchema>;
 
-/** Body POST /projects — step 1 of project creation (project-0002):
+/** Body POST /projects — step 1 of project creation:
  *  machineUserId = an idle MACHINE user (cli paired, not yet serving a project)
- *  ⇒ create a draft project + physic_projects (path=null, pending). */
+ *  ⇒ create a draft project + physic_projects (path=null, pending).
+ * @api project-0002
+ */
 export const createProjectRequestSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().max(2000).optional(),
@@ -185,9 +193,10 @@ export const createProjectRequestSchema = z.object({
 export type CreateProjectRequest = z.infer<typeof createProjectRequestSchema>;
 
 /**
- * Body POST /projects/:id/copy (project-0053) — duplicate a project as a spec-only DRAFT
- * (ADR-0148). Only `name` is supplied; the copy inherits the source spec (no physic project
+ * Body POST /projects/:id/copy — duplicate a project as a spec-only DRAFT.
+ * Only `name` is supplied; the copy inherits the source spec (no physic project
  * / cli / scaffold job), so the user re-runs the Content wizard to actually create it.
+ * @api project-0053 @adr 0148
  */
 export const copyProjectRequestSchema = z.object({
   name: z.string().min(1).max(100),
@@ -195,9 +204,10 @@ export const copyProjectRequestSchema = z.object({
 export type CopyProjectRequest = z.infer<typeof copyProjectRequestSchema>;
 
 /**
- * Runtime token knobs per project (ADR-0081), stored under `settings.tokens` — 2 cli
+ * Runtime token knobs per project, stored under `settings.tokens` — 2 cli
  * knobs (NOT period budgets; budgets live in the `quotas` table). Pushed to the project
- * cli via the daily `ws_token` (machine-0003). Out-of-bound values clamp back to default.
+ * cli via the daily `ws_token`. Out-of-bound values clamp back to default.
+ * @api machine-0003 @adr 0081
  */
 export interface ProjectTokenSettings {
   /** Session (5h) utilization % that makes the cli rotate its Claude profile; 0 = off. */
@@ -206,24 +216,27 @@ export interface ProjectTokenSettings {
   perPromptTokenLimit: number;
   /**
    * Wall-clock ceiling (seconds) for a single AI run before the cli terminates the spawned
-   * AI CLI (ADR-0243). **Overrides** the machine-user's own `aiRunTimeoutSec` (Worker config)
+   * AI CLI. **Overrides** the machine-user's own `aiRunTimeoutSec` (Worker config)
    * for a cli serving this project. 0 = inherit the machine-user setting (no project override).
+   * @adr 0243
    */
   aiRunTimeoutSec: number;
   /**
-   * Idle transcript auto-clear window (minutes) for a cli serving this project (ADR-0244).
+   * Idle transcript auto-clear window (minutes) for a cli serving this project.
    * **Overrides** the machine-user's own `autoClearIdleMinutes` (Worker config). 0 = inherit
    * the machine-user setting (no project override).
+   * @adr 0244
    */
   autoClearIdleMinutes: number;
 }
 
 /**
- * Project usage-alert rule (ADR-0220) — fires when the project's AI usage crosses a threshold,
+ * Project usage-alert rule — fires when the project's AI usage crosses a threshold,
  * delivering to a designated email and/or an in-app notification to a chosen project user.
  * `budgetPercent`: fire at `threshold`% (1–100) of the project's token/command budget in the
  * current period. `absolute`: fire when month-to-date tokens/commands reach `threshold`. At
  * least one of `email` / `notifyUserId` should be set. Stored under `projects.settings.alerts`.
+ * @adr 0220
  */
 export const PROJECT_ALERT_KINDS = ["budgetPercent", "absolute"] as const;
 export type ProjectAlertKind = (typeof PROJECT_ALERT_KINDS)[number];
@@ -239,13 +252,13 @@ export const projectAlertRuleSchema = z.object({
 });
 export type ProjectAlertRule = z.infer<typeof projectAlertRuleSchema>;
 
-/** The `alerts` block of `projects.settings` (ADR-0220). */
+/** The `alerts` block of `projects.settings`. @adr 0220 */
 export const projectAlertsSchema = z.object({
   rules: z.array(projectAlertRuleSchema).max(20).default([]),
 });
 export type ProjectAlerts = z.infer<typeof projectAlertsSchema>;
 
-/** Read the project usage-alert rules out of a loosely-typed `projects.settings` JSON (ADR-0220). */
+/** Read the project usage-alert rules out of a loosely-typed `projects.settings` JSON. @adr 0220 */
 export function readProjectAlertRules(
   settings: Record<string, unknown> | null | undefined,
 ): ProjectAlertRule[] {
@@ -254,11 +267,12 @@ export function readProjectAlertRules(
 }
 
 /**
- * Outbound-review policy per project (ADR-0082), stored under `settings.outboundReview`.
+ * Outbound-review policy per project, stored under `settings.outboundReview`.
  * When `enabled`, every AI input a machine cli runs must be approved by an outbound cli
  * (a project machine-user in `outboundLinkIds`) before it may spawn — `ruleCheck`/`aiReview`
  * are independently toggled engines. `allowedRepos` bounds where commits may go (empty ⇒
  * derived from `project.git`).
+ * @adr 0082
  */
 export interface OutboundReviewSettings {
   enabled: boolean;
@@ -267,17 +281,19 @@ export interface OutboundReviewSettings {
   /** Machine-link ids (project machine-users) that act as reviewers (round-robin pool). */
   outboundLinkIds: string[];
   /**
-   * Worker-pool ids whose members act as reviewers (ADR-0284) — expanded server-side to the pool
+   * Worker-pool ids whose members act as reviewers — expanded server-side to the pool
    * members' project-serving links and merged with `outboundLinkIds` (round-robin). Empty by default.
+   * @adr 0284
    */
   outboundPoolIds: string[];
   /** Repos commits are allowed to target (host/owner/name); empty = derive from git. */
   allowedRepos: string[];
   /**
-   * Block Console prompt image attachments (ADR-0257). A rule/AI review scans text, not binary,
+   * Block Console prompt image attachments. A rule/AI review scans text, not binary,
    * so a project that gates AI input for secrets can forbid image uploads here. When `true` the web
    * disables image paste and the server rejects a dispatch carrying `images` (`IMAGE_UPLOAD_BLOCKED`).
    * Default `false`.
+   * @adr 0257
    */
   blockImages: boolean;
   /**
@@ -288,16 +304,17 @@ export interface OutboundReviewSettings {
   rules: OutboundReviewRules;
 }
 
-/** The editable rule-scan pattern lists (ADR-0087) — `secret`/`environment` only. */
+/** The editable rule-scan pattern lists — `secret`/`environment` only. @adr 0087 */
 export interface OutboundReviewRules {
   secret: string[];
   environment: string[];
 }
 
 /**
- * Built-in rule-scan patterns (ADR-0087) — the fallback shown in the UI and used by the
+ * Built-in rule-scan patterns — the fallback shown in the UI and used by the
  * reviewer cli when a project has not overridden a category. Stored as regex literals so
  * they round-trip through the editor and preserve per-pattern flags.
+ * @adr 0087
  */
 export const DEFAULT_OUTBOUND_RULES: OutboundReviewRules = {
   secret: [
@@ -318,9 +335,10 @@ export const DEFAULT_OUTBOUND_RULES: OutboundReviewRules = {
 };
 
 /**
- * Compile one rule entry (ADR-0087) into a RegExp. Accepts a `/body/flags` literal (keeps
+ * Compile one rule entry into a RegExp. Accepts a `/body/flags` literal (keeps
  * the flags) or a bare source (no flags). Throws `SyntaxError` on an invalid pattern — the
  * save-gate catches this to reject; the reviewer cli catches it to skip the entry.
+ * @adr 0087
  */
 export function compileRulePattern(entry: string): RegExp {
   const literal = /^\/(.+)\/([gimsuy]*)$/s.exec(entry.trim());
@@ -333,15 +351,17 @@ export function compileRulePattern(entry: string): RegExp {
  * is on, the project cli prepends a guard to every AI prompt telling the agent to only
  * read/use/modify content inside the served worker project folder — a prompt-level
  * hardening on top of the cli already spawning with `cwd = <project folder>`. Pushed to
- * the cli via the daily `ws_token` (machine-0003), same path as the token knobs.
+ * the cli via the daily `ws_token`, same path as the token knobs.
+ * @api machine-0003
  */
 /**
- * Worker network probe result (ADR-0221). 4PM cannot enforce the worker's network from inside the
+ * Worker network probe result. 4PM cannot enforce the worker's network from inside the
  * cli, so instead of a server-set policy the cli **actively probes** the worker's network posture
  * (both directions) and whether it runs containerized; the web shows non-blocking warnings when the
  * network is left open. Carried on the `machine.usage` snapshot; observe-only (never blocks a
  * dispatch). `outbound` = can the worker reach the open internet (egress); `inbound` = is the worker
  * exposed to incoming connections on a public interface.
+ * @adr 0221
  */
 export interface WorkerNetworkProbe {
   /** `open` = the worker reached the open internet (not sandboxed); `restricted` = it could not. */
@@ -355,8 +375,9 @@ export interface WorkerNetworkProbe {
 }
 
 /**
- * Read the worker network probe (ADR-0221) out of a loosely-typed `machine.usage` snapshot JSON —
+ * Read the worker network probe out of a loosely-typed `machine.usage` snapshot JSON —
  * the cli carries it under `snapshot.network`. Returns null when absent/malformed (old clients).
+ * @adr 0221
  */
 export function readWorkerNetwork(snapshot: unknown): WorkerNetworkProbe | null {
   const n = (snapshot as { network?: unknown } | null)?.network as
@@ -377,42 +398,45 @@ export interface ProjectAiScopeSettings {
 }
 
 /**
- * Per-project git-auth method for the worker (ADR-0192 §4). `self` = the worker uses its own
- * gh/glab credentials (self-host default); `deploy-key` = legacy alias of `self` (ADR-0221);
+ * Per-project git-auth method for the worker. `self` = the worker uses its own
+ * gh/glab credentials (self-host default); `deploy-key` = legacy alias of `self`;
  * `github-app` = the server mints per-job GitHub-App installation tokens from the project's App
  * credential (ADR-0356, stored in its own table — never in settings); `gitlab-group-token` = the
  * server serves the project's stored GitLab group token to the worker's git helper / `glab` shim
  * (ADR-0382, stored encrypted in its own table — never in settings; served as-is, not minted);
  * `gitlab-service-account` = the server holds a GitLab service account's PAT and creates a short-lived
  * project access token per job (ADR-0435, same credential table, `kind: service-account`).
+ * @adr 0192 §4 @adr 0221
  */
 export const GIT_AUTH_METHODS = ["self", "deploy-key", "gitlab-group-token", "gitlab-service-account", "github-app"] as const;
 export type GitAuthMethod = (typeof GIT_AUTH_METHODS)[number];
 
-/** True for both GitLab methods (group token — ADR-0382; service account — ADR-0435). */
+/** True for both GitLab methods (group token — ADR-0382; service account). @adr 0435 */
 export function isGitLabMethod(method: GitAuthMethod | string | null | undefined): boolean {
   return method === "gitlab-group-token" || method === "gitlab-service-account";
 }
 
-/** Per-project git-auth policy (ADR-0192 §4) — method only; credentials live out of settings. */
+/** Per-project git-auth policy — method only; credentials live out of settings. @adr 0192 §4 */
 export interface ProjectGitAuthSettings {
   method: GitAuthMethod;
 }
 
 /**
- * Marketplace package policy per project (ADR-0185/0186), stored under `settings.packages`.
+ * Marketplace package policy per project, stored under `settings.packages`.
  * When `autoUpdate` is on, the server's daily tick re-installs each installed package's newer
  * approved version onto the project cli (drift-guarded); default off (manual updates only).
+ * @adr 0185 @adr 0186
  */
 export interface ProjectPackagesSettings {
   autoUpdate: boolean;
 }
 
 /**
- * Shared AI memory policy per project (ADR-0245), stored under `settings.memory`. Overrides the
+ * Shared AI memory policy per project, stored under `settings.memory`. Overrides the
  * machine-user's own memory config for a cli serving this project: `mode` `on`/`off` forces it,
  * `inherit` defers to the machine-user setting; `budgetChars` `0` = inherit the machine-user budget,
  * else the char ceiling of the compacted rolling memory.
+ * @adr 0245
  */
 export const PROJECT_MEMORY_MODES = ["inherit", "on", "off"] as const;
 export type ProjectMemoryMode = (typeof PROJECT_MEMORY_MODES)[number];
@@ -422,8 +446,9 @@ export interface ProjectMemorySettings {
 }
 
 /**
- * GET project AI memory (ADR-0245) — the current stored rolling memory for a `(project × link)`,
+ * GET project AI memory — the current stored rolling memory for a `(project × link)`,
  * read by the Console's Memory sub-tab (the server holds the copy the cli pushed via `memory.update`).
+ * @adr 0245
  */
 export interface ProjectAiMemoryResponse {
   /** The stored compacted memory text (empty when none yet). */
@@ -434,27 +459,27 @@ export interface ProjectAiMemoryResponse {
   updatedAt: string | null;
 }
 
-/** Typed view of `Project.settings` (ADR-0081/0082/0113). */
+/** Typed view of `Project.settings`. @adr 0081 @adr 0082 @adr 0113 */
 export interface ProjectSettings {
   tokens: ProjectTokenSettings;
   outboundReview: OutboundReviewSettings;
-  /** Shared AI memory override policy (ADR-0245). */
+  /** Shared AI memory override policy. @adr 0245 */
   memory: ProjectMemorySettings;
-  /** Selected template file per kind (ADR-0113) — kind → org template file id. */
+  /** Selected template file per kind — kind → org template file id. */
   templates: ProjectTemplateSelection;
   /** AI-scope policy (folder-restriction prompt guard). */
   aiScope: ProjectAiScopeSettings;
-  /** Marketplace package auto-update policy (ADR-0185). */
+  /** Marketplace package auto-update policy. @adr 0185 */
   packages: ProjectPackagesSettings;
-  /** Git-auth method for the worker (ADR-0192 §4). */
+  /** Git-auth method for the worker. @adr 0192 §4 */
   gitAuth: ProjectGitAuthSettings;
-  /** Project usage-alert rules (ADR-0220) — empty when none configured. */
+  /** Project usage-alert rules — empty when none configured. @adr 0220 */
   alerts: ProjectAlertRule[];
-  /** Approved, hash-pinned MCP servers (ADR-0427) — empty ⇒ no MCP server runs. */
+  /** Approved, hash-pinned MCP servers — empty ⇒ no MCP server runs. @adr 0427 */
   mcp: { servers: McpApprovedServer[] };
 }
 
-/** Defaults applied when a project settings key is absent (ADR-0081/0082/0113). */
+/** Defaults applied when a project settings key is absent. @adr 0081 @adr 0082 @adr 0113 */
 export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
   tokens: { sessionSwitchPct: 0, perPromptTokenLimit: 0, aiRunTimeoutSec: 0, autoClearIdleMinutes: 0 },
   memory: { mode: "inherit", budgetChars: 0 },
@@ -476,35 +501,39 @@ export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
   },
 };
 
-/** Max entries for the outbound-review string lists (ADR-0082) — guards oversized settings. */
+/** Max entries for the outbound-review string lists — guards oversized settings. @adr 0082 */
 export const OUTBOUND_REVIEW_MAX_LIST = 50;
 
 /**
- * Bounds for a **positive** AI-run wall-clock timeout in seconds (ADR-0243/0256). The single source
+ * Bounds for a **positive** AI-run wall-clock timeout in seconds. The single source
  * of truth for both the project override (`PROJECT_TOKEN_BOUNDS.aiRunTimeoutSec` below, `0` = inherit)
  * and the machine-user Worker-config field (`@4pm/ui` `config-model`/`ConfigForm`, `0` = unlimited):
  * a non-zero value is clamped into `[min, max]`.
+ * @adr 0243 @adr 0256
  */
 export const AI_RUN_TIMEOUT_BOUNDS = { min: 30, max: 3_600 } as const;
 
 /**
- * Bounded native resume limits (ADR-0339) editable in the worker config: the idle window (minutes) and
+ * Bounded native resume limits editable in the worker config: the idle window (minutes) and
  * the conversation-size cap (tokens) past which the cli starts a fresh, memory-seeded session. `0` = that
  * bound off; the maxima only guard against a nonsense value (1 day / 1M tokens).
+ * @adr 0339
  */
 export const AI_RESUME_BOUNDS = { maxIdleMinutes: 1_440, maxContextTokens: 1_000_000 } as const;
 
 /**
- * Bounds for the per-attempt tool install/update/restore timeout in seconds (ADR-0258). Source of truth
+ * Bounds for the per-attempt tool install/update/restore timeout in seconds. Source of truth
  * for the machine-user Worker-config field (`@4pm/ui` `config-model`/`ConfigForm`): `0` = the cli default
  * (300s), any other value is clamped into `[min, max]`. Guards a slow container egress without letting a
  * hung child wedge the worker.
+ * @adr 0258
  */
 export const TOOL_INSTALL_TIMEOUT_BOUNDS = { min: 60, max: 1_800 } as const;
 
 /**
- * Bounds for the token knobs (ADR-0081): each accepts 0 (off) or a value within
+ * Bounds for the token knobs: each accepts 0 (off) or a value within
  * `[min, max]`; anything else clamps back to the default (0).
+ * @adr 0081
  */
 export const PROJECT_TOKEN_BOUNDS = {
   sessionSwitchPct: { min: 70, max: 90 },
@@ -515,7 +544,7 @@ export const PROJECT_TOKEN_BOUNDS = {
   autoClearIdleMinutes: { min: 1, max: 1_440 },
 } as const;
 
-/** Bounds for the memory char budget (ADR-0245): 0 = inherit the machine-user budget, else 500–50k. */
+/** Bounds for the memory char budget: 0 = inherit the machine-user budget, else 500–50k. @adr 0245 */
 export const PROJECT_MEMORY_BUDGET_BOUNDS = { min: 500, max: 50_000 } as const;
 
 /** Read a knob: 0 ("off") or within bounds, else the default (0). */
@@ -699,14 +728,14 @@ export const SPEC_DRAFT_MAX_BYTES = 1_048_576;
  */
 export const HTTP_JSON_BODY_LIMIT_BYTES = 2 * 1_048_576;
 
-/** Data GET /projects/:id/spec-draft (project-0031, per-project DB draft — ADR-0077). */
+/** Data GET /projects/:id/spec-draft (project-0031, per-project DB draft). @adr 0077 */
 export interface SpecDraftResponse {
   spec: Record<string, unknown> | null;
   specVersion: number | null;
   updatedAt: string | null;
 }
 
-/** Data PUT /projects/:id/spec-draft (project-0030) — after saving. */
+/** Data PUT /projects/:id/spec-draft — after saving. @api project-0030 */
 export interface SpecDraftSavedResponse {
   updatedAt: string;
 }
@@ -718,29 +747,30 @@ export const putSpecDraftRequestSchema = z.object({
 });
 export type PutSpecDraftRequest = z.infer<typeof putSpecDraftRequestSchema>;
 
-/** Data GET /projects/:id/spec (project-0032b, ADR-0114) — the canonical `Project.spec`. */
+/** Data GET /projects/:id/spec — the canonical `Project.spec`. @api project-0032b @adr 0114 */
 export interface ProjectSpecResponse {
   spec: Record<string, unknown> | null;
   updatedAt: string | null;
 }
 
-/** Body PUT /projects/:id/spec (project-0033) — replace the canonical spec (READY project). */
+/** Body PUT /projects/:id/spec — replace the canonical spec (READY project). @api project-0033 */
 export const putProjectSpecRequestSchema = z.object({
   spec: z.record(z.string(), z.unknown()),
 });
 export type PutProjectSpecRequest = z.infer<typeof putProjectSpecRequestSchema>;
 
-/** Max size (bytes) of a persisted template "Analyze impact" report (project-0058 — ADR-0269). */
+/** Max size (bytes) of a persisted template "Analyze impact" report. @api project-0058 @adr 0269 */
 export const TEMPLATE_ANALYSIS_MAX_BYTES = 512 * 1024;
 
-/** Max size (bytes) of a persisted template "Update" run output (project-0060 — ADR-0270). */
+/** Max size (bytes) of a persisted template "Update" run output. @api project-0060 @adr 0270 */
 export const TEMPLATE_UPDATE_MAX_BYTES = 512 * 1024;
 
 /**
- * The saved template "Analyze impact" report for a project (ADR-0269, ADR-0270). Latest-only;
+ * The saved template "Analyze impact" report for a project. Latest-only;
  * overwritten on each analyze. `fromVersion` is the project's local template version at analyze
  * time (null = "unknown"), `toVersion` the latest template it was analyzed against, `instruction`
  * the optional custom prompt the user ran it with (null = none).
+ * @adr 0269 @adr 0270
  */
 export interface TemplateAnalysis {
   report: string;
@@ -752,25 +782,28 @@ export interface TemplateAnalysis {
 }
 
 /**
- * Resolved outcome of a template "Update" run (ADR-0271): `success` only when the agent actually
+ * Resolved outcome of a template "Update" run: `success` only when the agent actually
  * finished the prompt AND opened a pull request (a PR id is present); `warning` when it ran but did
  * not complete (blocked on approval, no PR tooling, unparseable result…); `failed` when the agent
  * reported an outright failure. The panel shows "Update complete" ONLY for `success`.
+ * @adr 0271
  */
 export type TemplateUpdateStatus = "success" | "warning" | "failed";
 
 /**
- * The template Update PR's state as last read server-side (ADR-0405): `merged`/`closed` are final;
+ * The template Update PR's state as last read server-side: `merged`/`closed` are final;
  * `null` = not read yet, or untrackable (self-managed git-auth has no server credential).
+ * @adr 0405
  */
 export type TemplatePullRequestState = "open" | "merged" | "closed";
 
 /**
- * The saved template "Update" run output for a project (ADR-0270, ADR-0271). Latest-only; overwritten
+ * The saved template "Update" run output for a project. Latest-only; overwritten
  * on each update run. `output` is the agent's raw summary; `status`/`pullRequestId`/`pullRequestUrl`/
  * `branch`/`message` are parsed from the agent's structured result so the panel reports completion
  * truthfully (success only with a PR id, else warning/failure). `instruction` is the optional custom
  * prompt used.
+ * @adr 0270 @adr 0271
  */
 export interface TemplateUpdateResult {
   output: string;
@@ -784,13 +817,13 @@ export interface TemplateUpdateResult {
   toVersion: string;
   savedAt: string;
   savedBy: string | null;
-  /** The PR state last read server-side (ADR-0405); absent/null = not read / untracked. */
+  /** The PR state last read server-side; absent/null = not read / untracked. @adr 0405 */
   pullRequestState?: TemplatePullRequestState | null;
-  /** ISO time of the last PR state read (ADR-0405). */
+  /** ISO time of the last PR state read. @adr 0405 */
   pullRequestCheckedAt?: string | null;
 }
 
-/** The parsed outcome of a template Update run (ADR-0271) — drives the panel's success/warning/error. */
+/** The parsed outcome of a template Update run — drives the panel's success/warning/error. @adr 0271 */
 export interface TemplateUpdateParsed {
   status: TemplateUpdateStatus;
   pullRequestId: string | null;
@@ -807,11 +840,12 @@ function asTrimmedStr(v: unknown): string | null {
 }
 
 /**
- * Parse the Update agent's fenced-JSON result (ADR-0271) into a resolved status. Success requires the
+ * Parse the Update agent's fenced-JSON result into a resolved status. Success requires the
  * agent to report `status:"success"` AND a real `pullRequestId`; a reported `failed` maps to `failed`;
  * anything else (blocked, success without a PR id, or no parseable JSON) maps to `warning` — so the
  * panel only ever shows "Update complete" when a PR was genuinely created. Shared by the web (on run
- * completion) and the server's `template-update` result sink (ADR-0407).
+ * completion) and the server's `template-update` result sink.
+ * @adr 0271 @adr 0407
  */
 export function parseTemplateUpdateResult(out: string): TemplateUpdateParsed {
   const start = out.indexOf("{");
@@ -839,17 +873,20 @@ export function parseTemplateUpdateResult(out: string): TemplateUpdateParsed {
   return { status, pullRequestId, pullRequestUrl, branch, message };
 }
 
-/** Data GET /projects/:id/template/analysis (project-0057) — the saved report, or null when none. */
+/** Data GET /projects/:id/template/analysis — the saved report, or null when none. @api project-0057 */
 export interface ProjectTemplateAnalysisResponse {
   analysis: TemplateAnalysis | null;
 }
 
-/** Data GET /projects/:id/template/update (project-0059) — the saved update output, or null when none. */
+/** Data GET /projects/:id/template/update — the saved update output, or null when none. @api project-0059 */
 export interface ProjectTemplateUpdateResultResponse {
   update: TemplateUpdateResult | null;
 }
 
-/** Body PUT /projects/:id/template/analysis (project-0058) — save the report (savedAt/By stamped server-side). */
+/**
+ * Body PUT /projects/:id/template/analysis — save the report (savedAt/By stamped server-side).
+ * @api project-0058
+ */
 export const putTemplateAnalysisRequestSchema = z.object({
   report: z.string().min(1),
   instruction: z.string().nullable(),
@@ -858,7 +895,10 @@ export const putTemplateAnalysisRequestSchema = z.object({
 });
 export type PutTemplateAnalysisRequest = z.infer<typeof putTemplateAnalysisRequestSchema>;
 
-/** Body PUT /projects/:id/template/update (project-0060) — save the update output (savedAt/By stamped server-side). */
+/**
+ * Body PUT /projects/:id/template/update — save the update output (savedAt/By stamped server-side).
+ * @api project-0060
+ */
 export const putTemplateUpdateRequestSchema = z.object({
   output: z.string().min(1),
   status: z.enum(["success", "warning", "failed"]),
@@ -872,10 +912,10 @@ export const putTemplateUpdateRequestSchema = z.object({
 });
 export type PutTemplateUpdateRequest = z.infer<typeof putTemplateUpdateRequestSchema>;
 
-/** Max serialized size (bytes) of a generated artifact's markdown (ADR-0114). */
+/** Max serialized size (bytes) of a generated artifact's markdown. @adr 0114 */
 export const ARTIFACT_MAX_BYTES = 512 * 1024;
 
-/** One AI-generated project artifact (ADR-0114). */
+/** One AI-generated project artifact. @adr 0114 */
 export interface ProjectArtifactResponse {
   id: string;
   kind: TemplateKind;
@@ -884,13 +924,13 @@ export interface ProjectArtifactResponse {
   createdAt: string;
 }
 
-/** Query GET /projects/:id/artifacts (project-0034) — optional kind filter. */
+/** Query GET /projects/:id/artifacts — optional kind filter. @api project-0034 */
 export const listArtifactsQuerySchema = z.object({
   kind: z.enum(TEMPLATE_KINDS).optional(),
 });
 export type ListArtifactsQuery = z.infer<typeof listArtifactsQuerySchema>;
 
-/** Body POST /projects/:id/artifacts (project-0035) — save a generated artifact. */
+/** Body POST /projects/:id/artifacts — save a generated artifact. @api project-0035 */
 export const createArtifactRequestSchema = z.object({
   kind: z.enum(TEMPLATE_KINDS),
   content: z.string().min(1).max(ARTIFACT_MAX_BYTES),
@@ -898,9 +938,10 @@ export const createArtifactRequestSchema = z.object({
 export type CreateArtifactRequest = z.infer<typeof createArtifactRequestSchema>;
 
 /**
- * A loose git-URL shape (ADR-0172): `https://…`, `git@host:…` or `ssh://…`. 4PM never
+ * A loose git-URL shape: `https://…`, `git@host:…` or `ssh://…`. 4PM never
  * creates repos — the user always points at an existing repo they own; a private repo on
- * a rented worker is given as its **ssh** url (ADR-0173).
+ * a rented worker is given as its **ssh** url.
+ * @adr 0172 @adr 0173
  */
 export const GIT_URL_RE = /^(https?:\/\/|git@[^\s:]+:|ssh:\/\/).+/i;
 
@@ -918,23 +959,26 @@ export const repoSpecSchema = z.object({
   desc: z.string().max(500).optional().default(""),
   /** Exactly one repo of the project is the primary (the root); the rest are submodules. */
   primary: z.boolean().optional().default(false),
-  /** Clone url — `https` or `ssh` (required; ADR-0172). */
+  /** Clone url — `https` or `ssh` (required). @adr 0172 */
   url: z.string().max(500).regex(GIT_URL_RE, "must be an https or ssh git url"),
   /**
    * Folder under the root: **empty for the primary** (the root itself), **non-empty and unique for a
-   * submodule** — the path `git submodule add` attaches it at (ADR-0316).
+   * submodule** — the path `git submodule add` attaches it at.
+   * @adr 0316
    */
   subdir: z.string().max(120).optional().default(""),
   /**
-   * Primary branch to clone / check out (ADR-0292). Empty ⇒ the repo's default branch. The
+   * Primary branch to clone / check out. Empty ⇒ the repo's default branch. The
    * worker clones with `-b <branch>` and the on-demand "update repos" action checks it out +
    * fast-forward pulls it.
+   * @adr 0292
    */
   branch: z.string().max(200).optional().default(""),
   /**
-   * Where `branch` is created from when it does not exist on the remote yet (ADR-0370): the default
+   * Where `branch` is created from when it does not exist on the remote yet: the default
    * branch, another remote branch (`branch`, primary only), or `empty` — an orphan branch with no
    * history. Absent ⇒ `default`.
+   * @adr 0370
    */
   base: z
     .object({
@@ -943,25 +987,26 @@ export const repoSpecSchema = z.object({
     })
     .optional(),
   /**
-   * Primary only (ADR-0370): reset the 4PM tracking files (AI_TODO / AI_DONE / AI_PROGRESS / USER_TODO /
+   * Primary only: reset the 4PM tracking files (AI_TODO / AI_DONE / AI_PROGRESS / USER_TODO /
    * USER_QA) to the template's empty versions after the scaffold copy. Absent ⇒ reset only when the
    * source already has a 4PM scaffold.
+   * @adr 0370
    */
   resetTracking: z.boolean().optional(),
 });
 export type RepoSpec = z.infer<typeof repoSpecSchema>;
 
-/** The 4PM tracking files the scaffold can reset (ADR-0370 §3). */
+/** The 4PM tracking files the scaffold can reset. @adr 0370 §3 */
 export const SCAFFOLD_TRACKING_FILES = ["AI_TODO.md", "AI_DONE.md", "AI_PROGRESS.md", "USER_TODO.md", "USER_QA.md"] as const;
 
-/** project-0076 request — probe a repo branch before creating (ADR-0370 §4). */
+/** project-0076 request — probe a repo branch before creating. @adr 0370 §4 */
 export const repoProbeRequestSchema = z.object({
   url: z.string().max(500).regex(GIT_URL_RE, "must be an https or ssh git url"),
   branch: z.string().max(200).optional().default(""),
   base: z
     .object({ kind: z.enum(["default", "branch", "empty"]), branch: z.string().max(200).optional() })
     .optional(),
-  /** The declared submodules to probe too — existence + protection (ADR-0371). */
+  /** The declared submodules to probe too — existence + protection. @adr 0371 */
   submodules: z
     .array(z.object({ subdir: z.string().max(120), url: z.string().max(500), branch: z.string().max(200).optional().default("") }))
     .max(20)
@@ -986,24 +1031,28 @@ export interface RepoProbeResponse {
     overwrite: string[];
     /** 4PM tracking files present at the source (resettable). */
     tracking: string[];
-    /** The parsed `project.spec.json` at `ref` (ADR-0393); null when absent or unreadable. Absent from an older cli. */
+    /**
+     * The parsed `project.spec.json` at `ref`; null when absent or unreadable. Absent from an older cli.
+     * @adr 0393
+     */
     spec?: Record<string, unknown> | null;
     /** `project.spec.json` exists but could not be read (bad JSON / too large) — ADR-0393. */
     specError?: string | null;
-    /** `model` of `.claude/settings.json` at `ref` (ADR-0394); null when absent. Absent from an older cli. */
+    /** `model` of `.claude/settings.json` at `ref`; null when absent. Absent from an older cli. @adr 0394 */
     settingsModel?: string | null;
   } | null;
-  /** The base branch is protected on the host (ADR-0371); null = unknown host / branch missing. */
+  /** The base branch is protected on the host; null = unknown host / branch missing. @adr 0371 */
   protected: boolean | null;
-  /** The declared submodules' bases: existence + protection (ADR-0371). */
+  /** The declared submodules' bases: existence + protection. @adr 0371 */
   submodules: { subdir: string; url: string; branch: string; exists: boolean; protected: boolean | null; error: string | null }[];
   error: string | null;
 }
 
 /**
- * Derive the display name of a repo from its clone url (ADR-0172): the last path segment
+ * Derive the display name of a repo from its clone url: the last path segment
  * without the `.git` suffix — e.g. `git@github.com:4azuo/XeNoDuongPho.git` ⇒ `XeNoDuongPho`,
  * `https://github.com/4azuo/XeNoDuongPho.git` ⇒ `XeNoDuongPho`. Empty when it can't be read.
+ * @adr 0172
  */
 export function repoName(url: string): string {
   const last = (url || "").trim().replace(/\/+$/, "").split(/[/:]/).pop() ?? "";
@@ -1011,10 +1060,11 @@ export function repoName(url: string): string {
 }
 
 /**
- * Derive the `owner/repo` slug from a clone url (ADR-0302): the last two path segments minus a
+ * Derive the `owner/repo` slug from a clone url: the last two path segments minus a
  * `.git` suffix — e.g. `https://github.com/4azuo/RestaurantApplication.git` and
  * `git@github.com:4azuo/RestaurantApplication.git` ⇒ `4azuo/RestaurantApplication`. Used for
  * `gh pr list -R <slug>` / `glab mr list -R <slug>`. Empty when it can't be read.
+ * @adr 0302
  */
 export function repoSlug(url: string): string {
   const cleaned = (url || "").trim().replace(/\.git$/i, "").replace(/\/+$/, "");
@@ -1027,9 +1077,10 @@ export function repoSlug(url: string): string {
 }
 
 /**
- * Derive the provider of a repo from its clone url host (ADR-0172): a `gitlab` host ⇒
+ * Derive the provider of a repo from its clone url host: a `gitlab` host ⇒
  * `glab`, otherwise `gh` (GitHub is the default for any other host). Used for the `gh`/`glab`
  * provider ops in the Git tab.
+ * @adr 0172
  */
 export function repoProvider(url: string): "gh" | "glab" {
   const u = (url || "").toLowerCase();
@@ -1041,11 +1092,12 @@ export function repoProvider(url: string): "gh" | "glab" {
 }
 
 /**
- * Validate a project's declared repos (ADR-0316): **≥1 repo, exactly one `primary`** (the root); the
+ * Validate a project's declared repos: **≥1 repo, exactly one `primary`** (the root); the
  * primary's `subdir` must be **empty**; every **submodule** (non-primary) needs a **non-empty** `subdir`;
  * and both `subdir` and `url` must be **unique** across the set (case-insensitively, url trimmed). Adds a
  * zod issue on `path` per violation so both `projectSpecSchema` (create) and `addRepoRequestSchema` (add)
  * share one rule. Shared by the server (input validation) and the web (client pre-check).
+ * @adr 0316
  */
 export function validateProjectRepos(
   repos: readonly RepoSpec[] | undefined,
@@ -1111,13 +1163,14 @@ export const subagentSpecSchema = z.object({
 export type SubagentSpec = z.infer<typeof subagentSpecSchema>;
 
 /**
- * PMSpec wizard payload (project-0010), SPEC_VERSION 5: the **self-describing envelope**
+ * PMSpec wizard payload, SPEC_VERSION 5: the **self-describing envelope**
  * (see the web's `features/spec/envelope.ts`). Stored as jsonb. `fields` carries every
  * catalog field with its schema + value; the `id` and `name` fields must hold a non-empty
- * value. `repos` (ADR-0073) stay top-level and are validated (ADR-0316): **≥1 repo, exactly one
+ * value. `repos` stay top-level and are validated: **≥1 repo, exactly one
  * `primary`** at the root (the only scaffolded repo), the rest **git submodules** with a unique
  * non-empty `subdir`; all urls unique. `meta` holds internal AI metadata for draft round-trips
  * (stripped on create).
+ * @api project-0010 @adr 0073 @adr 0316
  */
 export const projectSpecSchema = z
   .object({
@@ -1140,16 +1193,17 @@ export const projectSpecSchema = z
         });
       }
     }
-    // Repos (ADR-0316): ≥1 repo, exactly one primary (the root); the rest are submodules with a
+    // Repos: ≥1 repo, exactly one primary (the root); the rest are submodules with a
     // unique non-empty subdir; all urls unique. The primary is the only scaffolded repo.
     validateProjectRepos(v.repos, ctx);
   });
 export type ProjectSpec = z.infer<typeof projectSpecSchema>;
 
 /**
- * Body POST /projects/create — step 2: scaffold a draft from the spec (project-0010).
- * No `path` (ADR-0080): the cli scaffolds into `<profileDir>/<project-name>` and reports
+ * Body POST /projects/create — step 2: scaffold a draft from the spec.
+ * No `path`: the cli scaffolds into `<profileDir>/<project-name>` and reports
  * the resolved path back.
+ * @api project-0010 @adr 0080
  */
 export const createFromSpecRequestSchema = z.object({
   projectId: z.string().guid(),
@@ -1159,12 +1213,13 @@ export type CreateFromSpecRequest = z.infer<typeof createFromSpecRequestSchema>;
 
 /**
  * Body POST /projects/add — step 2 (add mode): register an existing project by cloning
- * its repos (project-0011, ADR-0117). No scaffold/AI-init; no manual `path`
+ * its repos. No scaffold/AI-init; no manual `path`
  * (ADR-0080 — the cli derives `<profileDir>/<project-name>` and returns it). Reuses the
  * multi-repo Git declaration (ADR-0073, simplified by ADR-0172): ≥1 repo, exactly one
  * `primary`; every repo carries a clone `url` (https or ssh), enforced by `repoSpecSchema`.
- * `spec` (ADR-0393) = the primary repo's `project.spec.json` read by the probe, with `repos`
+ * `spec` = the primary repo's `project.spec.json` read by the probe, with `repos`
  * replaced by the Git section's rows — saved to `project.spec` and written back by the cli.
+ * @api project-0011 @adr 0117 @adr 0393
  */
 export const addRepoRequestSchema = z
   .object({
@@ -1179,15 +1234,16 @@ export const addRepoRequestSchema = z
 export type AddRepoRequest = z.infer<typeof addRepoRequestSchema>;
 
 /**
- * Body POST /projects/:id/repos — add ONE repo to a READY project from the Git subtab
- * (project-0069, ADR-0299 §4). The repo is cloned into a new sibling folder and, unless
+ * Body POST /projects/:id/repos — add ONE repo to a READY project from the Git subtab.
+ * The repo is cloned into a new sibling folder and, unless
  * `scaffold` is false (Skip), scaffolded like create (template + spec + AI-init). 4PM never
- * creates repos — the `url` must be an existing repo (https or ssh — ADR-0172).
+ * creates repos — the `url` must be an existing repo (https or ssh).
+ * @api project-0069 @adr 0299 §4 @adr 0172
  */
 export const addProjectRepoRequestSchema = z.object({
-  /** Clone url — `https` or `ssh` (required; ADR-0172). */
+  /** Clone url — `https` or `ssh` (required). */
   url: z.string().max(500).regex(GIT_URL_RE, "must be an https or ssh git url"),
-  /** Primary branch to clone / check out (ADR-0292); empty ⇒ the repo's default branch. */
+  /** Primary branch to clone / check out; empty ⇒ the repo's default branch. @adr 0292 */
   branch: z.string().max(200).optional().default(""),
   /** Role label / folder hint (e.g. "docs" / "web"); empty ⇒ derived from the url basename. */
   role: z.string().max(60).optional().default(""),
@@ -1203,8 +1259,9 @@ export interface ProjectJobAcceptedResponse {
   jobId: string;
   project: ProjectResponse;
   /**
-   * project-0069 on a GitHub-App project (ADR-0356): the added repo's coverage status when the App
+   * project-0069 on a GitHub-App project: the added repo's coverage status when the App
    * does not cover it (`not_installed`/`no_access`/`host_mismatch`) — the web warns; absent otherwise.
+   * @adr 0356
    */
   gitAuthWarning?: string;
 }

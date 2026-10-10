@@ -1,6 +1,6 @@
 /**
- * AI prompt catalog registry (ADR-0381) — the single, framework-free source of truth for every
- * **server-managed** pre-written prompt (arch 0047). Shared by `@4pm/server` (seed default + the
+ * AI prompt catalog registry — the single, framework-free source of truth for every
+ * **server-managed** pre-written prompt. Shared by `@4pm/server` (seed default + the
  * server-built builders) and `@4pm/cli` (built-in default + override-or-built-in), so the default
  * text lives in exactly one place. The live content is the server DB prompt catalog, keyed by each
  * entry's `key`; these defaults are the **fill-only seed default + forward-safe fallback**.
@@ -13,6 +13,7 @@
  * Templating: a template may contain `{{var}}` placeholders; the builder substitutes them with
  * `renderPrompt`. `requiredVars` lists the placeholders a builder depends on — admin edits are
  * validated against this so a save can never drop a variable the builder needs.
+ * @adr 0381 @arch 0047
  */
 import defaultTemplates from "./ai-prompt-defaults.json";
 import { wrapUntrusted, type UntrustedKind } from "./untrusted-content";
@@ -20,10 +21,10 @@ import { wrapUntrusted, type UntrustedKind } from "./untrusted-content";
 /** The seed/fallback template per prompt key (from `ai-prompt-defaults.json`). */
 const DEFAULTS = defaultTemplates as Record<string, string>;
 
-/** Which app builds + dispatches the prompt (arch 0047). */
+/** Which app builds + dispatches the prompt. */
 export type PromptOwnerApp = "server" | "cli" | "web";
 
-/** Rollout phase (ADR-0381): `1` = server/cli (DB-managed now), `2` = web (deferred). */
+/** Rollout phase: `1` = server/cli (DB-managed now), `2` = web (deferred). */
 export type PromptPhase = 1 | 2;
 
 /** One manageable prompt in the catalog. */
@@ -41,9 +42,10 @@ export interface PromptDef {
   /** `{{var}}` placeholders the builder injects — enforced on save (none = a static prompt). */
   requiredVars: string[];
   /**
-   * Variables carrying third-party text (ADR-0421) and how the model must treat them — wrapped by
+   * Variables carrying third-party text and how the model must treat them — wrapped by
    * {@link renderCatalogPrompt} before substitution. **Required on every entry** (`{}` when none), so a
    * new prompt must decide; admin template edits cannot drop the marking.
+   * @adr 0421
    */
   untrustedVars: Readonly<Record<string, UntrustedKind>>;
   /** The built-in base-locale (English) template: seed default + forward-safe fallback. */
@@ -64,10 +66,11 @@ export function renderPrompt(template: string, vars: Record<string, string | num
 }
 
 /**
- * Render a catalog prompt (ADR-0421): wrap each non-empty value the entry's `untrustedVars` names with
+ * Render a catalog prompt: wrap each non-empty value the entry's `untrustedVars` names with
  * {@link wrapUntrusted} (source `<key>.<var>`), then substitute with {@link renderPrompt}. Every
  * resolver (web / cli / server) renders through this, so the marking holds for admin overrides too.
  * An unknown key renders as plain {@link renderPrompt}.
+ * @adr 0421
  */
 export function renderCatalogPrompt(key: string, template: string, vars: Record<string, string | number>): string {
   const untrusted = AI_PROMPTS[key]?.untrustedVars ?? {};
@@ -471,7 +474,7 @@ const PROMPT_META: PromptMeta[] = [
 
 /**
  * The server-managed prompt catalog, keyed by `key` — metadata + its default template. The DB is
- * seeded fill-only from these defaults (ADR-0381).
+ * seeded fill-only from these defaults.
  */
 export const AI_PROMPTS: Readonly<Record<string, PromptDef>> = Object.fromEntries(
   PROMPT_META.map((m) => [m.key, { ...m, defaultTemplate: DEFAULTS[m.key] ?? "" }]),

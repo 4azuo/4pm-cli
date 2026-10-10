@@ -1,9 +1,10 @@
 /**
  * Project-lifecycle channel handlers: keep the served physic project folder in sync with the
  * server — rename (PHYSIC_SYNC) / delete (PHYSIC_DELETE) the folder inside the profile (folder =
- * project name, ADR-0064), apply a live push of the project's token knobs (PROJECT_TOKENS,
- * ADR-0256), and scaffold (PROJECT_CREATE, ADR-0080) or register an existing (PROJECT_ADD,
+ * project name), apply a live push of the project's token knobs (PROJECT_TOKENS,
+ * ADR-0256), and scaffold (PROJECT_CREATE) or register an existing (PROJECT_ADD,
  * ADR-0117) project with streamed progress.
+ * @adr 0064 @adr 0080
  */
 import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import {
@@ -20,13 +21,13 @@ import {
   type RepoProbeRequest,
 } from "@4pm/ws";
 import type { GitAuthMethod } from "@4pm/dto";
-import { configureGitAuth } from "../../git-auth";
-import { requestGitSnapshot } from "../../git-snapshot";
-import { probeRepo } from "../../repo-probe";
-import { pauseAutonomous } from "../../autonomous-config";
-import { manageSshKey } from "../../git-ssh-key";
-import { createAiTaskRunner } from "../../ai-task";
-import { addProject, publishScaffold, scaffoldProject } from "../../scaffold";
+import { configureGitAuth } from "../../git/git-auth";
+import { requestGitSnapshot } from "../../git/git-snapshot";
+import { probeRepo } from "../../git/repo-probe";
+import { pauseAutonomous } from "../../autonomous/autonomous-config";
+import { manageSshKey } from "../../git/git-ssh-key";
+import { createAiTaskRunner } from "../../ai/ai-task";
+import { addProject, publishScaffold, scaffoldProject } from "../../project/scaffold";
 import { projectFolder, writeProfileConfig } from "../../../config/profile";
 import { setMcpServers } from "../../../utils/agent-mcp";
 import { logger } from "../../../common/logger/logger";
@@ -117,7 +118,7 @@ export function handleProjectChannels(
       return true;
     }
     case WsChannels.PROJECT_CREATE:
-      // Scaffold into <profileDir>/<projectName> (ADR-0080) + AI init + stream progress.
+      // Scaffold into <profileDir>/<projectName> + AI init + stream progress.
       void scaffoldProject(
         payload as unknown as ProjectCreatePayload,
         ctx.profileDir,
@@ -174,7 +175,10 @@ export function handleProjectChannels(
   }
 }
 
-/** Apply a git-auth method/host pushed by the server (ADR-0368) — same call the ws_token connect path makes. */
+/**
+ * Apply a git-auth method/host pushed by the server — same call the ws_token connect path makes.
+ * @adr 0368
+ */
 function applyGitAuth(ctx: WsHandlerCtx, method: string | null, host: string | null): void {
   configureGitAuth((method ?? null) as GitAuthMethod | null, host, ctx.profileDir, (req) =>
     ctx.request<GitTokenReply>(WsChannels.GIT_TOKEN, req),

@@ -1,9 +1,10 @@
 /**
- * Untrusted-content marking for AI prompts (ADR-0421). Third-party text (guest questions, ticket
+ * Untrusted-content marking for AI prompts. Third-party text (guest questions, ticket
  * threads, memory, task text, reviewed inputs) is wrapped in a nonce-named tag with a short notice
  * before it is substituted into a prompt, so the model can tell the platform's instructions apart from
  * text written by someone else. Applied to variable values before `renderPrompt`, so admin-overridden
- * templates (ADR-0381) get the marker too. Defence in depth — not a security boundary.
+ * templates get the marker too. Defence in depth — not a security boundary.
+ * @adr 0421 @adr 0381
  */
 
 /**
@@ -64,7 +65,7 @@ function notice(kind: UntrustedKind, source: string): string {
 }
 
 /**
- * Wrap untrusted text in a nonce-named marker block with a notice for the model (ADR-0421). The
+ * Wrap untrusted text in a nonce-named marker block with a notice for the model. The
  * result is meant to be substituted into a prompt template as a variable value.
  */
 export function wrapUntrusted(text: string, opts: WrapUntrustedOptions): string {

@@ -1,6 +1,7 @@
 /**
- * Git channel handlers (machine-0008/0021-0024, ADR-0089/0173): read-only history/diff over the
+ * Git channel handlers (machine-0008/0021-0024): read-only history/diff over the
  * served project's repos for the dashboard Git tab, plus the rented worker's ssh deploy-key ops.
+ * @adr 0089 @adr 0173
  */
 import {
   WsChannels,
@@ -12,10 +13,10 @@ import {
   type GitSshKeyRequest,
   type WsEnvelope,
 } from "@4pm/ws";
-import { gitDiff } from "../../git-diff";
-import { checkGitEnv } from "../../git-env";
-import { manageSshKey } from "../../git-ssh-key";
-import { gitCommit, gitCommitDiff, gitLog, gitRepos } from "../../git-history";
+import { gitDiff } from "../../git/git-diff";
+import { checkGitEnv } from "../../git/git-env";
+import { manageSshKey } from "../../git/git-ssh-key";
+import { gitCommit, gitCommitDiff, gitLog, gitRepos } from "../../git/git-history";
 import type { WsHandlerCtx } from "../context";
 
 /** Route the git.* channels; returns true when the message was handled. */
@@ -39,13 +40,13 @@ export function handleGitChannels(
       );
       return true;
     case WsChannels.GIT_REPOS:
-      // Request/reply (machine-0021): repos under the physic project (read-only — ADR-0089).
+      // Request/reply (machine-0021): repos under the physic project (read-only).
       void gitRepos(ctx.physicRoot).then((reply) =>
         ctx.send(WsChannels.GIT_REPOS, reply, message.id),
       );
       return true;
     case WsChannels.GIT_SSH_KEY: {
-      // Request/reply (ADR-0173): manage the rented worker's ssh deploy key (on the worker).
+      // Request/reply: manage the rented worker's ssh deploy key (on the worker).
       const req = payload as unknown as GitSshKeyRequest;
       void manageSshKey(req.op, ctx.profileDir).then((reply) =>
         ctx.send(WsChannels.GIT_SSH_KEY, reply, message.id),

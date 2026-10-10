@@ -13,11 +13,11 @@ import {
   type FsWriteRequest,
   type WsEnvelope,
 } from "@4pm/ws";
-import { listDir } from "../../fs-browse";
-import { readWorkerFile } from "../../fs-read";
-import { writeWorkerFile } from "../../fs-write";
-import { mutateFs } from "../../fs-mutate";
-import { downloadBinaryFile, uploadBinaryFile } from "../../fs-transfer";
+import { listDir } from "../../fs/fs-browse";
+import { readWorkerFile } from "../../fs/fs-read";
+import { writeWorkerFile } from "../../fs/fs-write";
+import { mutateFs } from "../../fs/fs-mutate";
+import { downloadBinaryFile, uploadBinaryFile } from "../../fs/fs-transfer";
 import type { WsHandlerCtx } from "../context";
 
 /** Route the fs.* channels; returns true when the message was handled. */

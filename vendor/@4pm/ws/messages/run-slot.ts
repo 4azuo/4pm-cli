@@ -1,10 +1,11 @@
 /**
- * `run.slot` messages (ADR-0359) — the per-org concurrent AI-run limit. Before spawning an AI CLI
+ * `run.slot` messages — the per-org concurrent AI-run limit. Before spawning an AI CLI
  * process the cli acquires a slot; over the plan's `maxConcurrentRuns` it gets a FIFO ticket and
  * retries with it until granted. A granted lease is renewed while the process runs and released on
- * exit; a lease/ticket whose cli died simply expires. A queued run that is stopped (ADR-0362) sends
+ * exit; a lease/ticket whose cli died simply expires. A queued run that is stopped sends
  * `leave` so its ticket is dropped at once. cli → server (with reply), relayed by the cli-server to the
  * server's internal gRPC `RunSlot`.
+ * @adr 0359 @adr 0362
  */
 
 /** Lease lifetime (s) — the cli renews every {@link RUN_SLOT_RENEW_MS}. */
@@ -23,7 +24,7 @@ export type RunSlotRequest =
   | { op: "acquire"; ticket?: string }
   | { op: "renew"; lease: string }
   | { op: "release"; lease: string }
-  // A queued run was stopped (ADR-0362): drop its ticket from the queue now.
+  // A queued run was stopped: drop its ticket from the queue now.
   | { op: "leave"; ticket: string };
 
 /**
@@ -37,7 +38,7 @@ export type RunSlotReply =
   | { granted: false; ticket: string; position: number; limit: number; running: number; retryAfterMs: number }
   | { ok: boolean };
 
-/** Where a queued run stands — carried on `command.output {queue}` status frames (ADR-0362). */
+/** Where a queued run stands — carried on `command.output {queue}` status frames. */
 export interface RunQueueInfo {
   /** Tickets ahead of this run in the org's FIFO queue (0 = next). */
   position: number;
@@ -47,10 +48,10 @@ export interface RunQueueInfo {
   running: number;
 }
 
-/** Exit code of a run stopped via `command.cancel` (ADR-0362) — the shell convention for SIGINT. */
+/** Exit code of a run stopped via `command.cancel` — the shell convention for SIGINT. */
 export const COMMAND_CANCELLED_EXIT_CODE = 130;
 
-/** Server → cli `command.cancel` request: stop this AI run (ADR-0362). */
+/** Server → cli `command.cancel` request: stop this AI run. */
 export interface CommandCancelRequest {
   commandId: string;
 }

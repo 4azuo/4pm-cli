@@ -1,7 +1,8 @@
 /**
- * WS session encryption (arch 0004, ADR-0002): ephemeral ECDH x25519 ⇒ HKDF ⇒
+ * WS session encryption: ephemeral ECDH x25519 ⇒ HKDF ⇒
  * AES-256-GCM, a nonce per message, forward secrecy. Used only on server & cli
  * (node:crypto) — the web does not import this file.
+ * @adr 0002 @arch 0004
  */
 import {
   createCipheriv,

@@ -1,13 +1,14 @@
 /**
- * Run-slot client (ADR-0359) — the cli half of the per-org concurrent AI-run limit. Before an AI CLI
+ * Run-slot client — the cli half of the per-org concurrent AI-run limit. Before an AI CLI
  * process is spawned, `acquireRunSlot` asks the server (`run.slot` acquire) for a slot; over the plan's
  * limit it waits in the org's FIFO queue, retrying with its ticket and reporting its position, and gives
  * up after RUN_SLOT_MAX_WAIT_MS (RUN_QUEUE_TIMEOUT). A granted lease is renewed while the run lasts and
  * released by the returned handle. Any transport error fails OPEN (run without a slot) so a server or
  * cli-server outage never blocks AI work; an older server that doesn't answer behaves the same.
- * A stop while queued (ADR-0362) sends `leave` so the ticket is dropped at once and resolves `cancelled`.
- * The server may refuse outright (`denied: "storage_full"` — the org's hosted storage is full, ADR-0365):
+ * A stop while queued sends `leave` so the ticket is dropped at once and resolves `cancelled`.
+ * The server may refuse outright (`denied: "storage_full"` — the org's hosted storage is full):
  * the run is not started and resolves `denied`.
+ * @adr 0359 @adr 0362 @adr 0365
  */
 import {
   RUN_SLOT_MAX_WAIT_MS,
@@ -34,7 +35,7 @@ export interface RunSlotQueueInfo {
 
 /**
  * The acquire outcome: a slot (possibly a no-op one — `queued` says whether it waited first), a queue
- * timeout, or a stop while queued (ADR-0362).
+ * timeout, or a stop while queued.
  */
 export type RunSlotOutcome =
   | { kind: "granted"; handle: RunSlotHandle; queued: boolean }
@@ -45,7 +46,7 @@ export type RunSlotOutcome =
 /** A handle with nothing to renew or release (unlimited plan / fail-open). */
 const NO_SLOT: RunSlotHandle = { release: () => undefined };
 
-/** Sleep `ms`, resolving early when `signal` aborts (a stop while queued — ADR-0362). */
+/** Sleep `ms`, resolving early when `signal` aborts (a stop while queued). */
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal?.aborted) return resolve();
@@ -78,7 +79,7 @@ function holdLease(ctx: WsHandlerCtx, lease: string): RunSlotHandle {
 
 /**
  * Acquire a concurrent-run slot for one AI run, waiting in the org's queue when the plan limit is
- * reached. `onQueued` is called whenever the queue position changes. `signal` (ADR-0362) stops the wait:
+ * reached. `onQueued` is called whenever the queue position changes. `signal` stops the wait:
  * the ticket is dropped (`run.slot {op:"leave"}`) and the outcome is `cancelled`.
  */
 export async function acquireRunSlot(
@@ -108,7 +109,7 @@ export async function acquireRunSlot(
       }
       return { kind: "granted", handle, queued: ticket !== undefined };
     }
-    // Refused outright — no queue (ADR-0365).
+    // Refused outright — no queue.
     if ("denied" in reply) return { kind: "denied", reason: reply.denied };
     ticket = reply.ticket;
     const limit = reply.limit;
@@ -121,7 +122,7 @@ export async function acquireRunSlot(
   }
 }
 
-/** Drop a stopped run's ticket (if it got one) and report `cancelled` (ADR-0362). Best-effort. */
+/** Drop a stopped run's ticket (if it got one) and report `cancelled`. Best-effort. */
 function leaveQueue(ctx: WsHandlerCtx, ticket: string | undefined): RunSlotOutcome {
   if (ticket) ctx.request<RunSlotReply>(WsChannels.RUN_SLOT, { op: "leave", ticket }).catch(() => undefined);
   return { kind: "cancelled" };

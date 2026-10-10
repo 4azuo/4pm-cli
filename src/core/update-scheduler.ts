@@ -1,24 +1,25 @@
 /**
- * UpdateScheduler — runs the org-configured daily cli auto-update (ADR-0074). The policy
+ * UpdateScheduler — runs the org-configured daily cli auto-update. The policy
  * is fed from each ws_token; at the target hour (resolved to the org timezone) it updates
  * when the cli is idle — deferring while a command runs so a job is never interrupted —
  * then re-execs the new binary (keeps `.cre`/profile, so the session reconnects). A Node
  * process cannot hot-swap its own code, so re-exec is the seamless equivalent of "no
  * restart". Gated by the org toggle AND the machine's local opt-out (`autoUpdate:false`).
+ * @adr 0074
  */
 import { spawn } from "node:child_process";
 import { logger } from "../common/logger/logger";
 import { CLI_VERSION } from "../version";
 import { readProfileConfig } from "../config/profile";
 import { CLI_UPDATE_LOCKED_REASON, reexecArgv, updateToLatest } from "./update";
-import { autoUpdateFlaggedTools, resolveInstallTimeoutMs } from "./worker-tools";
-import type { SessionBus } from "./session-bus";
+import { autoUpdateFlaggedTools, resolveInstallTimeoutMs } from "./worker/worker-tools";
+import type { SessionBus } from "./session/session-bus";
 import { t } from "../i18n";
 
 /** How often the scheduler re-evaluates whether the daily update is due (ms). */
 const TICK_MS = 60_000;
 
-/** Org-configured daily auto-update policy carried by the ws_token (ADR-0074). */
+/** Org-configured daily auto-update policy carried by the ws_token. */
 export interface AutoUpdatePolicy {
   autoUpdateDaily: boolean;
   autoUpdateHour: number;
@@ -32,8 +33,10 @@ export class UpdateScheduler {
   private lastDoneDateKey: string | null = null;
   /** Date key marked due but deferred because the cli was busy (stays set past the hour). */
   private pendingDateKey: string | null = null;
-  /** A push/connect-triggered update requested now (ADR-0289) — runs when idle, independent of the
-   *  daily policy; cleared once it runs. */
+  /** A push/connect-triggered update requested now — runs when idle, independent of the
+   *  daily policy; cleared once it runs.
+   * @adr 0289
+   */
   private forcedPending = false;
   /** Guards against a second update while one is in flight. */
   private updating = false;
@@ -42,10 +45,15 @@ export class UpdateScheduler {
     private readonly serverUrl: string,
     private readonly profileDir: string,
     private readonly bus: SessionBus,
-    /** Called after the idle tick reconciles the flagged tools, so the cli reports its new snapshot (ADR-0254). */
+    /**
+     * Called after the idle tick reconciles the flagged tools, so the cli reports its new snapshot.
+     * @adr 0254
+     */
     private readonly onToolsChanged?: () => void,
-    /** Report a self-update outcome to the server (ADR-0305) — used for FAILURES, so the web
-     *  "Update" modal surfaces why instead of waiting forever (a success re-execs + reconnects). */
+    /** Report a self-update outcome to the server — used for FAILURES, so the web
+     *  "Update" modal surfaces why instead of waiting forever (a success re-execs + reconnects).
+     * @adr 0305
+     */
     private readonly onUpdateResult?: (result: {
       ok: boolean;
       message: string | null;
@@ -65,10 +73,11 @@ export class UpdateScheduler {
   }
 
   /**
-   * Request an update to latest NOW (ADR-0289) — the server's `cli.update` push or the
+   * Request an update to latest NOW — the server's `cli.update` push or the
    * update-on-connect hook. Idle-aware like the daily tick (defers while a command runs) and
    * honours the local `autoUpdate:false` opt-out, but is independent of the daily org policy. Also
    * ensures the tick timer is running so the request is served even before the first ws_token.
+   * @adr 0289
    */
   updateNow(): void {
     if (this.optedOutLocally()) {
@@ -92,12 +101,12 @@ export class UpdateScheduler {
     }
   }
 
-  /** Local machine opt-out honored on top of the org toggle (ADR-0074). */
+  /** Local machine opt-out honored on top of the org toggle. */
   private optedOutLocally(): boolean {
     return readProfileConfig(this.profileDir).autoUpdate === false;
   }
 
-  /** `{ hour, dateKey }` for now, resolved to the org timezone (ADR-0074). */
+  /** `{ hour, dateKey }` for now, resolved to the org timezone. */
   private orgClock(): { hour: number; dateKey: string } | null {
     const tz = this.policy?.timezone || "UTC";
     try {
@@ -145,14 +154,14 @@ export class UpdateScheduler {
     if (clock.dateKey === this.lastDoneDateKey) return; // already handled today
 
     // Mark today's update due once the target hour arrives; it stays pending past the
-    // hour so a busy cli still updates when it next goes idle (ADR-0074).
+    // hour so a busy cli still updates when it next goes idle.
     if (this.pendingDateKey !== clock.dateKey && clock.hour === p.autoUpdateHour) {
       this.pendingDateKey = clock.dateKey;
       logger.info("update.scheduled.due", { dateKey: clock.dateKey, hour: p.autoUpdateHour });
     }
     if (this.pendingDateKey !== clock.dateKey) return; // not due yet today
 
-    // A command is running ⇒ defer until idle rather than interrupt the job (ADR-0074).
+    // A command is running ⇒ defer until idle rather than interrupt the job.
     if (this.bus.busy !== null) return;
 
     this.lastDoneDateKey = clock.dateKey;
@@ -167,7 +176,7 @@ export class UpdateScheduler {
     try {
       // Per-tool worker auto-update (ADR-0253) runs FIRST — the cli self-update below re-execs the
       // process on success, which would otherwise skip the flagged tools. Best-effort; a failed tool
-      // never blocks the cli update. Shares this org-gated, idle-only window (ADR-0074).
+      // never blocks the cli update. Shares this org-gated, idle-only window.
       await this.updateFlaggedTools();
       this.bus.log(t("update.scheduledChecking"));
       const result = await updateToLatest(this.serverUrl, force);
@@ -230,7 +239,7 @@ export class UpdateScheduler {
     }
   }
 
-  /** Update each tool flagged for auto-update in config.json to @latest (ADR-0253) — best-effort. */
+  /** Update each tool flagged for auto-update in config.json to @latest — best-effort. @adr 0253 */
   private async updateFlaggedTools(): Promise<void> {
     const config = readProfileConfig(this.profileDir);
     const tools = config.autoUpdateTools ?? [];

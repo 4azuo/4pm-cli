@@ -45,7 +45,7 @@ export interface FaqComposeRequest {
   customPrompt?: string;
 }
 
-/** Per-ticket outcome of a synthesis run (ADR-0333) — one entry per selected ticket. */
+/** Per-ticket outcome of a synthesis run — one entry per selected ticket. @adr 0333 */
 export interface FaqTicketResult {
   /** The ticket id this summary is for. */
   ticketId: string;
@@ -69,11 +69,11 @@ export interface FaqComposeReply {
   branch?: string;
   /** The AI agent's captured text output/summary (what it did), capped — shown in the admin modal. */
   output?: string;
-  /** Per-ticket result summaries parsed from the agent's structured output (ADR-0333). */
+  /** Per-ticket result summaries parsed from the agent's structured output. @adr 0333 */
   perTicket?: FaqTicketResult[];
   /** Optional error marker when the worker failed (clone/spawn/push/PR/timeout). */
   error?: string;
-  /** Real token usage of the claude run (ADR-0333); display-only (ADR-0224). */
+  /** Real token usage of the claude run; display-only. @adr 0333 @adr 0224 */
   tokens?: number;
   /** The token split behind `tokens`; absent when `tokens` is. */
   tokensBreakdown?: FaqComposeUsage;

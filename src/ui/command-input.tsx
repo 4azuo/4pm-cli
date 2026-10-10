@@ -1,13 +1,14 @@
 /**
- * CommandInput — the command write field of the TUI (ADR-0057): the operator types a
+ * CommandInput — the command write field of the TUI: the operator types a
  * prompt for the AI CLI, or a `/…` slash command. Slash commands autocomplete: typing
  * `/` shows matching commands (Tab to complete, ↑/↓ to pick while the menu is open).
  * Up/Down otherwise recall the persistent input history. Minimal controlled field on
  * Ink's useInput (no extra dependency). Separators / hint are laid out by App.
+ * @adr 0057
  */
 import React, { useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
-import type { SessionStatus } from "../core/session-bus";
+import type { SessionStatus } from "../core/session/session-bus";
 import { SLASH_COMMANDS } from "./slash-commands";
 import { t, type CliMessageKey } from "../i18n";
 

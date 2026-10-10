@@ -1,6 +1,7 @@
 /**
- * A minimal REST client for calling the server (BaseResponse — ADR-0009) for the
+ * A minimal REST client for calling the server (BaseResponse) for the
  * cli's public endpoints: confirm pairing, request ws_token, check version.
+ * @adr 0009
  */
 import type {
   BaseResponse,
@@ -9,7 +10,7 @@ import type {
   WhoamiResponse,
   WsTokenResponse,
 } from "@4pm/dto";
-import type { MachineFingerprint } from "../core/fingerprint";
+import type { MachineFingerprint } from "../core/profile/fingerprint";
 import { assertSecureRemoteUrl } from "../utils/secure-url";
 
 /** An error from the server carrying an errorCode. */
@@ -55,8 +56,9 @@ async function post<T>(serverUrl: string, path: string, body: unknown): Promise<
 }
 
 /**
- * machine-0002: confirm hashcode (2) ⇒ receive hashcode (3).
+ * Confirm hashcode (2) ⇒ receive hashcode (3).
  * Includes the machine fingerprint so the server can match/create a worker.
+ * @api machine-0002
  */
 export function confirmPairing(
   serverUrl: string,
@@ -71,8 +73,9 @@ export function confirmPairing(
 }
 
 /**
- * ADR-0192 §6: headless pairing — exchange a provisioning token for hashcode (3) with no
+ * Headless pairing — exchange a provisioning token for hashcode (3) with no
  * interactive hashcode dance (for a container/pool worker booting from an injected token).
+ * @adr 0192 §6
  */
 export function pairWithToken(
   serverUrl: string,
@@ -87,31 +90,35 @@ export function pairWithToken(
 }
 
 /**
- * machine-0003: request a ws_token using hashcode (3) (daily).
+ * Request a ws_token using hashcode (3) (daily).
+ * @api machine-0003
  */
 export function requestWsToken(serverUrl: string, hashcode3: string): Promise<WsTokenResponse> {
   return post<WsTokenResponse>(serverUrl, "/machine-links/token", { hashcode3 });
 }
 
 /**
- * machine-0020: read this cli's account + teams/projects (for /whoami).
+ * Read this cli's account + teams/projects (for /whoami).
+ * @api machine-0020
  */
 export function fetchWhoami(serverUrl: string, hashcode3: string): Promise<WhoamiResponse> {
   return post<WhoamiResponse>(serverUrl, "/machine-links/whoami", { hashcode3 });
 }
 
 /**
- * machine-0006b: self-revoke this link on `4pm unlink` (auth by hashcode3). The server
+ * Self-revoke this link on `4pm unlink` (auth by hashcode3). The server
  * closes the WS + soft-deletes the link/physic; the cli then removes its local .cre.
+ * @api machine-0006b
  */
 export function selfUnlink(serverUrl: string, hashcode3: string): Promise<null> {
   return post<null>(serverUrl, "/machine-links/self-unlink", { hashcode3 });
 }
 
 /**
- * meta-0001: the latest / minimum cli version (auto-update — ADR-0015). Bounded by a 20s timeout so a
- * stalled server never leaves the auto-update stuck on "checking for a new version…" forever (ADR-0074).
- * With `version` (the running one) the server adds that version's policy status (ADR-0363).
+ * The latest / minimum cli version (auto-update). Bounded by a 20s timeout so a
+ * stalled server never leaves the auto-update stuck on "checking for a new version…" forever.
+ * With `version` (the running one) the server adds that version's policy status.
+ * @api meta-0001 @adr 0074 @adr 0363 @adr 0015
  */
 export async function fetchCliVersion(serverUrl: string, version?: string): Promise<CliVersionResponse> {
   const ctrl = new AbortController();

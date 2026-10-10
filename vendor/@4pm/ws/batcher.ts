@@ -9,12 +9,13 @@ export interface OutputBatcherOptions {
   flushSizeKb?: number;
   maxBufferKb?: number;
   /**
-   * Hard cap (KiB) on the size of a **single** emitted frame (ADR-0322). A large AI output —
+   * Hard cap (KiB) on the size of a **single** emitted frame. A large AI output —
    * `claude -p --output-format json` emits its whole result in one stdout burst — arrives as one
    * huge `push`, and `flush` would otherwise emit the entire buffer as ONE `command.output` frame.
    * Bounded by the cli-server WS `maxPayload`, an over-cap frame is rejected (`WS_ERR_UNSUPPORTED_
    * MESSAGE_LENGTH`, 1009), which — before ADR-0322 — crashed the whole cli-server. `flush` slices
    * the buffer into frames no larger than this so a single burst can never exceed the transport cap.
+   * @adr 0322
    */
   maxFrameKb?: number;
   overflow?: "backpressure" | "truncate";
@@ -76,8 +77,9 @@ export class OutputBatcher {
 
   /**
    * Flush the current buffer immediately, splitting it into frames no larger than `maxFrameKb`
-   * (ADR-0322) so a single large burst never produces one over-`maxPayload` WS frame. The
+   * so a single large burst never produces one over-`maxPayload` WS frame. The
    * `truncated` flag is carried on the last frame only.
+   * @adr 0322
    */
   flush(): void {
     if (this.timer) {

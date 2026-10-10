@@ -1,12 +1,15 @@
 /**
- * `git.token` (cli → server, request–reply — ADR-0356): the worker's git credential helper / `gh` shim
+ * `git.token` (cli → server, request–reply): the worker's git credential helper / `gh` shim
  * asks for a short-lived GitHub-App installation token for one repo of the served project, scoped to a
  * job (or the link's default scope); at scope end the cli revokes the tokens at GitHub and reports it.
  * The App private key never leaves the server.
+ * @adr 0356
  */
 
 /** Host kind of the token's host — picks the shim env (`gh` GH_TOKEN/GH_ENTERPRISE_TOKEN, or `glab`
- *  GITLAB_TOKEN for a GitLab group token — ADR-0382). */
+ * GITLAB_TOKEN for a GitLab group token).
+ * @adr 0382
+ */
 export type GitHostKind = "github" | "ghe-cloud" | "ghes" | "gitlab";
 
 /** cli → server: issue a token for `repo` under `scope`, or report `scope` revoked. */

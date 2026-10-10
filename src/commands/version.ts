@@ -1,9 +1,10 @@
 /**
  * `4pm version` command — print the installed cli version; when a server URL is
  * available (a linked profile or --server), also query /meta/cli-version to show
- * the latest / minSupported and whether an update is available (meta-0001).
+ * the latest / minSupported and whether an update is available.
+ * @api meta-0001
  */
-import { readCredential } from "../core/credential";
+import { readCredential } from "../core/profile/credential";
 import { compareSemver } from "../core/update";
 import { fetchCliVersion } from "../services/api";
 import { CLI_VERSION } from "../version";

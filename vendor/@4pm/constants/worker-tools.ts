@@ -1,8 +1,9 @@
 /**
- * Worker tool catalog (ADR-0206) — the default set of command-line tools 4PM detects on a
+ * Worker tool catalog — the default set of command-line tools 4PM detects on a
  * worker (the AI CLIs, the VCS CLIs and the base toolchain), plus the shape used to install
  * one. Single source of truth reused by the cli (detection/install), the shared UI panel, and
  * the admin Documents "Default tools" reference. Framework-independent (pure constant).
+ * @adr 0206
  */
 
 /** How a catalog tool is categorized in the UI. */
@@ -32,37 +33,41 @@ export interface WorkerToolCatalogEntry {
    */
   installPackage: string | null;
   /**
-   * Whether the Tools panel offers **install/uninstall** for this tool (ADR-0227). `false` ⇒ a
+   * Whether the Tools panel offers **install/uninstall** for this tool. `false` ⇒ a
    * **detect-only prerequisite**: the panel shows it read-only ("Prerequisite"), never installs or
    * uninstalls it — even when it has an `installPackage` (the tool is provisioned/managed
    * out-of-band, e.g. 4PM-managed on a rented pool worker). The whole default catalog is detect-only.
+   * @adr 0227
    */
   installable: boolean;
   /**
-   * Whether the Tools panel offers **update-to-latest** for this tool (ADR-0252). Orthogonal to
+   * Whether the Tools panel offers **update-to-latest** for this tool. Orthogonal to
    * `installable`: the default catalog stays install/uninstall-closed, but the npm-distributed tools
    * (`pnpm`/`claude`/`codex`) are `true` here — the panel shows an **Update** button that reinstalls
    * the tool at `@latest` (`npm i -g <pkg>@latest` / `pnpm add -g <pkg>@latest`) behind a confirm
    * warning. `false` for the OS/runtime prerequisites (`git`/`node`/`npm`/`gh`/`glab` — not
    * npm-updatable). Requires a non-null `installPackage` to resolve the target.
+   * @adr 0252
    */
   updatable: boolean;
   /**
-   * Whether the panel offers **Install** when the tool is missing (ADR-0396) — no Uninstall, so it stays
+   * Whether the panel offers **Install** when the tool is missing — no Uninstall, so it stays
    * a prerequisite. `true` for `claude`/`codex` (npm) and `gh`/`glab` (release binary — `installPackage`
    * null): the cli also self-installs them (gh/glab at start, AI CLIs at start for used providers + on use).
+   * @adr 0396
    */
   installWhenMissing: boolean;
 }
 
 /**
- * The default worker-tool catalog (ADR-0206/0227/0252). Every default tool is **detect-only** for
+ * The default worker-tool catalog. Every default tool is **detect-only** for
  * install/uninstall (`installable: false`) — the panel probes + displays it but never installs/
  * uninstalls it. The npm-distributed ones (`pnpm`/`claude`/`codex`) are **updatable**
- * (`updatable: true`, ADR-0252): the panel offers an Update button that reinstalls them at `@latest`.
+ * (`updatable: true`): the panel offers an Update button that reinstalls them at `@latest`.
  * `installPackage` is still the package identity (extras-dedup + Documents reference) and resolves
- * the update target, independent of `installable`. `claude`/`codex`/`gh`/`glab` are `installWhenMissing`
- * (ADR-0396): an Install button while missing, and the cli self-installs them.
+ * the update target, independent of `installable`. `claude`/`codex`/`gh`/`glab` are `installWhenMissing`:
+ * an Install button while missing, and the cli self-installs them.
+ * @adr 0227 @adr 0252 @adr 0396
  */
 export const WORKER_TOOL_CATALOG: readonly WorkerToolCatalogEntry[] = [
   { id: "git", label: "Git", category: "vcs", versionArg: "--version", installPackage: null, installable: false, updatable: false, installWhenMissing: false },
@@ -80,7 +85,7 @@ export const WORKER_TOOL_PREREQUISITE_IDS: readonly string[] = WORKER_TOOL_CATAL
   (t) => !t.installable,
 ).map((t) => t.id);
 
-/** The catalog ids that offer **update-to-latest** (npm-distributed tools — ADR-0252). */
+/** The catalog ids that offer **update-to-latest** (npm-distributed tools). @adr 0252 */
 export const WORKER_TOOL_UPDATABLE_IDS: readonly string[] = WORKER_TOOL_CATALOG.filter(
   (t) => t.updatable,
 ).map((t) => t.id);
@@ -92,7 +97,7 @@ export const WORKER_TOOL_UPDATABLE_IDS: readonly string[] = WORKER_TOOL_CATALOG.
  */
 export const WORKER_TOOL_BUNDLED_GLOBALS: readonly string[] = ["npm", "corepack"];
 
-/** The catalog ids the panel can install while missing + the cli self-installs (ADR-0396). */
+/** The catalog ids the panel can install while missing + the cli self-installs. @adr 0396 */
 export const WORKER_TOOL_INSTALL_WHEN_MISSING_IDS: readonly string[] = WORKER_TOOL_CATALOG.filter(
   (t) => t.installWhenMissing,
 ).map((t) => t.id);

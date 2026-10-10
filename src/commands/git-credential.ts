@@ -1,25 +1,27 @@
 /**
- * `4pm git-credential <get|store|erase>` + `4pm git-token` (ADR-0356) — the worker side of GitHub-App
+ * `4pm git-credential <get|store|erase>` + `4pm git-token` — the worker side of GitHub-App
  * git-auth. git runs `git-credential` as its credential helper (configured by the daemon through its
  * process env, scoped to the App host); the `gh` shim runs `git-token`. Both ask the running `4pm start`
  * daemon — found via `FOURPM_PROFILE_DIR` — over its control socket for a short-lived token under the job
  * scope (`FOURPM_JOB_ID`). They print nothing when no token applies, so git / gh fall back to the worker's
  * own credentials. Never prints anything but the credential (stdout is the git protocol).
+ * @adr 0356
  */
 import { connect } from "node:net";
 import { join } from "node:path";
-import { CONTROL_SOCKET_FILE, createFrameParser, encodeFrame, type ControlServerFrame } from "../core/control-protocol";
-import { readControlToken } from "../core/control-token";
-import { GIT_HOST_ENV, GIT_HOST_KIND_ENV, JOB_ID_ENV, PROFILE_DIR_ENV } from "../core/git-auth";
-import { GIT_TOKEN_SOCKET_ENV } from "../core/git-token-server";
+import { CONTROL_SOCKET_FILE, createFrameParser, encodeFrame, type ControlServerFrame } from "../core/control/control-protocol";
+import { readControlToken } from "../core/control/control-token";
+import { GIT_HOST_ENV, GIT_HOST_KIND_ENV, JOB_ID_ENV, PROFILE_DIR_ENV } from "../core/git/git-auth";
+import { GIT_TOKEN_SOCKET_ENV } from "../core/git/git-token-server";
 
 /** Give up on the daemon after this long (git would otherwise hang on the helper). */
 const REQUEST_TIMEOUT_MS = 20_000;
 
 /**
- * Ask the daemon for a token for `host`/`path`; null when unavailable. Under uid separation (ADR-0430) the
+ * Ask the daemon for a token for `host`/`path`; null when unavailable. Under uid separation the
  * helper runs as the agent and uses the token-only socket (no control token — the group is the gate);
  * otherwise the control socket with its per-run token.
+ * @adr 0430
  */
 function requestToken(host: string, path: string): Promise<string | null> {
   const tokenSocket = process.env[GIT_TOKEN_SOCKET_ENV];

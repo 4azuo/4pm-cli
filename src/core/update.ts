@@ -1,11 +1,12 @@
 /**
- * Auto-update on startup (ADR-0015, meta-0001):
+ * Auto-update on startup:
  * GET /meta/cli-version?version=<current> ⇒ current < minSupported or status `unsupported` (admin
- * cli version policy — ADR-0363) = mandatory update;
+ * cli version policy) = mandatory update;
  * current < latest + autoUpdate ⇒ auto-update. Supports two paths: npm global
  * (`npm i -g @4pm/cli@<latest>`) or self-download tarball (verify sha256). After
  * updating, verify the version at the re-exec path actually advanced before claiming
- * success, so a mis-applied update can't trigger a restart loop (ADR-0053).
+ * success, so a mis-applied update can't trigger a restart loop.
+ * @api meta-0001 @adr 0015 @adr 0053 @adr 0363
  */
 import { execSync } from "node:child_process";
 import { createHash, createPublicKey, verify } from "node:crypto";
@@ -41,7 +42,7 @@ export function compareSemver(a: string, b: string): number {
 /**
  * Canonical form for equality: strip a leading `v`, lower-case, and normalize the separator before a
  * pre-release/build suffix to a single `-`, so the same release written as `1.12.1b`, `1.12.1-b` or
- * `1.12.1+b` all compare equal (ADR-0015). Mirrors the server's `canonVersion` — a GitHub tag
+ * `1.12.1+b` all compare equal. Mirrors the server's `canonVersion` — a GitHub tag
  * `cli-v1.12.1b` and a build `1.12.1-b` are the same version and must not read as an available update.
  */
 export function canonVersion(v: string): string {
@@ -57,7 +58,7 @@ export function canonVersion(v: string): string {
  * suffix (compareSemver ignores the `-suffix`/`+build`, so "1.10.2" vs a "1.10.2-b" build reads equal —
  * treat the differing build as an available update). `canonVersion` first normalizes the suffix form
  * (`1.12.1b` == `1.12.1-b`) so the same release written two ways is NOT re-installed. Never true when
- * `current` is numerically newer than `latest` (ADR-0015). Mirrors the server's cliOutdated.
+ * `current` is numerically newer than `latest`. Mirrors the server's cliOutdated.
  */
 export function shouldUpdateTo(current: string, latest: string): boolean {
   return canonVersion(current) !== canonVersion(latest) && compareSemver(current, latest) <= 0;
@@ -65,20 +66,22 @@ export function shouldUpdateTo(current: string, latest: string): boolean {
 
 /**
  * The install root of the RUNNING code = parent of dist/ (which holds package.json +
- * dist/). Derived from `import.meta.url` — the SAME basis version.ts uses (ADR-0052) —
+ * dist/). Derived from `import.meta.url` — the SAME basis version.ts uses —
  * NOT `process.argv[1]`, which for a symlinked global bin points at the bin/prefix dir,
  * not the real package. Using the wrong basis makes the update land in the wrong
  * directory while CLI_VERSION never changes (the bug this fixes).
+ * @adr 0052
  */
 function runningInstallRoot(): string {
   return dirname(dirname(fileURLToPath(import.meta.url)));
 }
 
 /**
- * Where a self-download update lands (ADR-0428): the running install root when it is writable; else,
+ * Where a self-download update lands: the running install root when it is writable; else,
  * under a read-only container root (`/app`), the writable runtime dir named by `FOURPM_CLI_RUNTIME_DIR`
  * (the image's `4pm` launcher prefers it). Falls back to the running root (the extract then reports the
  * real error) when neither applies.
+ * @adr 0428
  */
 function updateTargetRoot(): string {
   const running = runningInstallRoot();
@@ -95,7 +98,8 @@ let appliedRoot: string | null = null;
 
 /**
  * The argv for re-executing into the freshly updated cli: the same args, but pointing at the root the
- * update landed in (a read-only container root updates into the runtime dir — ADR-0428).
+ * update landed in (a read-only container root updates into the runtime dir).
+ * @adr 0428
  */
 export function reexecArgv(): string[] {
   const args = process.argv.slice(1);
@@ -117,8 +121,9 @@ function installedViaNpm(): boolean {
 
 /**
  * Version the re-exec would actually load — read from the package.json at the running
- * install root (same file version.ts reads — ADR-0052). Used to verify an update really
- * landed on the running install before claiming success (ADR-0053). "0.0.0" when unreadable.
+ * install root (same file version.ts reads). Used to verify an update really
+ * landed on the running install before claiming success. "0.0.0" when unreadable.
+ * @adr 0052
  */
 function readInstalledVersion(): string {
   try {
@@ -130,9 +135,10 @@ function readInstalledVersion(): string {
 }
 
 /**
- * Update via npm global — a shared binary, applies to every instance (ADR-0014).
+ * Update via npm global — a shared binary, applies to every instance.
+ * @adr 0014
  */
-/** Max wall-clock for the global npm install before we treat it as a hang (ADR-0305/0308). */
+/** Max wall-clock for the global npm install before we treat it as a hang. @adr 0305 @adr 0308 */
 const NPM_INSTALL_TIMEOUT_MS = 180_000;
 /** Max wall-clock for the tarball self-download before we treat it as a hang. */
 const DOWNLOAD_TIMEOUT_MS = 60_000;
@@ -146,7 +152,7 @@ function tailReason(raw: string): string {
 function updateViaNpm(version: string): void {
   // `version` comes from the server's update manifest and is interpolated into a shell
   // command — require a plain semver before exec so a malformed/hostile value can't inject
-  // shell (the self-download path already gates on sha256 + optional signature, ADR-0015).
+  // shell (the self-download path already gates on sha256 + optional signature).
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
     throw new Error(`Refusing to update: invalid version string "${version}".`);
   }
@@ -204,7 +210,7 @@ async function updateViaDownload(
   }
   // Optional ed25519 signature over the raw tarball bytes. Enforced only when a
   // public key is embedded (CLI_SIGNING_PUBLIC_KEY); then a valid signature is
-  // required — a missing/invalid one aborts the update (ADR-0015).
+  // required — a missing/invalid one aborts the update.
   if (CLI_SIGNING_PUBLIC_KEY) {
     if (!signature) {
       throw new Error("Missing tarball signature — aborting update (ADR-0015).");
@@ -252,14 +258,15 @@ async function updateViaDownload(
 }
 
 /**
- * True when this worker runs an update-locked image (`:full-locked` — ADR-0432): the cli never replaces
+ * True when this worker runs an update-locked image (`:full-locked`): the cli never replaces
  * itself; a newer cli comes only from pulling a newer image. Worker tools stay updatable.
+ * @adr 0432
  */
 export function cliUpdateLocked(): boolean {
   return process.env.FOURPM_UPDATE_LOCKED === "1";
 }
 
-/** The reason reported to the web when a locked worker is asked to update (ADR-0432). */
+/** The reason reported to the web when a locked worker is asked to update. @adr 0432 */
 export const CLI_UPDATE_LOCKED_REASON =
   "This worker runs an update-locked image (:full-locked) — the cli cannot update itself. Pull a newer image and recreate the container.";
 
@@ -277,10 +284,11 @@ export type ManualUpdateResult =
 /**
  * Manual update (`4pm update`) / operator "Update" push: install the server's latest version. Reuses
  * the same npm/self-download path as startup auto-update. Throws only when the server is unreachable.
- * `force` (the operator "Update" action — ADR-0289/0308) installs the server's latest **unconditionally**,
+ * `force` (the operator "Update" action) installs the server's latest **unconditionally**,
  * even when the running version compares equal — so a build the version compare can't tell apart (e.g. a
  * `-suffix`/`+build` an OLDER cli's compareSemver ignores) still applies on an explicit command, instead
  * of no-op'ing as "already latest" and leaving the web modal to time out.
+ * @adr 0289 @adr 0308
  */
 export async function updateToLatest(serverUrl: string, force = false): Promise<ManualUpdateResult> {
   // Dev build (unstamped, "0.0.0" — ADR-0052): never self-update, and don't even dial
@@ -308,7 +316,7 @@ export async function updateToLatest(serverUrl: string, force = false): Promise<
   } catch (err) {
     return { action: "failed", error: String(err), toVersion: meta.latest };
   }
-  // Verify the update actually landed on the running install (ADR-0053) — the same
+  // Verify the update actually landed on the running install — the same
   // check startup does. Prevents `4pm update` from claiming success while the running
   // version stays old (e.g. extracted into the wrong directory).
   const installed = readInstalledVersion();
@@ -399,7 +407,7 @@ export async function checkAndUpdate(
     return { action: "none" };
   }
 
-  // Verify the update landed where the re-exec will load from (ADR-0053): the update
+  // Verify the update landed where the re-exec will load from: the update
   // tool can report success without changing the running install (e.g. `npm i -g` hit
   // a different global prefix). Restarting into the old binary would loop — so only
   // claim "updated" when the installed version actually advanced.

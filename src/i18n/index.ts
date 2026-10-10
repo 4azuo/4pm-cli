@@ -1,9 +1,10 @@
 /**
- * CLI i18n (ADR-0276) — resolves the operator's locale and translates message keys for
+ * CLI i18n — resolves the operator's locale and translates message keys for
  * user-facing errors. Locale precedence: the worker `config.json` `locale` (set from the
- * Worker configs form via config-sync, ADR-0141) → `FOURPM_LOCALE` / `LANG` / `LC_ALL` →
+ * Worker configs form via config-sync) → `FOURPM_LOCALE` / `LANG` / `LC_ALL` →
  * English. The catalog is self-contained (no next-intl); server-error text is keyed by the
  * shared `@4pm/constants` ErrorCode tokens where it maps a server code.
+ * @adr 0276 @adr 0141
  */
 import { normalizeLocale, type Locale } from "@4pm/constants";
 import { catalogs, en, type CliMessageKey } from "./messages";

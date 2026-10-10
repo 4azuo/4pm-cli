@@ -4,7 +4,7 @@
  * override. Kept out of the main file so it stays focused on the session lifecycle.
  */
 import { CLI_SETTINGS_BOUNDS, type TranscriptEntry as DtoTranscriptEntry } from "@4pm/dto";
-import type { TranscriptEntry as BusTranscriptEntry } from "../session-bus";
+import type { TranscriptEntry as BusTranscriptEntry } from "../session/session-bus";
 
 /** Map a SessionBus transcript entry to the console-sync wire shape (drops the cli-only `ts`). */
 export function toDtoEntry(e: BusTranscriptEntry): DtoTranscriptEntry {

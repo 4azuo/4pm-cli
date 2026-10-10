@@ -1,24 +1,24 @@
 /**
- * `4pm link` command — two-way pairing with the server (machine-0001/0002, ADR-0014):
+ * `4pm link` command — two-way pairing with the server (machine-0001/0002):
  * generate hashcode (1) shown to the user ⇒ the user enters it on the web /machines
  * page ⇒ enter hashcode (2) from the web back here ⇒ confirm (with the machine
  * fingerprint) ⇒ store hashcode (3) in the profile's `.cre`. Without --profile the
- * profile is keyed by the paired MACHINE userId (ADR-0047). Pairing always proceeds
- * (no "already linked" pre-check): it renews the profile if it exists, else adds it
- * (ADR-0063).
+ * profile is keyed by the paired MACHINE userId. Pairing always proceeds
+ * (no "already linked" pre-check): it renews the profile if it exists, else adds it.
+ * @adr 0047 @adr 0063 @adr 0014
  */
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
-import { readCredential, writeCredential } from "../core/credential";
-import { collectFingerprint } from "../core/fingerprint";
+import { readCredential, writeCredential } from "../core/profile/credential";
+import { collectFingerprint } from "../core/profile/fingerprint";
 import { confirmPairing, pairWithToken } from "../services/api";
 import { ensureProfileConfig, prepareWorkspaces, profileDir, projectFolder, writeDefaultProfile } from "../config/profile";
 import { assertSecureRemoteUrl } from "../utils/secure-url";
 import { initI18n, t } from "../i18n";
 
 /**
- * A filesystem-safe profile name derived from the account username (ADR-0063): readable
+ * A filesystem-safe profile name derived from the account username: readable
  * folders (e.g. "mcacc1", "admin") so no `--profile` is needed to tell them apart.
  */
 function sanitizeProfileName(name: string): string {
@@ -27,7 +27,7 @@ function sanitizeProfileName(name: string): string {
 
 /**
  * Run interactive pairing. `explicitProfile` is the (optional) --profile name; when
- * absent the profile is named after the paired account's username (ADR-0063).
+ * absent the profile is named after the paired account's username.
  */
 export async function runLink(
   serverUrl: string,
@@ -59,9 +59,9 @@ export async function runLink(
   }
   const { hashcode3, username, scope, projectName } = result;
   // Explicit --profile keeps its name; otherwise name the profile after the account's
-  // username (readable, no --profile needed — ADR-0063).
+  // username (readable, no --profile needed).
   const profileName = explicitProfile ?? sanitizeProfileName(username);
-  // Renew if the profile already exists, else add a new one (ADR-0063) — notified below.
+  // Renew if the profile already exists, else add a new one — notified below.
   const existed = readCredential(profileDir(profileName), profileName) != null;
   const dir = profileDir(profileName);
   writeCredential(dir, {

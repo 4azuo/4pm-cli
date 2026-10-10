@@ -3,7 +3,7 @@
  * ADR-0015). Unlike startup auto-update this forces the update regardless of the
  * profile's `autoUpdate` config; reuses the same npm/self-download path.
  */
-import { readCredential } from "../core/credential";
+import { readCredential } from "../core/profile/credential";
 import { updateToLatest } from "../core/update";
 import { readProfileConfig } from "../config/profile";
 import { initI18n, t } from "../i18n";

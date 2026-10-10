@@ -1,11 +1,12 @@
 /**
- * Host-mounted AI logins under the agent uid separation (ADR-0433). The ADR-0199 recipe bind-mounts a host
+ * Host-mounted AI logins under the agent uid separation. The ADR-0199 recipe bind-mounts a host
  * login (`-v ~/.claude:/home/node/ai-creds/claude`) and points a profile at it. The agent cannot read those
  * host-owned `0600` files, and changing their owner/mode would break the login on the host — so, while
  * separation is on, a profile under `~/ai-creds/` runs on an imported copy in the state volume
  * (`~/.4pm/ai/mounted/<same path>`). The cli copies the credential files from the mount (never writes to it)
  * whenever the host's file changed since the last import; the copy is the agent's and the provider keeps
  * refreshing it in place. Off ⇒ the profile uses the mount directly, as before.
+ * @adr 0433
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -17,7 +18,7 @@ import { agentHome, agentUser, asAgent, prepareAgentCredentialDir } from "./agen
 /** The provider credential files worth importing (claude: token + account; codex: token). */
 const CREDENTIAL_FILES = [".credentials.json", ".claude.json", "auth.json"] as const;
 
-/** Where host logins are mounted (ADR-0199): `~/ai-creds/<name>`. */
+/** Where host logins are mounted: `~/ai-creds/<name>`. @adr 0199 */
 function mountRoot(): string {
   return resolve(homedir(), "ai-creds");
 }
@@ -117,8 +118,9 @@ function importFromMount(dir: string): void {
 }
 
 /**
- * Make a provider credential dir ready for an agent run (ADR-0430 phase 3 + ADR-0433): share it with the
+ * Make a provider credential dir ready for an agent run: share it with the
  * agent and, for an imported host login, refresh the copy from the mount. No-op when separation is off.
+ * @adr 0430 phase 3
  */
 export function prepareCredentialDir(dir: string): void {
   if (!agentUser()) return;

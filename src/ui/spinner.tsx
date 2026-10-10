@@ -1,6 +1,7 @@
 /**
  * Spinner — a tiny animated braille spinner (no extra dependency) used in the
- * processing status line while a tool (claude/codex/…) runs (ADR-0057).
+ * processing status line while a tool (claude/codex/…) runs.
+ * @adr 0057
  */
 import React, { useEffect, useState } from "react";
 import { Text } from "ink";

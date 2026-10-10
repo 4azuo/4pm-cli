@@ -1,15 +1,16 @@
 import type { WhoamiResponse } from "@4pm/dto";
 
 /**
- * Static session info shown in the TUI banner (ADR-0057) — resolved locally from the
+ * Static session info shown in the TUI banner — resolved locally from the
  * credential/profile/config (never a secret), plus a `whoami` fetcher for /whoami.
+ * @adr 0057
  */
 export interface SessionInfo {
   /** Installed cli version (CLI_VERSION). */
   version: string;
   /** Link scope — "project" (MACHINE) or "orchestrator" (root/ADMIN) — ADR-0010. */
   scope: string;
-  /** Active profile name (default profile = paired userId — ADR-0047). */
+  /** Active profile name (default profile = paired userId). @adr 0047 */
   profile: string;
   /** Profile directory (~/.4pm/profiles/<name>/) — slash commands read/write config here. */
   profileDir: string;

@@ -1,16 +1,17 @@
 /**
- * `4pm attach` (ADR-0192 §2) — open the interactive TUI against a **running** headless daemon
+ * `4pm attach` — open the interactive TUI against a **running** headless daemon
  * (`4pm start`) over its per-profile control socket, instead of starting a second WS session. The
  * daemon streams its SessionBus (transcript/header) into a local bus that drives the same Ink TUI;
  * the operator's input is forwarded back. One terminal can attach to any of N daemons.
+ * @adr 0192 §2
  */
 import { join } from "node:path";
-import { readCredential } from "../core/credential";
+import { readCredential } from "../core/profile/credential";
 import { fetchWhoami } from "../services/api";
-import { SessionBus } from "../core/session-bus";
-import { connectControl } from "../core/control-client";
-import { CONTROL_SOCKET_FILE } from "../core/control-protocol";
-import { readControlToken } from "../core/control-token";
+import { SessionBus } from "../core/session/session-bus";
+import { connectControl } from "../core/control/control-client";
+import { CONTROL_SOCKET_FILE } from "../core/control/control-protocol";
+import { readControlToken } from "../core/control/control-token";
 import { runTui } from "../ui/run-tui";
 import type { SessionInfo } from "../ui/session-info";
 import { readProfileConfig } from "../config/profile";

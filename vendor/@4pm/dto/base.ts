@@ -1,11 +1,12 @@
 /**
- * BaseResponse (ADR-0009) + BaseRequest (ADR-0008) — standard envelope & list
+ * BaseResponse + BaseRequest — standard envelope & list
  * query params for every API.
  *
  * Error i18n: on failure the server returns `errorCode` (+ optional `meta` for
  * interpolation) and clients localize the message themselves. `message` is only
  * an English fallback / for non-i18n clients; `errorId` is a support reference,
  * never shown to end users.
+ * @adr 0009 @adr 0008
  */
 import { z } from "zod";
 import type { ErrorCode } from "@4pm/constants";
@@ -30,7 +31,7 @@ export interface BaseResponse<T = unknown> {
   total?: number;
   /** List endpoints that advertise a per-org creation cap (count/max UI, e.g. ADR-0332). */
   max?: number;
-  /** Keyset-paged feeds (ADR-0361): whether older / newer rows exist beyond this page. */
+  /** Keyset-paged feeds: whether older / newer rows exist beyond this page. @adr 0361 */
   hasOlder?: boolean;
   hasNewer?: boolean;
 }
@@ -123,7 +124,7 @@ export const baseRequestSchema = z.object({
 /** Standard list/query params — list DTOs extend with their own filters. */
 export type BaseRequest = z.infer<typeof baseRequestSchema>;
 
-/** Filter `pinned=true` (string query ⇒ boolean) — shared list flag (ADR-0027). */
+/** Filter `pinned=true` (string query ⇒ boolean) — shared list flag. @adr 0027 */
 export const pinnedFilterSchema = z
   .enum(["true", "false"])
   .transform((v) => v === "true")
@@ -131,7 +132,8 @@ export const pinnedFilterSchema = z
 
 /**
  * Filter `deleted=true` (string query ⇒ boolean) — ADMIN-only Trash view listing
- * soft-deleted records (ADR-0109). Shared by project/team/user list DTOs.
+ * soft-deleted records. Shared by project/team/user list DTOs.
+ * @adr 0109
  */
 export const deletedFilterSchema = z
   .enum(["true", "false"])

@@ -1,6 +1,7 @@
 /**
- * User preference enums for the web dashboard (ADR-0001) — imported by both
+ * User preference enums for the web dashboard — imported by both
  * server and web so values stay in sync for future per-user preferences.
+ * @adr 0001
  */
 
 /** Color theme (each theme has one CSS-variables file in the web app). */

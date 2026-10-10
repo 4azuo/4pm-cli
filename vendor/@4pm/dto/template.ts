@@ -1,6 +1,7 @@
 /**
- * DTOs for the org template-file library (ADR-0113): permanent cloud storage for report /
+ * DTOs for the org template-file library: permanent cloud storage for report /
  * estimation / … templates, quota-limited per plan, referenced per-project by kind.
+ * @adr 0113
  */
 
 /** Template kinds a project can assign a file to (aligns with the Theme C generators). */
@@ -24,11 +25,11 @@ export const TEMPLATE_ALLOWED_MIME = [
 export interface TemplateFileResponse {
   id: string;
   name: string;
-  /** Optional free-text description (ADR-0332). */
+  /** Optional free-text description. @adr 0332 */
   description: string | null;
   mime: string;
   size: number;
-  /** Current version number (1-based, ADR-0332). */
+  /** Current version number (1-based). @adr 0332 */
   version: number;
   uploadedBy: string | null;
   createdAt: string;
@@ -36,7 +37,7 @@ export interface TemplateFileResponse {
   updatedAt: string;
 }
 
-/** One immutable version in a template file's history (ADR-0332). */
+/** One immutable version in a template file's history. @adr 0332 */
 export interface TemplateFileVersionResponse {
   id: string;
   version: number;
@@ -46,13 +47,13 @@ export interface TemplateFileVersionResponse {
   createdAt: string;
 }
 
-/** Body PATCH /templates/:id — edit a file's metadata (name/description) (ADR-0332). */
+/** Body PATCH /templates/:id — edit a file's metadata (name/description). @adr 0332 */
 export interface UpdateTemplateFileRequest {
   name?: string;
   description?: string | null;
 }
 
-/** Data GET /templates — the org's files + storage-quota usage (ADR-0113). */
+/** Data GET /templates — the org's files + storage-quota usage. */
 export interface TemplateListResponse {
   items: TemplateFileResponse[];
   /** Sum of the org's non-deleted template file sizes (bytes). */

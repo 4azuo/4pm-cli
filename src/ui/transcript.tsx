@@ -1,19 +1,20 @@
 /**
- * Transcript rendering helpers (ADR-0057): flatten transcript entries into single
+ * Transcript rendering helpers: flatten transcript entries into single
  * display lines (splitting multi-line output) and render one line with a source tag.
  * Command output is passthrough — printed verbatim, not recolored — per
  * cli-display 0001. The body is a fixed-height viewport (see App), not <Static>.
  *
- * Readability (ADR-0107): entries are grouped into blocks by `(source, kind)` — the
+ * Readability: entries are grouped into blocks by `(source, kind)` — the
  * source tag prints only on the block's first physical row (not every line), and a blank
  * spacer row separates adjacent blocks. A `<detail title="…">…</detail>` span (e.g. the
  * spec-context JSON of a dispatched suggest/review/compose prompt) is collapsed to a single
  * dim `▸ title` line so the viewport is not flooded — the underlying prompt is unchanged.
+ * @adr 0057 @adr 0107
  */
 import React from "react";
 import { Box, Text } from "ink";
 import { prettyResult } from "@4pm/utils";
-import type { TranscriptEntry } from "../core/session-bus";
+import type { TranscriptEntry } from "../core/session/session-bus";
 
 /** One physical line shown in the viewport. */
 export interface DisplayLine {
@@ -22,13 +23,13 @@ export interface DisplayLine {
   level: TranscriptEntry["level"];
   kind: TranscriptEntry["kind"];
   text: string;
-  /** Render the source tag on this row (only the first row of a block — ADR-0107). */
+  /** Render the source tag on this row (only the first row of a block). */
   showTag: boolean;
   /** A collapsed/expanded fold marker row (dim `▸[N] …` / `▾[N] …`). */
   collapsed: boolean;
   /** A blank separator row between two blocks (no tag, no text). */
   spacer: boolean;
-  /** The 1-based fold number on a marker row (`/expand N` targets it — ADR-0108). */
+  /** The 1-based fold number on a marker row (`/expand N` targets it). @adr 0108 */
   blockIndex?: number;
 }
 
@@ -53,14 +54,15 @@ function textColor(line: DisplayLine): string | undefined {
   return undefined; // passthrough output / info — default terminal color
 }
 
-/** A leading AI-run start-time stamp on an `aireq` marker ("yyyy/MM/dd HH:mm:ss ", ADR-0249). */
+/** A leading AI-run start-time stamp on an `aireq` marker ("yyyy/MM/dd HH:mm:ss "). @adr 0249 */
 const START_STAMP_RE = /^(\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2} )/;
 
 /**
  * Render an AI marker line ("<cmd> ‹ …" request / "<cmd> › …" response): the CLI name
  * before the arrow is colored so the prompt/response boundary stands out. A request's leading
- * start-time stamp (ADR-0249) is dimmed rather than colored as the name. Continuation rows of a
+ * start-time stamp is dimmed rather than colored as the name. Continuation rows of a
  * wrapped request (no arrow) fall back to the default color.
+ * @adr 0249
  */
 function AiMarkerLine({ line }: { line: DisplayLine }): React.ReactElement {
   const arrow = line.kind === "aireq" ? "‹" : "›";
@@ -125,9 +127,10 @@ const DETAIL_RE = /<detail\s+title="([^"]*)">([\s\S]*?)<\/detail>/g;
 
 /**
  * Split an entry's raw text into segments, turning each `<detail title="…">…</detail>` span
- * into one collapsed marker segment (title + its payload body — ADR-0107/0108). The newline
+ * into one collapsed marker segment (title + its payload body). The newline
  * right before/after a marker is absorbed so the collapsed line sits flush with surrounding
  * text. Text without a `<detail>` is just split on newlines (unchanged behavior).
+ * @adr 0108
  */
 function toSegments(raw: string): Segment[] {
   if (!raw.includes("<detail")) {
@@ -183,12 +186,13 @@ function pushCollapsible(
 
 /**
  * Flatten entries into display lines. Entries are grouped into **blocks** by consecutive
- * `(source, kind)` (ADR-0107): a blank spacer row separates adjacent blocks, and the source
+ * `(source, kind)`: a blank spacer row separates adjacent blocks, and the source
  * tag shows only on the block's first physical row. Each line is split on embedded newlines
  * **and** wrapped to `textWidth`, so every DisplayLine stays exactly one physical row (the
  * fixed-height viewport math in App is unchanged). Collapsible folds — `<detail>` spans and
- * json/code `result` blocks (ADR-0108) — are numbered `▸[N]`; a fold whose number is in
+ * json/code `result` blocks — are numbered `▸[N]`; a fold whose number is in
  * `expanded` shows its pretty-printed body instead.
+ * @adr 0108
  */
 export function flattenEntries(
   entries: TranscriptEntry[],
@@ -217,7 +221,7 @@ export function flattenEntries(
     // Tag only the very first physical row of a new block; continuation entries/rows omit it.
     let firstRow = newBlock;
 
-    // A whole json/code AI result — one collapsible fold (ADR-0108). Title carries the
+    // A whole json/code AI result — one collapsible fold. Title carries the
     // pretty-printed line count so the fold hints its size.
     if (entry.kind === "result") {
       blockNo += 1;

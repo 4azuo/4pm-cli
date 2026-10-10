@@ -1,13 +1,14 @@
 /**
- * Plan how the TUI input box drives an AI CLI (ADR-0057). The operator types a
+ * Plan how the TUI input box drives an AI CLI. The operator types a
  * natural-language prompt; by default it goes to `claude` (print mode) so the AI agent
  * itself decides whether to call `gh`/`glab`/`git`/etc. — no command whitelist.
  *
  * Each provider (claudeHome / codexHome / antigravityHome) is a **list** of profiles: the
  * runner tries them in order until one authenticates, then remembers the working one
  * (working-first ordering here). Every profile's `args` are EXTRA pre-prompt args
- * appended AFTER the hardcoded required args (ADR-0158) — they can add options but never
+ * appended AFTER the hardcoded required args — they can add options but never
  * strip the token-metering flags — plus an optional `model`. Pure helper.
+ * @adr 0057 @adr 0158
  */
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -19,13 +20,14 @@ import { readAgentFile } from "./agent-user";
 import { effectiveCredentialDir } from "./ai-cred-mount";
 
 /**
- * REQUIRED pre-prompt args per known AI CLI (ADR-0158) — **hardcoded in source and always
+ * REQUIRED pre-prompt args per known AI CLI — **hardcoded in source and always
  * injected** so token metering can never be turned off by an operator's config edit.
  * Claude runs headless via `-p` and emits **stream-json** (needs `--verbose`) so the cli
  * renders text live AND reads the real token usage from the final `result` event; codex
  * runs `exec --json` for the same reason (its JSONL `turn.completed` carries usage —
  * ADR-0072). A profile's own `args` are appended as EXTRAS on top of these, never
- * replacing them. Antigravity has none yet (schema-only until its CLI is wired — ADR-0138).
+ * replacing them. Antigravity has none yet (schema-only until its CLI is wired).
+ * @adr 0138
  */
 const REQUIRED_AI_ARGS: { claude: string[]; codex: string[]; antigravity: string[] } = {
   claude: ["-p", "--output-format", "stream-json", "--verbose"],
@@ -34,10 +36,11 @@ const REQUIRED_AI_ARGS: { claude: string[]; codex: string[]; antigravity: string
 };
 
 /**
- * Agentic tools disallowed for a one-shot AI run (ADR-0249) — a comma-separated single token so
+ * Agentic tools disallowed for a one-shot AI run — a comma-separated single token so
  * claude's variadic `--disallowedTools <tools...>` consumes exactly this arg (a terminator flag
  * follows so it can't swallow the prompt). A text-in → text-out spec review/compose/suggest has no
  * reason to run these; blocking them stops the run from wandering the repo / editing files / looping.
+ * @adr 0249
  */
 export const ONE_SHOT_DISALLOWED_CLAUDE_TOOLS = [
   "Bash", "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit", "Task", "WebSearch", "WebFetch",
@@ -54,13 +57,14 @@ export const ONE_SHOT_DISALLOWED_CLAUDE_TOOLS = [
 const ONE_SHOT_MAX_TURNS = 4;
 
 /**
- * Extra pre-prompt args that make a claude run one-shot (ADR-0249): a fixed `--max-turns`
+ * Extra pre-prompt args that make a claude run one-shot: a fixed `--max-turns`
  * ({@link ONE_SHOT_MAX_TURNS}, equals form so an older claude that doesn't know the flag treats it as
  * an ignored unknown option, NOT a stray positional) bounds the agentic loop; `--disallowedTools`
  * blocks the tools; and `--permission-mode default` is a NON-variadic terminator placed last so the
  * variadic `--disallowedTools` consumes only its tool token. The prompt no longer follows on argv (it
- * rides stdin — ADR-0251), so the terminator's "shield the prompt" role is moot but the flag is still
+ * rides stdin), so the terminator's "shield the prompt" role is moot but the flag is still
  * a valid setting. Claude only — codex `exec` is already single-shot. Empty for a non-claude cmd.
+ * @adr 0249 @adr 0251
  */
 function oneShotArgs(cmd: string): string[] {
   if (!cmd.includes("claude")) return [];
@@ -74,11 +78,12 @@ function oneShotArgs(cmd: string): string[] {
 }
 
 /**
- * Tools disallowed for a **read-only agent** run (ADR-0265) — the write/orchestration tools only, as
+ * Tools disallowed for a **read-only agent** run — the write/orchestration tools only, as
  * one comma-separated token (same variadic-consumption trick as {@link ONE_SHOT_DISALLOWED_CLAUDE_TOOLS}).
  * Unlike one-shot this **keeps** `Read`/`Glob`/`Grep`/`Bash`/`ToolSearch` so the agent can inspect and
  * diff the repo; it only blocks anything that would modify files or spawn side-effecting work — a
  * read-only report (template "Analyze impact") must never edit/commit.
+ * @adr 0265
  */
 const READ_ONLY_DISALLOWED_CLAUDE_TOOLS = [
   "Edit", "Write", "NotebookEdit", "Task", "SlashCommand", "Skill", "WebSearch", "WebFetch",
@@ -88,20 +93,22 @@ const READ_ONLY_DISALLOWED_CLAUDE_TOOLS = [
 ].join(",");
 
 /**
- * Fixed agentic turn cap for a read-only run (ADR-0265) — a whole-repo analysis (e.g. the template
+ * Fixed agentic turn cap for a read-only run — a whole-repo analysis (e.g. the template
  * "Analyze impact" report) must read many files over several turns before it can write the report, so
  * this is generous and NOT operator-tunable: a tiny per-profile cap would starve the run before it
  * ever produces output.
+ * @adr 0265
  */
 const READ_ONLY_MAX_TURNS = 40;
 
 /**
- * Extra pre-prompt args that make a claude run a **read-only agent** (ADR-0265): a fixed `--max-turns`
+ * Extra pre-prompt args that make a claude run a **read-only agent**: a fixed `--max-turns`
  * ({@link READ_ONLY_MAX_TURNS} — NOT 1, it must read many files over several turns); `--disallowedTools`
  * blocking only write/orchestration tools; and `--permission-mode plan` as the NON-variadic terminator
  * placed last (plan mode is read-only: the agent may Read/Glob/Grep and run read-only Bash to explore
  * but cannot edit files). For codex a read-only sandbox (`--sandbox read-only`) denies writes. Empty
  * for a non-claude/non-codex cmd.
+ * @adr 0265
  */
 function readOnlyArgs(cmd: string): string[] {
   if (cmd.includes("claude")) {
@@ -118,13 +125,14 @@ function readOnlyArgs(cmd: string): string[] {
 }
 
 /**
- * Extra pre-prompt args that make a claude run a **write-capable agent** (ADR-0271): a full agent
+ * Extra pre-prompt args that make a claude run a **write-capable agent**: a full agent
  * that must run file + git/`gh`/`glab` writes **headless without an approval prompt** (the project-
  * template "Update" → branch + PR). `--permission-mode bypassPermissions` auto-approves every tool for
  * this run so it never stalls on an interactive approval a headless `-p` can't answer; it keeps ALL
  * tools (no `--disallowedTools`) and no turn cap (an update may take many turns). Still bounded by the
- * folder-scope guard (ADR-0181) + the wall-clock timeout (ADR-0243). For codex a full-access run
+ * folder-scope guard + the wall-clock timeout. For codex a full-access run
  * (`--dangerously-bypass-approvals-and-sandbox`, best-effort). Empty for a non-claude/non-codex cmd.
+ * @adr 0271 @adr 0181 @adr 0243
  */
 function bypassArgs(cmd: string): string[] {
   if (cmd.includes("claude")) return ["--permission-mode", "bypassPermissions"];
@@ -146,27 +154,29 @@ const DEFAULT_AI_CLI = "claude";
  * One AI-CLI profile (config.json). `profile` is the home/config directory selecting the
  * signed-in account (CLAUDE_CONFIG_DIR / CODEX_HOME / …) — an absolute path, "~/x", or a
  * bare name resolved under $HOME (e.g. ".claude-1"). `args` are EXTRA pre-prompt args
- * appended after the hardcoded required args (ADR-0158) — they cannot remove the required
+ * appended after the hardcoded required args — they cannot remove the required
  * metering flags (omitted ⇒ just the required args). `model` is passed as `--model <model>`
- * (omitted/empty ⇒ the CLI's own default model). `enabled` (ADR-0180) defaults true; a
+ * (omitted/empty ⇒ the CLI's own default model). `enabled` defaults true; a
  * profile with `enabled: false` is kept in config.json but excluded from the run plan (never
- * spawned; skipped by failover — ADR-0057 — and %session rotation — ADR-0081).
+ * spawned; skipped by failover — ADR-0057 — and %session rotation).
+ * @adr 0180 @adr 0081
  */
 export interface AiProfile {
   profile: string;
   args?: string[];
   model?: string;
   enabled?: boolean;
-  /** Optional managed `ANTHROPIC_API_KEY` (ADR-0378); absent ⇒ OAuth via the profile dir. */
+  /** Optional managed `ANTHROPIC_API_KEY`; absent ⇒ OAuth via the profile dir. @adr 0378 */
   apiKey?: ApiKeyDescriptor;
 }
 
 /**
- * A profile's managed `ANTHROPIC_API_KEY` source (ADR-0378). `inline` carries the key value (stored in
+ * A profile's managed `ANTHROPIC_API_KEY` source. `inline` carries the key value (stored in
  * config.json — a secret); `ssm` / `secretsManager` carry only a reference the cli resolves at spawn
  * with the worker's own AWS credentials. Resolved just-in-time by `resolve-api-key.ts` and exported as
  * `ANTHROPIC_API_KEY` for that profile's spawn (so claude bills via the key — metering still parses the
  * stream-json `result`). Only claude uses it today.
+ * @adr 0378
  */
 export interface ApiKeyDescriptor {
   source: "inline" | "ssm" | "secretsManager";
@@ -189,18 +199,19 @@ export type AiProvider = "claude" | "codex" | "antigravity";
 const AI_PROVIDERS: readonly AiProvider[] = ["claude", "codex", "antigravity"];
 
 /**
- * One entry in the unified, mixed credential list (`config.aiProfiles` — ADR-0182): an AiProfile
+ * One entry in the unified, mixed credential list (`config.aiProfiles`): an AiProfile
  * plus the `provider` that selects which AI CLI it drives (command + hardcoded metering args +
  * `CLAUDE_CONFIG_DIR`/`CODEX_HOME`). The account/auth (OAuth **or** the user's own API key) is
  * configured by the user INSIDE the `profile` config dir — 4PM never stores a key. `label` is an
  * optional display name (falls back to the signed-in account email / the dir basename).
+ * @adr 0182
  */
 export interface AiCredential extends AiProfile {
   provider: AiProvider;
   label?: string;
 }
 
-/** A profile is usable when it has a non-blank dir and isn't explicitly disabled (ADR-0180). */
+/** A profile is usable when it has a non-blank dir and isn't explicitly disabled. @adr 0180 */
 function isUsableProfile(p: AiProfile): boolean {
   return p.enabled !== false && Boolean(p.profile && p.profile.trim());
 }
@@ -209,9 +220,10 @@ function isUsableProfile(p: AiProfile): boolean {
 const warnedDuplicateDirs = new Set<string>();
 
 /**
- * Keep the first entry per resolved profile dir and drop the rest (ADR-0409): two profiles sharing a
+ * Keep the first entry per resolved profile dir and drop the rest: two profiles sharing a
  * dir are one account (same credential key / session state), so a duplicate only repeats a failover
  * attempt. Covers configs edited on the machine, which the web/server checks never see.
+ * @adr 0409
  */
 export function dropDuplicateDirs<T extends AiProfile>(profiles: T[]): T[] {
   const seen = new Set<string>();
@@ -229,7 +241,7 @@ export function dropDuplicateDirs<T extends AiProfile>(profiles: T[]): T[] {
   });
 }
 
-/** A credential is usable when it is a usable profile AND names a known provider (ADR-0182). */
+/** A credential is usable when it is a usable profile AND names a known provider. @adr 0182 */
 export function isUsableCredential(c: AiCredential): boolean {
   return isUsableProfile(c) && AI_PROVIDERS.includes(c.provider);
 }
@@ -242,14 +254,16 @@ export interface AiCliConfig {
   /** Reserved for the future antigravity CLI — stored but not spawned yet (schema only). */
   antigravityHome?: AiProfile[];
   /**
-   * Unified mixed credential list (ADR-0182). When present (with ≥1 usable entry) it REPLACES
+   * Unified mixed credential list. When present (with ≥1 usable entry) it REPLACES
    * the per-provider lists for the run plan: one ordered, cross-provider failover chain. Absent
    * ⇒ the legacy per-`aiCli` single-provider plan.
+   * @adr 0182
    */
   aiProfiles?: AiCredential[];
   /**
-   * Failover start policy (ADR-0182): `"remember"` starts from the last-working credential
-   * (ADR-0057); `"priority"` always starts at the top of the list. Default `"remember"`.
+   * Failover start policy: `"remember"` starts from the last-working credential;
+   * `"priority"` always starts at the top of the list. Default `"remember"`.
+   * @adr 0182
    */
   aiFailoverMode?: "remember" | "priority";
   aiEnv?: Record<string, string>;
@@ -266,14 +280,18 @@ export interface AiAttempt {
   key: string | null;
   /**
    * The argv after the command (required metering args + `--model` + one-shot caps) — **without**
-   * the prompt (ADR-0251): the prompt rides `stdin`, not a positional, so it can't exceed
+   * the prompt: the prompt rides `stdin`, not a positional, so it can't exceed
    * `MAX_ARG_STRLEN`.
+   * @adr 0251
    */
   args: string[];
-  /** The prompt to feed on the child's stdin (ADR-0251) — `claude -p` / `codex exec` both read it. */
+  /** The prompt to feed on the child's stdin — `claude -p` / `codex exec` both read it. @adr 0251 */
   stdin: string;
   env: Record<string, string>;
-  /** The profile's managed API key descriptor (ADR-0378), resolved + merged into env at spawn; omitted ⇒ OAuth. */
+  /**
+   * The profile's managed API key descriptor, resolved + merged into env at spawn; omitted ⇒ OAuth.
+   * @adr 0378
+   */
   apiKey?: ApiKeyDescriptor;
 }
 
@@ -300,10 +318,11 @@ export function labelFromCredentialKey(key: string): string {
 }
 
 /**
- * Claude auth mode for metering (ADR-0192 §5): `api-key` when an `ANTHROPIC_API_KEY` is present
+ * Claude auth mode for metering: `api-key` when an `ANTHROPIC_API_KEY` is present
  * (in the profile's `aiEnv` or the cli process env — the API-billed path), else `subscription`
- * (OAuth account, metered from `.credentials.json` — ADR-0072). Tags each usage report so billing
+ * (OAuth account, metered from `.credentials.json`). Tags each usage report so billing
  * can split subscription vs API-key runs.
+ * @adr 0192 §5 @adr 0072
  */
 export function resolveClaudeAuthMode(config: AiCliConfig): "subscription" | "api-key" {
   const key = config.aiEnv?.["ANTHROPIC_API_KEY"] ?? process.env.ANTHROPIC_API_KEY;
@@ -317,9 +336,10 @@ export function isUnifiedConfig(config: AiCliConfig): boolean {
 
 /**
  * The provider the operator pinned via `aiCli`. When it names a known provider the unified run
- * (ADR-0182) is **scoped** to that provider's credentials (ADR-0197) — failover stays within the
+ * is **scoped** to that provider's credentials — failover stays within the
  * active CLI; a blank/"—"/unknown value ⇒ null = **mixed** (fail over across the whole list).
  * Legacy per-`aiCli` configs already run one provider, so this only affects the unified plan.
+ * @adr 0182 @adr 0197
  */
 export function activeProvider(config: AiCliConfig): AiProvider | null {
   const v = config.aiCli?.trim();
@@ -346,7 +366,8 @@ export function claudeCredentialKeys(config: AiCliConfig): string[] {
 /**
  * Resolve a profile (credential) dir path: absolute stays as-is; "~/x" and a bare name (e.g.
  * ".claude-1") resolve under $HOME. Under uid separation a host-mounted login (`~/ai-creds/…`) resolves
- * to its imported copy (ADR-0433), so every consumer — runs, labels, keys, deny rules — sees one dir.
+ * to its imported copy, so every consumer — runs, labels, keys, deny rules — sees one dir.
+ * @adr 0433
  */
 export function resolveHomePath(value: string): string {
   if (value.startsWith("~")) return effectiveCredentialDir(join(homedir(), value.slice(1).replace(/^[/\\]/, "")));
@@ -391,11 +412,12 @@ export function folderScopeGuard(folder: string, prompt: string): string {
 }
 
 /**
- * Per-run AI execution override (ADR-0261) — the few knobs the web "AI settings" modal can layer
+ * Per-run AI execution override — the few knobs the web "AI settings" modal can layer
  * over a profile for one dispatch (per-user, chosen in the browser). Structurally mirrors `@4pm/dto`
  * `AiRunConfig`; kept local so this pure helper stays framework/dep-free. Every field optional —
  * an unset field ⇒ the profile default. Provider mapping is best-effort (see {@link overrideArgs} /
  * {@link overrideEnv}); a knob a provider can't express is ignored so the run still proceeds.
+ * @adr 0261
  */
 export interface AiRunOverride {
   /** `--model` override (both providers) — wins over the profile's `model`. */
@@ -406,14 +428,15 @@ export interface AiRunOverride {
   temperature?: number;
 }
 
-/** Thinking level → claude `MAX_THINKING_TOKENS` budget (ADR-0261). `off`/absent ⇒ no env. */
+/** Thinking level → claude `MAX_THINKING_TOKENS` budget. `off`/absent ⇒ no env. @adr 0261 */
 const THINKING_TOKENS: Record<string, number> = { low: 4000, medium: 10000, high: 31999 };
 
 /**
- * Provider-specific pre-prompt args contributed by a per-run override (ADR-0261). Codex takes its
+ * Provider-specific pre-prompt args contributed by a per-run override. Codex takes its
  * reasoning effort + temperature as `-c key=value` config overrides; claude expresses thinking via
  * env (see {@link overrideEnv}) and has no temperature knob, so it adds none here. Best-effort — an
  * unmapped knob is simply omitted. Pure.
+ * @adr 0261
  */
 function overrideArgs(cmd: string, o?: AiRunOverride): string[] {
   if (!o || !cmd.includes("codex")) return [];
@@ -424,9 +447,10 @@ function overrideArgs(cmd: string, o?: AiRunOverride): string[] {
 }
 
 /**
- * Extra env contributed by a per-run override (ADR-0261) — claude expresses its thinking budget via
+ * Extra env contributed by a per-run override — claude expresses its thinking budget via
  * `MAX_THINKING_TOKENS` (there is no print-mode flag). Merged into the attempt's env by the planner.
  * Non-claude / no thinking ⇒ empty. Pure.
+ * @adr 0261
  */
 export function overrideEnv(cmd: string, o?: AiRunOverride): Record<string, string> {
   if (!o || !cmd.includes("claude")) return {};
@@ -437,13 +461,14 @@ export function overrideEnv(cmd: string, o?: AiRunOverride): Record<string, stri
 
 /**
  * Compose the argv after the command: the hardcoded required args (always, for metering)
- * + the profile's `args` (extras appended on top — ADR-0158) + `--model <model>` when set
- * + per-run override args (ADR-0261) + one-shot caps when `oneShot` (ADR-0249) or read-only-agent
+ * + the profile's `args` (extras appended on top) + `--model <model>` when set
+ * + per-run override args + one-shot caps when `oneShot` or read-only-agent
  * caps when `readOnly` (ADR-0265; `plan` mode + write-tool disallow, read tools kept). The prompt is
- * **not** appended (ADR-0251): it rides the child's stdin, so it can't exceed `MAX_ARG_STRLEN`
+ * **not** appended: it rides the child's stdin, so it can't exceed `MAX_ARG_STRLEN`
  * (`claude -p` / `codex exec` read stdin when no positional prompt is given). The one-shot args stay
  * LAST — their non-variadic terminator (`--permission-mode default`) still bounds the variadic
  * `--disallowedTools`. A per-run `override.model` wins over the profile's `model`.
+ * @adr 0261 @adr 0249 @adr 0251
  */
 function buildRunArgs(
   profile: AiProfile,
@@ -492,7 +517,8 @@ function buildRunArgs(
 
 /**
  * Candidate Claude home dirs (where `.credentials.json` lives) for reading the OAuth
- * usage snapshot (ADR-0072). Configured dirs first; falls back to the default `~/.claude`.
+ * usage snapshot. Configured dirs first; falls back to the default `~/.claude`.
+ * @adr 0072
  */
 export function claudeHomeDirs(config: AiCliConfig): string[] {
   const dirs = profileDirs(claudeProfilesOf(config));
@@ -500,8 +526,9 @@ export function claudeHomeDirs(config: AiCliConfig): string[] {
 }
 
 /**
- * Reads the worker's current AI config while account labels are masked (ADR-0395); null ⇒ unmasked.
+ * Reads the worker's current AI config while account labels are masked; null ⇒ unmasked.
  * Read at label time so the `#N` numbering follows live config edits.
+ * @adr 0395
  */
 let maskConfigReader: (() => AiCliConfig) | null = null;
 
@@ -513,15 +540,16 @@ export function setAiAccountMask(readConfig: (() => AiCliConfig) | null): void {
   maskConfigReader = readConfig;
 }
 
-/** True while AI account labels are masked (ADR-0395). */
+/** True while AI account labels are masked. @adr 0395 */
 export function isAiAccountMaskOn(): boolean {
   return maskConfigReader !== null;
 }
 
 /**
- * The masked label of a credential dir (ADR-0395): `AI account #N`, where N is the dir's 1-based
+ * The masked label of a credential dir: `AI account #N`, where N is the dir's 1-based
  * position among the configured credential dirs (all providers, config order); plain `AI account`
  * when the dir isn't configured (or the config can't be read).
+ * @adr 0395
  */
 function maskedAccountLabel(dir: string): string {
   try {
@@ -534,7 +562,8 @@ function maskedAccountLabel(dir: string): string {
 
 /**
  * The real (unmasked) label of a profile dir: the account email, else the folder basename.
- * Only for admin-only surfaces (`machine.status.aiAccounts` — ADR-0354).
+ * Only for admin-only surfaces (`machine.status.aiAccounts`).
+ * @adr 0354
  */
 function unmaskedProfileLabel(dir: string): string {
   return profileAccountEmail(dir) ?? basename(dir);
@@ -545,7 +574,8 @@ function unmaskedProfileLabel(dir: string): string {
  * from `<dir>/.claude.json` (`oauthAccount.emailAddress`), else the folder basename
  * (e.g. ".claude-1"). Best-effort — a missing/unreadable file or a non-claude profile
  * falls back to the folder name so the header is never blank. Masked to `AI account #N`
- * on a platform-pool (rented) worker (ADR-0395).
+ * on a platform-pool (rented) worker.
+ * @adr 0395
  */
 export function profileDisplayLabel(dir: string): string {
   return maskConfigReader ? maskedAccountLabel(dir) : unmaskedProfileLabel(dir);
@@ -553,14 +583,15 @@ export function profileDisplayLabel(dir: string): string {
 
 /**
  * Display label for a configured credential: its explicit `label`, else {@link profileDisplayLabel}.
- * While masked (ADR-0395) the explicit label is hidden too — an operator may have typed an email there.
+ * While masked the explicit label is hidden too — an operator may have typed an email there.
+ * @adr 0395
  */
 export function credentialDisplayLabel(label: string | undefined, dir: string): string {
   const explicit = label?.trim();
   return explicit && !maskConfigReader ? explicit : profileDisplayLabel(dir);
 }
 
-/** Last account email read per `.claude.json`, keyed by its mtime (the read may spawn — ADR-0430). */
+/** Last account email read per `.claude.json`, keyed by its mtime (the read may spawn). @adr 0430 */
 const accountEmailCache = new Map<string, { mtimeMs: number; email: string | null }>();
 
 /**
@@ -588,9 +619,10 @@ function profileAccountEmail(dir: string): string | null {
 }
 
 /**
- * The AI accounts this cli is configured with, reported to the server in `machine.status`
- * (ADR-0354): every usable credential across all providers — the account email when readable,
+ * The AI accounts this cli is configured with, reported to the server in `machine.status`:
+ * every usable credential across all providers — the account email when readable,
  * else the credential's explicit `label`, else the folder name. De-duplicated, config order.
+ * @adr 0354
  */
 export function aiAccountLabels(config: AiCliConfig): string[] {
   const labels = isUnifiedConfig(config)
@@ -601,7 +633,7 @@ export function aiAccountLabels(config: AiCliConfig): string[] {
           return profileAccountEmail(dir) ?? (c.label?.trim() || basename(dir));
         })
     : [...profileDirs(config.claudeHome), ...profileDirs(config.codexHome), ...profileDirs(config.antigravityHome)].map(
-        // Admin-only (ADR-0354) — never masked (ADR-0395).
+        // Admin-only — never masked (ADR-0395).
         (dir) => unmaskedProfileLabel(dir),
       );
   return [...new Set(labels)];
@@ -648,8 +680,9 @@ export interface ResolvedClaudeProfile {
 /**
  * Resolve the configured claude profiles to try (working-first, disabled/blank dropped — the
  * SAME selection as {@link planAiRun}), but WITHOUT baking a prompt into argv so the caller can
- * feed a large prompt over stdin (the support agent's grounded answer — ADR-0170). Empty list ⇒
+ * feed a large prompt over stdin (the support agent's grounded answer). Empty list ⇒
  * no profile configured (the caller should fall back to the CLI's default env).
+ * @adr 0170
  */
 export function resolveClaudeProfiles(
   config: AiCliConfig,
@@ -668,16 +701,17 @@ export function resolveClaudeProfiles(
 export interface AiWorkingHint {
   /** Legacy per-`aiCli` working profile dir (moved to the front). */
   dir?: string | null;
-  /** Unified working credential key (moved to the front — ADR-0182). */
+  /** Unified working credential key (moved to the front). @adr 0182 */
   credential?: string | null;
 }
 
 /**
- * Build the run plan for a typed prompt. When the unified mixed list drives the run (ADR-0182)
+ * Build the run plan for a typed prompt. When the unified mixed list drives the run
  * the attempts span all providers in list order (a prompt can fail over claude→codex); otherwise
  * the legacy per-`aiCli` plan applies. Attempts are ordered working-first: the hinted credential
  * (unified) or dir (legacy) is moved to the front. No usable profile ⇒ a single "default" attempt
  * (the CLI's own default env).
+ * @adr 0182
  */
 export function planAiRun(
   prompt: string,
@@ -695,10 +729,11 @@ export function planAiRun(
 }
 
 /**
- * The unified mixed-list plan (ADR-0182): an ordered failover chain over `aiProfiles`. By default
+ * The unified mixed-list plan: an ordered failover chain over `aiProfiles`. By default
  * it spans every provider (mixed), but a specific `aiCli` **scopes** the chain to that provider's
- * credentials — failover stays within the active CLI (ADR-0197); only "—" (blank) fails over
+ * credentials — failover stays within the active CLI; only "—" (blank) fails over
  * across providers.
+ * @adr 0182 @adr 0197
  */
 function planUnifiedRun(
   prompt: string,
@@ -711,7 +746,7 @@ function planUnifiedRun(
   bypass = false,
 ): AiPlan {
   const baseEnv = config.aiEnv ?? {};
-  // Scope to the pinned provider unless "—" (mixed) is selected (ADR-0197).
+  // Scope to the pinned provider unless "—" (mixed) is selected.
   const active = activeProvider(config);
   // Duplicate dirs collapse to the first entry across all providers, before scoping (ADR-0409).
   const usable = dropDuplicateDirs(config.aiProfiles!.filter(isUsableCredential));

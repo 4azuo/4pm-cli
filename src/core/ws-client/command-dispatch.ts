@@ -1,10 +1,11 @@
 /**
- * The AI / command dispatch path (ADR-0057), extracted from the WsClient as pure functions over a
+ * The AI / command dispatch path, extracted from the WsClient as pure functions over a
  * `WsHandlerCtx`. Handles the COMMAND_DISPATCH channel (raw command, AI prompt, or web slash
  * command), runs an AI prompt through the profile-failover path (shared by locally-typed and
  * server-dispatched prompts), runs a web-dispatched 4pm-cli slash command, and maintains the shared
- * AI memory (ADR-0245). Kept together because these pieces call each other and share the memory /
+ * AI memory. Kept together because these pieces call each other and share the memory /
  * session-pressure helpers below.
+ * @adr 0057 @adr 0245
  */
 import { basename } from "node:path";
 import { randomUUID as randomCommandId } from "node:crypto";
@@ -24,16 +25,16 @@ import {
   type UsageReportPayload,
   type WsEnvelope,
 } from "@4pm/ws";
-import { runCommand } from "../executor";
-import { runAiFailover, type AiRunHandlers, type AiRunResult } from "../ai-runner";
-import { aiProviderOf, estimateTokens } from "../ai-stream";
+import { runCommand } from "../exec/executor";
+import { runAiFailover, type AiRunHandlers, type AiRunResult } from "../ai/ai-runner";
+import { aiProviderOf, estimateTokens } from "../ai/ai-stream";
 import {
   getPinnedCredential,
   getWorkingCredential,
   getWorkingProfile,
   setWorkingCredential,
   setWorkingProfile,
-} from "../ai-profile-state";
+} from "../ai/ai-profile-state";
 import {
   claudeCredentialKeys,
   claudeHomeDirs,
@@ -46,9 +47,9 @@ import {
   resolveClaudeProfiles,
 } from "../../utils/ai-cli";
 import { formatTimestampInZone } from "../../utils/time";
-import { finishCommand, recordCommand } from "../command-history";
-import { materializeImages, rewriteImagePlaceholders, sweepOldAttachments } from "../command-images";
-import { appendCommandOutput, resetCommandOutput } from "../command-output-store";
+import { finishCommand, recordCommand } from "../exec/command-history";
+import { materializeImages, rewriteImagePlaceholders, sweepOldAttachments } from "../exec/command-images";
+import { appendCommandOutput, resetCommandOutput } from "../exec/command-output-store";
 import {
   readProfileConfig,
   resolveMemoryConfig,
@@ -57,29 +58,29 @@ import {
 } from "../../config/profile";
 import { runSlashCommand } from "../../ui/slash-commands";
 import type { SessionInfo } from "../../ui/session-info";
-import { runMemoryCompaction } from "../memory-compact";
-import { setCommitAuthor } from "../git-commit-identity";
+import { runMemoryCompaction } from "../knowledge/memory-compact";
+import { setCommitAuthor } from "../git/git-commit-identity";
 import { logger } from "../../common/logger/logger";
 import { CLI_VERSION } from "../../version";
 import type { WsHandlerCtx } from "./context";
 import { acquireRunSlot } from "./run-slot";
 import { t } from "../../i18n";
-import { requestGitSnapshot } from "../git-snapshot";
-import { ensureAiClisFor } from "../toolchain";
+import { requestGitSnapshot } from "../git/git-snapshot";
+import { ensureAiClisFor } from "../worker/toolchain";
 
-/** Preamble prepended before the shared AI memory when seeding a fresh native session (ADR-0245). */
+/** Preamble prepended before the shared AI memory when seeding a fresh native session. */
 const MEMORY_SEED_HEADER =
   "CONTEXT MEMORY from earlier in this conversation (may span prior sessions/accounts). Use it as " +
   "background; do not repeat it back unless relevant:";
 
-/** One in-flight AI run that `command.cancel` can stop (ADR-0362). */
+/** One in-flight AI run that `command.cancel` can stop. @adr 0362 */
 interface ActiveRun {
   controller: AbortController;
   /** `queued` until it holds a run slot, then `running`. */
   state: "queued" | "running";
 }
 
-/** In-flight AI runs on this cli, by command id (ADR-0362). */
+/** In-flight AI runs on this cli, by command id. @adr 0362 */
 const activeRuns = new Map<string, ActiveRun>();
 
 /** git subcommands (and gh/glab actions) that change the repo state a snapshot reports. */
@@ -97,15 +98,16 @@ function changesGitState(cmd: string, args: string[]): boolean {
   return GIT_STATE_SUBCOMMANDS.has(args[i] ?? "");
 }
 
-/** How many AI runs are in flight (queued or running) — git snapshots wait while > 0 (ADR-0369). */
+/** How many AI runs are in flight (queued or running) — git snapshots wait while > 0. @adr 0369 */
 export function activeAiRunCount(): number {
   return activeRuns.size;
 }
 
 /**
- * Stop an in-flight AI run (ADR-0362): a queued run leaves the run-slot queue, a running one has its AI
+ * Stop an in-flight AI run: a queued run leaves the run-slot queue, a running one has its AI
  * process killed with no failover; the run then ends its own stream with `done {cancelled}`. Returns
  * `{ok:false, state:"unknown"}` when the command is not an active AI run on this cli.
+ * @adr 0362
  */
 export function cancelActiveRun(commandId: string): CommandCancelReply {
   const run = activeRuns.get(commandId);
@@ -116,14 +118,15 @@ export function cancelActiveRun(commandId: string): CommandCancelReply {
 
 /**
  * Route COMMAND_DISPATCH: record in the local history (per cli), stream output, mark finished — and
- * COMMAND_CANCEL (ADR-0362): stop an in-flight AI run. Returns true when the message was handled.
+ * COMMAND_CANCEL: stop an in-flight AI run. Returns true when the message was handled.
+ * @adr 0362
  */
 export function handleCommandChannels(
   ctx: WsHandlerCtx,
   message: WsEnvelope,
   payload: Record<string, unknown>,
 ): boolean {
-  // Stop an AI run (server → cli, reply — ADR-0362).
+  // Stop an AI run (server → cli, reply).
   if (message.channel === WsChannels.COMMAND_CANCEL) {
     const commandId = typeof payload.commandId === "string" ? payload.commandId : "";
     const reply = cancelActiveRun(commandId);
@@ -214,7 +217,7 @@ export function handleCommandChannels(
 }
 
 /**
- * Run a prompt the operator typed in the TUI input box (ADR-0057). There is no
+ * Run a prompt the operator typed in the TUI input box. There is no
  * command whitelist: the prompt is handed to the configured AI CLI (default
  * `claude`) so the AI agent decides whether to call gh/glab/git/etc. The command is
  * announced to the server (tracking record + history) then spawned through the
@@ -246,9 +249,10 @@ export async function runLocalCommand(ctx: WsHandlerCtx, input: string): Promise
 }
 
 /**
- * What an AI prompt run ended with (ADR-0371) — callers that act on the result (the autonomous cycle)
+ * What an AI prompt run ended with — callers that act on the result (the autonomous cycle)
  * read it; the console path ignores it. `exhausted` = every profile attempt failed on a usage limit /
  * credits (wait for a reset); `output` = the final attempt's verbatim answer text.
+ * @adr 0371
  */
 export interface AiPromptOutcome {
   exitCode: number;
@@ -262,7 +266,7 @@ export interface AiPromptOutcome {
 const REFUSED: AiPromptOutcome = { exitCode: 1, cancelled: false, exhausted: false, neverStarted: true, output: "" };
 
 /**
- * Run an AI prompt through the AI-CLI **profile-failover** path (ADR-0057). Shared by a
+ * Run an AI prompt through the AI-CLI **profile-failover** path. Shared by a
  * locally-typed prompt (`origin: "local"`) and a server-dispatched AI prompt
  * (`origin: "server"` — command.dispatch with `ai:true`), so the web console behaves
  * exactly like typing the prompt in the cli (tries profiles, meters real tokens) instead
@@ -363,7 +367,7 @@ async function runAiPromptInner(
   // `||` (not `??`): a blank aiCli ("mixed"/none — ADR-0182) falls back to claude. In unified
   // mode `cmd` is only used by the legacy-only branches below, so this is just a safe default.
   const cmd = config.aiCli || "claude";
-  // Working-first memory (ADR-0057): the unified mixed list (ADR-0182) remembers one
+  // Working-first memory: the unified mixed list (ADR-0182) remembers one
   // cross-provider credential key; the legacy plan remembers the per-cmd profile dir. In
   // "priority" mode (ADR-0182) the memory is ignored so every prompt starts at the list top.
   const unified = isUnifiedConfig(config);
@@ -422,7 +426,7 @@ async function runAiPromptInner(
   const hint = unified
     ? { credential: startCred ?? workingCred }
     : { dir: startDir ?? workingDir };
-  // Shared AI memory (ADR-0245): resume the native session on the SAME profile when we have one
+  // Shared AI memory: resume the native session on the SAME profile when we have one
   // (it already carries the context — no re-inject), else seed a fresh session with the compacted
   // memory. Probe the plan once to learn the first attempt's credential/provider, then decide.
   const memCfg = resolveMemoryConfig(config);
@@ -465,7 +469,7 @@ async function runAiPromptInner(
     aiMeta: { cmd: plan.cmd, args: markerArgs, prompt },
   });
   logger.info("command.ai", { commandId, origin, cmd: plan.cmd, profiles: plan.attempts.length });
-  // A local prompt has no server record yet ⇒ announce it (ADR-0057); a server-dispatched
+  // A local prompt has no server record yet ⇒ announce it; a server-dispatched
   // AI prompt already has a tracking record from command-0001.
   if (origin === "local") {
     ctx.send(WsChannels.COMMAND_ANNOUNCE, {
@@ -494,7 +498,7 @@ async function runAiPromptInner(
   let displayMode: "pending" | "prose" | "result" = "pending";
   let resultId: string | null = null;
   let resultBuf = "";
-  // The full assistant answer text (verbatim), captured for the shared-memory compaction (ADR-0245).
+  // The full assistant answer text (verbatim), captured for the shared-memory compaction.
   let answerText = "";
   // Why each failed attempt failed (ADR-0371): all limit/credits ⇒ the run is "exhausted" (wait for a reset).
   const failReasons: string[] = [];
@@ -629,7 +633,7 @@ async function runAiPromptInner(
     ctx.bus.push({ source: origin, kind: "log", text, level: "warn" });
     ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: `${text}\n`, log: true });
   }
-  // Remember the working profile so the next prompt tries it first (ADR-0057) + show it in the
+  // Remember the working profile so the next prompt tries it first + show it in the
   // header. Unified plans remember one cross-provider credential key (ADR-0182); the legacy plan
   // remembers the per-cmd dir. (In "priority" mode the memory is written but ignored on read.)
   const profileLabel = result.workedDir ? profileDisplayLabel(result.workedDir) : null;
@@ -714,7 +718,7 @@ async function runAiPromptInner(
     level: result.exitCode === 0 ? "info" : result.cancelled ? "warn" : "error",
     durationMs: Date.now() - aiStartedMs,
   });
-  // Shared AI memory (ADR-0245): remember the native session id for a same-profile `--resume`, then
+  // Shared AI memory: remember the native session id for a same-profile `--resume`, then
   // fold the exchange into the rolling memory (a background compaction) so the next reset re-grounds
   // the AI. The reply is already shown + busy is off, so this never blocks the console.
   if (memCfg.enabled && result.exitCode === 0) {
@@ -743,9 +747,10 @@ async function runAiPromptInner(
 }
 
 /**
- * Drop remembered native sessions that are no longer cheap to resume (ADR-0339): the last run ended
+ * Drop remembered native sessions that are no longer cheap to resume: the last run ended
  * longer ago than the idle window (the prompt cache has expired ⇒ a resume would re-cache the whole
  * history) or the conversation grew past the context cap. A session without recorded meta is stale.
+ * @adr 0339
  */
 function pruneResumableSessions(
   ctx: WsHandlerCtx,
@@ -763,13 +768,14 @@ function pruneResumableSessions(
 }
 
 /**
- * Run a `/…` 4pm-cli slash command dispatched from the web Console (ADR-0249). Mirrors the TUI's
+ * Run a `/…` 4pm-cli slash command dispatched from the web Console. Mirrors the TUI's
  * `runSlashCommand` with a **server-origin** context that streams `print` output back over
  * command.output + console.sync, so a web user gets the same commands as an operator at the
  * machine — EXCEPT any the operator disabled via `webBlockedCommands`. `/claude-cmd <x>` forwards
  * `x` to the AI CLI (a real AI run). Fold ops (`/expand`/`/collapse`) are TUI-only — the web has
  * its own fold viewer — so they just print a hint. Interactive `confirm` (e.g. `/config init`) is
  * not supported from the web.
+ * @adr 0249
  */
 export async function runWebSlashCommand(ctx: WsHandlerCtx, line: string, commandId: string): Promise<void> {
   const origin: CommandOrigin = "server";
@@ -788,7 +794,8 @@ export async function runWebSlashCommand(ctx: WsHandlerCtx, line: string, comman
   /**
    * Settle the command: send the terminal `done` (web stream resolves), record history, and push
    * an `exit` transcript entry so the Console (which renders console.sync, not command.output)
-   * frees its input + shows the processing time (ADR-0246/0249).
+   * frees its input + shows the processing time.
+   * @adr 0246
    */
   const settle = (exitCode: number): void => {
     ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: "", done: true, exitCode });
@@ -880,7 +887,7 @@ export async function runWebSlashCommand(ctx: WsHandlerCtx, line: string, comman
 }
 
 /**
- * Fold the latest exchange into the shared AI memory (ADR-0245): a background claude compaction to a
+ * Fold the latest exchange into the shared AI memory: a background claude compaction to a
  * budget-bounded summary, cached locally + written back to the server (`memory.update`). Best-effort —
  * a failed/empty compaction keeps the previous memory (no write). Claude-only (mirrors the design's
  * native-session focus); a non-claude worker simply never compacts.
@@ -925,10 +932,11 @@ async function updateSharedMemory(
 }
 
 /**
- * Reset the shared AI memory + native sessions for a "new conversation" (ADR-0245) — a manual
+ * Reset the shared AI memory + native sessions for a "new conversation" — a manual
  * `/clear`. Drops the cached memory + every remembered `session_id` (so the next run starts a fresh
  * native session) and clears the server-stored memory. Idle auto-clear does NOT call this
- * (display-only — ADR-0244).
+ * (display-only).
+ * @adr 0244
  */
 export function resetMemorySession(ctx: WsHandlerCtx): void {
   ctx.aiMemory = "";
@@ -938,11 +946,12 @@ export function resetMemorySession(ctx: WsHandlerCtx): void {
 }
 
 /**
- * Pick the Claude profile to try first when under session pressure (ADR-0081). Returns
+ * Pick the Claude profile to try first when under session pressure. Returns
  * the next candidate dir (cyclically after the current working one) when the knob is set
  * and the live session utilization is at/over it AND there is more than one candidate;
  * otherwise null (keep the normal working-first ordering). Claude-only (session % is a
  * Claude subscription metric).
+ * @adr 0081
  */
 function profileUnderSessionPressure(
   ctx: WsHandlerCtx,
@@ -962,10 +971,11 @@ function profileUnderSessionPressure(
 }
 
 /**
- * Unified-list equivalent of {@link profileUnderSessionPressure} (ADR-0182): under session
+ * Unified-list equivalent of {@link profileUnderSessionPressure}: under session
  * pressure, return the next **claude** credential key (cyclically after the working one) so the
  * failover starts on a fresher Claude account. Claude-only — %session is a Claude subscription
  * metric; codex/antigravity entries are unaffected. Null ⇒ keep the working-first order.
+ * @adr 0182
  */
 function credentialUnderSessionPressure(
   ctx: WsHandlerCtx,
@@ -983,9 +993,10 @@ function credentialUnderSessionPressure(
 }
 
 /**
- * Reject a prompt whose estimated tokens exceed the project's per-prompt limit (ADR-0081)
+ * Reject a prompt whose estimated tokens exceed the project's per-prompt limit
  * without spawning: surface it in the transcript + close the command on the server with a
  * PROMPT_TOKEN_LIMIT_EXCEEDED note (exit 1). No usage is metered (nothing ran).
+ * @adr 0081
  */
 function rejectPromptOverLimit(
   ctx: WsHandlerCtx,
@@ -1019,9 +1030,10 @@ function rejectPromptOverLimit(
 }
 
 /**
- * Reject a prompt an outbound reviewer blocked (ADR-0082) without spawning: surface the
+ * Reject a prompt an outbound reviewer blocked without spawning: surface the
  * verdict + close the command on the server. `reasons` contains only violation categories
  * (never secret values); a "unavailable" reason maps to no-outbound-available.
+ * @adr 0082
  */
 function rejectByReview(
   ctx: WsHandlerCtx,

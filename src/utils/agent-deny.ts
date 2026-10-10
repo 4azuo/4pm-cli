@@ -1,5 +1,5 @@
 /**
- * agent-deny (ADR-0347) — the secret-path **deny rules** injected into every claude agent run the cli
+ * agent-deny — the secret-path **deny rules** injected into every claude agent run the cli
  * spawns (project dispatch, memory compaction, knowledge compose, AI assist, support answer, FAQ
  * compose). Claude's file tools may READ anywhere without an approval, so a prompt-injected or
  * misbehaving agent could read the worker's credentials; these rules make claude refuse Read/Glob/Grep
@@ -17,6 +17,7 @@
  * allow Bash stay protected only as far as their Bash policy goes. Delivered as `--settings <json>`
  * (a single-value flag, so it can't be swallowed by / swallow a variadic `--disallowedTools`).
  * Claude only — other AI CLIs get no args.
+ * @adr 0347
  */
 import { isAbsolute, resolve } from "node:path";
 

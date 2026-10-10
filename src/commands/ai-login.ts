@@ -1,10 +1,11 @@
 /**
- * `4pm ai-login` command (ADR-0199) — authenticate a profile's AI-CLI credential dir IN PLACE, so
+ * `4pm ai-login` command — authenticate a profile's AI-CLI credential dir IN PLACE, so
  * an operator can log into claude/codex inside the container (the `in-container` credential posture)
  * without hunting for the right `CLAUDE_CONFIG_DIR`/`CODEX_HOME`. For each configured, usable AI
  * profile it spawns the provider CLI interactively with that env var pointed at the profile's
  * resolved config dir (created if missing); the operator completes the provider's own login
  * (claude: `/login`; codex: its sign-in). `--ai <dir|index>` targets a single profile.
+ * @adr 0199
  */
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
@@ -13,8 +14,8 @@ import { readProfileConfig } from "../config/profile";
 import { isUsableCredential, profileEnvVar, resolveHomePath } from "../utils/ai-cli";
 import type { AiCredential } from "../utils/ai-cli";
 import { initI18n, t } from "../i18n";
-import { agentSpawnArgs } from "../core/agent-spawn";
-import { agentEnv } from "../core/agent-sandbox";
+import { agentSpawnArgs } from "../core/agent/agent-spawn";
+import { agentEnv } from "../core/agent/agent-sandbox";
 
 /** Spawn one provider CLI interactively with its config-dir env var set; resolve on exit. */
 function runProviderLogin(cmd: string, envVar: string, dir: string): Promise<number> {

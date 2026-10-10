@@ -1,8 +1,9 @@
 /**
- * Slash commands for the TUI (ADR-0057): lines starting with `/` are intercepted by
+ * Slash commands for the TUI: lines starting with `/` are intercepted by
  * the input box and handled locally (NOT sent to the AI CLI) — check version, view /
  * init / update the profile config, clear the transcript, quit. Extensible registry:
  * add a SlashCommand to COMMANDS.
+ * @adr 0057
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -14,14 +15,14 @@ import {
   writeProfileConfig,
   type ProfileConfig,
 } from "../config/profile";
-import { getCommandHistory } from "../core/command-history";
-import { readCommandOutput } from "../core/command-output-store";
+import { getCommandHistory } from "../core/exec/command-history";
+import { readCommandOutput } from "../core/exec/command-output-store";
 import {
   clearPinnedCredential,
   getPinnedCredential,
   getWorkingCredential,
   setPinnedCredential,
-} from "../core/ai-profile-state";
+} from "../core/ai/ai-profile-state";
 import {
   credentialDisplayLabel,
   credentialKey,
@@ -74,11 +75,11 @@ export interface SlashContext {
   submitAi: (input: string) => void;
   /** Force an immediate reconnect — for /reconnect. */
   reconnect: () => void;
-  /** Update the header's active-AI-profile label — for /ai-profile use/reset (ADR-0250). */
+  /** Update the header's active-AI-profile label — for /ai-profile use/reset. @adr 0250 */
   setActiveProfile: (label: string | null) => void;
-  /** Toggle a fold's expansion (ADR-0108); `n` defaults to the newest fold — for /expand. */
+  /** Toggle a fold's expansion; `n` defaults to the newest fold — for /expand. @adr 0108 */
   expand: (n?: number) => void;
-  /** Collapse a fold (ADR-0108); `n` defaults to the newest fold — for /collapse. */
+  /** Collapse a fold; `n` defaults to the newest fold — for /collapse. @adr 0108 */
   collapse: (n?: number) => void;
   /** Highest fold number currently on screen (0 = none) — bounds /expand·/collapse. */
   maxBlock: number;
@@ -250,7 +251,7 @@ function runOutput(ctx: SlashContext): void {
   for (const line of out.replace(/\n$/, "").split("\n")) ctx.print(line);
 }
 
-/** /logs [N] — tail the profile's structured log (ADR-0054). */
+/** /logs [N] — tail the profile's structured log. @adr 0054 */
 function runLogs(ctx: SlashContext): void {
   const n = Math.max(1, Math.min(200, Number(ctx.args[0]) || 20));
   const dir = join(ctx.info.profileDir, "logs");
@@ -299,11 +300,12 @@ function aiProfileLabel(c: AiCredential): string {
 }
 
 /**
- * /ai-profile [list | use <n> | reset] — view the worker's AI credential profiles (ADR-0182) and
- * switch which one runs (ADR-0250). `use <n>` PINS entry `n`: it is tried first on every prompt
+ * /ai-profile [list | use <n> | reset] — view the worker's AI credential profiles and
+ * switch which one runs. `use <n>` PINS entry `n`: it is tried first on every prompt
  * (overriding aiFailoverMode), with failover to the rest kept as a backup; `reset` returns to
  * automatic failover. Operates on the unified mixed list (`config.aiProfiles`); a legacy
  * per-provider config has nothing to switch here.
+ * @adr 0182 @adr 0250
  */
 function runAiProfile(ctx: SlashContext): void {
   const dir = ctx.info.profileDir;
@@ -375,7 +377,7 @@ function runAiProfile(ctx: SlashContext): void {
   ctx.print(t("slash.aiProfile.unknownSub", { sub: sub ?? "" }), "error");
 }
 
-/** /expand [N] · /collapse [N] — toggle/fold a numbered `▸[N]` block (ADR-0108). */
+/** /expand [N] · /collapse [N] — toggle/fold a numbered `▸[N]` block. @adr 0108 */
 function runFold(ctx: SlashContext, action: "expand" | "collapse"): void {
   if (ctx.maxBlock === 0) {
     ctx.print(t("slash.fold.none"), "warn");

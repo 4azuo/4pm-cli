@@ -1,11 +1,12 @@
 /**
- * Worker identity without a persistent volume (ADR-0428). `4pm credential-export` prints a paired
+ * Worker identity without a persistent volume. `4pm credential-export` prints a paired
  * profile's `.cre` as ONE opaque value (base64 of `{profile, credential}`) that an operator stores in a
  * secret store (e.g. AWS Secrets Manager). Injected as `FOURPM_CREDENTIAL`, it lets `4pm start` on an
  * ephemeral container (an ECS task without EFS) restore the same identity on every boot — no re-pairing,
  * since provisioning tokens are single-use. An existing `.cre` is never overwritten.
+ * @adr 0428
  */
-import { readCredential, writeCredential, type Credential } from "../core/credential";
+import { readCredential, writeCredential, type Credential } from "../core/profile/credential";
 import { ensureProfileConfig, profileDir, writeDefaultProfile } from "../config/profile";
 import { t } from "../i18n";
 
@@ -15,7 +16,7 @@ interface ExportedCredential {
   credential: Credential;
 }
 
-/** A filesystem-safe profile name (same rule as `4pm link` — ADR-0063). */
+/** A filesystem-safe profile name (same rule as `4pm link`). @adr 0063 */
 function safeProfileName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, "_") || "profile";
 }

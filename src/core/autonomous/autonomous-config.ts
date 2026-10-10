@@ -1,0 +1,168 @@
+/**
+ * Autonomous config — the knobs for the unattended loop, stored as **clean JSON** (no
+ * `_about`/`_*` comment keys; the web Settings Form labels + explains every field) at
+ * `~/.4pm/profiles/<name>/autonomous.config.json` — the **profile dir**, next to `config.json` and
+ * OUTSIDE any project repo, so the autonomous *parameters* never ship in a checkout and the *logic*
+ * lives only in this cli. Read by the daemon each cycle; edited from the web Autonomous → Settings tab.
+ * ADR-0418: `evidenceDir` / `mockupDir` folders; the old `model` knob is gone (each AI profile's model applies)
+ * and is dropped on the next save.
+ * @adr 0321
+ */
+import { readFile, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { EVIDENCE_ROOT, MOCKUP_ROOT, isSafeRepoDir } from "@4pm/dto";
+
+/** The autonomous knobs (parameters only — no logic). */
+export interface AutonomousConfig {
+  /** The on/off switch: when true the daemon's scheduler does not start cycles. @adr 0392 */
+  paused: boolean;
+  /** Standard 5-field cron the daemon's in-process scheduler fires on (ADR-0392 — no OS crontab). */
+  cronSchedule: string;
+  /** Empty = run all day; `HH:MM-HH:MM` = skip within the window (may cross midnight). */
+  quietHours: string;
+  /** -1 = unlimited; >0 = cap on cycles that actually run in one local day. */
+  maxTicksPerDay: number;
+  /** After N consecutive failed cycles, set `paused=true` (0 = off). */
+  stopOnConsecutiveFailures: number;
+  /** Delete per-day tick logs older than N days (0 = keep forever). */
+  logRetentionDays: number;
+  /** Skip the cycle when the 5h-session utilization is at/over this % (ADR-0321 quota gate). */
+  maxSessionPct: number;
+  /** Skip the cycle when the 7-day utilization is at/over this % (ADR-0321 quota gate). */
+  maxWeeklyPct: number;
+  /** A task claim lives this long from `Started`; older ⇒ released by its holder / taken over. @adr 0371 */
+  claimTtlHours: number;
+  /** Re-verify the held claim this often while the agent works; lost ⇒ the run is stopped. @adr 0371 */
+  claimCheckMinutes: number;
+  /** A task that fails / overruns this many times is split into child tasks. @adr 0371 */
+  maxTaskAttempts: number;
+  /** Indicative S/M size hints for intake — guidance for the agent, not hard caps. @adr 0371 §6 */
+  taskSizeHints: { sMaxFiles: number; sMaxLines: number; mMaxFiles: number; mMaxLines: number };
+  /** Repo-relative folder of new book evidence files (ADR-0418; default `.4pm/evidence`). */
+  evidenceDir: string;
+  /** Repo-relative folder of the intake UI mockups (ADR-0418; default `.4pm/mockups`). */
+  mockupDir: string;
+}
+
+/** Defaults when the file is absent or a field is missing. */
+export const DEFAULT_AUTONOMOUS_CONFIG: AutonomousConfig = {
+  paused: true,
+  cronSchedule: "*/10 * * * *",
+  quietHours: "",
+  maxTicksPerDay: -1,
+  stopOnConsecutiveFailures: 3,
+  logRetentionDays: 14,
+  maxSessionPct: 80,
+  maxWeeklyPct: 90,
+  claimTtlHours: 6,
+  claimCheckMinutes: 10,
+  maxTaskAttempts: 5,
+  taskSizeHints: { sMaxFiles: 5, sMaxLines: 300, mMaxFiles: 20, mMaxLines: 1500 },
+  evidenceDir: EVIDENCE_ROOT,
+  mockupDir: MOCKUP_ROOT,
+};
+
+/** The config file path under a profile dir. */
+export function autonomousConfigPath(profileDir: string): string {
+  return join(profileDir, "autonomous.config.json");
+}
+
+/** Coerce an unknown JSON object into a full config, filling defaults for missing/invalid fields. */
+function coerce(raw: unknown): AutonomousConfig {
+  const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const d = DEFAULT_AUTONOMOUS_CONFIG;
+  const num = (v: unknown, def: number): number => (typeof v === "number" && Number.isFinite(v) ? v : def);
+  const str = (v: unknown, def: string): string => (typeof v === "string" ? v : def);
+  // A folder must be a safe repo-relative path (ADR-0418); anything else falls back to the default.
+  const dir = (v: unknown, def: string): string => {
+    const t = typeof v === "string" ? v.trim().replace(/\/+$/, "") : "";
+    return t && isSafeRepoDir(t) ? t : def;
+  };
+  return {
+    paused: typeof o.paused === "boolean" ? o.paused : d.paused,
+    cronSchedule: str(o.cronSchedule, d.cronSchedule),
+    quietHours: str(o.quietHours, d.quietHours),
+    maxTicksPerDay: num(o.maxTicksPerDay, d.maxTicksPerDay),
+    stopOnConsecutiveFailures: num(o.stopOnConsecutiveFailures, d.stopOnConsecutiveFailures),
+    logRetentionDays: num(o.logRetentionDays, d.logRetentionDays),
+    maxSessionPct: num(o.maxSessionPct, d.maxSessionPct),
+    maxWeeklyPct: num(o.maxWeeklyPct, d.maxWeeklyPct),
+    claimTtlHours: Math.max(1, num(o.claimTtlHours, d.claimTtlHours)),
+    claimCheckMinutes: Math.max(1, num(o.claimCheckMinutes, d.claimCheckMinutes)),
+    maxTaskAttempts: Math.max(1, num(o.maxTaskAttempts, d.maxTaskAttempts)),
+    taskSizeHints: (() => {
+      const h = (o.taskSizeHints && typeof o.taskSizeHints === "object" ? o.taskSizeHints : {}) as Record<string, unknown>;
+      const dh = d.taskSizeHints;
+      return {
+        sMaxFiles: num(h.sMaxFiles, dh.sMaxFiles),
+        sMaxLines: num(h.sMaxLines, dh.sMaxLines),
+        mMaxFiles: num(h.mMaxFiles, dh.mMaxFiles),
+        mMaxLines: num(h.mMaxLines, dh.mMaxLines),
+      };
+    })(),
+    evidenceDir: dir(o.evidenceDir, d.evidenceDir),
+    mockupDir: dir(o.mockupDir, d.mockupDir),
+  };
+}
+
+/** Read + parse the config (async). Missing/corrupt file ⇒ defaults. */
+export async function readAutonomousConfig(profileDir: string): Promise<AutonomousConfig> {
+  try {
+    return coerce(JSON.parse(await readFile(autonomousConfigPath(profileDir), "utf8")));
+  } catch {
+    return { ...DEFAULT_AUTONOMOUS_CONFIG };
+  }
+}
+
+/** Sync read (for the coarse `machine.status` running flag). Missing/corrupt ⇒ defaults. */
+export function readAutonomousConfigSync(profileDir: string): AutonomousConfig {
+  try {
+    return coerce(JSON.parse(readFileSync(autonomousConfigPath(profileDir), "utf8")));
+  } catch {
+    return { ...DEFAULT_AUTONOMOUS_CONFIG };
+  }
+}
+
+/** The raw config file text for the web editor (`{}`-pretty defaults when absent). */
+export async function readAutonomousConfigText(profileDir: string): Promise<string> {
+  try {
+    return await readFile(autonomousConfigPath(profileDir), "utf8");
+  } catch {
+    return JSON.stringify(DEFAULT_AUTONOMOUS_CONFIG, null, 2) + "\n";
+  }
+}
+
+/** Persist the config (from the web Settings editor); coerced so only real keys are written. */
+export async function writeAutonomousConfig(profileDir: string, raw: unknown): Promise<void> {
+  const cfg = coerce(raw);
+  await writeFile(autonomousConfigPath(profileDir), JSON.stringify(cfg, null, 2) + "\n", "utf8");
+}
+
+/** Turn the engine off (`paused:true`) — e.g. when the served project is deleted, so the next project
+ * bound to this cli starts stopped. No-op when already paused.
+ * @adr 0392
+ */
+export async function pauseAutonomous(profileDir: string): Promise<void> {
+  const cfg = await readAutonomousConfig(profileDir);
+  if (!cfg.paused) await writeAutonomousConfig(profileDir, { ...cfg, paused: true });
+}
+
+/**
+ * The repo folders the cli commits with the books: every evidence root in use + the mockup folder.
+ * @adr 0418
+ */
+export function repoDirsOf(cfg: Pick<AutonomousConfig, "evidenceDir" | "mockupDir">): string[] {
+  return [...new Set([EVIDENCE_ROOT, cfg.evidenceDir, cfg.mockupDir])];
+}
+
+/** True when `now` (local) falls inside the `HH:MM-HH:MM` quiet-hours window (supports crossing midnight). */
+export function isInQuietHours(quietHours: string, now: Date = new Date()): boolean {
+  const m = /^(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})$/.exec(quietHours.trim());
+  if (!m) return false;
+  const toMin = (h: string, mi: string): number => Number(h) * 60 + Number(mi);
+  const start = toMin(m[1]!, m[2]!);
+  const end = toMin(m[3]!, m[4]!);
+  const cur = now.getHours() * 60 + now.getMinutes();
+  return start <= end ? cur >= start && cur < end : cur >= start || cur < end;
+}

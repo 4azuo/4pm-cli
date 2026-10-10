@@ -3,8 +3,9 @@
  * CLI entry point for `4pm` (runs on the worker machine).
  * Commands: link (pairing) · start (connect WS, receive dispatch) · unlink ·
  * version (show version) · update (manual self-update).
- * Common flag: --profile <name> — an independent instance with its own config +
- * .cre at ~/.4pm/profiles/<name>/ (ADR-0014).
+ * Common flag: --profile <name> — an independent instance with its own config +.
+ * cre at ~/.4pm/profiles/<name>/.
+ * @adr 0014
  */
 import { runLink } from "./commands/link";
 import { runStart } from "./commands/start";
@@ -48,9 +49,10 @@ function flagValue(args: string[], name: string): string | undefined {
 }
 
 /**
- * Resolve which linked profile to act on (ADR-0063): explicit `--profile` wins; else
+ * Resolve which linked profile to act on: explicit `--profile` wins; else
  * 0 linked ⇒ prompt to link; 1 ⇒ that one; 2+ ⇒ an interactive picker on a TTY (or ask
  * for `--profile` when headless). Returns null when the caller should stop.
+ * @adr 0063
  */
 async function pickLinkedProfile(
   explicit: string | null,

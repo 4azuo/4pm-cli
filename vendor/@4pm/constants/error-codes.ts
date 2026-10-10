@@ -35,12 +35,12 @@ export const ErrorCode = {
   TOKEN_EXPIRED: "TOKEN_EXPIRED",
   TOKEN_USED: "TOKEN_USED",
   TOKEN_REVOKED: "TOKEN_REVOKED",
-  /** The session is idle-locked (ADR-0204) — re-authenticate to continue (HTTP 423). */
+  /** The session is idle-locked — re-authenticate to continue (HTTP 423). @adr 0204 */
   SESSION_LOCKED: "SESSION_LOCKED",
   PASSWORD_POLICY_VIOLATION: "PASSWORD_POLICY_VIOLATION",
   PASSWORD_CONFIRM_MISMATCH: "PASSWORD_CONFIRM_MISMATCH",
   PASSWORD_CURRENT_INVALID: "PASSWORD_CURRENT_INVALID",
-  /** The new password appears in a known data breach (Have I Been Pwned — ADR-0426). */
+  /** The new password appears in a known data breach (Have I Been Pwned). @adr 0426 */
   PASSWORD_BREACHED: "PASSWORD_BREACHED",
   IDENTITY_REQUIRED: "IDENTITY_REQUIRED",
   MFA_CODE_INVALID: "MFA_CODE_INVALID",
@@ -289,7 +289,7 @@ export const ErrorCode = {
   NO_PROVIDER_SUBSCRIPTION: "NO_PROVIDER_SUBSCRIPTION",
   ENTERPRISE_PLAN_NOT_ASSIGNABLE: "ENTERPRISE_PLAN_NOT_ASSIGNABLE",
   PAYMENT_FAILED: "PAYMENT_FAILED",
-  // support tickets (ADR-0167) + AI help agent (ADR-0168)
+  // support tickets (ADR-0167) + AI help agent (ADR-0170)
   SUPPORT_TICKET_NOT_FOUND: "SUPPORT_TICKET_NOT_FOUND",
   // managed legal documents (ADR-0350): unknown/disabled document; accepting a version that is not current
   LEGAL_DOCUMENT_NOT_FOUND: "LEGAL_DOCUMENT_NOT_FOUND",

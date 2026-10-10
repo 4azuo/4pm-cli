@@ -4,13 +4,25 @@
  */
 import { z } from "zod";
 
-/** Password policy: 8–32 characters, at least 1 letter and 1 digit. */
+/** Minimum length of a NEW password (ADR-0426, NIST SP 800-63B — no composition rules). */
+export const PASSWORD_MIN_LENGTH = 12;
+
+/** Maximum accepted password length — long passphrases must fit (NIST: allow ≥ 64). */
+export const PASSWORD_MAX_LENGTH = 128;
+
+/**
+ * Policy for a NEW password: 12–128 characters, any characters — no letter/digit rule.
+ * Breached passwords are refused server-side (Have I Been Pwned). Existing shorter passwords still
+ * log in: login / current-password fields only bound the length ({@link passwordInputSchema}).
+ * @adr 0426
+ */
 export const passwordSchema = z
   .string()
-  .min(8, "password: at least 8 characters")
-  .max(32, "password: at most 32 characters")
-  .regex(/[a-zA-Z]/, "password: needs at least 1 letter")
-  .regex(/[0-9]/, "password: needs at least 1 digit");
+  .min(PASSWORD_MIN_LENGTH, `password: at least ${PASSWORD_MIN_LENGTH} characters`)
+  .max(PASSWORD_MAX_LENGTH, `password: at most ${PASSWORD_MAX_LENGTH} characters`);
+
+/** An EXISTING password typed to log in / confirm (any length the old or new policy allowed). */
+export const passwordInputSchema = z.string().min(1).max(PASSWORD_MAX_LENGTH);
 
 /** Username: 3–32 characters, letters/digits and . _ -, starting with a letter or digit. */
 export const usernameSchema = z

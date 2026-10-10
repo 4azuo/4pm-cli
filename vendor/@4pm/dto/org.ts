@@ -13,9 +13,10 @@ import { z } from "zod";
 import { PaymentProvider } from "@4pm/constants";
 
 /**
- * Pending paid-plan checkout recorded at register (ADR-0104), stored under
+ * Pending paid-plan checkout recorded at register, stored under
  * `settings.billing.pending`. After verify + first login the web opens the hosted checkout;
  * the subscription consumer clears it once the sub is active.
+ * @adr 0104
  */
 export interface BillingPendingCheckout {
   planCode: string;
@@ -40,65 +41,69 @@ export function readPendingCheckout(
   return { planCode: pending.planCode, provider };
 }
 
-/** Security-related org policy (ADR-0039), stored under `settings.security`. */
+/** Security-related org policy, stored under `settings.security`. @adr 0039 */
 export interface OrgSecuritySettings {
   /** Allow ADMIN to create sub-accounts without an email address. */
   allowSubAccountWithoutEmail: boolean;
   /**
    * Org-wide IP/CIDR allowlist — the outer boundary above each user's allowlist
-   * (org > user inheritance, ADR-0044). Empty = no org-level restriction.
+   * (org > user inheritance). Empty = no org-level restriction.
+   * @adr 0044
    */
   ipAllowlist: string[];
 }
 
-/** General/regional org policy (ADR-0039), stored under `settings.general`. */
+/** General/regional org policy, stored under `settings.general`. @adr 0039 */
 export interface OrgGeneralSettings {
   /** IANA timezone name (e.g. "UTC", "Asia/Ho_Chi_Minh") — the org's default. */
   timezone: string;
   /**
-   * Default rows per page for the org's paginated list views (ADR-0198). Drives the `size`
+   * Default rows per page for the org's paginated list views. Drives the `size`
    * query the web sends; clamped to {@link PAGE_SIZE_BOUNDS}.
+   * @adr 0198
    */
   pageSize: number;
   /**
-   * Idle privacy-lock timeout in minutes for the whole org (ADR-0202). After this much
+   * Idle privacy-lock timeout in minutes for the whole org. After this much
    * inactivity the web covers the app with a backdrop until the user re-enters their password.
    * `0` disables it; other values clamp to {@link IDLE_LOCK_BOUNDS}.
+   * @adr 0202
    */
   idleLockMinutes: number;
   /**
-   * How many worker-config template versions to keep (ADR-0234). When a new version is saved,
+   * How many worker-config template versions to keep. When a new version is saved,
    * versions older than the most recent N are pruned (a retention cap). Clamped to
    * {@link WORKER_CONFIG_VERSIONS_BOUNDS}.
+   * @adr 0234
    */
   workerConfigVersionsKept: number;
-  /** Max checklists per org (ADR-0332). Clamped to {@link CHECKLIST_MAX_BOUNDS}. */
+  /** Max checklists per org. Clamped to {@link CHECKLIST_MAX_BOUNDS}. @adr 0332 */
   checklistMax: number;
-  /** How many checklist item-versions to keep (ADR-0332). Clamped to {@link WORKER_CONFIG_VERSIONS_BOUNDS}. */
+  /** How many checklist item-versions to keep. Clamped to {@link WORKER_CONFIG_VERSIONS_BOUNDS}. @adr 0332 */
   checklistVersionsKept: number;
-  /** Max worker-config templates per org (ADR-0332). Clamped to {@link CHECKLIST_MAX_BOUNDS}. */
+  /** Max worker-config templates per org. Clamped to {@link CHECKLIST_MAX_BOUNDS}. @adr 0332 */
   workerConfigTemplatesMax: number;
 }
 
-/** Bounds (rows) for the list page size (ADR-0198) — values outside clamp to the default. */
+/** Bounds (rows) for the list page size — values outside clamp to the default. @adr 0198 */
 export const PAGE_SIZE_BOUNDS = { min: 5, max: 100 } as const;
 
-/** Default rows per page when unset (ADR-0198). */
+/** Default rows per page when unset. @adr 0198 */
 export const DEFAULT_PAGE_SIZE = 10;
 
-/** Bounds (minutes) for the idle privacy-lock (ADR-0202); `0` (off) is allowed separately. */
+/** Bounds (minutes) for the idle privacy-lock; `0` (off) is allowed separately. @adr 0202 */
 export const IDLE_LOCK_BOUNDS = { min: 1, max: 480 } as const;
 
-/** Default idle privacy-lock timeout in minutes when unset (ADR-0202). */
+/** Default idle privacy-lock timeout in minutes when unset. @adr 0202 */
 export const DEFAULT_IDLE_LOCK_MINUTES = 30;
 
-/** Bounds for how many worker-config template versions are kept (ADR-0234). */
+/** Bounds for how many worker-config template versions are kept. @adr 0234 */
 export const WORKER_CONFIG_VERSIONS_BOUNDS = { min: 1, max: 100 } as const;
 
-/** Default number of worker-config template versions kept when unset (ADR-0234). */
+/** Default number of worker-config template versions kept when unset. @adr 0234 */
 export const DEFAULT_WORKER_CONFIG_VERSIONS_KEPT = 10;
 
-/** An org's resource caps (ADR-0332) — **admin-only** settings (only the platform admin edits them). */
+/** An org's resource caps — **admin-only** settings (only the platform admin edits them). @adr 0332 */
 export interface OrgResourceCaps {
   checklistMax: number;
   checklistVersionsKept: number;
@@ -108,15 +113,16 @@ export interface OrgResourceCaps {
 
 /** Bounds for the per-org resource caps (checklists / worker-config templates) — ADR-0332. */
 export const CHECKLIST_MAX_BOUNDS = { min: 1, max: 1000 } as const;
-/** Default caps (ADR-0332): 100 checklists / 100 worker-config templates, 10 versions kept each. */
+/** Default caps: 100 checklists / 100 worker-config templates, 10 versions kept each. @adr 0332 */
 export const DEFAULT_CHECKLIST_MAX = 100;
 export const DEFAULT_CHECKLIST_VERSIONS_KEPT = 10;
 export const DEFAULT_WORKER_CONFIG_TEMPLATES_MAX = 100;
 
 /**
- * Per-org command-history policy (ADR-0045), stored under `settings.commandHistory`.
+ * Per-org command-history policy, stored under `settings.commandHistory`.
  * `store=false` skips writing history files but still records recent activity
- * (`user_recent_projects`, ADR-0029). `retentionDays=0` keeps forever.
+ * (`user_recent_projects`). `retentionDays=0` keeps forever.
+ * @adr 0045 @adr 0029
  */
 export interface OrgCommandHistorySettings {
   store: boolean;
@@ -124,17 +130,18 @@ export interface OrgCommandHistorySettings {
 }
 
 /**
- * Per-org token lifetimes (ADR-0056), stored under `settings.tokens`. Web uses
+ * Per-org token lifetimes, stored under `settings.tokens`. Web uses
  * access + refresh JWT; cli maps `ws_token` → access and `hashcode3` → refresh
  * (the cli has no JWT). All values in **seconds**; `cli.hashcode3TtlSec = 0` means
  * "never expires". Empty/out-of-bound values fall back to the defaults below.
+ * @adr 0056
  */
 export interface OrgTokenSettings {
   web: { accessTtlSec: number; refreshTtlSec: number };
   cli: { wsTokenTtlSec: number; hashcode3TtlSec: number };
 }
 
-/** Bounds (seconds) for token TTLs (ADR-0056) — values outside clamp to default. */
+/** Bounds (seconds) for token TTLs — values outside clamp to default. @adr 0056 */
 export const TOKEN_TTL_BOUNDS = {
   accessTtlSec: { min: 300, max: 86_400 },
   refreshTtlSec: { min: 3_600, max: 7_776_000 },
@@ -144,22 +151,24 @@ export const TOKEN_TTL_BOUNDS = {
 } as const;
 
 /**
- * Per-org cli runtime policy (ADR-0056), stored under `settings.cli`. Delivered to
+ * Per-org cli runtime policy, stored under `settings.cli`. Delivered to
  * the worker via the daily `ws_token` response. `reconnectMaxBackoffSec` caps the
  * exponential reconnect backoff when the server is unreachable — the cli retries
  * forever without unpairing, so this bounds the gap between attempts. All in seconds.
+ * @adr 0056
  */
 export interface OrgCliSettings {
   reconnectMaxBackoffSec: number;
-  /** Enable the daily scheduled cli auto-update (ADR-0074). */
+  /** Enable the daily scheduled cli auto-update. @adr 0074 */
   autoUpdateDaily: boolean;
-  /** Hour of day (0–23, in the org timezone) the daily update runs (ADR-0074). */
+  /** Hour of day (0–23, in the org timezone) the daily update runs. @adr 0074 */
   autoUpdateHour: number;
 }
 
 /**
  * Bounds for cli policy — the 1-min ceiling on the reconnect backoff (seconds) and the
- * 0–23 range for the daily auto-update hour (ADR-0074).
+ * 0–23 range for the daily auto-update hour.
+ * @adr 0074
  */
 export const CLI_SETTINGS_BOUNDS = {
   reconnectMaxBackoffSec: { min: 5, max: 60 },
@@ -167,10 +176,11 @@ export const CLI_SETTINGS_BOUNDS = {
 } as const;
 
 /**
- * Per-org community retention (ADR-0112), stored under `settings.communityRetention`. Days;
- * `0` = keep forever. Each is capped at the plan's `retentionDays` (ADR-0105) on save.
+ * Per-org community retention, stored under `settings.communityRetention`. Days;
+ * `0` = keep forever. Each is capped at the plan's `retentionDays` on save.
  * Projected to @4pm/community (OrgRef) to drive its sweep: `forumPosts` (4rum),
  * `messages` (community messages), `attachments` (images & files — one knob).
+ * @adr 0112 @adr 0105
  */
 export interface OrgCommunityRetentionSettings {
   forumPosts: number;
@@ -179,9 +189,10 @@ export interface OrgCommunityRetentionSettings {
 }
 
 /**
- * Per-org community edit/delete windows (ADR-0341), stored under `settings.communityEdit`. Minutes an
+ * Per-org community edit/delete windows, stored under `settings.communityEdit`. Minutes an
  * author may edit / delete their own 4rum post or Messenger message; `0` = unlimited. Projected to
  * @4pm/community (OrgRef), which enforces them. Moderators may always delete.
+ * @adr 0341
  */
 export interface OrgCommunityEditSettings {
   editWindowMinutes: number;
@@ -191,7 +202,7 @@ export interface OrgCommunityEditSettings {
 /** Bounds of the community edit/delete windows in minutes (0 = unlimited; max 30 days). */
 export const COMMUNITY_EDIT_WINDOW_MAX_MINUTES = 43_200;
 
-/** Typed view of `Organization.settings` (ADR-0039, ADR-0045, ADR-0056). */
+/** Typed view of `Organization.settings`. @adr 0039 @adr 0045 @adr 0056 */
 export interface OrgSettings {
   security: OrgSecuritySettings;
   general: OrgGeneralSettings;
@@ -200,15 +211,16 @@ export interface OrgSettings {
   communityEdit: OrgCommunityEditSettings;
   tokens: OrgTokenSettings;
   cli: OrgCliSettings;
-  /** Storage alert rules (ADR-0365). */
+  /** Storage alert rules. @adr 0365 */
   storageAlerts: StorageAlertRule[];
-  /** Auto clear config (ADR-0365). */
+  /** Auto clear config. @adr 0365 */
   storageAutoClear: StorageAutoClearSettings;
   /**
-   * The worker pool (ADR-0284) designated to run **project-less org AI tasks** (ADR-0376 — e.g. AI
+   * The worker pool designated to run **project-less org AI tasks** (ADR-0376 — e.g. AI
    * checklist authoring), stored under `settings.aiPoolId`. `null` = none configured. A pool set here
    * **cannot be attached to a project** (and a project-attached pool cannot be chosen here) — the
    * server enforces the mutual exclusivity on both the Settings save and the project pool-attach.
+   * @adr 0284
    */
   aiPoolId: string | null;
 }
@@ -238,14 +250,14 @@ export const DEFAULT_ORG_SETTINGS: OrgSettings = {
   aiPoolId: null,
 };
 
-/** Read a numeric TTL, clamping out-of-range values back to `def` (ADR-0056). */
+/** Read a numeric TTL, clamping out-of-range values back to `def`. @adr 0056 */
 function readTtl(value: unknown, def: number, min: number, max: number): number {
   return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max
     ? Math.floor(value)
     : def;
 }
 
-/** Read a community edit/delete window (minutes): 0 (unlimited) … max, else `def` (ADR-0341). */
+/** Read a community edit/delete window (minutes): 0 (unlimited) … max, else `def`. @adr 0341 */
 function readEditWindow(value: unknown, def: number): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= COMMUNITY_EDIT_WINDOW_MAX_MINUTES
     ? Math.floor(value)
@@ -262,7 +274,8 @@ function readHashcode3Ttl(value: unknown, def: number): number {
 
 /**
  * Read the typed org settings from the loosely-typed JSON store, filling in
- * defaults for any missing keys (ADR-0039).
+ * defaults for any missing keys.
+ * @adr 0039
  */
 export function readOrgSettings(settings: Record<string, unknown> | null | undefined): OrgSettings {
   const security = (settings?.security ?? {}) as Partial<OrgSecuritySettings>;
@@ -394,8 +407,9 @@ export function readOrgSettings(settings: Record<string, unknown> | null | undef
 
 /**
  * Return a copy of `Organization.settings` for responses (org-0001/0002): typed namespaces filled with
- * defaults, and the retired `mail` namespace (platform-only mail — ADR-0366) stripped so a stale
+ * defaults, and the retired `mail` namespace (platform-only mail) stripped so a stale
  * stored value (which may hold credentials) is never returned.
+ * @adr 0366
  */
 export function maskOrgSettingsSecrets(
   settings: Record<string, unknown> | null | undefined,
@@ -415,9 +429,9 @@ export function maskOrgSettingsSecrets(
 export interface OrgResponse {
   id: string;
   name: string;
-  /** Slug login user org (ADR-0023). */
+  /** Slug login user org. @adr 0023 */
   slug: string;
-  /** Memorable login alias set by ADMIN (ADR-0111); null when unset. */
+  /** Memorable login alias set by ADMIN; null when unset. @adr 0111 */
   alias: string | null;
   settings: Record<string, unknown>;
   createdAt: string;
@@ -425,17 +439,19 @@ export interface OrgResponse {
 }
 
 /**
- * Login alias format (ADR-0111): 3–40 chars of `[a-z0-9-]`, or empty string to clear it.
+ * Login alias format: 3–40 chars of `[a-z0-9-]`, or empty string to clear it.
  * Reserved words are rejected server-side.
+ * @adr 0111
  */
 export const orgAliasSchema = z
   .string()
   .regex(/^([a-z0-9-]{3,40})?$/, "alias must be 3–40 chars of a–z, 0–9, -");
 
 /**
- * org-0004 — hosted-storage usage vs the plan cap, split into the 3 meter colours (ADR-0122) plus the
- * per-kind figures (ADR-0365).
+ * Hosted-storage usage vs the plan cap, split into the 3 meter colours plus the
+ * per-kind figures.
  * With `?userId`, `machineUser` carries that machine user's own cli footprint (across its links).
+ * @api org-0004 @adr 0122 @adr 0365
  */
 export interface StorageUsageResponse {
   /** `entitlements.templateStorageBytes` (total hosted cap); null = unlimited. */
@@ -452,7 +468,7 @@ export interface StorageUsageResponse {
     /** Templates + artifacts + message/post/comment attachments + memo/AI-doc images and files. */
     files: number;
   };
-  /** Per-kind bytes (ADR-0365); the colours above are sums of these. */
+  /** Per-kind bytes; the colours above are sums of these. */
   kinds: StorageKindBytes;
   /** `usedBytes ≥ quotaBytes` — writes/uploads/new AI runs are blocked (never true when unlimited). */
   full: boolean;
@@ -465,15 +481,16 @@ export interface StorageUsageResponse {
 }
 
 /**
- * Org overview for the Organization dashboard card (org-0005) — readable by **any** org member
+ * Org overview for the Organization dashboard card — readable by **any** org member
  * (no permission gate), so every role sees the org's headline counts, this-month AI-token usage
  * and hosted-storage breakdown. Deliberately excludes billing identity (the plan name) — that
  * stays ADMIN-only on the subscription card.
+ * @api org-0005
  */
 export interface OrgOverviewResponse {
   /** Total non-deleted accounts in the org (humans + machines). */
   userCount: number;
-  /** Rented (4PM-hosted pool) machine accounts currently surfaced into the org (ADR-0132). */
+  /** Rented (4PM-hosted pool) machine accounts currently surfaced into the org. @adr 0132 */
   rentedCount: number;
   /** Non-deleted teams. */
   teamCount: number;

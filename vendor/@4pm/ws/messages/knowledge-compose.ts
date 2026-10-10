@@ -1,9 +1,10 @@
 /**
- * KNOWLEDGE_COMPOSE payloads (ADR-0190) — the server's request to a project's cli to AI-distil the
+ * KNOWLEDGE_COMPOSE payloads — the server's request to a project's cli to AI-distil the
  * project into a knowledge article, and the cli's reply. Request–reply over the `knowledge.compose`
  * channel: the worker runs the AI CLI (claude/codex) in the project's working dir with a distillation
  * prompt and returns the composed markdown. Falls back to a templated draft on the server when the
  * cli/AI is unavailable.
+ * @adr 0190
  */
 
 /** Server → cli: distil this project into a knowledge doc. */

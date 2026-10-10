@@ -17,9 +17,10 @@ export const PhysicProjectStatus = {
   PENDING: "pending",
   ACTIVE: "active",
   /**
-   * The folder was created on attach but its repos could not be provisioned (ADR-0288):
+   * The folder was created on attach but its repos could not be provisioned:
    * the worker lacks gh/glab auth, a clone failed, or the cli/tools version is too old.
    * The web shows "not provisioned — update required" (never "version unknown").
+   * @adr 0288
    */
   NEEDS_PROVISION: "needs_provision",
   /** The folder no longer exists on the worker. */

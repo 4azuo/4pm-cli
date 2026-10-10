@@ -1,9 +1,10 @@
 /**
- * `4pm unlink` command — revoke the server-side link (machine-0006b) then delete the
- * profile's local `.cre`. Server unreachable ⇒ still delete locally + warn (ADR-0014).
+ * `4pm unlink` command — revoke the server-side link then delete the
+ * profile's local `.cre`. Server unreachable ⇒ still delete locally + warn.
+ * @api machine-0006b @adr 0014
  */
 import { rmSync } from "node:fs";
-import { readCredential } from "../core/credential";
+import { readCredential } from "../core/profile/credential";
 import { clearDefaultProfileIf, readProfileConfig } from "../config/profile";
 import { selfUnlink } from "../services/api";
 import { initI18n, t } from "../i18n";

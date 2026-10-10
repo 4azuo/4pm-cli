@@ -23,10 +23,11 @@ export function backoffJitterMs(
 }
 
 /**
- * Detect whether a chunk of text is machine-readable output worth collapsing (ADR-0108):
+ * Detect whether a chunk of text is machine-readable output worth collapsing:
  * JSON (leading `{`/`[`) or a fenced code block (leading ```` ``` ````). Returns the kind or
  * `null` for anything else (plain prose is never collapsed). Leading whitespace is ignored so
  * it works on the first streamed chunk.
+ * @adr 0108
  */
 export function looksLikeJsonOrCode(text: string): "json" | "code" | null {
   const t = text.replace(/^\s+/, "");
@@ -36,9 +37,10 @@ export function looksLikeJsonOrCode(text: string): "json" | "code" | null {
 }
 
 /**
- * Pretty-print a collapsed result for display when expanded (ADR-0108): JSON is re-indented
+ * Pretty-print a collapsed result for display when expanded: JSON is re-indented
  * (2 spaces), tolerating trailing prose by parsing the outermost `{…}`/`[…]` slice; code and
  * unparseable text are returned trimmed and unchanged.
+ * @adr 0108
  */
 export function prettyResult(text: string): string {
   const trimmed = text.trim();

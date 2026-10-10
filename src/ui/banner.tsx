@@ -7,7 +7,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import type { MachineUsagePayload } from "@4pm/ws";
-import type { SessionStatus } from "../core/session-bus";
+import type { SessionStatus } from "../core/session/session-bus";
 import type { SessionInfo } from "./session-info";
 import { t } from "../i18n";
 
@@ -50,7 +50,7 @@ export function Banner({
   project: string | null;
   status: SessionStatus;
   activeProfile: string | null;
-  /** Latest Claude subscription usage snapshot (5h/weekly — ADR-0072), or null. */
+  /** Latest Claude subscription usage snapshot (5h/weekly), or null. @adr 0072 */
   usage: MachineUsagePayload | null;
   /** Tokens consumed this session. */
   sessionTokens: number;

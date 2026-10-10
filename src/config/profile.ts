@@ -1,9 +1,10 @@
 /**
- * Multi-instance profiles (ADR-0014): each cli instance runs with its own profile
+ * Multi-instance profiles: each cli instance runs with its own profile
  * `4pm --profile <name>` (or the FOURPM_PROFILE env var) — a separate config dir +
  * `.cre` at ~/.4pm/profiles/<name>/. Without `--profile`, the default profile is keyed
- * by the paired MACHINE userId (ADR-0047), stored in the ~/.4pm/default pointer;
+ * by the paired MACHINE userId, stored in the ~/.4pm/default pointer;
  * `default` is only the legacy fallback (pre-ADR-0047).
+ * @adr 0014 @adr 0047
  */
 import {
   existsSync,
@@ -29,7 +30,7 @@ function defaultPointerPath(): string {
 }
 
 /**
- * The default profile name = the userId in ~/.4pm/default (ADR-0047), falling back to
+ * The default profile name = the userId in ~/.4pm/default, falling back to
  * the legacy `default` profile when the pointer is absent.
  */
 export function defaultProfileName(): string {
@@ -62,50 +63,56 @@ export function clearDefaultProfileIf(name: string): void {
 /** Per-profile config (config.json inside the profile directory). */
 export interface ProfileConfig {
   /**
-   * UI language for the cli's own operator-facing error messages (ADR-0276), set from the
+   * UI language for the cli's own operator-facing error messages, set from the
    * Worker configs form. Operator-editable (not server-managed). Absent ⇒ the cli falls back
    * to `FOURPM_LOCALE`/`LANG`/`LC_ALL`, then English.
+   * @adr 0276
    */
   locale?: Locale;
-  /** Auto-update on startup (ADR-0015) — defaults to true. */
+  /** Auto-update on startup — defaults to true. @adr 0015 */
   autoUpdate?: boolean;
   /**
-   * Catalog ids / npm package names flagged for per-tool auto-update (ADR-0253). The daily
+   * Catalog ids / npm package names flagged for per-tool auto-update. The daily
    * maintenance tick (ADR-0074, org-gated + idle-only) runs `npm i -g <pkg>@latest` for each.
    * Since ADR-0254 the authoritative flags live in the DB `MachineLink.toolSnapshot`; this is a
    * **server-seeded local mirror** written from `ws_token.toolRestore.autoUpdate` on each connect, so
    * the idle tick can read it without a round-trip. Empty/absent ⇒ none.
+   * @adr 0253
    */
   autoUpdateTools?: string[];
   /**
-   * Toolchain self-install (ADR-0396): install a missing gh/glab at start and the AI CLIs of the enabled
+   * Toolchain self-install: install a missing gh/glab at start and the AI CLIs of the enabled
    * profiles at start + on use. Defaults to true; `false` leaves installs to the Tools tab's Install button.
+   * @adr 0396
    */
   autoInstallTools?: boolean;
   /**
-   * Timeout (seconds) for a global tool install/update/restore op (ADR-0258) — bounds each
+   * Timeout (seconds) for a global tool install/update/restore op — bounds each
    * `npm i -g`/`pnpm add -g` attempt so a hung child can't wedge a restore, while being long enough
    * for a cold npm on a slow container egress (the old fixed 180s was too short). `0`/absent ⇒ the
    * 300s default. Detection probes (`--version`, `npm ls -g`) keep their own short timeouts.
+   * @adr 0258
    */
   toolInstallTimeoutSec?: number;
   /**
-   * Minutes between periodic git snapshots of the served project (ADR-0369, arch 0051) — each one runs
+   * Minutes between periodic git snapshots of the served project — each one runs
    * `git fetch --prune` first so the server sees origin as of now. Absent/invalid ⇒ 10; `0` disables the
    * periodic run (event-driven snapshots still go out).
+   * @adr 0369 @arch 0051
    */
   gitSnapshotIntervalMin?: number;
   /** The physic project folder this cli serves (assigned by the server). */
   physicPath?: string | null;
   /** Interval to upload command history to R2 (minutes) — defaults to 10. */
   commandHistoryUploadMinutes?: number;
-  /** AI CLI the TUI input box drives (ADR-0057) — defaults to "claude". */
+  /** AI CLI the TUI input box drives — defaults to "claude". @adr 0057 */
   aiCli?: string;
   /**
    * Claude profiles to run — each `{ profile, args?, model? }` sets CLAUDE_CONFIG_DIR to
    * its `profile` dir. A **list** of candidates tried in order until one authenticates
-   * (the working one is remembered — ADR-0057). `args` are EXTRA pre-prompt args appended
-   * after the hardcoded required metering flags (ADR-0158); `model` is passed as `--model`.
+   * (the working one is remembered). `args` are EXTRA pre-prompt args appended
+   * after the hardcoded required metering flags; `model` is passed as `--model`.
+   * @adr 0158 @adr 0057
    */
   claudeHome?: AiProfile[];
   /** Codex profiles to run — same shape; each sets CODEX_HOME to its `profile` dir. */
@@ -116,16 +123,18 @@ export interface ProfileConfig {
    */
   antigravityHome?: AiProfile[];
   /**
-   * Unified mixed credential list (ADR-0182). Each `{ provider, profile, args?, model?, enabled?,
+   * Unified mixed credential list. Each `{ provider, profile, args?, model?, enabled?,
    * label? }` names the AI CLI it drives, so a single ordered list intermixes claude/codex/
    * antigravity accounts. When present (≥1 usable entry) it REPLACES `claudeHome`/`codexHome`/
    * `antigravityHome` + the single `aiCli` for the run plan: failover walks it in order and can
    * cross providers. Absent ⇒ the legacy per-`aiCli` plan (backward-compatible — no migration).
+   * @adr 0182
    */
   aiProfiles?: AiCredential[];
   /**
-   * Failover start policy (ADR-0182): `"remember"` starts from the last-working credential
-   * (ADR-0057); `"priority"` always starts at the top of `aiProfiles`. Default `"remember"`.
+   * Failover start policy: `"remember"` starts from the last-working credential;
+   * `"priority"` always starts at the top of `aiProfiles`. Default `"remember"`.
+   * @adr 0182 @adr 0057
    */
   aiFailoverMode?: "remember" | "priority";
   /** Extra env passed when spawning the AI CLI (overrides the mapped ones above). */
@@ -136,9 +145,10 @@ export interface ProfileConfig {
    */
   autoClearIdleMinutes?: number;
   /**
-   * Read-only mirror of the serving project's runtime token knobs (ADR-0081), refreshed
-   * from each `ws_token` (machine-0003). The server is the source of truth — these are
+   * Read-only mirror of the serving project's runtime token knobs, refreshed
+   * from each `ws_token`. The server is the source of truth — these are
    * cached locally only so the AI prompt path can enforce them without a round-trip.
+   * @api machine-0003 @adr 0081
    */
   /** Session (5h) utilization % that triggers a Claude profile rotation; 0 = off. */
   sessionSwitchPct?: number;
@@ -146,60 +156,68 @@ export interface ProfileConfig {
   perPromptTokenLimit?: number;
   /**
    * Machine-user default wall-clock ceiling (seconds) for a single AI run before the cli
-   * terminates the spawned AI CLI (ADR-0243). Operator-editable via the Worker config; 0 = no
+   * terminates the spawned AI CLI. Operator-editable via the Worker config; 0 = no
    * limit. Overridden per-project by the read-only `projectAiRunTimeoutSec` mirror below when >0.
+   * @adr 0243
    */
   aiRunTimeoutSec?: number;
   /**
-   * 4pm-cli slash commands blocked from the **web Console** (ADR-0249) — operator-editable via the
+   * 4pm-cli slash commands blocked from the **web Console** — operator-editable via the
    * Worker config + config templates. A `/name` line dispatched from the web runs on the worker
    * unless its `name` is listed here. Machine-user policy (not per-project); default blocks the two
    * that tamper with / kill the worker — `quit` + `config` — everything else allowed (`[]` = allow all).
    * The TUI is unaffected (an operator at the machine keeps every command).
+   * @adr 0249
    */
   webBlockedCommands?: string[];
   /**
-   * Read-only mirror of the serving project's AI-run timeout override (ADR-0243), refreshed from
+   * Read-only mirror of the serving project's AI-run timeout override, refreshed from
    * each `ws_token` like the two knobs above. Server is the source of truth; >0 wins over the
    * machine-user `aiRunTimeoutSec`; 0 ⇒ no project override. Never operator-editable (a Worker-config
    * write preserves it — a server-managed key).
+   * @adr 0243
    */
   projectAiRunTimeoutSec?: number;
   /**
-   * Read-only mirror of the serving project's idle auto-clear override (ADR-0244), refreshed from
+   * Read-only mirror of the serving project's idle auto-clear override, refreshed from
    * each `ws_token` like the knobs above. Server is the source of truth; >0 wins over the
    * machine-user `autoClearIdleMinutes`; 0 ⇒ no project override. Never operator-editable (a
    * Worker-config write preserves it — a server-managed key).
+   * @adr 0244
    */
   projectAutoClearIdleMinutes?: number;
   /**
-   * Shared AI memory (ADR-0245) — machine-user defaults, operator-editable via the Worker config.
+   * Shared AI memory — machine-user defaults, operator-editable via the Worker config.
    * `aiMemoryEnabled` turns the rolling cross-profile memory on for this worker (default false;
    * costs an extra compaction AI call per turn); `aiMemoryBudgetChars` caps the compacted text
    * (default 1000, max 9999). Overridden per-project by the two read-only mirror keys below.
+   * @adr 0245
    */
   aiMemoryEnabled?: boolean;
   aiMemoryBudgetChars?: number;
   /**
-   * Bounded native `--resume` (ADR-0339) — operator-editable. A remembered claude session is resumed
+   * Bounded native `--resume` — operator-editable. A remembered claude session is resumed
    * only if its last run ended ≤ `aiResumeMaxIdleMinutes` ago (default 5, the prompt-cache TTL) and
    * its context is ≤ `aiResumeMaxContextTokens` (default 100 000); otherwise a fresh session seeded
    * with the shared memory. `0` ⇒ that bound is off.
+   * @adr 0339
    */
   aiResumeMaxIdleMinutes?: number;
   aiResumeMaxContextTokens?: number;
   /**
-   * Read-only mirror of the serving project's memory override (ADR-0245), refreshed from each
+   * Read-only mirror of the serving project's memory override, refreshed from each
    * `ws_token`. Server is the source of truth; `mode` `on`/`off` forces enablement (else `inherit`
    * defers to `aiMemoryEnabled`), `projectAiMemoryBudgetChars` `>0` wins over `aiMemoryBudgetChars`.
    * Never operator-editable (server-managed keys).
+   * @adr 0245
    */
   projectAiMemoryMode?: "inherit" | "on" | "off";
   projectAiMemoryBudgetChars?: number;
   /**
-   * Read-only mirror of `ws_token.maskAiAccounts` (ADR-0395): on a platform-pool (rented) worker the
+   * Read-only mirror of `ws_token.maskAiAccounts`: on a platform-pool (rented) worker the
    * AI credential labels are shown as `AI account #N`. Kept here so `4pm start` masks the header
    * before the first token arrives. Server-managed, never operator-editable.
+   * @adr 0395
    */
   maskAiAccounts?: boolean;
 }
@@ -208,7 +226,7 @@ export interface ProfileConfig {
  * Extract the EXPLICIT profile from args (--profile <name>) or the FOURPM_PROFILE env
  * var. Returns [explicit profile | null, args with the --profile pair removed]. When
  * null, callers resolve the default lazily: `link` derives it from the paired userId;
- * other commands use `defaultProfileName()` (ADR-0047).
+ * other commands use `defaultProfileName()`.
  */
 export function resolveProfileArg(args: string[]): [string | null, string[]] {
   const index = args.indexOf("--profile");
@@ -234,7 +252,8 @@ export interface ProfileEntry {
 
 /**
  * List profiles under ~/.4pm/profiles/ (each a directory), flagging which are linked
- * (have a `.cre`). Used for the interactive picker (ADR-0063) instead of `--profile`.
+ * (have a `.cre`). Used for the interactive picker instead of `--profile`.
+ * @adr 0063
  */
 export function listProfiles(): ProfileEntry[] {
   const base = join(homedir(), ".4pm", "profiles");
@@ -253,18 +272,20 @@ export function listProfiles(): ProfileEntry[] {
 }
 
 /**
- * Mode of `~/.4pm`: owner-only, except under uid separation (ADR-0430) where the shared group may
+ * Mode of `~/.4pm`: owner-only, except under uid separation where the shared group may
  * traverse it (`0710` — no listing) to reach `workspaces/`; the profiles inside stay `0700`.
+ * @adr 0430
  */
 function fourpmHomeMode(): number {
   return agentUser() ? 0o710 : 0o700;
 }
 
 /**
- * Prepare the workspace of a profile for uid separation (ADR-0430), at `start`/`link`: `umask 007` (files
+ * Prepare the workspace of a profile for uid separation, at `start`/`link`: `umask 007` (files
  * the cli and the agent create in a project stay group-writable), `~/.4pm` traversable by the shared group,
  * `~/.4pm/workspaces/<profile>` shared (`2770`) and registered so every process run in it runs as the
  * agent. No-op when separation is off.
+ * @adr 0430
  */
 export function prepareWorkspaces(profileDirPath: string): void {
   if (!agentUser()) return;
@@ -280,10 +301,11 @@ export function prepareWorkspaces(profileDirPath: string): void {
 }
 
 /**
- * Where a profile's served projects live (ADR-0430): `~/.4pm/workspaces/<profile>/` — OUTSIDE the profile
+ * Where a profile's served projects live: `~/.4pm/workspaces/<profile>/` — OUTSIDE the profile
  * dir, so the profile (`.cre`, config, logs, sockets) can stay owner-only while the project tree is shared
  * with the agent user, and the claude deny rules on `~/.4pm/profiles/**` never cover the project itself.
  * `SCAFFOLD_ROOT` overrides it (tests / custom layouts).
+ * @adr 0430
  */
 export function workspaceRoot(profileDirPath: string): string {
   if (process.env.SCAFFOLD_ROOT) return resolve(process.env.SCAFFOLD_ROOT);
@@ -295,7 +317,10 @@ export function safeProjectFolderName(projectName: string): string {
   return projectName.replace(/[/\\]/g, "_").replace(/\.\./g, "_").trim();
 }
 
-/** The folder a project is served from (folder = sanitized project name — ADR-0064/0430); null when unusable. */
+/**
+ * The folder a project is served from (folder = sanitized project name); null when unusable.
+ * @adr 0064 @adr 0430
+ */
 export function projectFolder(profileDirPath: string, projectName: string): string | null {
   const safe = safeProjectFolderName(projectName);
   return safe ? join(workspaceRoot(profileDirPath), safe) : null;
@@ -354,10 +379,11 @@ export function defaultProfileConfig(): ProfileConfig {
 }
 
 /**
- * Resolve the effective shared-AI-memory config (ADR-0245) for a serving cli: the project override
+ * Resolve the effective shared-AI-memory config for a serving cli: the project override
  * (server-managed mirror) wins — `mode` `on`/`off` forces enablement, else `inherit` defers to the
  * machine-user `aiMemoryEnabled`; the project budget wins when `>0`, else the machine-user budget
  * (default 1000). `enabled:false` ⇒ memory is off (no inject, no compaction).
+ * @adr 0245
  */
 export function resolveMemoryConfig(config: ProfileConfig): { enabled: boolean; budgetChars: number } {
   const mode = config.projectAiMemoryMode ?? "inherit";
@@ -368,9 +394,10 @@ export function resolveMemoryConfig(config: ProfileConfig): { enabled: boolean; 
 }
 
 /**
- * Resolve the bounded-resume limits (ADR-0339): the max idle gap (ms) since the session's last run
+ * Resolve the bounded-resume limits: the max idle gap (ms) since the session's last run
  * and the max context tokens it may carry to still be resumed. `0` in config ⇒ that bound is off
  * (returned as `Infinity`); absent ⇒ the defaults (5 min / 100 000 tokens).
+ * @adr 0339
  */
 export function resolveResumePolicy(config: ProfileConfig): { maxIdleMs: number; maxContextTokens: number } {
   const idleMin = config.aiResumeMaxIdleMinutes ?? 5;
@@ -382,22 +409,24 @@ export function resolveResumePolicy(config: ProfileConfig): { maxIdleMs: number;
 }
 
 /**
- * Resolve the effective idle transcript auto-clear window (minutes) for a serving cli (ADR-0244):
+ * Resolve the effective idle transcript auto-clear window (minutes) for a serving cli:
  * the project override (`projectAutoClearIdleMinutes`, the server-managed mirror) wins when > 0,
  * else the machine-user's own `autoClearIdleMinutes` (default 10). 0 ⇒ disabled.
+ * @adr 0244
  */
 export function resolveIdleAutoClearMinutes(config: ProfileConfig): number {
   const project = config.projectAutoClearIdleMinutes ?? 0;
   return project > 0 ? project : (config.autoClearIdleMinutes ?? 10);
 }
 
-/** The safe default web-blocked commands (ADR-0249) when the key is absent — quit + config. */
+/** The safe default web-blocked commands when the key is absent — quit + config. @adr 0249 */
 export const DEFAULT_WEB_BLOCKED_COMMANDS = ["quit", "config"];
 
 /**
- * The set of 4pm-cli slash commands blocked from the web Console (ADR-0249) — the operator's
+ * The set of 4pm-cli slash commands blocked from the web Console — the operator's
  * `webBlockedCommands` normalised to lower-case names. **Absent (undefined) ⇒ the safe default**
  * (quit + config); an explicit `[]` ⇒ allow all. TUI is never gated.
+ * @adr 0249
  */
 export function resolveWebBlockedCommands(config: ProfileConfig): Set<string> {
   const list = Array.isArray(config.webBlockedCommands)

@@ -20,71 +20,79 @@ export interface UserResponse {
   username: string;
   /**
    * Friendly display name shown in place of the immutable `username` where the account is
-   * presented to humans (ADR-0200) — use `aliasName || username`. Null = show the username.
+   * presented to humans — use `aliasName || username`. Null = show the username.
+   * @adr 0200
    */
   aliasName: string | null;
-  /** null = internal account created without email (ADR-0039). */
+  /** null = internal account created without email. @adr 0039 */
   email: string | null;
   phone: string | null;
   roles: Role[];
   isRoot: boolean;
   /**
-   * Rented (4PM-hosted pool) MACHINE user (ADR-0132) — surfaced into a customer org only
+   * Rented (4PM-hosted pool) MACHINE user — surfaced into a customer org only
    * while it holds an active rental; the web badges it "Rented" and shows a read-only,
    * rental-scoped user page (no Settings/Permission tabs).
+   * @adr 0132
    */
   isRented: boolean;
-  /** Account status: "active" | "paused" (org-level pause — ADR-0093). */
+  /** Account status: "active" | "paused" (org-level pause). @adr 0093 */
   status: UserStatus;
   ipAllowlist: string[];
   emailVerifiedAt: string | null;
-  /** URL to the avatar image (`/users/:id/avatar`); null when not uploaded (ADR-0028). */
+  /** URL to the avatar image (`/users/:id/avatar`); null when not uploaded. @adr 0028 */
   avatarUrl: string | null;
   /**
-   * The org's idle privacy-lock timeout in minutes (ADR-0202) — an org policy surfaced on the
+   * The org's idle privacy-lock timeout in minutes — an org policy surfaced on the
    * self `GET /users/me` so every member can apply it (org.read is ADMIN-only). `0` = off.
    * Only populated on the `me()` response; omitted elsewhere.
+   * @adr 0202
    */
   idleLockMinutes?: number;
   /**
-   * Whether **this session** is currently idle-locked server-side (ADR-0204). Fresh (not cached) on
+   * Whether **this session** is currently idle-locked server-side. Fresh (not cached) on
    * the `me()` response so a reload while locked re-shows the lock overlay. Only on `me()`.
+   * @adr 0204
    */
   sessionLocked?: boolean;
-  /** Whether the user has set an unlock PIN (ADR-0205) — the lock overlay offers PIN vs password.
-   * Only on the self `me()` response. */
+  /** Whether the user has set an unlock PIN — the lock overlay offers PIN vs password.
+   * Only on the self `me()` response.
+   * @adr 0205
+   */
   hasPin?: boolean;
   /**
-   * Tools whose last run failed on this account's cli (ADR-0223) — populated only for MACHINE users
+   * Tools whose last run failed on this account's cli — populated only for MACHINE users
    * (project Members), so a user sees the last tool/connect error like the admin pools. Omitted for
    * human accounts and when the cli is healthy.
+   * @adr 0223
    */
   failingTools?: WorkerFailingTool[];
   createdAt: string;
   updatedAt: string;
 }
 
-/** Data PUT /users/me/avatar (user-0007) — the new avatar URL. */
+/** Data PUT /users/me/avatar — the new avatar URL. @api user-0007 */
 export interface AvatarUploadResponse {
   avatarUrl: string;
 }
 
-/** Allowed avatar MIME types + max size (ADR-0028). */
+/** Allowed avatar MIME types + max size. @adr 0028 */
 export const AVATAR_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
 export const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
 
-/** Summary of teams/projects attached to a user (user-0004). */
+/** Summary of teams/projects attached to a user. @api user-0004 */
 export interface UserRelationSummary {
   id: string;
   name: string;
 }
 
 /**
- * A team a user belongs to, enriched for the user Info page (user-0004): the team's avatar,
+ * A team a user belongs to, enriched for the user Info page: the team's avatar,
  * its lead's display name (null when none) and whether THIS user is the lead.
+ * @api user-0004
  */
 export interface UserTeamSummary extends UserRelationSummary {
-  /** Team avatar URL (`/teams/:id/avatar`), null when none uploaded (ADR-0043). */
+  /** Team avatar URL (`/teams/:id/avatar`), null when none uploaded. @adr 0043 */
   avatarUrl: string | null;
   /** Team lead's display name, or null when no lead is set. */
   leadName: string | null;
@@ -93,22 +101,23 @@ export interface UserTeamSummary extends UserRelationSummary {
 }
 
 /**
- * A project a user can reach (user-0004): either assigned **directly** (`project_users`) or
+ * A project a user can reach: either assigned **directly** (`project_users`) or
  * **via a team** the user belongs to (`project_teams`), or both. `viaTeams` lists the team
  * names granting access when the reach is team-derived (empty when only direct).
+ * @api user-0004
  */
 export interface UserProjectSummary extends UserRelationSummary {
   /** True when the user is directly assigned to the project (`project_users`). */
   direct: boolean;
   /** Team names that grant access to this project (empty when only direct). */
   viaTeams: string[];
-  /** Project lifecycle status (ADR-0092) — rendered as a status badge on the row. */
+  /** Project lifecycle status — rendered as a status badge on the row. @adr 0092 */
   status: ProjectStatus;
-  /** Human members on the project (`project_users`, excluding MACHINE accounts — ADR-0041). */
+  /** Human members on the project (`project_users`, excluding MACHINE accounts). @adr 0041 */
   memberCount: number;
   /** Teams attached to the project (`project_teams`). */
   teamCount: number;
-  /** Project manager's display name (ADR-0038), or null when none is set. */
+  /** Project manager's display name, or null when none is set. @adr 0038 */
   pmName: string | null;
   /** Project creation time (ISO). */
   createdAt: string;
@@ -120,38 +129,42 @@ export interface UserDetailResponse extends UserResponse {
   projects: UserProjectSummary[];
   /**
    * For a MACHINE (worker) account on its **own** `me()` response: the project(s) it currently
-   * **serves** via AI-routing (`project_worker_entries`, ADR-0284/0288) — this is what the worker
+   * **serves** via AI-routing (`project_worker_entries`) — this is what the worker
    * is actually running on, independent of a `project_users` membership (which may be detached).
    * Populated only on the self `me()` for a MACHINE; omitted otherwise.
+   * @adr 0284 @adr 0288
    */
   machineServedProjects?: UserRelationSummary[];
   /**
-   * Last activity time — the most recent `UserRecentProject.occurredAt` (ADR-0029);
+   * Last activity time — the most recent `UserRecentProject.occurredAt`;
    * null when the user has never interacted with a project.
+   * @adr 0029
    */
   lastActivityAt: string | null;
   /**
    * Whether the requesting actor may edit this user's settings — specifically the
-   * IP allowlist (ADR-0050). True for ADMIN (anyone) and for a PM/TL who manages the
+   * IP allowlist. True for ADMIN (anyone) and for a PM/TL who manages the
    * user's project/team. Roles remain ADMIN-only regardless. Self edits profile via
    * `isSelf`, independent of this flag.
+   * @adr 0050
    */
   canManageSettings: boolean;
-  /** Usage-alert rules for this cli user (ADR-0110); empty when none configured. */
+  /** Usage-alert rules for this cli user; empty when none configured. @adr 0110 */
   alerts: UsageAlertRule[];
-  /** cli data retention (days) for this machine user (ADR-0115); 0 = cli defaults. */
+  /** cli data retention (days) for this machine user; 0 = cli defaults. @adr 0115 */
   cliRetentionDays: number;
 }
 
-/** A row of GET /users (user-0002) — profile + team memberships (for grouping in the UI). */
+/** A row of GET /users — profile + team memberships (for grouping in the UI). @api user-0002 */
 export interface UserListItemResponse extends UserResponse {
   teams: UserRelationSummary[];
   /** Projects the user is directly assigned to (`project_users`), for the list UI. */
   projects: UserRelationSummary[];
   /**
-   * For a MACHINE user, the id of the single project it is a member of (ADR-0041);
+   * For a MACHINE user, the id of the single project it is a member of;
    * null when unassigned or for non-MACHINE users. Lets the UI hide machines that
    * are already tied to another project.
+   * @adr 0041
    */
   machineProjectId: string | null;
   /**
@@ -162,9 +175,10 @@ export interface UserListItemResponse extends UserResponse {
   machinePoolId: string | null;
   /**
    * For a **rented** (4PM-hosted pool) user (`isRented`), the live WS state of its
-   * pool-owned worker cli (ADR-0160) — the org's own `machines.list` never returns the
+   * pool-owned worker cli — the org's own `machines.list` never returns the
    * pool link, so the machine list can't derive it. `null` for non-rented users (the UI
    * keeps deriving those from the org's links). A rented user is always paired.
+   * @adr 0160
    */
   machineConnected: boolean | null;
   /**
@@ -178,17 +192,21 @@ export interface UserListItemResponse extends UserResponse {
   machineCliVersion: string | null;
   machineCliOutdated: boolean | null;
   machineCliUnsupported: boolean | null;
-  /** Rented users only (ADR-0363): cut-off date + admin note of the running version; null otherwise. */
+  /** Rented users only: cut-off date + admin note of the running version; null otherwise. @adr 0363 */
   machineCliUnsupportedFrom: string | null;
   machineCliVersionNote: string | null;
-  /** Rented users only: true when the pool worker runs an update-locked image (ADR-0432/0434); null otherwise. */
+  /**
+   * Rented users only: true when the pool worker runs an update-locked image; null otherwise.
+   * @adr 0432 @adr 0434
+   */
   machineCliUpdateLocked?: boolean | null;
 }
 
 /**
- * Usage-alert rule (ADR-0110) — emails when a cli user's usage crosses a threshold within a
+ * Usage-alert rule — emails when a cli user's usage crosses a threshold within a
  * period. `session5h`/`weekly` thresholds are utilization percent (1–100); `monthlyTokens` is
  * an absolute month-to-date AI-token count. `email` empty ⇒ send to the user's own email.
+ * @adr 0110
  */
 export const USAGE_ALERT_METRICS = ["session5h", "weekly", "monthlyTokens"] as const;
 export type UsageAlertMetric = (typeof USAGE_ALERT_METRICS)[number];
@@ -202,13 +220,13 @@ export const usageAlertRuleSchema = z.object({
 });
 export type UsageAlertRule = z.infer<typeof usageAlertRuleSchema>;
 
-/** The `alerts` block of `users.settings` (ADR-0110). */
+/** The `alerts` block of `users.settings`. @adr 0110 */
 export const userAlertsSchema = z.object({
   rules: z.array(usageAlertRuleSchema).max(20).default([]),
 });
 export type UserAlerts = z.infer<typeof userAlertsSchema>;
 
-/** Read the usage-alert rules out of a loosely-typed `users.settings` JSON (ADR-0110). */
+/** Read the usage-alert rules out of a loosely-typed `users.settings` JSON. @adr 0110 */
 export function readUserAlertRules(
   settings: Record<string, unknown> | null | undefined,
 ): UsageAlertRule[] {
@@ -219,9 +237,10 @@ export function readUserAlertRules(
 }
 
 /**
- * Per-machine-user cli data retention in days (ADR-0115) — applied by the cli to its logs,
+ * Per-machine-user cli data retention in days — applied by the cli to its logs,
  * command-history and command-output. `0` = the cli's built-in defaults. Capped at the plan's
  * `retentionDays` server-side.
+ * @adr 0115
  */
 export function readUserCliRetentionDays(
   settings: Record<string, unknown> | null | undefined,
@@ -241,12 +260,12 @@ export const rolesSchema = z
 /** Query GET /users — BaseRequest + filter role. */
 export const listUsersQuerySchema = baseRequestSchema.extend({
   role: z.enum(ALL_ROLES as [Role, ...Role[]]).optional(),
-  /** ADMIN-only Trash: list soft-deleted users (ADR-0109). */
+  /** ADMIN-only Trash: list soft-deleted users. @adr 0109 */
   deleted: deletedFilterSchema,
 });
 export type ListUsersQuery = z.infer<typeof listUsersQuerySchema>;
 
-/** Body POST /users — ADMIN creates a sub-account (user-0003). */
+/** Body POST /users — ADMIN creates a sub-account. @api user-0003 */
 export const createUserRequestSchema = z.object({
   username: usernameSchema,
   password: passwordSchema,
@@ -258,7 +277,7 @@ export const createUserRequestSchema = z.object({
 });
 export type CreateUserRequest = z.infer<typeof createUserRequestSchema>;
 
-/** Body PATCH /users/:id — partial; does not change username/password (user-0005). */
+/** Body PATCH /users/:id — partial; does not change username/password. @api user-0005 */
 export const updateUserRequestSchema = z.object({
   email: emailSchema.optional(),
   phone: phoneSchema.nullable().optional(),
@@ -273,16 +292,17 @@ export const updateUserRequestSchema = z.object({
 });
 export type UpdateUserRequest = z.infer<typeof updateUserRequestSchema>;
 
-/** Body PUT /users/:id/password — ADMIN resets a sub-account's password (user-0010). */
+/** Body PUT /users/:id/password — ADMIN resets a sub-account's password. @api user-0010 */
 export const setUserPasswordRequestSchema = z.object({
   password: passwordSchema,
 });
 export type SetUserPasswordRequest = z.infer<typeof setUserPasswordRequestSchema>;
 
 /**
- * Body POST /users/me/contact-change (user-0011, ADR-0046) — start changing the
+ * Body POST /users/me/contact-change — start changing the
  * caller's own email OR phone (exactly one). Email change is verified by an OTP
  * sent to the current phone; phone change by a link sent to the current email.
+ * @api user-0011 @adr 0046
  */
 export const contactChangeRequestSchema = z
   .object({
@@ -295,13 +315,13 @@ export const contactChangeRequestSchema = z
   });
 export type ContactChangeRequest = z.infer<typeof contactChangeRequestSchema>;
 
-/** Body POST /users/me/contact-change/verify (user-0012) — the phone OTP for an email change. */
+/** Body POST /users/me/contact-change/verify — the phone OTP for an email change. @api user-0012 */
 export const contactChangeVerifySchema = z.object({
   otp: z.string().min(4).max(10),
 });
 export type ContactChangeVerifyRequest = z.infer<typeof contactChangeVerifySchema>;
 
-/** Body POST /users/contact-change/confirm (user-0014) — the email-link token for a phone change. */
+/** Body POST /users/contact-change/confirm — the email-link token for a phone change. @api user-0014 */
 export const contactChangeConfirmSchema = z.object({
   token: z.string().min(1),
 });
@@ -314,7 +334,7 @@ export interface ContactChangeStartResponse {
   method: "phone_otp" | "email_link";
 }
 
-/** A pending contact-change (GET /users/me/contact-change, user-0013). */
+/** A pending contact-change (GET /users/me/contact-change). @api user-0013 */
 export interface ContactChangePending {
   type: "email" | "phone";
   /** Masked new value for display (e.g. `n***@x.com`). */
@@ -328,25 +348,26 @@ export interface ContactChangeStatusResponse {
 }
 
 /**
- * Body POST /users/me/activity/heartbeat (user-0020, ADR-0201) — the keepalive tick reports
+ * Body POST /users/me/activity/heartbeat — the keepalive tick reports
  * the caller's current presence. `projectId` = the project page the user is on (omitted on
- * non-project pages). Doubles as the session keepalive (ADR-0098).
+ * non-project pages). Doubles as the session keepalive.
+ * @api user-0020 @adr 0201 @adr 0098
  */
 export const activityHeartbeatSchema = z.object({
   projectId: z.string().guid().optional(),
-  /** ADR-0342 — the client is idle (5 min no input · tab hidden) ⇒ presence `idle`. */
+  /** The client is idle (5 min no input · tab hidden) ⇒ presence `idle`. @adr 0342 */
   idle: z.boolean().optional(),
 });
 export type ActivityHeartbeatRequest = z.infer<typeof activityHeartbeatSchema>;
 
-/** A user's live presence (ADR-0342): no heartbeat within the TTL ⇒ `offline`. */
+/** A user's live presence: no heartbeat within the TTL ⇒ `offline`. @adr 0342 */
 export const PRESENCE_STATUSES = ["online", "idle", "offline"] as const;
 export type PresenceStatus = (typeof PRESENCE_STATUSES)[number];
 
-/** Max ids per user-cards lookup (ADR-0342). */
+/** Max ids per user-cards lookup. @adr 0342 */
 export const USER_CARDS_MAX_IDS = 100;
 
-/** Query GET /users/cards — comma-separated user ids (user-0028, ADR-0342). */
+/** Query GET /users/cards — comma-separated user ids. @api user-0028 @adr 0342 */
 export const userCardsQuerySchema = z.object({
   ids: z
     .string()
@@ -355,7 +376,7 @@ export const userCardsQuerySchema = z.object({
 });
 export type UserCardsQuery = z.infer<typeof userCardsQuerySchema>;
 
-/** One user card (user-0028, ADR-0342) — display name, versioned avatar URL and live presence. */
+/** One user card — display name, versioned avatar URL and live presence. @api user-0028 @adr 0342 */
 export interface UserCardResponse {
   id: string;
   username: string;
@@ -364,7 +385,7 @@ export interface UserCardResponse {
   status: PresenceStatus;
 }
 
-/** Active time a user accrued on one project (ADR-0201) — `activeMs` = summed session duration. */
+/** Active time a user accrued on one project — `activeMs` = summed session duration. @adr 0201 */
 export interface ProjectActivity {
   projectId: string;
   name: string;
@@ -372,10 +393,11 @@ export interface ProjectActivity {
 }
 
 /**
- * Data GET /users/:id/stats (user-0021, ADR-0201) — locally-attributable activity statistics for
+ * Data GET /users/:id/stats — locally-attributable activity statistics for
  * the User Info page. `totalActiveMs`/`perProject` come from `user_sessions`; the rest from the org
  * DB. Cross-service per-user counts (community posts, integration issues/tasks) are **not** included
  * here — they require per-user endpoints on those separate apps (a follow-up per ADR-0201).
+ * @api user-0021 @adr 0201
  */
 export interface UserStatsResponse {
   /** Account creation time (ISO). */
@@ -392,15 +414,16 @@ export interface UserStatsResponse {
   commandCount: number;
   /** AI tokens attributed to the user (Σ `command_history.tokens`). */
   tokenCount: number;
-  /** Activity-log rows the user performed as actor (ADR-0283). */
+  /** Activity-log rows the user performed as actor. @adr 0283 */
   activityCount: number;
-  /** Σ command runtime (ms) attributed to the user — "processing time" (ADR-0283). */
+  /** Σ command runtime (ms) attributed to the user — "processing time". @adr 0283 */
   processingMs: number;
 }
 
 /**
- * Data GET /teams/:id/stats (team-0010b, ADR-0201) — the same activity stats aggregated over the
+ * Data GET /teams/:id/stats — the same activity stats aggregated over the
  * team's members, plus the team's own `createdAt` and `memberCount`.
+ * @api team-0010b @adr 0201
  */
 export interface TeamStatsResponse {
   createdAt: string;
@@ -411,8 +434,8 @@ export interface TeamStatsResponse {
   commandCount: number;
   /** AI tokens attributed to the team's members (Σ `command_history.tokens`). */
   tokenCount: number;
-  /** Activity-log rows performed by the team's members as actors (ADR-0283). */
+  /** Activity-log rows performed by the team's members as actors. @adr 0283 */
   activityCount: number;
-  /** Σ command runtime (ms) over the team's members — "processing time" (ADR-0283). */
+  /** Σ command runtime (ms) over the team's members — "processing time". @adr 0283 */
   processingMs: number;
 }

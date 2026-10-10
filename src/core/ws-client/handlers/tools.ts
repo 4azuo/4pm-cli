@@ -1,9 +1,10 @@
 /**
- * Worker-tools channel handlers (machine-0050-0058, ADR-0206/0252/0254/0258): probe the worker's
+ * Worker-tools channel handlers (machine-0050-0058): probe the worker's
  * tool catalog, toggle per-tool auto-update, run streamed install/uninstall/update ops, and
  * reconcile the worker to a pushed manifest (copy-apply / restore). Streamed ops ack acceptance
  * then push `tools.progress` + a terminal `tools.done` keyed by opId; each op reports the fresh
  * snapshot back so the DB-backed Tools panel + restore target stay current.
+ * @adr 0206 @adr 0252 @adr 0254 @adr 0258
  */
 import {
   WsChannels,
@@ -24,8 +25,8 @@ import {
   resolveInstallTimeoutMs,
   runWorkerToolOp,
   setToolAutoUpdate,
-} from "../../worker-tools";
-import { installTool } from "../../toolchain";
+} from "../../worker/worker-tools";
+import { installTool } from "../../worker/toolchain";
 import { readProfileConfig } from "../../../config/profile";
 import type { WsHandlerCtx } from "../context";
 
@@ -37,14 +38,14 @@ export function handleToolsChannels(
 ): boolean {
   switch (message.channel) {
     case WsChannels.TOOLS_LIST:
-      // Request/reply (machine-0050, ADR-0206): probe the default catalog + extra globals. Pass the
+      // Request/reply (machine-0050): probe the default catalog + extra globals. Pass the
       // per-tool auto-update flags (config.json, ADR-0253) so each row's `autoUpdate` reflects state.
       void detectWorkerTools(readProfileConfig(ctx.profileDir).autoUpdateTools ?? []).then((reply) =>
         ctx.send(WsChannels.TOOLS_LIST, reply satisfies ToolsListReply, message.id),
       );
       return true;
     case WsChannels.TOOLS_AUTOUPDATE: {
-      // Request/reply (machine-0056): the server now persists the flag in the DB (ADR-0254) and
+      // Request/reply (machine-0056): the server now persists the flag in the DB and
       // forwards this ONLY to an online worker for immediacy, so the local `config.json` mirror —
       // read by the ADR-0074 daily tick — updates now instead of at the next ws_token. A
       // prerequisite / invalid name is rejected without persisting (mirrors runWorkerToolOp).
@@ -56,7 +57,7 @@ export function handleToolsChannels(
     case WsChannels.TOOLS_INSTALL:
     case WsChannels.TOOLS_UNINSTALL:
     case WsChannels.TOOLS_UPDATE: {
-      // Streamed op (machine-0051/0052/0055, ADR-0206/0252): ack acceptance, then push progress
+      // Streamed op (machine-0051/0052/0055): ack acceptance, then push progress
       // lines and one terminal `tools.done` frame keyed by opId (server relays them over SSE).
       const req = payload as unknown as ToolsMutateRequest;
       const op =
@@ -83,16 +84,16 @@ export function handleToolsChannels(
           exitCode: res.exitCode,
           error: res.error,
         } satisfies ToolsDonePayload);
-        // Report the new snapshot to the DB (ADR-0254) so the panel + restore target stay current.
+        // Report the new snapshot to the DB so the panel + restore target stay current.
         void ctx.reportWorkerTools();
       });
       return true;
     }
     case WsChannels.TOOLS_RESTORE: {
-      // Reconcile the worker to a pushed manifest NOW (ADR-0254): the copy-apply / restore path. The
-      // cli installs each missing/mismatched `name@version` (retry+backoff — ADR-0258), then reports
+      // Reconcile the worker to a pushed manifest NOW: the copy-apply / restore path. The
+      // cli installs each missing/mismatched `name@version` (retry+backoff), then reports
       // its new snapshot with the classified `restoreFailed`. Best-effort; per-tool failures never
-      // fail the run. Two shapes (ADR-0258): a **manual** restore carries an `opId` — the cli acks
+      // fail the run. Two shapes: a **manual** restore carries an `opId` — the cli acks
       // immediately and streams `tools.progress`/`tools.done` keyed by `opId` (machine-0058 → SSE);
       // the connect-hook/copy/re-drive path has no `opId` and the reply IS the terminal result (so the
       // server can clear the pending copy pointer). The report `trigger` echoes the request so a

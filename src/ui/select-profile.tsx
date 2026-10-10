@@ -1,8 +1,9 @@
 /**
- * A minimal arrow-key list picker (ADR-0063): render a short Ink app, let the operator
+ * A minimal arrow-key list picker: render a short Ink app, let the operator
  * move with ↑/↓ and pick with Enter (Esc/Ctrl+C cancels). Used by `4pm start` / `4pm
  * unlink` to choose a profile when several exist, instead of requiring `--profile`.
  * Requires a TTY (raw mode); callers fall back to `--profile` when headless.
+ * @adr 0063
  */
 import React, { useState } from "react";
 import { Box, render, Text, useApp, useInput } from "ink";
