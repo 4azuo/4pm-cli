@@ -13,6 +13,7 @@ import type {
 } from "@4pm/constants";
 import { hexTokenSchema } from "@4pm/validation";
 import { baseRequestSchema } from "./base";
+import { bookPatchSchema } from "./book-patch";
 import type { CommandOrigin } from "./command";
 import type {
   GitAuthMethod,
@@ -212,6 +213,12 @@ export interface WsTokenResponse {
    * @adr 0438
    */
   approvalProjectId?: string | null;
+  /**
+   * The team codes this link serves in its project (routing entries' teams) — the autonomous cycle only
+   * takes in / claims rows of those teams. `null` = all teams; absent (older server) ⇒ all teams.
+   * @adr 0450
+   */
+  servedTeams?: string[] | null;
   /**
    * Network egress policy for the cli's proxy: the served project's policy (org deny merged into `deny`)
    * + the org denylist alone for project-less runs. Absent from an older server ⇒ the cli keeps Audit with
@@ -1166,7 +1173,12 @@ export const SAFE_REPO_PATH_RE = /^(?!\.git\/)(?!.*(?:^|\/)\.{1,2}\/)[A-Za-z0-9.
  * `<root>/<BOOK>/<ROW-ID>/<file>` (groups: root, book, row id, file).
  */
 export const EVIDENCE_PATH_RE =
-  /^((?:[A-Za-z0-9._-]+\/){0,8}?[A-Za-z0-9._-]+)\/(USER_TODO|USER_QA|AI_TODO|AI_DONE)\/([A-Z]+-\d{4}-\d{4})\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
+  /^((?:[A-Za-z0-9._-]+\/){0,8}?[A-Za-z0-9._-]+)\/(USER_TODO|USER_QA|AI_TODO|AI_DONE)\/([A-Z]+-\d{6}-\d{3})\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
+
+/** A book save carries exactly one of a patch or a whole file with its base hash. @adr 0455 */
+function bookSaveShapeOk(b: { patch?: unknown; content?: unknown; baseHash?: unknown }): boolean {
+  return b.patch !== undefined ? b.content === undefined : typeof b.content === "string" && typeof b.baseHash === "string";
+}
 
 /**
  * Body POST /machines/:id/tasks/approve-batch — commit a Save's pending approvals atomically.
@@ -1188,18 +1200,23 @@ export const taskApproveBatchRequestSchema = z.object({
    */
   book: z
     .object({
-      content: z.string().max(256 * 1024),
+      // A row-level patch (ADR-0455), or — when the draft can't be diffed — the whole file + the hash of the
+      // file it was edited from.
+      patch: bookPatchSchema.optional(),
+      content: z.string().max(256 * 1024).optional(),
+      baseHash: z.string().max(32).optional(),
       evidence: z
         .array(z.object({ stageId: z.string().guid(), path: z.string().regex(EVIDENCE_PATH_RE) }))
         .max(EVIDENCE_MAX_PER_SAVE)
         .optional(),
     })
+    .refine(bookSaveShapeOk, { message: "send `patch`, or `content` with `baseHash`" })
     .optional(),
 });
 export type TaskApproveBatchRequestBody = z.infer<typeof taskApproveBatchRequestSchema>;
 /** A markdown link / image whose target is an evidence path under any root (groups: `!`, label, path). */
 const EVIDENCE_LINK_RE =
-  /(!?)\[([^\]\n]*)\]\(<?((?:[A-Za-z0-9._-]+\/){1,9}(?:USER_TODO|USER_QA|AI_TODO|AI_DONE)\/[A-Z]+-\d{4}-\d{4}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})>?\)/g;
+  /(!?)\[([^\]\n]*)\]\(<?((?:[A-Za-z0-9._-]+\/){1,9}(?:USER_TODO|USER_QA|AI_TODO|AI_DONE)\/[A-Z]+-\d{6}-\d{3}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})>?\)/g;
 
 /** True when `path` is an evidence path that is safe to read/write (any root, no `..` / `.git`). */
 export function isEvidencePath(path: string): boolean {
@@ -1300,7 +1317,11 @@ export const autonomousWriteRequestSchema = z.discriminatedUnion("kind", [
     kind: z.literal("bookSave"),
     // `aiDone` = the AI Verify verdict column on the read-only AI Done (ADR-0400): no authorship, no cap.
     book: z.enum(["userTodo", "userQa", "aiTodo", "aiDone"]),
-    content: z.string().max(256 * 1024),
+    // A row-level patch (ADR-0455), or — when the draft can't be diffed — the whole file + the hash of the
+    // file it was edited from (the cli refuses a stale one with `BOOK_STALE`).
+    patch: bookPatchSchema.optional(),
+    content: z.string().max(256 * 1024).optional(),
+    baseHash: z.string().max(32).optional(),
     // Staged evidence files (machine-0072) to commit with the book (ADR-0404); each path must sit under
     // the saved book's own `.4pm/evidence/<BOOK>/` folder (the cli re-checks).
     evidence: z
@@ -1313,7 +1334,7 @@ export const autonomousWriteRequestSchema = z.discriminatedUnion("kind", [
     unapprove: z.array(z.string().min(1).max(64)).max(500).optional(),
   }),
   // (The `cron` install/uninstall kind was retired by ADR-0392 — the cli daemon schedules ticks itself.)
-]);
+]).refine((b) => b.kind !== "bookSave" || bookSaveShapeOk(b), { message: "send `patch`, or `content` with `baseHash`" });
 export type AutonomousWriteBody = z.infer<typeof autonomousWriteRequestSchema>;
 
 /** Query GET /machines/:id/autonomous/logs — one day's tick log. @api machine-0030 @adr 0152 */

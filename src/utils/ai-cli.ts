@@ -347,6 +347,27 @@ export function activeProvider(config: AiCliConfig): AiProvider | null {
 }
 
 /**
+ * AI providers this worker can run: those with a usable entry in the unified list, else those with a
+ * usable legacy per-provider profile, plus the pinned `aiCli`; with nothing configured the default
+ * `claude` (its default home) still runs. Drives the marketplace's not-enabled-provider warning.
+ * @adr 0460
+ */
+export function enabledAiProviders(config: AiCliConfig): AiProvider[] {
+  const out = new Set<AiProvider>();
+  if (isUnifiedConfig(config)) {
+    for (const c of config.aiProfiles!) if (isUsableCredential(c)) out.add(c.provider);
+    return [...out];
+  }
+  if ((config.claudeHome ?? []).some(isUsableProfile)) out.add("claude");
+  if ((config.codexHome ?? []).some(isUsableProfile)) out.add("codex");
+  if ((config.antigravityHome ?? []).some(isUsableProfile)) out.add("antigravity");
+  const pinned = activeProvider(config);
+  if (pinned) out.add(pinned);
+  if (out.size === 0) out.add(DEFAULT_AI_CLI as AiProvider);
+  return [...out];
+}
+
+/**
  * The effective claude profile list for the OAuth-only paths (usage snapshot, %session rotation,
  * support answer): the unified list's claude entries when it drives the run, else the legacy
  * `claudeHome`.

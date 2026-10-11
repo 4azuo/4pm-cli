@@ -30,6 +30,7 @@ import {
   decryptPayload,
   deriveSessionKey,
   encryptPayload,
+  CliFeature,
   WsChannels,
   type EcdhSession,
   type GitTokenReply,
@@ -67,6 +68,7 @@ import { configureGitAuth } from "./git/git-auth";
 import { setPromptOverrides } from "./ai/prompt-overrides";
 import { setMcpServers } from "../utils/agent-mcp";
 import { loadApprovalTrust, setApprovalTrust } from "./autonomous/autonomous-approvals";
+import { setServedTeams } from "./autonomous/autonomous-teams";
 import { egressCapability, kernelEgress, setEgressEndpoints, setEgressMcpUrls, setEgressRepos, setNetworkPolicy } from "./network/egress-state";
 import { startEgressProxy } from "./network/egress-proxy";
 import { startNetguardSync } from "./network/netguard-client";
@@ -677,6 +679,8 @@ export class WsClient {
         // Signed approvals (ADR-0438): the server's public keys + the served project bound into each
         // signature; absent ⇒ keep the stored trust (never a downgrade).
         setApprovalTrust(token.approvalKeys, token.approvalProjectId, this.context.profileDir);
+        // The teams this cli serves (ADR-0450): the autonomous cycle takes only their rows; absent ⇒ keep.
+        setServedTeams(token.servedTeams, this.context.profileDir);
         // Networks (ADR-0439): the served project's egress policy + what counts as a system host.
         setNetworkPolicy(token.network);
         setEgressMcpUrls(mcpRemoteUrls(token.mcpServers));
@@ -1083,6 +1087,8 @@ export class WsClient {
         const cap = egressCapability();
         return { egress: cap.egress, ...(cap.reason ? { egressReason: cap.reason } : {}) };
       })(),
+      // Optional features this cli implements — the server gates features an older cli lacks (ADR-0449).
+      features: CLI_FEATURES,
     });
   }
 
@@ -1384,6 +1390,9 @@ export class WsClient {
     this.bus.log(t("error.linkInvalid", { reason }), "error");
   }
 }
+
+/** Features reported in machine.status (`CliFeature`, ADR-0449). */
+const CLI_FEATURES: string[] = [CliFeature.CLIENT_VIEWER, CliFeature.BOOK_TEAMS, CliFeature.APPROVAL_PARTIES, CliFeature.DISCUSSIONS, CliFeature.ER, CliFeature.BOOK_PATCH, CliFeature.PACKAGES_MULTI_TARGET];
 
 /** The URLs of the approved http/sse MCP servers (system egress hosts — ADR-0439). */
 function mcpRemoteUrls(list: { definition: unknown }[] | undefined): string[] {

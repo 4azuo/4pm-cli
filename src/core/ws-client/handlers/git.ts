@@ -14,6 +14,7 @@ import {
   type WsEnvelope,
 } from "@4pm/ws";
 import { gitDiff } from "../../git/git-diff";
+import { clientHidden } from "../../fs/client-visibility";
 import { checkGitEnv } from "../../git/git-env";
 import { manageSshKey } from "../../git/git-ssh-key";
 import { gitCommit, gitCommitDiff, gitLog, gitRepos } from "../../git/git-history";
@@ -29,9 +30,17 @@ export function handleGitChannels(
     case WsChannels.GIT_DIFF:
       // Request/reply — HEAD vs working-tree content for Monaco diff. Clamped to the physic
       // root (ADR-0281): the path is project-root-relative, never out of the served root.
-      void gitDiff(ctx.physicRoot, (payload as unknown as GitDiffRequest).path).then((reply) =>
-        ctx.send(WsChannels.GIT_DIFF, reply, message.id),
-      );
+      // A customer viewer never gets `.git` / gitignored content (ADR-0449).
+      {
+        const req = payload as unknown as GitDiffRequest;
+        void clientHidden(ctx.physicRoot, req.path, req.viewer)
+          .then((hidden) =>
+            hidden
+              ? { path: req.path, oldContent: "", newContent: "", isBinary: false, hidden: true }
+              : gitDiff(ctx.physicRoot, req.path),
+          )
+          .then((reply) => ctx.send(WsChannels.GIT_DIFF, reply, message.id));
+      }
       return true;
     case WsChannels.GIT_ENV:
       // Request/reply (machine-0008).

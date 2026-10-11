@@ -1,16 +1,20 @@
 /**
  * Autonomous git steps — everything the cycle does with git runs here, in code, never in the
  * agent: resolve each repo's `<base>` explicitly (spec / `.gitmodules`, else origin/HEAD — never the
- * checked-out branch), sync `<base>`, publish the books to `<base>` as an optimistic lock (a rejected
- * non-fast-forward push = a lost race ⇒ reset + re-evaluate), prepare the task branch
- * `dev/<base>/<GROUP>/<TSK>` in the root and each submodule, save work in progress, and deliver
- * (push + PR into each repo's base).
- * @adr 0371
+ * checked-out branch), sync the books branch `autonomous-books/<base>` (which follows `<base>`), publish
+ * the books there as an optimistic lock (a rejected non-fast-forward push = a lost race ⇒ reset +
+ * re-evaluate), prepare the task branch `dev/<base>/<GROUP>/<TSK>` from `<base>` in the root and each
+ * submodule, save work in progress, and deliver (push + PR into each repo's base). `<base>` itself only
+ * ever changes through PRs, so it can be protected. The ER folder and the sequence diagrams are books-branch
+ * only too: stripped from task branches like the sidecars.
+ * @adr 0371 @adr 0448 @adr 0453
  */
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { EVIDENCE_ROOT } from "@4pm/dto";
+import { DISCUSSIONS_DIR, ER_SIDECAR_REL, EVIDENCE_ROOT } from "@4pm/dto";
 import { ATTEMPTS_REL } from "./autonomous-books";
+import { booksBranch } from "./autonomous-tasks";
 import { openPullRequest, prStateOf } from "../git/git-host";
 import { attachSubmoduleBranches } from "../git/submodule-branch";
 import { readFileInRoot } from "../../utils/safe-path";
@@ -21,7 +25,7 @@ const run = execInProject;
 
 /**
  * The book files + sidecars — with the evidence / mockup folders (`addRepoDirs`) the ONLY paths ever pushed
- * straight to `<base>`.
+ * to the books branch.
  * @adr 0404 @adr 0418
  */
 export const BOOK_PATHS = [
@@ -33,6 +37,7 @@ export const BOOK_PATHS = [
   ".claude/.autonomous.approvals.json",
   ".claude/.autonomous.authors.json",
   ATTEMPTS_REL,
+  ER_SIDECAR_REL,
 ];
 
 /**
@@ -40,7 +45,7 @@ export const BOOK_PATHS = [
  * never by an agent run: an agent's edits are reverted on intake and stripped from task branches.
  * @adr 0438
  */
-export const SIDECAR_PATHS = [".claude/.autonomous.approvals.json", ".claude/.autonomous.authors.json", ATTEMPTS_REL];
+export const SIDECAR_PATHS = [".claude/.autonomous.approvals.json", ".claude/.autonomous.authors.json", ATTEMPTS_REL, ER_SIDECAR_REL];
 
 /**
  * Put the sidecars back to their version at `ref` in the working tree + index — tracked ones restored,
@@ -66,17 +71,48 @@ async function restoreSidecars(root: string, ref: string): Promise<string[]> {
 }
 
 /**
+ * Put the discussion files back to `ref` — they are written only by the cli's discussion batches, never by
+ * an agent run. Returns `[".4pm/discussions"]` when the agent changed them, else `[]`.
+ * @adr 0454
+ */
+async function restoreDiscussions(root: string, ref: string): Promise<string[]> {
+  return restoreDirToRef(root, ref, DISCUSSIONS_DIR);
+}
+
+/**
+ * Put one repo folder back to `ref` (working tree + index): files added since are dropped, the others
+ * restored. Returns `[dir]` when anything differed, else `[]`.
+ * @adr 0454 @adr 0453
+ */
+export async function restoreDirToRef(root: string, ref: string, dir: string): Promise<string[]> {
+  const atRef = new Set((await gitQuiet(root, ["ls-tree", "-r", "--name-only", ref, "--", dir])).split("\n").filter(Boolean));
+  const atHead = (await gitQuiet(root, ["ls-files", "--", dir])).split("\n").filter(Boolean);
+  const dirty =
+    (await gitQuiet(root, ["status", "--porcelain", "--", dir])).trim() !== "" ||
+    (await gitQuiet(root, ["diff", "--name-only", ref, "--", dir])).trim() !== "";
+  if (!dirty) return [];
+  // Files the agent added (tracked now, absent at ref) leave the index; the others go back to ref.
+  const added = atHead.filter((p) => !atRef.has(p));
+  if (added.length) await gitQuiet(root, ["rm", "-q", "--cached", "--", ...added]);
+  if (atRef.size) await gitQuiet(root, ["checkout", ref, "--", dir]);
+  await gitQuiet(root, ["clean", "-fdq", "--", dir]);
+  return [dir];
+}
+
+/**
  * Remove an agent's sidecar changes from a task branch before it is pushed: restore the sidecars to the
- * branch's fork point with `origin/<base>` (not the base tip — the cli keeps publishing books there, and
- * a restore to the tip would make the PR rewrite them) and commit the restore when anything differed, so
+ * branch's fork point with `origin/<base>` (not the base tip — a restore to the tip would make the PR
+ * rewrite whatever changed on `<base>` since) and commit the restore when anything differed, so
  * neither the branch nor its PR carries sidecar changes. Returns the reverted paths.
  * @adr 0438
  */
-export async function stripSidecarsFromBranch(root: string, base: string, taskId: string): Promise<string[]> {
+export async function stripSidecarsFromBranch(root: string, base: string, taskId: string, dirs: readonly string[] = []): Promise<string[]> {
   if (!(await hasRemoteBranch(root, base))) return [];
   const fork = (await gitQuiet(root, ["merge-base", "HEAD", `origin/${base}`])).trim();
   if (!fork) return [];
-  const changed = await restoreSidecars(root, fork);
+  // `dirs`: the books-branch-only folders (ER + sequences — ADR-0453).
+  const changed = [...(await restoreSidecars(root, fork)), ...(await restoreDiscussions(root, fork))];
+  for (const d of dirs) changed.push(...(await restoreDirToRef(root, fork, d)));
   if (changed.length === 0) return [];
   // Commit only the restored paths (a pathspec naming a file git does not know fails the commit).
   if ((await gitQuiet(root, ["diff", "--cached", "--name-only", "--", ...changed])).trim()) {
@@ -198,18 +234,58 @@ export async function wipCommit(cwd: string, message: string): Promise<boolean> 
 }
 
 /**
- * Phase 1: leave the working tree on a fresh `<base>` so the books are current. A dirty task
- * branch is first saved (`wip:` commit — nothing is lost); a dirty tree on any other branch is stashed.
+ * Make sure the books branch exists on the remote: created from `origin/<base>` the first time (a ref
+ * create, no checkout; a racing creator just wins). Returns the ref to work from — `origin/<books>` —
+ * or null when there is no remote `<base>` (local-only repo: the books stay on the local base).
  */
-export async function syncBase(root: string, base: string): Promise<void> {
+export async function ensureBooksBranch(root: string, base: string): Promise<string | null> {
+  const books = booksBranch(base);
+  await gitQuiet(root, ["fetch", "-q", "origin", base]);
+  await gitQuiet(root, ["fetch", "-q", "origin", books]);
+  if (await hasRemoteBranch(root, books)) return `origin/${books}`;
+  if (!(await hasRemoteBranch(root, base))) return null;
+  await gitQuiet(root, ["push", "-q", "origin", `refs/remotes/origin/${base}:refs/heads/${books}`]);
+  await gitQuiet(root, ["fetch", "-q", "origin", books]);
+  return (await hasRemoteBranch(root, books)) ? `origin/${books}` : null;
+}
+
+/**
+ * Bring `origin/<base>` into the checked-out books branch when `<base>` moved, so intake plans against
+ * current code. Only book paths differ between the two branches, so a conflict can only be in them —
+ * the books side wins (`-X ours`). A merge that still fails is aborted (the books stay usable).
+ */
+async function mergeBaseIntoBooks(root: string, base: string): Promise<void> {
+  if (!(await hasRemoteBranch(root, base))) return;
+  try {
+    await git(root, ["merge-base", "--is-ancestor", `origin/${base}`, "HEAD"]);
+    return; // already contains <base>
+  } catch {
+    // <base> moved — merge it below
+  }
+  try {
+    await git(root, ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "merge", "-q", "--no-edit", "-X", "ours", "-m", `chore(auto): sync ${base} into the books (4PM)`, `origin/${base}`]);
+  } catch {
+    await gitQuiet(root, ["merge", "--abort"]);
+  }
+}
+
+/**
+ * Phase 1: leave the working tree on a fresh books branch (current books + current `<base>` code). A
+ * dirty task branch is first saved (`wip:` commit — nothing is lost); a dirty tree on any other branch is
+ * stashed. A repo without a remote `<base>` keeps working on the local base.
+ */
+export async function syncBooks(root: string, base: string): Promise<void> {
   const cur = await currentBranch(root);
   if ((await gitQuiet(root, ["status", "--porcelain"])).trim()) {
-    if (cur.includes("/dev/")) await wipCommit(root, "wip: autosave before sync (4PM)");
+    if (cur.startsWith("dev/") || cur.includes("/dev/")) await wipCommit(root, "wip: autosave before sync (4PM)");
     else await gitQuiet(root, ["stash", "push", "-u", "-m", "4PM autosave"]);
   }
   await git(root, ["fetch", "-q", "--prune", "origin"]);
-  if (await hasRemoteBranch(root, base)) await git(root, ["checkout", "-q", "-B", base, `origin/${base}`]);
-  else await git(root, ["checkout", "-q", base]);
+  const ref = await ensureBooksBranch(root, base);
+  if (ref) {
+    await git(root, ["checkout", "-q", "-B", booksBranch(base), ref]);
+    await mergeBaseIntoBooks(root, base);
+  } else await git(root, ["checkout", "-q", base]);
   await gitQuiet(root, ["submodule", "update", "--init", "-q"], 300_000);
   await attachSubmoduleBranches(root);
 }
@@ -218,33 +294,36 @@ export async function syncBase(root: string, base: string): Promise<void> {
 export type PublishResult = "pushed" | "unchanged" | "aborted" | "failed";
 
 /**
- * Publish a change to the books on `<base>`: on a fresh `origin/<base>`, apply `change`
- * (it edits the book files and returns false to abort — e.g. the task is no longer free), commit only the
- * book paths, push. A non-fast-forward rejection means another worker pushed first: fetch, reset, and
- * re-apply `change` against the new state. Up to 5 attempts with jitter.
+ * Publish a change to the books on the books branch: on a fresh `origin/autonomous-books/<base>` (with
+ * `<base>` merged in), apply `change` (it edits the book files and returns false to abort — e.g. the task
+ * is no longer free), commit only the book paths, push. A non-fast-forward rejection means another
+ * worker pushed first: fetch, reset, and re-apply `change` against the new state. Up to 5 attempts.
  */
 export async function publishBooks(
   root: string,
   base: string,
-  message: string,
+  message: string | (() => string),
   change: () => Promise<boolean>,
   opts: { detach?: boolean; dirs?: string[] } = {},
 ): Promise<PublishResult> {
+  const books = booksBranch(base);
   for (let attempt = 1; attempt <= 5; attempt++) {
-    await git(root, ["fetch", "-q", "origin", base]).catch(() => undefined);
-    if (await hasRemoteBranch(root, base)) {
-      // A side worktree works detached (the base branch may be checked out in the main worktree).
-      if (opts.detach) await git(root, ["checkout", "-q", "--detach", `origin/${base}`]);
-      else await git(root, ["checkout", "-q", "-B", base, `origin/${base}`]);
+    const ref = await ensureBooksBranch(root, base);
+    if (ref) {
+      // A side worktree works detached (the books branch may be checked out in the main worktree).
+      if (opts.detach) await git(root, ["checkout", "-q", "--detach", ref]);
+      else await git(root, ["checkout", "-q", "-B", books, ref]);
+      await mergeBaseIntoBooks(root, base);
     }
     if (!(await change())) return "aborted";
     await gitQuiet(root, ["add", "--", ...BOOK_PATHS.filter((p) => existsSync(join(root, p)))]);
     await addRepoDirs(root, opts.dirs);
     const staged = (await gitQuiet(root, ["diff", "--cached", "--name-only"])).trim();
     if (!staged) return "unchanged";
-    await git(root, ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "commit", "-q", "-m", message]);
+    // A message function is read after `change` (e.g. the ER version an apply produced — ADR-0453).
+    await git(root, ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "commit", "-q", "-m", typeof message === "string" ? message : message()]);
     try {
-      await git(root, ["push", "-q", "origin", `HEAD:refs/heads/${base}`]);
+      await git(root, ["push", "-q", "origin", `HEAD:refs/heads/${ref ? books : base}`]);
       return "pushed";
     } catch (err) {
       const msg = String(err);
@@ -256,9 +335,9 @@ export async function publishBooks(
 }
 
 /**
- * Publish the agent's intake edits (already in the working tree on `<base>`): commit the books, push, and
- * on a rejection rebase onto the fresh `<base>` once more; a conflict aborts and discards this intake
- * (it re-runs next cycle).
+ * Publish the agent's intake edits (already in the working tree on the books branch): commit the books,
+ * push, and on a rejection rebase onto the fresh books branch once more; a conflict aborts and discards
+ * this intake (it re-runs next cycle).
  */
 export async function publishIntake(
   root: string,
@@ -266,13 +345,18 @@ export async function publishIntake(
   message: string,
   dirs?: string[],
   onGuard?: (reverted: string[]) => void | Promise<void>,
+  prepare?: (ref: string) => Promise<void>,
 ): Promise<PublishResult> {
   // Guard (ADR-0438): drop any commit the agent made (only the staged books below are published) and
   // put the cli-owned sidecars back — an intake agent never approves, authors or counts attempts.
-  const ref = (await hasRemoteBranch(root, base)) ? `origin/${base}` : "HEAD";
+  const books = booksBranch(base);
+  const target = (await hasRemoteBranch(root, books)) ? books : base;
+  const ref = (await hasRemoteBranch(root, target)) ? `origin/${target}` : "HEAD";
   if (ref !== "HEAD") await gitQuiet(root, ["reset", "-q", ref]);
-  const reverted = await restoreSidecars(root, ref);
+  const reverted = [...(await restoreSidecars(root, ref)), ...(await restoreDiscussions(root, ref))];
   if (reverted.length && onGuard) await onGuard(reverted);
+  // The cli's own post-intake step (ADR-0453: restore the approved ER, number new change requests).
+  if (prepare) await prepare(ref);
   await gitQuiet(root, ["add", "--", ...BOOK_PATHS.filter((p) => existsSync(join(root, p)))]);
   // The evidence roots + the mockup folder the intake agent may write (ADR-0418).
   await addRepoDirs(root, dirs);
@@ -284,15 +368,15 @@ export async function publishIntake(
   await git(root, ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "commit", "-q", "-m", message]);
   for (let attempt = 1; attempt <= 5; attempt++) {
     try {
-      await git(root, ["push", "-q", "origin", `HEAD:refs/heads/${base}`]);
+      await git(root, ["push", "-q", "origin", `HEAD:refs/heads/${target}`]);
       return "pushed";
     } catch {
-      await gitQuiet(root, ["fetch", "-q", "origin", base]);
+      await gitQuiet(root, ["fetch", "-q", "origin", target]);
       try {
-        await git(root, ["rebase", "-q", `origin/${base}`]);
+        await git(root, ["rebase", "-q", `origin/${target}`]);
       } catch {
         await gitQuiet(root, ["rebase", "--abort"]);
-        await gitQuiet(root, ["reset", "-q", "--hard", `origin/${base}`]);
+        await gitQuiet(root, ["reset", "-q", "--hard", `origin/${target}`]);
         return "aborted";
       }
     }
@@ -300,10 +384,21 @@ export async function publishIntake(
   return "failed";
 }
 
-/** The book text of `<base>` as on the remote (read without switching branches). */
+/**
+ * The ref the books are read from: `origin/autonomous-books/<base>`, else `origin/<base>` (before the
+ * books branch exists), else null.
+ */
+export async function booksReadRef(cwd: string, base: string): Promise<string | null> {
+  if (await hasRemoteBranch(cwd, booksBranch(base))) return `origin/${booksBranch(base)}`;
+  return (await hasRemoteBranch(cwd, base)) ? `origin/${base}` : null;
+}
+
+/** A book's text as on the remote books branch (read without switching branches). */
 export async function remoteBook(cwd: string, base: string, rel: string): Promise<string> {
   await gitQuiet(cwd, ["fetch", "-q", "origin", base]);
-  return gitQuiet(cwd, ["show", `origin/${base}:${rel}`]);
+  await gitQuiet(cwd, ["fetch", "-q", "origin", booksBranch(base)]);
+  const ref = await booksReadRef(cwd, base);
+  return ref ? gitQuiet(cwd, ["show", `${ref}:${rel}`]) : "";
 }
 
 /** Has `origin/<branch>` been merged into `<base>`? Host PR state first, then ancestry. */
@@ -342,6 +437,25 @@ export async function checkoutTaskBranch(cwd: string, branch: string, base: stri
   await git(cwd, ["checkout", "-q", "-B", branch, start]);
 }
 
+/**
+ * Fingerprint of the work state of the given repos (`HEAD` + `git status --porcelain` + `git diff HEAD`,
+ * hashed): a changed value means the agent committed or edited something in between. Used to tell a
+ * timed-out run that made progress from one that did not.
+ * @adr 0452
+ */
+export async function workFingerprint(dirs: readonly string[]): Promise<string> {
+  const h = createHash("sha256");
+  for (const cwd of dirs) {
+    const [head, status, diff] = await Promise.all([
+      gitQuiet(cwd, ["rev-parse", "HEAD"]),
+      gitQuiet(cwd, ["status", "--porcelain"]),
+      gitQuiet(cwd, ["diff", "HEAD", "--binary"]),
+    ]);
+    h.update(`${cwd}\0${head}\0${status}\0${diff}\0`);
+  }
+  return h.digest("hex");
+}
+
 /** Commits on `branch` not on `origin/<base>`. */
 export async function aheadOf(cwd: string, branch: string, base: string): Promise<number> {
   return Number((await gitQuiet(cwd, ["rev-list", "--count", `origin/${base}..${branch}`])).trim()) || 0;
@@ -358,22 +472,23 @@ export async function deliverPr(cwd: string, url: string, branch: string, base: 
 }
 
 /**
- * Apply a book edit made OUTSIDE the cycle (the web: approvals, book saves, posted requests)
- * straight onto `<base>` without touching the worker's working tree (it may be on a task branch): a
- * temporary detached worktree of `origin/<base>` runs `publishBooks`, then is removed. `fn` edits the
- * books under the given dir and returns false to abort. Returns "unchanged" when `<base>` has no remote.
+ * Apply a book edit made OUTSIDE the cycle (the web: approvals, book saves, posted requests) straight
+ * onto the books branch without touching the worker's working tree (it may be on a task branch): a
+ * temporary detached worktree of `origin/autonomous-books/<base>` runs `publishBooks`, then is removed.
+ * `fn` edits the books under the given dir and returns false to abort. Returns "unchanged" when there is
+ * no remote `<base>`.
  */
-export async function mutateBooksOnBase(
+export async function mutateBooks(
   root: string,
   base: string,
-  message: string,
+  message: string | (() => string),
   fn: (dir: string) => Promise<boolean>,
   dirs?: string[],
 ): Promise<PublishResult> {
-  await git(root, ["fetch", "-q", "origin", base]).catch(() => undefined);
-  if (!(await hasRemoteBranch(root, base))) return "unchanged";
+  const ref = await ensureBooksBranch(root, base);
+  if (!ref) return "unchanged";
   const dir = join(root, ".git", `4pm-books-${process.pid}-${Date.now()}`);
-  await git(root, ["worktree", "add", "-q", "--detach", dir, `origin/${base}`]);
+  await git(root, ["worktree", "add", "-q", "--detach", dir, ref]);
   try {
     return await publishBooks(dir, base, message, () => fn(dir), { detach: true, dirs });
   } finally {
@@ -382,19 +497,33 @@ export async function mutateBooksOnBase(
   }
 }
 
-/** Last `git fetch origin <base>` per repo (reads within 15 s reuse it). */
+/** Last fetch of `<base>` + its books branch per repo (reads within 15 s reuse it). */
 const lastFetch = new Map<string, number>();
 
-/** A book file as on `origin/<base>` (fetched at most every 15 s); null when unavailable. */
-export async function readBaseFile(root: string, base: string, rel: string): Promise<string | null> {
+/**
+ * The books read ref (`booksReadRef`) after a fetch of `<base>` + the books branch at most every 15 s;
+ * null when there is no remote at all.
+ * @adr 0453
+ */
+export async function freshBooksRef(root: string, base: string): Promise<string | null> {
   const key = `${root}\u0000${base}`;
   if (Date.now() - (lastFetch.get(key) ?? 0) > 15_000) {
     await gitQuiet(root, ["fetch", "-q", "origin", base]);
+    await gitQuiet(root, ["fetch", "-q", "origin", booksBranch(base)]);
     lastFetch.set(key, Date.now());
   }
-  if (!(await hasRemoteBranch(root, base))) return null;
+  return booksReadRef(root, base);
+}
+
+/**
+ * A book file as on the remote books branch (else `origin/<base>` before it exists), fetched at most
+ * every 15 s; null when there is no remote at all.
+ */
+export async function readBooksFile(root: string, base: string, rel: string): Promise<string | null> {
+  const ref = await freshBooksRef(root, base);
+  if (!ref) return null;
   try {
-    return await git(root, ["show", `origin/${base}:${rel}`]);
+    return await git(root, ["show", `${ref}:${rel}`]);
   } catch {
     return "";
   }

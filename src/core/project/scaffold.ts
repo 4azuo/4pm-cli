@@ -29,6 +29,7 @@ import { detachSubmodules, pruneStaleSubmodules } from "../git/submodule-detach"
 import { lexicalInRoot, PathEscapeError, readFileInRoot, resolveForRead, writeFileInRoot } from "../../utils/safe-path";
 import { projectFolder } from "../../config/profile";
 import { execInProject } from "../agent/agent-spawn";
+import { reapplyInstalledHooks } from "../agent/packages";
 
 /**
  * Refuse a scaffold copy into `dir` when any path the sample template would write already exists there
@@ -664,6 +665,8 @@ async function scaffoldRepo(
   assertNoEscapingLinks(dir, sampleDir());
   // force:false ⇒ keep any files the clone already has instead of clobbering them.
   await cp(sampleDir(), dir, { recursive: true, force: false, errorOnExist: false });
+  // Installed marketplace hooks live in the settings file the reset just replaced (ADR-0461).
+  if (opts.resetClaude) await reapplyInstalledHooks(dir);
   if (spec) {
     await applyDefaultModel(dir, spec, emit);
     emit("spec", `Writing project.spec.json into ${label}…`);

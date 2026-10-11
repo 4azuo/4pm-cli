@@ -13,7 +13,9 @@ import {
   approvalEntrySchema,
   approvalRowCanonical,
   approvalSigningPayload,
+  ercCanonical,
   type ApprovalEntry,
+  type ApprovalPartyEntry,
   type ApprovalPublicKey,
   type ApprovalState,
 } from "@4pm/dto";
@@ -161,6 +163,75 @@ export function buildApprovalEntries(
     }
   }
   return { ok: true, entries };
+}
+
+/**
+ * Merge a web approval write into the approvals map: `finals` replace the final v1 entry of their
+ * row, `parties` join the row's `parties[]` (one per approver + group, the newest wins). Every party must
+ * bind to the row's current content — else the first stale id is returned and nothing is merged.
+ * @adr 0451
+ */
+export function mergeApprovalWrite(
+  map: Record<string, unknown>,
+  finals: Record<string, ApprovalEntry>,
+  parties: Record<string, ApprovalPartyEntry[]> | undefined,
+  books: ApprovalBooks,
+): { ok: true } | { ok: false; staleId: string } {
+  for (const [id, list] of Object.entries(parties ?? {})) {
+    const h = approvalRowHash(bookOfRow(books, id), id);
+    if (h === null || list.some((p) => p.h !== h)) return { ok: false, staleId: id };
+  }
+  const ids = new Set([...Object.keys(finals), ...Object.keys(parties ?? {})]);
+  for (const id of ids) {
+    const cur = (map[id] && typeof map[id] === "object" ? map[id] : {}) as Record<string, unknown>;
+    const curParties = Array.isArray(cur.parties) ? (cur.parties as ApprovalPartyEntry[]) : [];
+    const add = parties?.[id] ?? [];
+    const merged = [...curParties.filter((p) => !add.some((a) => a.by === p.by && a.group === p.group)), ...add];
+    const final = finals[id];
+    if (final) map[id] = { ...final, ...(merged.length ? { parties: merged } : {}) };
+    else map[id] = { ...cur, ...(merged.length ? { parties: merged } : {}) };
+  }
+  return { ok: true };
+}
+
+/**
+ * Unapprove `ids`: `clearAll` (a manager, or no policy) drops the whole entry; otherwise only the
+ * caller's own parties go, and the final with them (the row stops being runnable).
+ * @adr 0451
+ */
+export function unapproveIds(map: Record<string, unknown>, ids: readonly string[], by: string, clearAll: boolean): void {
+  for (const id of ids) {
+    const cur = map[id] as { parties?: ApprovalPartyEntry[] } | undefined;
+    if (clearAll || !cur || typeof cur !== "object") {
+      delete map[id];
+      continue;
+    }
+    const rest = (Array.isArray(cur.parties) ? cur.parties : []).filter((p) => p.by !== by);
+    if (rest.length) map[id] = { parties: rest };
+    else delete map[id];
+  }
+}
+
+/** `sha256:<hex>` of an ER change-request file (the text an ERC approval binds to). @adr 0453 */
+export function ercFileHash(text: string): string {
+  return `sha256:${createHash("sha256").update(ercCanonical(text)).digest("hex")}`;
+}
+
+/**
+ * Verification state of an ERC approval entry against the ERC file text (same scheme as a book row, `h` =
+ * the file hash); null when the entry is not an approval.
+ * @adr 0453
+ */
+export function ercApprovalStateOf(id: string, raw: unknown, fileText: string): ApprovalState | null {
+  const parsed = approvalEntrySchema.safeParse(raw);
+  if (!parsed.success) return null;
+  if (!trust) return "approved";
+  const e = parsed.data;
+  if (!e.sig || !e.kid || !e.h) return "unsigned";
+  const key = trust.keys.get(e.kid);
+  if (!key || !trust.projectId) return "invalid";
+  if (!verifySig(approvalSigningPayload({ projectId: trust.projectId, rowId: id, by: e.by, at: e.at, h: e.h }), key, e.sig)) return "invalid";
+  return e.h === ercFileHash(fileText) ? "approved" : "stale";
 }
 
 /** Test hook: reset the in-memory trust. */

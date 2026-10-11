@@ -3,6 +3,7 @@
  * estimation / … templates, quota-limited per plan, referenced per-project by kind.
  * @adr 0113
  */
+import { z } from "zod";
 
 /** Template kinds a project can assign a file to (aligns with the Theme C generators). */
 export const TEMPLATE_KINDS = ["report", "est", "wbs", "proposal", "feasibility"] as const;
@@ -66,3 +67,48 @@ export interface TemplateListResponse {
 
 /** Per-project template selection (`project.settings.templates`) — kind → template file id. */
 export type ProjectTemplateSelection = Partial<Record<TemplateKind, string>>;
+
+/** Where a project's template file comes from. @adr 0456 */
+export type ProjectTemplateFileSource = "org" | "project" | "fork";
+
+/** One template file as used by a project. @api template-0014 @adr 0456 */
+export interface ProjectTemplateFileResponse extends TemplateFileResponse {
+  source: ProjectTemplateFileSource;
+  enabled: boolean;
+  /** For a fork: the org source's current version (null when the source is gone). */
+  sourceVersion: number | null;
+  /** For a fork: the version it was copied from. */
+  forkedFromVersion: number | null;
+}
+
+/** Body POST /projects/:id/template-files (JSON modes; `upload` is multipart). @api template-0015 */
+export interface AttachProjectTemplateFileRequest {
+  mode: "attach" | "fork";
+  templateFileId: string;
+  enabled?: boolean;
+}
+
+/** Body PATCH /projects/:id/template-files/:fileId. @api template-0016 */
+export interface UpdateProjectTemplateFileRequest {
+  enabled?: boolean;
+  /** Owned / fork only. */
+  name?: string;
+  description?: string | null;
+  /** Fork only: copy the org file's current blob as a new version. */
+  updateFromSource?: boolean;
+}
+
+/** Body schema — POST /projects/:id/template-files (JSON attach / fork). @api template-0015 */
+export const attachProjectTemplateFileSchema = z.object({
+  mode: z.enum(["attach", "fork"]),
+  templateFileId: z.string().guid(),
+  enabled: z.boolean().optional(),
+});
+
+/** Body schema — PATCH /projects/:id/template-files/:fileId. @api template-0016 */
+export const updateProjectTemplateFileSchema = z.object({
+  enabled: z.boolean().optional(),
+  name: z.string().trim().min(1).max(255).optional(),
+  description: z.string().max(4000).nullable().optional(),
+  updateFromSource: z.boolean().optional(),
+});

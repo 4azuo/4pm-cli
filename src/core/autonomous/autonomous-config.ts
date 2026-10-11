@@ -5,13 +5,13 @@
  * OUTSIDE any project repo, so the autonomous *parameters* never ship in a checkout and the *logic*
  * lives only in this cli. Read by the daemon each cycle; edited from the web Autonomous → Settings tab.
  * ADR-0418: `evidenceDir` / `mockupDir` folders; the old `model` knob is gone (each AI profile's model applies)
- * and is dropped on the next save.
+ * and is dropped on the next save. ADR-0453: `erDir` / `sequenceDir` folders (the project ER + sequence diagrams).
  * @adr 0321
  */
 import { readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { EVIDENCE_ROOT, MOCKUP_ROOT, isSafeRepoDir } from "@4pm/dto";
+import { ER_ROOT, EVIDENCE_ROOT, MOCKUP_ROOT, SEQUENCE_ROOT, isSafeRepoDir } from "@4pm/dto";
 
 /** The autonomous knobs (parameters only — no logic). */
 export interface AutonomousConfig {
@@ -37,13 +37,25 @@ export interface AutonomousConfig {
   claimCheckMinutes: number;
   /** A task that fails / overruns this many times is split into child tasks. @adr 0371 */
   maxTaskAttempts: number;
+  /**
+   * Wall-clock cap (minutes) of each AI run of the cycle (intake / implement / split) — replaces the
+   * AI-run timeout for these runs; clamped to [5, claimTtlHours × 60]. @adr 0452
+   */
+  runTimeoutMinutes: number;
   /** Indicative S/M size hints for intake — guidance for the agent, not hard caps. @adr 0371 §6 */
   taskSizeHints: { sMaxFiles: number; sMaxLines: number; mMaxFiles: number; mMaxLines: number };
   /** Repo-relative folder of new book evidence files (ADR-0418; default `.4pm/evidence`). */
   evidenceDir: string;
   /** Repo-relative folder of the intake UI mockups (ADR-0418; default `.4pm/mockups`). */
   mockupDir: string;
+  /** Repo-relative folder of the project ER module files + change requests (default `.4pm/er`). @adr 0453 */
+  erDir: string;
+  /** Repo-relative folder of the task / question sequence diagrams (default `.4pm/sequences`). @adr 0453 */
+  sequenceDir: string;
 }
+
+/** Lower bound of `runTimeoutMinutes`. @adr 0452 */
+const MIN_RUN_TIMEOUT_MINUTES = 5;
 
 /** Defaults when the file is absent or a field is missing. */
 export const DEFAULT_AUTONOMOUS_CONFIG: AutonomousConfig = {
@@ -58,9 +70,12 @@ export const DEFAULT_AUTONOMOUS_CONFIG: AutonomousConfig = {
   claimTtlHours: 6,
   claimCheckMinutes: 10,
   maxTaskAttempts: 5,
+  runTimeoutMinutes: 60,
   taskSizeHints: { sMaxFiles: 5, sMaxLines: 300, mMaxFiles: 20, mMaxLines: 1500 },
   evidenceDir: EVIDENCE_ROOT,
   mockupDir: MOCKUP_ROOT,
+  erDir: ER_ROOT,
+  sequenceDir: SEQUENCE_ROOT,
 };
 
 /** The config file path under a profile dir. */
@@ -75,6 +90,7 @@ function coerce(raw: unknown): AutonomousConfig {
   const num = (v: unknown, def: number): number => (typeof v === "number" && Number.isFinite(v) ? v : def);
   const str = (v: unknown, def: string): string => (typeof v === "string" ? v : def);
   // A folder must be a safe repo-relative path (ADR-0418); anything else falls back to the default.
+  const claimTtlHours = Math.max(1, num(o.claimTtlHours, d.claimTtlHours));
   const dir = (v: unknown, def: string): string => {
     const t = typeof v === "string" ? v.trim().replace(/\/+$/, "") : "";
     return t && isSafeRepoDir(t) ? t : def;
@@ -88,9 +104,11 @@ function coerce(raw: unknown): AutonomousConfig {
     logRetentionDays: num(o.logRetentionDays, d.logRetentionDays),
     maxSessionPct: num(o.maxSessionPct, d.maxSessionPct),
     maxWeeklyPct: num(o.maxWeeklyPct, d.maxWeeklyPct),
-    claimTtlHours: Math.max(1, num(o.claimTtlHours, d.claimTtlHours)),
+    claimTtlHours,
     claimCheckMinutes: Math.max(1, num(o.claimCheckMinutes, d.claimCheckMinutes)),
     maxTaskAttempts: Math.max(1, num(o.maxTaskAttempts, d.maxTaskAttempts)),
+    // A run never outlives its own claim, and is never unlimited (ADR-0452).
+    runTimeoutMinutes: Math.min(claimTtlHours * 60, Math.max(MIN_RUN_TIMEOUT_MINUTES, num(o.runTimeoutMinutes, d.runTimeoutMinutes))),
     taskSizeHints: (() => {
       const h = (o.taskSizeHints && typeof o.taskSizeHints === "object" ? o.taskSizeHints : {}) as Record<string, unknown>;
       const dh = d.taskSizeHints;
@@ -103,6 +121,8 @@ function coerce(raw: unknown): AutonomousConfig {
     })(),
     evidenceDir: dir(o.evidenceDir, d.evidenceDir),
     mockupDir: dir(o.mockupDir, d.mockupDir),
+    erDir: dir(o.erDir, d.erDir),
+    sequenceDir: dir(o.sequenceDir, d.sequenceDir),
   };
 }
 
@@ -149,11 +169,17 @@ export async function pauseAutonomous(profileDir: string): Promise<void> {
 }
 
 /**
- * The repo folders the cli commits with the books: every evidence root in use + the mockup folder.
- * @adr 0418
+ * The repo folders the cli commits with the books: every evidence root in use + the mockup folder, and the ER +
+ * sequence folders.
+ * @adr 0418 @adr 0453
  */
-export function repoDirsOf(cfg: Pick<AutonomousConfig, "evidenceDir" | "mockupDir">): string[] {
-  return [...new Set([EVIDENCE_ROOT, cfg.evidenceDir, cfg.mockupDir])];
+export function repoDirsOf(cfg: Pick<AutonomousConfig, "evidenceDir" | "mockupDir"> & Partial<Pick<AutonomousConfig, "erDir" | "sequenceDir">>): string[] {
+  return [...new Set([EVIDENCE_ROOT, cfg.evidenceDir, cfg.mockupDir, ...(cfg.erDir ? [cfg.erDir] : []), ...(cfg.sequenceDir ? [cfg.sequenceDir] : [])])];
+}
+
+/** The books-branch-only folders stripped from task branches (ER + sequences). @adr 0453 */
+export function booksOnlyDirsOf(cfg: Pick<AutonomousConfig, "erDir" | "sequenceDir">): string[] {
+  return [cfg.erDir, cfg.sequenceDir];
 }
 
 /** True when `now` (local) falls inside the `HH:MM-HH:MM` quiet-hours window (supports crossing midnight). */

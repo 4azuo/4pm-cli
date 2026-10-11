@@ -1,7 +1,7 @@
 # USER_TODO — User requests
 
 > Write what you want the AI to do (in the project's language — default English), **one request per row**.
-> Each row has an **ID `REQ-{groupid:0000}-{reqid:0000}`** (group = one batch of related requests) used to
+> Each row has an **ID `REQ-{groupid:000000}-{reqid:000}`** (group ids are allocated by the 4PM server) (group = one batch of related requests) used to
 > approve it and to reference it from `Depends`. The autonomous cycle analyses a request into tasks in
 > `AI_TODO.md` **only after the row is approved**. Approval + authorship are kept in JSON sidecars, not in
 > this table (ADR-0320): `.claude/.autonomous.approvals.json` (who/when approved) and

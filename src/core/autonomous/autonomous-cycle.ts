@@ -1,21 +1,26 @@
 /**
  * Autonomous cycle runner (ADR-0319 → reworked by ADR-0371). Runs ONE unattended cycle through the
  * daemon's live WS session (profile/quota failover, metering, folder scope, run timeout). Every git step
- * runs here in code — resolve each repo's `<base>`, protection guard, sync, the books as an optimistic
- * lock on `<base>` (claim / finish / release / question / split), the task branch
+ * runs here in code — resolve each repo's `<base>`, books-branch protection guard, sync, the books as an
+ * optimistic lock on `autonomous-books/<base>` (claim / finish / release / question / split), the task branch
  * `dev/<base>/<GROUP>/<TSK>` in the root + each submodule, WIP saves, delivery (push + PRs into each
  * base). The agent only does the intake analysis, the implementation and the split analysis. A held
  * claim is re-verified during the run and on reconnect; a lost claim stops the run without pushing.
+ * Intake also writes sequence diagrams + ER change requests (numbered here), a task waits for its group's
+ * change request, and an implement change request / question sequence reaches the books.
+ * @adr 0448 @adr 0452 @adr 0453
  */
 import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { WsHandlerCtx } from "../ws-client/context";
-import { cancelActiveRun, runAiPrompt, type AiPromptOutcome } from "../ws-client/command-dispatch";
+import { cancelActiveRun, runAiPrompt, type AiPromptOutcome, type AiRunOverrides } from "../ws-client/command-dispatch";
 import { resolveCliPrompt } from "../ai/prompt-overrides";
-import { WsChannels, type AutonomousAlertPayload, type AutonomousBookUsageReply } from "@4pm/ws";
+import { WsChannels, type AutonomousAlertPayload, type AutonomousBookGroupsReply, type AutonomousBookUsageReply } from "@4pm/ws";
+import { BOOK_GROUPS_PER_REQUEST, bookGroupCode, bookGroupOf } from "@4pm/dto";
 import { cappedBookIds } from "./autonomous";
 import {
+  booksOnlyDirsOf,
   isInQuietHours,
   readAutonomousConfig,
   repoDirsOf,
@@ -36,8 +41,9 @@ import {
   remoteBook,
   resolveBases,
   stripSidecarsFromBranch,
-  syncBase,
+  syncBooks,
   wipCommit,
+  workFingerprint,
   type RepoBase,
 } from "./autonomous-git";
 import { agentEvidence, listMockups } from "./autonomous-evidence";
@@ -50,10 +56,11 @@ import {
   approvedIds,
   claimState,
   foldTaskAnswers,
-  hasIntakeWork,
+  intakeIds,
   isSplitChild,
   pickTask,
   readLocalClaim,
+  booksBranch,
   taskBranch,
   writeLocalClaim,
   type Candidate,
@@ -65,6 +72,19 @@ import { activeProvider, claudeHomeDirs } from "../../utils/ai-cli";
 import { checkClaudeUsage } from "../ai/claude-usage";
 import { readFileInRoot } from "../../utils/safe-path";
 import { withEgressRun } from "../network/egress-env";
+import { servedTeams, servesTeam } from "./autonomous-teams";
+import { linkedDiscussionsContext } from "./autonomous-discussions";
+import {
+  blockedErGroups,
+  captureAgentErcs,
+  implementErContext,
+  openErcNote,
+  prepareIntakeEr,
+  publishTaskErcs,
+  writeQuestionSequence,
+} from "./autonomous-er";
+import type { NewErcFile } from "./autonomous-er-store";
+import { bookRowTeam } from "@4pm/dto";
 
 // ── Prompts (the agent's parts only) ──────────────────────────────────────────────────────────────
 
@@ -79,8 +99,12 @@ function booksIntro(approved: readonly string[]): string {
 \`AI_PROGRESS.md\`, \`AI_DONE.md\` — have canonical templates in \`.claude/templates/\` (\`<NAME>.empty.md\`
 = EMPTY, \`<NAME>.sample.md\` = example WITH DATA). When clearing a book, overwrite it with EXACTLY the
 empty template. The APPROVED rows are exactly these ids (verified by 4PM): ${list}.
-NEVER act on any other row. NEVER edit \`.claude/.autonomous.approvals.json\`, \`.claude/.autonomous.authors.json\`
-or \`.claude/.autonomous.attempts.json\` — 4PM reverts such edits and alerts the project managers.`;
+NEVER act on any other row. NEVER edit \`.claude/.autonomous.approvals.json\`, \`.claude/.autonomous.authors.json\`,
+\`.claude/.autonomous.attempts.json\` or anything under \`.4pm/discussions/\` — 4PM reverts such edits and alerts the
+project managers.
+TEAMS: a book table may have a \`Team\` column (a team code such as \`FE\`). Copy a request's \`Team\` onto every task
+or question you create from it (add the \`Team\` column after \`ID\` when the table has none); never change the
+\`Team\` of an existing row.`;
 }
 
 /**
@@ -88,13 +112,19 @@ or \`.claude/.autonomous.attempts.json\` — 4PM reverts such edits and alerts t
  * sized tasks. Books only — no git, no code.
  * @adr 0371 phase 3
  */
-export function buildIntakePrompt(cfg: AutonomousConfig, approved: readonly string[]): string {
+export function buildIntakePrompt(cfg: AutonomousConfig, approved: readonly string[], erOpenNote = "", groups: readonly number[] = []): string {
   const h = cfg.taskSizeHints;
   // Admin override (ADR-0381) for `cli.autonomous.intake`, else the shared registry default.
   return resolveCliPrompt("cli.autonomous.intake", {
     booksIntro: booksIntro(approved),
+    // The only group ids the agent may use for new TSK / QA rows — allocated by the server (ADR-0455).
+    groupIds: groups.map(bookGroupCode).join(", "),
     evidenceDir: cfg.evidenceDir,
     mockupDir: cfg.mockupDir,
+    // Sequence diagrams + ER change requests (ADR-0453); `erOpenNote` lists the open change requests.
+    sequenceDir: cfg.sequenceDir,
+    erDir: cfg.erDir,
+    erOpenNote,
     sMaxFiles: h.sMaxFiles,
     sMaxLines: h.sMaxLines,
     mMaxFiles: h.mMaxFiles,
@@ -104,8 +134,9 @@ export function buildIntakePrompt(cfg: AutonomousConfig, approved: readonly stri
 
 /**
  * Implementation: work + test on the prepared branches; commit only. `mockups` = the intake
- * mockups of the task's group — the design reference.
- * @adr 0371 phase 6 @adr 0418
+ * mockups of the task's group — the design reference; `design` = the task's sequence diagram and the group's
+ * ER context.
+ * @adr 0371 phase 6 @adr 0418 @adr 0453
  */
 function buildImplementPrompt(
   mine: LocalClaim,
@@ -113,6 +144,7 @@ function buildImplementPrompt(
   resumed: boolean,
   cfg: AutonomousConfig,
   mockups: string[],
+  design: { sequenceNote: string; erNote: string } = { sequenceNote: "", erNote: "" },
 ): string {
   const subLines = subs.length
     ? subs.map((s) => `- submodule \`${s.dir}\` is on branch \`${s.branch}\` — commit changes to it INSIDE \`${s.dir}\``).join("\n")
@@ -135,6 +167,10 @@ function buildImplementPrompt(
     mockupNote: mockups.length
       ? `\nUI MOCKUPS for this task's group (the design reference — follow their layout, fields and states; do not edit them):\n${mockups.map((m) => `- \`${m}\``).join("\n")}\n`
       : "",
+    sequenceNote: design.sequenceNote,
+    erNote: design.erNote,
+    erDir: cfg.erDir,
+    sequenceDir: cfg.sequenceDir,
   });
 }
 
@@ -206,6 +242,20 @@ function alert(ctx: WsHandlerCtx, payload: AutonomousAlertPayload): void {
   }
 }
 
+/** The book group of a task id (`TSK-000123-…` → `TSK-000123`), "" when none. */
+function taskGroup(taskId: string): string {
+  return /^(TSK-\d{6})-/.exec(taskId)?.[1] ?? "";
+}
+
+/**
+ * Report a cycle event for automation rules over the alert channel — informational, the server
+ * notifies nobody for it. Best-effort.
+ * @adr 0458
+ */
+function emitEvent(ctx: WsHandlerCtx, type: string, task: string | undefined, fields: Record<string, string | number | boolean>): void {
+  alert(ctx, { kind: "event", ...(task ? { task } : {}), message: type, event: { type, fields } });
+}
+
 /** Branches per submodule for a task, and the source each starts from (the dependency's / parent's). */
 function subBranches(subs: RepoBase[], taskId: string, rootFrom: string | null): { sub: RepoBase; branch: string; from: string | null }[] {
   // The root's `from` is `dev/<base>/<GROUP>/<TSK-x>` — use the same TSK-x's branch in each submodule.
@@ -226,7 +276,14 @@ async function reportSidecarTamper(ctx: WsHandlerCtx, root: string, files: strin
 }
 
 /** Save + push the work in progress of a task (root + submodules) — no PR. Best-effort. */
-async function pushWip(ctx: WsHandlerCtx, root: string, mine: LocalClaim, subs: { sub: RepoBase; branch: string }[], note: string): Promise<void> {
+async function pushWip(
+  ctx: WsHandlerCtx,
+  root: string,
+  mine: LocalClaim,
+  subs: { sub: RepoBase; branch: string }[],
+  note: string,
+  booksOnly: readonly string[] = [],
+): Promise<void> {
   for (const s of subs) {
     const abs = join(root, s.sub.dir);
     if ((await currentBranch(abs)) !== s.branch) continue;
@@ -235,7 +292,7 @@ async function pushWip(ctx: WsHandlerCtx, root: string, mine: LocalClaim, subs: 
   }
   if ((await currentBranch(root)) === mine.branch) {
     await wipCommit(root, `wip(${mine.id}): ${note}`);
-    await reportSidecarTamper(ctx, root, await stripSidecarsFromBranch(root, mine.base, mine.id), mine.id);
+    await reportSidecarTamper(ctx, root, await stripSidecarsFromBranch(root, mine.base, mine.id, booksOnly), mine.id);
     await pushBranch(root, mine.branch).catch(() => undefined);
   }
 }
@@ -253,7 +310,7 @@ async function wipDiff(root: string, mine: LocalClaim): Promise<string> {
 const running = new Set<string>();
 
 /**
- * Run one autonomous cycle: gates → guard (protection) → sync `<base>` → resume / release a
+ * Run one autonomous cycle: gates → guard (books-branch protection) → sync the books branch → resume / release a
  * held claim → fold task answers → intake → claim (race-safe) → task branches → implement (claim watched)
  * → deliver PRs → finish; failures release the task (WIP pushed, attempts+1) and split it at the limit;
  * a question parks it on a `QA-…`.
@@ -309,20 +366,19 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       ctx.bus.autonomousDone(false, "base branch unknown");
       return;
     }
-    for (const r of [rootBase, ...bases.subs]) {
-      if (!r.base || !r.url) continue;
-      if ((await branchProtection(r.url, r.base)) === true) {
-        const repo = r.dir || "root";
-        await log(`[stop] base branch "${r.base}" is protected in ${repo} — the books cannot be pushed`);
-        alert(ctx, { kind: "base-protected", repo, branch: r.base, message: `The base branch "${r.base}" (${repo}) is protected; autonomous cannot record its tasks there.` });
-        await recordRun(root, hist, "skip", `base-protected: ${r.base} (${repo})`, today); // surfaced as status.baseProtected
-        ctx.bus.autonomousDone(false, "base branch protected");
-        return;
-      }
+    // The books live on `autonomous-books/<base>` of the root (ADR-0448): `<base>` may be protected (it
+    // only changes through PRs), but the books branch must accept the worker's pushes.
+    const books = booksBranch(rootBase.base);
+    if (rootBase.url && (await branchProtection(rootBase.url, books)) === true) {
+      await log(`[stop] books branch "${books}" is protected — the books cannot be pushed`);
+      alert(ctx, { kind: "books-protected", repo: "root", branch: books, message: `The books branch "${books}" is protected; autonomous cannot record its tasks there.` });
+      await recordRun(root, hist, "skip", `books-protected: ${books}`, today); // surfaced as status.booksProtected
+      ctx.bus.autonomousDone(false, "books branch protected");
+      return;
     }
 
-    // --- Phase 1: sync <base> ------------------------------------------------------------------
-    await syncBase(root, rootBase.base);
+    // --- Phase 1: sync the books branch (current books + current <base>) -------------------------
+    await syncBooks(root, rootBase.base);
 
     // --- Phase 2: a held claim? (resume / release / lost) ----------------------------------------
     let mine = await readLocalClaim(profileDir);
@@ -348,7 +404,7 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     }
 
     // --- Has work? + quota gate ----------------------------------------------------------------
-    if (!mine && !(await hasWork(root))) {
+    if (!mine && !(await hasWork(root, profileDir))) {
       await log("[skip] no approved USER_TODO/USER_QA/AI_TODO work");
       ctx.bus.autonomousDone(false, "no work");
       return;
@@ -379,27 +435,58 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
         return !!c && c.limit !== null && c.used >= c.limit;
       });
       if (intakeBlocked) await log("[cap] monthly AI_TODO/USER_QA limit reached — intake skipped this cycle");
-      else if (await hasIntakeWork(root)) {
+      else if ((await intakeIds(root, profileDir)).length > 0) {
         const before = await cappedBookIds(root);
-        const out = await runAiPrompt(ctx, buildIntakePrompt(cfg, [...(await approvedIds(root))].filter((id) => !id.startsWith("TSK-")).sort()), randomUUID(), "local", false, undefined, undefined, false, true);
-        if (out.exhausted) {
-          await gitQuiet(root, ["checkout", "--", "."]);
-          await log("[skip] usage limit during intake");
-          ctx.bus.autonomousDone(false, "usage limit");
-          return;
+        // Only the approved requests / answered questions of the teams this worker serves (ADR-0450), plus
+        // the resolved discussions linked to them as clarifications (ADR-0454, wrapped as untrusted).
+        // One server-allocated group per request / answered question (ADR-0455) — at most a batch per cycle.
+        const ids = (await intakeIds(root, profileDir)).slice(0, BOOK_GROUPS_PER_REQUEST);
+        const groups = await allocateIntakeGroups(ctx, ids.length);
+        if (!groups) await log("[skip] intake: could not allocate book group ids from the server");
+        else {
+          const context = await linkedDiscussionsContext(root, rootBase.base, ids);
+          const erOpenNote = await openErcNote(root, cfg.erDir).catch(() => "");
+          const out = await runAiPrompt(ctx, buildIntakePrompt(cfg, ids, erOpenNote, groups) + context, randomUUID(), "local", false, undefined, undefined, false, true, runOverrides(cfg));
+          if (out.exhausted) {
+            await gitQuiet(root, ["checkout", "--", "."]);
+            await log("[skip] usage limit during intake");
+            ctx.bus.autonomousDone(false, "usage limit");
+            return;
+          }
+          // New TSK / QA rows must use the allocated groups — anything else is discarded (re-run next cycle).
+          const stray = await strayIntakeIds(root, before, groups);
+          if (stray.length) {
+            await gitQuiet(root, ["checkout", "--", "."]);
+            await log(`[skip] intake used group ids it was not given (${stray.slice(0, 5).join(", ")}) — discarded`);
+          } else {
+            await fillIntakeTeams(root, profileDir, ids, before);
+            const res = await publishIntake(
+              root,
+              rootBase.base,
+              "chore(auto): intake requests into tasks",
+              dirs,
+              (files) => reportSidecarTamper(ctx, root, files),
+              // The approved ER stays as it was; the agent's new change requests get their numbers (ADR-0453).
+              async (ref) => {
+                const er = await prepareIntakeEr(root, ref, cfg.erDir);
+                if (er.tampered) await reportSidecarTamper(ctx, root, [cfg.erDir]);
+                if (er.created.length) await log(`[er] change requests ${er.created.join(", ")} proposed`);
+                for (const s of er.skipped) await log(`[er] skipped ${s.name}: ${s.reason}`);
+              },
+            );
+            await log(`[intake] ${res}`);
+            if (res === "pushed") await reportNewBookRows(ctx, root, before);
+          }
         }
-        const res = await publishIntake(root, rootBase.base, "chore(auto): intake requests into tasks", dirs, (files) =>
-          reportSidecarTamper(ctx, root, files),
-        );
-        await log(`[intake] ${res}`);
-        if (res === "pushed") await reportNewBookRows(ctx, root, before);
-        await syncBase(root, rootBase.base);
+        await syncBooks(root, rootBase.base);
       }
 
       // --- Phase 4: claim (race-safe) -----------------------------------------------------------
       const skip = new Set<string>();
       for (let i = 0; i < 5 && !mine; i++) {
-        const cand: Candidate | null = await pickTask(root, rootBase, { worker, ttlHours: cfg.claimTtlHours, maxAttempts: cfg.maxTaskAttempts, skip });
+        // A group whose ER change request is not applied yet waits (ADR-0453).
+        const blockedGroups = await blockedErGroups(root, cfg.erDir).catch(() => new Set<string>());
+        const cand: Candidate | null = await pickTask(root, rootBase, { worker, ttlHours: cfg.claimTtlHours, maxAttempts: cfg.maxTaskAttempts, skip, profileDir, blockedGroups });
         if (!cand) break;
         const attempts = await B.readAttempts(root);
         const claim: LocalClaim = {
@@ -419,6 +506,7 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
           mine = { ...claim, from: cand.from };
           await writeLocalClaim(profileDir, mine);
           await log(`[claim] ${mine.id}${cand.takeover ? ` (taken over from ${cand.takeover.worker})` : ""} attempt ${mine.attempt}`);
+          emitEvent(ctx, "task.claimed", mine.id, { taskId: mine.id, group: taskGroup(mine.id), attempt: mine.attempt });
         } else skip.add(cand.task.id);
       }
       if (!mine) {
@@ -442,17 +530,22 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     // --- Phase 6: implement (agent), claim watched ---------------------------------------------
     const commandId = randomUUID();
     Object.assign(watch, { commandId, claim: mine, root, lost: false });
+    // Work state before the run: a timeout is judged by whether it changed (ADR-0452).
+    const workDirs = [root, ...subs.map((s) => join(root, s.sub.dir))];
+    const workBefore = await workFingerprint(workDirs);
     const timer = setInterval(() => void verifyHeldClaim(ctx).catch(() => undefined), cfg.claimCheckMinutes * 60_000);
     timer.unref?.();
     let out: AiPromptOutcome;
     try {
       // The intake mockups of this task's group (`<mockupDir>/TSK-<group>--*.html` — ADR-0418).
-      const group = /^(TSK-\d{4})-/.exec(mine.id)?.[1] ?? "";
+      const group = /^(TSK-\d{6})-/.exec(mine.id)?.[1] ?? "";
       const mockups = group ? (await listMockups(root, rootBase.base, cfg.mockupDir).catch(() => [])).filter((m) => m.split("/").pop()?.startsWith(`${group}--`)) : [];
-      const prompt = buildImplementPrompt(mine, subs.map((s) => ({ dir: s.sub.dir, branch: s.branch })), resumed || hadWork, cfg, mockups);
+      // The task's sequence diagram + the group's ER, read from the books branch (ADR-0453).
+      const design = await implementErContext(root, rootBase.base, cfg, mine.id).catch(() => ({ sequenceNote: "", erNote: "" }));
+      const prompt = buildImplementPrompt(mine, subs.map((s) => ({ dir: s.sub.dir, branch: s.branch })), resumed || hadWork, cfg, mockups, design);
       // No model override: each AI profile's own model applies (ADR-0418).
       // Egress (ADR-0439): the run's connections are logged under this task.
-      out = await withEgressRun({ taskId: mine.id }, () => runAiPrompt(ctx, prompt, commandId, "local", false, undefined, undefined, false, true));
+      out = await withEgressRun({ taskId: mine.id }, () => runAiPrompt(ctx, prompt, commandId, "local", false, undefined, undefined, false, true, runOverrides(cfg)));
     } finally {
       clearInterval(timer);
     }
@@ -466,7 +559,7 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       await log(`[lost] ${mine.id} was taken over while running — stopped, nothing pushed`);
       alert(ctx, { kind: "claim-lost", task: mine.id, message: `${worker} lost its claim of ${mine.id} while working; its work was not pushed.` });
       await writeLocalClaim(profileDir, null);
-      await syncBase(root, rootBase.base);
+      await syncBooks(root, rootBase.base);
       ctx.bus.autonomousDone(false, "claim lost");
       return;
     }
@@ -478,18 +571,26 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       ctx.bus.autonomousDone(false, "usage limit — task kept");
       return;
     }
-    const reply = parseJsonReply<{ status?: string; summary?: string; question?: string }>(out.output);
+    const reply = parseJsonReply<{ status?: string; summary?: string; question?: string; sequence?: string }>(out.output);
     const status = out.cancelled ? "failed" : out.exitCode !== 0 ? "failed" : (reply?.status ?? "failed");
 
     if (status === "needs-input") {
-      await pushWip(ctx, root, mine, subs, "waiting for an answer");
-      await syncBase(root, rootBase.base);
+      await pushWip(ctx, root, mine, subs, "waiting for an answer", booksOnlyDirsOf(cfg));
+      await syncBooks(root, rootBase.base);
       const question = reply?.question?.trim() || reply?.summary?.trim() || "The agent needs a decision to continue.";
       let qaId: string | null = null;
-      await publishBooks(root, rootBase.base, `chore(auto): ${mine.id} asks a question`, async () => {
-        qaId = await applyQuestion(root, mine!, question);
-        return qaId !== null;
-      });
+      await publishBooks(
+        root,
+        rootBase.base,
+        `chore(auto): ${mine.id} asks a question`,
+        async () => {
+          qaId = await applyQuestion(root, mine!, question);
+          // The sequence diagram the agent returned with its question (ADR-0453).
+          if (qaId) await writeQuestionSequence(root, cfg.sequenceDir, qaId, reply?.sequence);
+          return qaId !== null;
+        },
+        { dirs },
+      );
       await writeLocalClaim(profileDir, null);
       await log(`[question] ${mine.id} parked on ${qaId ?? "?"}`);
       alert(ctx, { kind: "task-question", task: mine.id, message: `${mine.id} waits for an answer (${qaId ?? "QA"}): ${question.slice(0, 200)}` });
@@ -499,12 +600,19 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       return;
     }
     if (status !== "done") {
-      const reason = reply?.summary?.trim() || (out.cancelled ? "run stopped" : `agent run failed (exit ${out.exitCode})`);
+      // A timeout that changed the work state is progress, not a broken worker: it counts an attempt
+      // but not towards auto-pause (ADR-0452). Judged before the release commits the WIP.
+      const timedOut = out.timedOut && !out.cancelled;
+      const progressed = timedOut && (await workFingerprint(workDirs)) !== workBefore;
+      const reason = timedOut
+        ? `timed out after ${cfg.runTimeoutMinutes} min (${progressed ? "progress kept" : "no progress"})`
+        : reply?.summary?.trim() || (out.cancelled ? "run stopped" : `agent run failed (exit ${out.exitCode})`);
       await releaseTask(ctx, root, rootBase, bases.subs, mine, reason, cfg);
+      emitEvent(ctx, timedOut ? "task.timeout" : "task.failed", mine.id, { taskId: mine.id, group: taskGroup(mine.id), reason: reason.slice(0, 300) });
       hist = await readHistories(root);
-      hist.consecutiveFails += 1;
+      if (!progressed) hist.consecutiveFails += 1;
       await recordRun(root, hist, "failure", `${mine.id}: ${reason}`, today);
-      await maybeAutoPause(root, profileDir, cfg, hist, log);
+      await maybeAutoPause(root, profileDir, cfg, hist, log, (reason) => emitEvent(ctx, "cycle.paused", undefined, { reason }));
       ctx.bus.autonomousDone(false, reason);
       return;
     }
@@ -514,25 +622,45 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       await log(`[lost] ${mine.id} was taken over before delivery — nothing pushed`);
       alert(ctx, { kind: "claim-lost", task: mine.id, message: `${worker} lost its claim of ${mine.id} before delivering.` });
       await writeLocalClaim(profileDir, null);
-      await syncBase(root, rootBase.base);
+      await syncBooks(root, rootBase.base);
       ctx.bus.autonomousDone(false, "claim lost");
       return;
     }
-    let delivered: { files: string; notes: string; evidence: string[] };
+    let delivered: { files: string; notes: string; evidence: string[]; ercs: NewErcFile[]; prUrl?: string };
     try {
-      delivered = await deliver(ctx, root, rootBase, subs, mine, reply?.summary ?? "", cfg.evidenceDir);
+      delivered = await deliver(ctx, root, rootBase, subs, mine, reply?.summary ?? "", cfg);
     } catch (err) {
       const reason = `delivery failed: ${String(err instanceof Error ? err.message : err)}`;
       await releaseTask(ctx, root, rootBase, bases.subs, mine, reason, cfg);
+      emitEvent(ctx, "task.failed", mine.id, { taskId: mine.id, group: taskGroup(mine.id), reason: reason.slice(0, 300) });
       ctx.bus.autonomousDone(false, reason);
       return;
     }
 
+    if (delivered.prUrl) {
+      emitEvent(ctx, "task.delivered", mine.id, { taskId: mine.id, group: taskGroup(mine.id), prUrl: delivered.prUrl, branch: mine.branch });
+      emitEvent(ctx, "pr.opened", mine.id, { repo: "root", prUrl: delivered.prUrl, branch: mine.branch, taskId: mine.id });
+    }
+
     // --- Phase 8: finish -----------------------------------------------------------------------
-    await syncBase(root, rootBase.base);
-    const fin = await publishBooks(root, rootBase.base, `chore(auto): finish ${mine.id}`, () => applyFinish(root, mine!, delivered, cfg.evidenceDir), { dirs });
+    await syncBooks(root, rootBase.base);
+    let taskErcs: string[] = [];
+    const fin = await publishBooks(
+      root,
+      rootBase.base,
+      `chore(auto): finish ${mine.id}`,
+      async () => {
+        if (!(await applyFinish(root, mine!, delivered, cfg.evidenceDir))) return false;
+        // The agent's change request goes to the books for approval (ADR-0453).
+        taskErcs = await publishTaskErcs(root, cfg.erDir, delivered.ercs, mine!.id, mine!.task.team);
+        return true;
+      },
+      { dirs },
+    );
+    if (taskErcs.length) await log(`[er] ${mine.id} proposed ${taskErcs.join(", ")}`);
     await writeLocalClaim(profileDir, null);
     await log(`[done] ${mine.id} — ${delivered.notes} (${fin})`);
+    emitEvent(ctx, "task.done", mine.id, { taskId: mine.id, group: taskGroup(mine.id), prUrl: delivered.prUrl ?? "" });
     hist = await readHistories(root);
     hist.consecutiveFails = 0;
     await recordRun(root, hist, "success", `${mine.id} delivered`, today);
@@ -548,7 +676,7 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
 /** Is the claim gone from the REMOTE books (read without leaving the task branch)? Unknown ⇒ false. */
 async function remoteClaimLost(root: string, mine: LocalClaim): Promise<boolean> {
   const prog = await remoteBook(root, mine.base, "AI_PROGRESS.md");
-  if (!prog) return false; // unreadable — the finish step re-verifies on <base>
+  if (!prog) return false; // unreadable — the finish step re-verifies on the books branch
   const row = B.parseClaims(prog).claims.find((c) => c.id === mine.id);
   return !row || row.claim !== mine.claim;
 }
@@ -566,8 +694,9 @@ async function deliver(
   subs: { sub: RepoBase; branch: string }[],
   mine: LocalClaim,
   summary: string,
-  evRoot: string,
-): Promise<{ files: string; notes: string; evidence: string[] }> {
+  cfg: AutonomousConfig,
+): Promise<{ files: string; notes: string; evidence: string[]; ercs: NewErcFile[]; prUrl?: string }> {
+  const evRoot = cfg.evidenceDir;
   const title = `${mine.id}: ${mine.task.desc}`.replace(/\s+/g, " ").slice(0, 100);
   const subPrs: string[] = [];
   for (const s of subs) {
@@ -582,13 +711,17 @@ async function deliver(
   }
   // Root: pointer bumps + any uncommitted leftovers, then push + PR.
   await wipCommit(root, `feat(${mine.id}): ${summary || mine.task.desc}`.slice(0, 200));
-  // The agent's own commits may carry sidecar edits — restore them before the push / PR (ADR-0438).
-  await reportSidecarTamper(ctx, root, await stripSidecarsFromBranch(root, rootBase.base, mine.id), mine.id);
+  // The agent's change requests travel to the books, never to `<base>` (ADR-0453) — read them before the strip.
+  const ercs = await captureAgentErcs(root, cfg.erDir);
+  // The agent's own commits may carry sidecar edits — restore them before the push / PR (ADR-0438); the ER +
+  // sequence folders are books-only (ADR-0453). An edit there other than a new change request is reported.
+  const stripped = await stripSidecarsFromBranch(root, rootBase.base, mine.id, booksOnlyDirsOf(cfg));
+  await reportSidecarTamper(ctx, root, ercs.length ? stripped.filter((p) => p !== cfg.erDir) : stripped, mine.id);
   const files = (await gitQuiet(root, ["diff", "--name-only", `origin/${rootBase.base}...${mine.branch}`])).split("\n").filter(Boolean);
   // The agent's own evidence on the task branch (ADR-0404) — listed in AI Done's Evidence column.
   const evidence = await agentEvidence(root, mine.id, evRoot);
   if ((await aheadOf(root, mine.branch, rootBase.base)) === 0) {
-    return { files: "", notes: `no changes needed; branch: ${mine.branch}${subPrs.length ? `; sub PRs: ${subPrs.join(", ")}` : ""}`, evidence: [] };
+    return { files: "", notes: `no changes needed; branch: ${mine.branch}${subPrs.length ? `; sub PRs: ${subPrs.join(", ")}` : ""}`, evidence: [], ercs };
   }
   await pushBranch(root, mine.branch);
   const body = `${summary}\n\nTask ${mine.id} (4PM autonomous).${subPrs.length ? `\n\nSubmodule PRs:\n${subPrs.map((p) => `- ${p}`).join("\n")}` : ""}`;
@@ -598,18 +731,20 @@ async function deliver(
     files: files.slice(0, 20).join(", ") + (files.length > 20 ? ` (+${files.length - 20})` : ""),
     notes: `branch: ${mine.branch}; PR: ${pr.url ?? "opened"}${subPrs.length ? `; sub PRs: ${subPrs.join(", ")}` : ""}`,
     evidence,
+    ercs,
+    ...(pr.url ? { prUrl: pr.url } : {}),
   };
 }
 
 /**
- * Release a task after a failure / overrun: push its WIP, then on `<base>` either return it
+ * Release a task after a failure / overrun: push its WIP, then on the books branch either return it
  * to `AI_TODO` (attempts+1) or — at the attempt limit — split it (a split child becomes a QA question).
  * @adr 0371 §4
  */
 async function releaseTask(ctx: WsHandlerCtx, root: string, rootBase: RepoBase, allSubs: RepoBase[], mine: LocalClaim, reason: string, cfg: AutonomousConfig): Promise<void> {
   const subs = subBranches(allSubs, mine.id, null);
-  await pushWip(ctx, root, mine, subs, reason.slice(0, 80));
-  await syncBase(root, rootBase.base); // the books (and attempts) as on the remote
+  await pushWip(ctx, root, mine, subs, reason.slice(0, 80), booksOnlyDirsOf(cfg));
+  await syncBooks(root, rootBase.base); // the books (and attempts) as on the remote
   const attempts = await B.readAttempts(root);
   const next = (attempts[mine.id]?.count ?? 0) + 1;
   const reasons = `${attempts[mine.id]?.last ?? ""}; ${reason}`;
@@ -619,9 +754,9 @@ async function releaseTask(ctx: WsHandlerCtx, root: string, rootBase: RepoBase, 
       await publishBooks(root, rootBase.base, `chore(auto): ${mine.id} needs a decision`, async () => (await applyQuestion(root, mine, q, true)) !== null);
       alert(ctx, { kind: "task-failed-limit", task: mine.id, message: `${mine.id} failed ${next} times; a decision was requested in USER_QA.` });
     } else {
-      const out = await runAiPrompt(ctx, buildSplitPrompt(mine, reasons, await wipDiff(root, mine)), randomUUID(), "local", false, undefined, undefined, true, false);
+      const out = await runAiPrompt(ctx, buildSplitPrompt(mine, reasons, await wipDiff(root, mine)), randomUUID(), "local", false, undefined, undefined, true, false, runOverrides(cfg));
       const children = parseJsonReply<{ children?: { desc: string; priority?: string; size?: string; notes?: string }[] }>(out.output)?.children?.filter((c) => c?.desc?.trim()) ?? [];
-      await syncBase(root, rootBase.base);
+      await syncBooks(root, rootBase.base);
       if (children.length >= 2) {
         let ids: string[] | null = null;
         await publishBooks(
@@ -648,13 +783,53 @@ async function releaseTask(ctx: WsHandlerCtx, root: string, rootBase: RepoBase, 
   await dayLog(root, `[release] ${mine.id} attempt ${next}: ${reason}`);
 }
 
+/** The cycle's own run budget: `runTimeoutMinutes`, and no profile failover on a timeout. @adr 0452 */
+function runOverrides(cfg: AutonomousConfig): AiRunOverrides {
+  return { timeoutMs: cfg.runTimeoutMinutes * 60_000, failoverOnTimeout: false };
+}
+
 /** Auto-pause after N consecutive failures. @adr 0321 */
-async function maybeAutoPause(root: string, profileDir: string, cfg: AutonomousConfig, hist: Histories, log: (l: string) => Promise<void>): Promise<void> {
+async function maybeAutoPause(
+  root: string,
+  profileDir: string,
+  cfg: AutonomousConfig,
+  hist: Histories,
+  log: (l: string) => Promise<void>,
+  onPaused?: (reason: string) => void,
+): Promise<void> {
   if (cfg.stopOnConsecutiveFailures > 0 && hist.consecutiveFails >= cfg.stopOnConsecutiveFailures) {
     await writeAutonomousConfig(profileDir, { ...cfg, paused: true });
     await log(`[stop] ${hist.consecutiveFails} consecutive failures → paused`);
+    onPaused?.(`${hist.consecutiveFails} consecutive failures`);
   }
   await writeHistories(root, hist);
+}
+
+/** Fresh book group numbers for an intake run from the server; null when unavailable (intake waits). @adr 0455 */
+async function allocateIntakeGroups(ctx: WsHandlerCtx, count: number): Promise<number[] | null> {
+  try {
+    const reply = await ctx.request<AutonomousBookGroupsReply>(WsChannels.AUTONOMOUS_BOOK_GROUPS, {
+      count: Math.min(Math.max(count, 1), BOOK_GROUPS_PER_REQUEST),
+    });
+    return reply.groups?.length ? reply.groups : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The intake's new AI_TODO / USER_QA ids whose group is not one of `groups`. @adr 0455 */
+async function strayIntakeIds(root: string, before: Awaited<ReturnType<typeof cappedBookIds>>, groups: readonly number[]): Promise<string[]> {
+  const allowed = new Set(groups.map(bookGroupCode));
+  const after = await cappedBookIds(root);
+  const out: string[] = [];
+  for (const book of ["AI_TODO", "USER_QA"] as const) {
+    for (const id of after[book]) {
+      if (before[book].has(id)) continue;
+      const g = bookGroupOf(id);
+      if (!g || !allowed.has(g)) out.push(id);
+    }
+  }
+  return out;
 }
 
 /** Read the org's monthly autonomous-book counters; null when unavailable (fail open). @adr 0365 */
@@ -732,9 +907,9 @@ async function recordRun(
  * USER_TODO, an approved `QA-` in USER_QA, an approved `TSK-` in AI_TODO — or AI_PROGRESS carries a task.
  * @adr 0319 @adr 0321 @adr 0438
  */
-async function hasWork(root: string): Promise<boolean> {
+async function hasWork(root: string, profileDir: string): Promise<boolean> {
   // Verified approvals only (ADR-0438) — a forged or edited entry is no work.
-  const approved = [...(await approvedIds(root))];
+  const approvedAll = [...(await approvedIds(root))];
   const read = (f: string): Promise<string> => readFileInRoot(root, join(root, f), "utf8").catch(() => "");
   const [userTodo, userQa, aiTodo, aiProgress] = await Promise.all([
     read("USER_TODO.md"),
@@ -742,14 +917,47 @@ async function hasWork(root: string): Promise<boolean> {
     read("AI_TODO.md"),
     read("AI_PROGRESS.md"),
   ]);
+  // A team-restricted worker counts only its teams' rows (ADR-0450).
+  const approved = approvedAll.filter((id) => {
+    const md = id.startsWith("REQ-") ? userTodo : id.startsWith("QA-") ? userQa : aiTodo;
+    return servesTeam(profileDir, bookRowTeam(md, id));
+  });
   const anyApproved = (prefix: string, text: string): boolean =>
     approved.some((id) => id.startsWith(prefix) && text.includes(id));
   return (
     anyApproved("REQ-", userTodo) ||
     anyApproved("QA-", userQa) ||
     anyApproved("TSK-", aiTodo) ||
-    /TSK-\d{4}-\d{4}/.test(aiProgress)
+    /TSK-\d{6}-\d{3}/.test(aiProgress)
   );
+}
+
+/**
+ * After an intake run, give the rows it created a `Team` when the agent left it empty and the team is
+ * unambiguous: the worker serves exactly one team, or every request / question taken in shares one team.
+ * @adr 0450
+ */
+async function fillIntakeTeams(
+  root: string,
+  profileDir: string,
+  intake: readonly string[],
+  before: Awaited<ReturnType<typeof cappedBookIds>>,
+): Promise<void> {
+  const served = servedTeams(profileDir);
+  const [userTodo, userQa] = await Promise.all([B.readBook(root, "USER_TODO.md"), B.readBook(root, "USER_QA.md")]);
+  const sourceTeams = new Set(intake.map((id) => bookRowTeam(id.startsWith("REQ-") ? userTodo : userQa, id)).filter(Boolean));
+  const team = served && served.length === 1 ? served[0]! : sourceTeams.size === 1 ? [...sourceTeams][0]! : "";
+  if (!team) return;
+  const todo = await B.readBook(root, "AI_TODO.md");
+  const { tasks } = B.parseTasks(todo);
+  if (tasks.some((t) => !before.AI_TODO.has(t.id) && !t.team)) {
+    await B.writeBook(root, "AI_TODO.md", B.writeTasks(todo, tasks.map((t) => (!before.AI_TODO.has(t.id) && !t.team ? { ...t, team } : t))));
+  }
+  const qa = await B.readBook(root, "USER_QA.md");
+  const { rows } = B.parseQa(qa);
+  if (rows.some((q) => !before.USER_QA.has(q.id) && !q.team)) {
+    await B.writeBook(root, "USER_QA.md", B.writeQa(qa, rows.map((q) => (!before.USER_QA.has(q.id) && !q.team ? { ...q, team } : q))));
+  }
 }
 
 /** True when the config has a usable (enabled, non-blank) codex profile — mixed list or legacy list. */

@@ -5,7 +5,8 @@
  * RAG, the paired profile's config.json, and the AI CLI's model
  * list. Each project
  * op is a no-op on an idle cli (no `physicRoot`); config.json ops target the profile dir directly.
- * @adr 0152 @adr 0153 @adr 0154 @adr 0183 @adr 0185 @adr 0155 @adr 0156 @adr 0157 @adr 0141 @adr 0394
+ * The project ER (`er.read` / `er.write` — ADR-0453) rides here too.
+ * @adr 0152 @adr 0153 @adr 0154 @adr 0183 @adr 0185 @adr 0155 @adr 0156 @adr 0157 @adr 0141 @adr 0394 @adr 0453
  */
 import {
   WsChannels,
@@ -20,6 +21,9 @@ import {
   type ConfigReadReply,
   type ConfigWriteReply,
   type ConfigWriteRequest,
+  type DiscussionsReadRequest,
+  type ErReadRequest,
+  type ErWriteRequest,
   type GraphBuildRequest,
   type McpScanReply,
   type PackagesInstallRequest,
@@ -31,6 +35,8 @@ import {
   type WsEnvelope,
 } from "@4pm/ws";
 import { readAutonomous, readAutonomousEvidence, readAutonomousLogs, writeAutonomous } from "../../autonomous/autonomous";
+import { readDiscussions } from "../../autonomous/autonomous-discussions";
+import { readEr, writeEr } from "../../autonomous/autonomous-er";
 import { listAgents, readAgent, writeAgent } from "../../agent/agents";
 import { readSecrets, writeSecrets } from "../../worker/secrets";
 import { readAgentTools, writeAgentTools } from "../../agent/agent-tools";
@@ -40,6 +46,8 @@ import { buildGraph } from "../../worker/graph";
 import { ragInstall, ragQuery, ragReindex, ragStatus } from "../../knowledge/rag";
 import { applyConfigText, readConfigText } from "../../profile/config-sync";
 import { listAiModels } from "../../ai/ai-models";
+import { readProfileConfig } from "../../../config/profile";
+import { enabledAiProviders } from "../../../utils/ai-cli";
 import type { WsHandlerCtx } from "../context";
 
 /** Route the worker-config channels; returns true when the message was handled. */
@@ -64,6 +72,15 @@ export function handleWorkerChannels(
         );
       }
       return true;
+    case WsChannels.DISCUSSIONS_READ: {
+      // Request/reply (ADR-0454): discussion files on the books branch — blobs, contents, a batch commit.
+      const root = ctx.physicRoot;
+      const req = payload as unknown as DiscussionsReadRequest;
+      void (root ? readDiscussions(root, req) : Promise.resolve({ files: [], error: "no project served" })).then((reply) =>
+        ctx.send(WsChannels.DISCUSSIONS_READ, reply, message.id),
+      );
+      return true;
+    }
     case WsChannels.AUTONOMOUS_EVIDENCE: {
       // Request/reply (machine-0073, ADR-0404): one committed book evidence file as base64.
       const req = payload as unknown as AutonomousEvidenceRequest;
@@ -71,6 +88,24 @@ export function handleWorkerChannels(
         void readAutonomousEvidence(ctx.physicRoot, ctx.profileDir, req).then((reply) =>
           ctx.send(WsChannels.AUTONOMOUS_EVIDENCE, reply, message.id),
         );
+      }
+      return true;
+    }
+    case WsChannels.ER_READ: {
+      // Request/reply (machine-0077): the project ER on the books branch, optionally at a past version.
+      const req = payload as unknown as ErReadRequest;
+      if (ctx.physicRoot) {
+        void readEr(ctx.physicRoot, ctx.profileDir, req)
+          .catch((err: unknown) => ({ error: err instanceof Error ? err.message : String(err) }))
+          .then((reply) => ctx.send(WsChannels.ER_READ, reply, message.id));
+      }
+      return true;
+    }
+    case WsChannels.ER_WRITE: {
+      // Request/reply (machine-0078/0079): save / withdraw / decide a change request; `by` is server-filled.
+      const req = payload as unknown as ErWriteRequest;
+      if (ctx.physicRoot) {
+        void writeEr(ctx.physicRoot, ctx.profileDir, req).then((reply) => ctx.send(WsChannels.ER_WRITE, reply, message.id));
       }
       return true;
     }
@@ -191,9 +226,9 @@ export function handleWorkerChannels(
       return true;
     }
     case WsChannels.PACKAGES_LIST:
-      // Request/reply (machine-0047): installed manifest + on-disk sha256 (drift).
+      // Request/reply (machine-0047): installed manifest + drift + the enabled AI providers.
       if (ctx.physicRoot) {
-        void listPackages(ctx.physicRoot).then((reply) =>
+        void listPackages(ctx.physicRoot, enabledAiProviders(readProfileConfig(ctx.profileDir))).then((reply) =>
           ctx.send(WsChannels.PACKAGES_LIST, reply, message.id),
         );
       }
@@ -202,7 +237,7 @@ export function handleWorkerChannels(
       // Request/reply (machine-0048): delete an installed artifact + manifest entry.
       const req = payload as unknown as PackagesRemoveRequest;
       if (ctx.physicRoot) {
-        void removePackage(ctx.physicRoot, req.slug).then((reply) =>
+        void removePackage(ctx.physicRoot, req).then((reply) =>
           ctx.send(WsChannels.PACKAGES_REMOVE, reply, message.id),
         );
       }

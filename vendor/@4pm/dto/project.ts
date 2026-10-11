@@ -115,6 +115,8 @@ export interface ProjectTeamMember {
 export interface ProjectTeamSummary {
   id: string;
   name: string;
+  /** The team's book key (`Team` cell — ADR-0450). */
+  code: string;
   /** The team's own avatar-serving URL (`/teams/:id/avatar`) or null when none. */
   avatarUrl: string | null;
   /** The team's participation in THIS project is paused (`project_teams.status`). */
@@ -920,27 +922,30 @@ export type PutTemplateUpdateRequest = z.infer<typeof putTemplateUpdateRequestSc
 /** Max serialized size (bytes) of a generated artifact's markdown. @adr 0114 */
 export const ARTIFACT_MAX_BYTES = 512 * 1024;
 
-/** One AI-generated project artifact. @adr 0114 */
+/**
+ * One AI-generated project artifact. `kind` is the doc type key (a system key or an org / project key);
+ * the doc-type fields are null on rows created before server-side generation.
+ * @adr 0114 @adr 0457
+ */
 export interface ProjectArtifactResponse {
   id: string;
-  kind: TemplateKind;
+  kind: string;
+  docTypeId: string | null;
+  docTypeVersion: number | null;
+  templateFileId: string | null;
+  templateVersion: number | null;
+  params: Record<string, string> | null;
+  runId: string | null;
   content: string;
   createdBy: string | null;
   createdAt: string;
 }
 
-/** Query GET /projects/:id/artifacts — optional kind filter. @api project-0034 */
+/** Query GET /projects/:id/artifacts — optional doc type key filter. @api project-0034 */
 export const listArtifactsQuerySchema = z.object({
-  kind: z.enum(TEMPLATE_KINDS).optional(),
+  kind: z.string().max(40).optional(),
 });
 export type ListArtifactsQuery = z.infer<typeof listArtifactsQuerySchema>;
-
-/** Body POST /projects/:id/artifacts — save a generated artifact. @api project-0035 */
-export const createArtifactRequestSchema = z.object({
-  kind: z.enum(TEMPLATE_KINDS),
-  content: z.string().min(1).max(ARTIFACT_MAX_BYTES),
-});
-export type CreateArtifactRequest = z.infer<typeof createArtifactRequestSchema>;
 
 /**
  * A loose git-URL shape: `https://…`, `git@host:…` or `ssh://…`. 4PM never

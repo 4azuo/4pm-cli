@@ -103,15 +103,23 @@ export type AiRunConfig = z.infer<typeof aiRunConfigSchema>;
 
 /**
  * A dispatch's server-side result sink. `template-update` carries the version pair and
- * custom instruction the saved `TemplateUpdateResult` records.
- * @adr 0407
+ * custom instruction the saved `TemplateUpdateResult` records; `doc-generation` names the run whose
+ * artifact the server stores.
+ * @adr 0407 @adr 0457
  */
-export const commandResultSinkSchema = z.object({
-  kind: z.literal("template-update"),
-  fromVersion: z.string().max(64).nullable(),
-  toVersion: z.string().min(1).max(64),
-  instruction: z.string().nullable(),
-});
+export const commandResultSinkSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("template-update"),
+    fromVersion: z.string().max(64).nullable(),
+    toVersion: z.string().min(1).max(64),
+    instruction: z.string().nullable(),
+  }),
+  // A server-side doc generation (ADR-0457): the sink stores the artifact of this run. Only the server
+  // sets it (its own dispatch); a client-sent one is rejected at dispatch.
+  z.object({ kind: z.literal("doc-generation"), runId: z.string().guid() }),
+  // A rule's AI action (ADR-0458): the sink records the output on that run's action. Server-only too.
+  z.object({ kind: z.literal("automation-action"), runId: z.string().guid(), index: z.number().int().min(0).max(20) }),
+]);
 export type CommandResultSink = z.infer<typeof commandResultSinkSchema>;
 
 /** Body POST /commands — dispatch a command to the project's cli. */

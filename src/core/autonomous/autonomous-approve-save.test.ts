@@ -12,8 +12,8 @@ import { writeAutonomous } from "./autonomous";
 import { resetApprovalTrustForTest } from "./autonomous-approvals";
 
 const HEAD = "| ID | Group | Depends | Request |\n|---|---|---|---|\n";
-const BEFORE = `${HEAD}| REQ-0001-0001 | 0001 | | Add login |\n`;
-const AFTER = `${HEAD}| REQ-0001-0001 | 0001 | | Add login with SSO |\n`;
+const BEFORE = `${HEAD}| REQ-000001-001 | 0001 | | Add login |\n`;
+const AFTER = `${HEAD}| REQ-000001-001 | 0001 | | Add login with SSO |\n`;
 
 let root: string;
 let profileDir: string;
@@ -29,7 +29,7 @@ beforeEach(() => {
   profileDir = mkdtempSync(join(tmpdir(), "4pm-prof-"));
   mkdirSync(join(root, ".claude"));
   writeFileSync(join(root, "USER_TODO.md"), BEFORE);
-  writeFileSync(join(root, ".claude/.autonomous.authors.json"), JSON.stringify({ "REQ-0001-0001": { by: "writer" } }));
+  writeFileSync(join(root, ".claude/.autonomous.authors.json"), JSON.stringify({ "REQ-000001-001": { by: "writer" } }));
   writeFileSync(join(root, ".claude/.autonomous.approvals.json"), "{}");
 });
 afterEach(() => {
@@ -39,20 +39,20 @@ afterEach(() => {
 
 describe("bookSave with approvals", () => {
   it("blocks a non-ADMIN approving a row they just edited, writing nothing", async () => {
-    const r = await writeAutonomous(root, profileDir, { kind: "bookSave", book: "userTodo", content: AFTER, approve: ["REQ-0001-0001"], by: "editor" }, "editor");
-    expect(r).toMatchObject({ ok: false, code: "APPROVAL_SELF", failedId: "REQ-0001-0001" });
+    const r = await writeAutonomous(root, profileDir, { kind: "bookSave", book: "userTodo", content: AFTER, approve: ["REQ-000001-001"], by: "editor" }, "editor");
+    expect(r).toMatchObject({ ok: false, code: "APPROVAL_SELF", failedId: "REQ-000001-001" });
     expect(readFileSync(join(root, "USER_TODO.md"), "utf8")).toBe(BEFORE);
     expect(json(".claude/.autonomous.approvals.json")).toEqual({});
   });
 
   it("lets a non-author approve an unedited row and an ADMIN approve their own edit", async () => {
-    const ok = await writeAutonomous(root, profileDir, { kind: "bookSave", book: "userTodo", content: BEFORE, approve: ["REQ-0001-0001"], by: "reviewer" }, "reviewer");
+    const ok = await writeAutonomous(root, profileDir, { kind: "bookSave", book: "userTodo", content: BEFORE, approve: ["REQ-000001-001"], by: "reviewer" }, "reviewer");
     expect(ok.ok).toBe(true);
-    expect(json(".claude/.autonomous.approvals.json")["REQ-0001-0001"]).toMatchObject({ approved: true, by: "reviewer" });
+    expect(json(".claude/.autonomous.approvals.json")["REQ-000001-001"]).toMatchObject({ approved: true, by: "reviewer" });
     const admin = await writeAutonomous(
       root,
       profileDir,
-      { kind: "bookSave", book: "userTodo", content: AFTER, approve: ["REQ-0001-0001"], by: "editor", byIsAdmin: true },
+      { kind: "bookSave", book: "userTodo", content: AFTER, approve: ["REQ-000001-001"], by: "editor", byIsAdmin: true },
       "editor",
     );
     expect(admin.ok).toBe(true);
@@ -60,14 +60,14 @@ describe("bookSave with approvals", () => {
   });
 
   it("refuses a signed entry whose hash is for other content (stale)", async () => {
-    const signed = { "REQ-0001-0001": { approved: true as const, by: "reviewer", at: "t", h: `sha256:${"0".repeat(64)}`, kid: "k", sig: "ed25519:AA==" } };
+    const signed = { "REQ-000001-001": { approved: true as const, by: "reviewer", at: "t", h: `sha256:${"0".repeat(64)}`, kid: "k", sig: "ed25519:AA==" } };
     const r = await writeAutonomous(
       root,
       profileDir,
-      { kind: "bookSave", book: "userTodo", content: BEFORE, approve: ["REQ-0001-0001"], signed, by: "reviewer" },
+      { kind: "bookSave", book: "userTodo", content: BEFORE, approve: ["REQ-000001-001"], signed, by: "reviewer" },
       "reviewer",
     );
-    expect(r).toMatchObject({ ok: false, code: "APPROVAL_STALE", failedId: "REQ-0001-0001" });
+    expect(r).toMatchObject({ ok: false, code: "APPROVAL_STALE", failedId: "REQ-000001-001" });
     expect(json(".claude/.autonomous.approvals.json")).toEqual({});
   });
 });

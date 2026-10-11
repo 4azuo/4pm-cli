@@ -1,7 +1,9 @@
 /**
  * Worker filesystem channel handlers (machine-0007/0027/0059/0061/0062): browse/read/write/mutate
  * files + binary upload/download inside the served physic project root for the dashboard Files + Git
- * tabs. Every op is clamped to `ctx.physicRoot` so the web can only go inward, never out.
+ * tabs. Every op is clamped to `ctx.physicRoot` so the web can only go inward, never out. A customer
+ * viewer (`viewer: "client"`) never sees `.git` or gitignored paths.
+ * @adr 0449
  */
 import {
   WsChannels,
@@ -18,6 +20,8 @@ import { readWorkerFile } from "../../fs/fs-read";
 import { writeWorkerFile } from "../../fs/fs-write";
 import { mutateFs } from "../../fs/fs-mutate";
 import { downloadBinaryFile, uploadBinaryFile } from "../../fs/fs-transfer";
+import { clientHidden, filterListingForClient } from "../../fs/client-visibility";
+import { relative, resolve } from "node:path";
 import type { WsHandlerCtx } from "../context";
 
 /** Route the fs.* channels; returns true when the message was handled. */
@@ -27,20 +31,31 @@ export function handleFsChannels(
   payload: Record<string, unknown>,
 ): boolean {
   switch (message.channel) {
-    case WsChannels.FS_LIST:
+    case WsChannels.FS_LIST: {
       // Request/reply (machine-0007): reply on the same channel via replyTo. Scoped to
       // the physic project root — the browser can only go inward, never out.
-      void listDir((payload as unknown as FsListRequest).path, ctx.physicRoot).then((reply) =>
-        ctx.send(WsChannels.FS_LIST, reply, message.id),
-      );
+      const req = payload as unknown as FsListRequest;
+      const root = ctx.physicRoot;
+      void listDir(req.path, root)
+        .then(async (reply) =>
+          req.viewer === "client" && root
+            ? { ...reply, entries: await filterListingForClient(root, relative(resolve(root), reply.path), reply.entries) }
+            : reply,
+        )
+        .then((reply) => ctx.send(WsChannels.FS_LIST, reply, message.id));
       return true;
-    case WsChannels.FS_READ:
+    }
+    case WsChannels.FS_READ: {
       // Request/reply — read a file for the dashboard files tab. Clamped to the physic root
       // (ADR-0281): the browser addresses files project-root-relative, never out of the root.
-      void readWorkerFile(ctx.physicRoot, (payload as unknown as FsReadRequest).path).then((reply) =>
-        ctx.send(WsChannels.FS_READ, reply, message.id),
-      );
+      const req = payload as unknown as FsReadRequest;
+      void clientHidden(ctx.physicRoot, req.path, req.viewer)
+        .then((hidden) =>
+          hidden ? { path: req.path, content: "", truncated: false, hidden: true } : readWorkerFile(ctx.physicRoot, req.path),
+        )
+        .then((reply) => ctx.send(WsChannels.FS_READ, reply, message.id));
       return true;
+    }
     case WsChannels.FS_WRITE: {
       // Request/reply (machine-0027, ADR-0151): write a file, clamped to the physic root —
       // the Git tab's manual conflict resolution.
@@ -72,9 +87,9 @@ export function handleFsChannels(
       // Request/reply (machine-0062, ADR-0278): read a file's raw bytes (base64) for the browser to
       // save, clamped to the physic root + size-capped (`project.read`).
       const req = payload as unknown as FsDownloadRequest;
-      void downloadBinaryFile(ctx.physicRoot, req.path).then((reply) =>
-        ctx.send(WsChannels.FS_DOWNLOAD, reply, message.id),
-      );
+      void clientHidden(ctx.physicRoot, req.path, req.viewer)
+        .then((hidden) => (hidden ? { error: "CLIENT_PATH_HIDDEN" } : downloadBinaryFile(ctx.physicRoot, req.path)))
+        .then((reply) => ctx.send(WsChannels.FS_DOWNLOAD, reply, message.id));
       return true;
     }
     default:

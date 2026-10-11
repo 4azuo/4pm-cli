@@ -5,4 +5,4 @@
 
 | ID | Group | Depends | Original request | Question / options | Answer |
 |----|-------|---------|------------------|--------------------|--------|
-| QA-0001-0001 | Auth | | Add a login screen | Email/password only, or also OAuth? (a) email+password, (b) also Google, (c) also GitHub | (a) email+password |
+| QA-000001-001 | Auth | | Add a login screen | Email/password only, or also OAuth? (a) email+password, (b) also Google, (c) also GitHub | (a) email+password |

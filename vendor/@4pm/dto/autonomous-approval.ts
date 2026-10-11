@@ -61,8 +61,11 @@ function tables(md: string): { header: string[]; rows: string[][] }[] {
 
 /**
  * The canonical text an approval of `rowId` binds to: the id plus its content cells (whitespace runs
- * collapsed), joined by U+0001. Null when the book has no table with the id and every content column,
- * or no such row. The caller hashes it (`sha256:<hex>` = the entry's `h`).
+ * collapsed), joined by U+0001 — plus `team:<code>` when the row has a non-empty `Team` cell (ADR-0450:
+ * the approvers depend on the team, so moving a row voids its approval; an untagged row hashes as before).
+ * Null when the book has no table with the id and every content column, or no such row. The caller hashes
+ * it (`sha256:<hex>` = the entry's `h`).
+ * @adr 0450
  */
 export function approvalRowCanonical(markdown: string, rowId: string): string | null {
   const cols = approvalContentColumns(rowId);
@@ -74,10 +77,76 @@ export function approvalRowCanonical(markdown: string, rowId: string): string | 
     if (idCol < 0 || idx.some((k) => k < 0)) continue;
     const row = t.rows.find((r) => (r[idCol] ?? "") === rowId);
     if (!row) continue;
-    return [rowId, ...idx.map((k) => (row[k] ?? "").replace(/\s+/g, " ").trim())].join("\u0001");
+    const teamCol = lower.indexOf("team");
+    const team = teamCol >= 0 ? (row[teamCol] ?? "").trim() : "";
+    return [rowId, ...idx.map((k) => (row[k] ?? "").replace(/\s+/g, " ").trim()), ...(team ? [`team:${team}`] : [])].join("\u0001");
   }
   return null;
 }
+
+/** The `Team` cell of `rowId` in `markdown` ("" when untagged, absent or no such row). @adr 0450 */
+export function bookRowTeam(markdown: string, rowId: string): string {
+  for (const t of tables(markdown)) {
+    const lower = t.header.map((h) => h.toLowerCase());
+    const idCol = lower.indexOf("id");
+    if (idCol < 0) continue;
+    const row = t.rows.find((r) => (r[idCol] ?? "") === rowId);
+    if (!row) continue;
+    const teamCol = lower.indexOf("team");
+    return teamCol >= 0 ? (row[teamCol] ?? "").trim() : "";
+  }
+  return "";
+}
+
+/**
+ * Every row of a book's id-keyed tables: id → `{ team, cells }` (cells keyed by lower-cased header). Used
+ * to diff a save (team / own-row / answer-only rules) on the server and the cli alike.
+ * @adr 0450 @adr 0454
+ */
+export function bookRowsById(markdown: string): Map<string, { team: string; cells: Record<string, string> }> {
+  const out = new Map<string, { team: string; cells: Record<string, string> }>();
+  for (const t of tables(markdown)) {
+    const lower = t.header.map((h) => h.toLowerCase());
+    const idCol = lower.indexOf("id");
+    if (idCol < 0) continue;
+    for (const r of t.rows) {
+      const id = (r[idCol] ?? "").trim();
+      if (!id || out.has(id)) continue;
+      const cells: Record<string, string> = {};
+      lower.forEach((h, k) => (cells[h] = (r[k] ?? "").trim()));
+      out.set(id, { team: (cells.team ?? "").trim(), cells });
+    }
+  }
+  return out;
+}
+
+/** Signed-payload prefix of one party approval. @adr 0451 */
+export const APPROVAL_PARTY_PAYLOAD_VERSION = "4pm-approval-party:v1";
+
+/**
+ * The approver groups of a project approval policy. `member` = an approver holding the book's approve
+ * right who is in no required group (recorded, satisfies nothing).
+ * @adr 0451
+ */
+export const APPROVAL_GROUPS = ["teamLead", "designated", "client", "member"] as const;
+export type ApprovalGroup = (typeof APPROVAL_GROUPS)[number];
+
+/** The exact string the server signs for one party approval. @adr 0451 */
+export function approvalPartySigningPayload(p: { projectId: string; rowId: string; by: string; at: string; h: string; group: ApprovalGroup }): string {
+  return [APPROVAL_PARTY_PAYLOAD_VERSION, p.projectId, p.rowId, p.by, p.at, p.h, p.group].join("|");
+}
+
+/** One party approval inside an approvals-file entry (`parties[]`). @adr 0451 */
+export const approvalPartyEntrySchema = z.object({
+  by: z.string().min(1),
+  byLabel: z.string().optional(),
+  group: z.enum(APPROVAL_GROUPS),
+  at: z.string().min(1),
+  h: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  kid: z.string().min(1).max(64).optional(),
+  sig: z.string().regex(/^ed25519:[A-Za-z0-9+/=]+$/).optional(),
+});
+export type ApprovalPartyEntry = z.infer<typeof approvalPartyEntrySchema>;
 
 /** The exact string the server signs for one approval (the projectId stops cross-project replay). */
 export function approvalSigningPayload(p: { projectId: string; rowId: string; by: string; at: string; h: string }): string {

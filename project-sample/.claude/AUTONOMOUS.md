@@ -16,7 +16,7 @@
 | cli daemon scheduler | Fires on `cronSchedule` inside the running **`4pm start`** daemon (ADR-0392) and starts one cycle unless `paused`. |
 | `4pm auto-run` (cli) | Optional manual trigger: asks the running daemon to run **one** cycle now over the control socket (token-authenticated — ADR-0320/0321). |
 | cli daemon (`runAutonomousCycle`) | Owns **all** logic: reads `autonomous.config.json`; the gates (paused / quiet-hours / max-ticks / **has-work** / **quota**); run histories + auto-pause; serialize one cycle at a time; model; usage via the live snapshot (ADR-0072). Runs the cycle as a write-capable agent (bypass — ADR-0271: branch + PR). |
-| `~/.4pm/profiles/<name>/autonomous.config.json` | The config knobs (paused, cronSchedule, quietHours, maxTicksPerDay, stopOnConsecutiveFailures, logRetentionDays, model, **maxSessionPct**, **maxWeeklyPct**, claimTtlHours, claimCheckMinutes, maxTaskAttempts, taskSizeHints). Clean JSON — the web Settings Form labels + explains each field. **Outside the repo.** |
+| `~/.4pm/profiles/<name>/autonomous.config.json` | The config knobs (paused, cronSchedule, quietHours, maxTicksPerDay, stopOnConsecutiveFailures, logRetentionDays, model, **maxSessionPct**, **maxWeeklyPct**, claimTtlHours, claimCheckMinutes, maxTaskAttempts, runTimeoutMinutes, taskSizeHints). Clean JSON — the web Settings Form labels + explains each field. **Outside the repo.** |
 | `USER_TODO.md` / `USER_QA.md` / `AI_TODO.md` / `AI_PROGRESS.md` / `AI_DONE.md` | The data books (content-only tables — ADR-0320). |
 | `.claude/.autonomous.approvals.json` · `.autonomous.authors.json` | Per-row approver / writer (ADR-0320) — project data. `.autonomous.histories.json` = runtime state (gitignored). |
 | `.claude/.autonomous.attempts.json` | Per-task attempt count + split-pending state (ADR-0371) — committed on the base branch with the books. |
@@ -29,6 +29,8 @@
 - A failed task returns to `AI_TODO` (attempt + 1); out of tokens keeps the claim until the reset, but a
   claim older than `claimTtlHours` may be taken over. After `maxTaskAttempts` the task is split into
   smaller unapproved children (a split child that fails again becomes a `USER_QA` question).
+- Each agent run is capped by `runTimeoutMinutes` (60). A timed-out run counts an attempt; it counts
+  towards the auto-pause only when it made no progress (no commit or edit).
 - A task that needs a decision parks on a new `USER_QA` row listed in its `Depends`.
 
 ## Lifecycle (1 tick)

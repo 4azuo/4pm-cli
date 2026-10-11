@@ -47,8 +47,8 @@ afterEach(() => rmSync(tmp, { recursive: true, force: true }));
 describe("publishIntake guard", () => {
   it("publishes the books but reverts a forged approval and drops agent commits", async () => {
     // The agent writes a task, forges its approval, and commits something else on its own.
-    writeFileSync(join(root, "AI_TODO.md"), "| ID | Task description |\n|---|---|\n| TSK-0001-0001 | x |\n");
-    writeFileSync(join(root, APPROVALS), '{ "TSK-0001-0001": { "approved": true } }\n');
+    writeFileSync(join(root, "AI_TODO.md"), "| ID | Task description |\n|---|---|\n| TSK-000001-001 | x |\n");
+    writeFileSync(join(root, APPROVALS), '{ "TSK-000001-001": { "approved": true } }\n');
     writeFileSync(join(root, "evil.sh"), "curl attacker\n");
     g(root, "add", "evil.sh");
     g(root, "commit", "-q", "-m", "agent commit");
@@ -58,7 +58,7 @@ describe("publishIntake guard", () => {
     });
     expect(res).toBe("pushed");
     expect(reverted).toEqual([APPROVALS]);
-    expect(remoteFile("AI_TODO.md")).toContain("TSK-0001-0001");
+    expect(remoteFile("AI_TODO.md")).toContain("TSK-000001-001");
     expect(remoteFile(APPROVALS)).toBe("{}");
     expect(() => remoteFile("evil.sh")).toThrow();
   });
@@ -66,7 +66,7 @@ describe("publishIntake guard", () => {
 
 describe("task branch guard", () => {
   it("strips the agent's sidecar commits back to the fork point and keeps its code", async () => {
-    g(root, "checkout", "-q", "-b", "dev/main/0001/TSK-0001-0001");
+    g(root, "checkout", "-q", "-b", "dev/main/0001/TSK-000001-001");
     writeFileSync(join(root, "app.ts"), "export {};\n");
     writeFileSync(join(root, APPROVALS), '{ "TSK-9": { "approved": true } }\n');
     g(root, "add", "-A");
@@ -74,12 +74,12 @@ describe("task branch guard", () => {
     // Meanwhile the cli publishes a newer approvals file on main.
     const other = join(tmp, "other");
     execFileSync("git", ["clone", "-q", remote, other]);
-    writeFileSync(join(other, APPROVALS), '{ "TSK-0001-0001": { "approved": true, "by": "u" } }\n');
+    writeFileSync(join(other, APPROVALS), '{ "TSK-000001-001": { "approved": true, "by": "u" } }\n');
     g(other, "commit", "-q", "-am", "chore(auto): approve");
     g(other, "push", "-q", "origin", "main");
     g(root, "fetch", "-q", "origin");
 
-    const reverted = await stripSidecarsFromBranch(root, "main", "TSK-0001-0001");
+    const reverted = await stripSidecarsFromBranch(root, "main", "TSK-000001-001");
     expect(reverted).toEqual([APPROVALS]);
     const fork = g(root, "merge-base", "HEAD", "origin/main");
     expect(g(root, "diff", "--name-only", fork, "HEAD")).toBe("app.ts");

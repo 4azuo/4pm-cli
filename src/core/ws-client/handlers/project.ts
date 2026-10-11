@@ -6,6 +6,7 @@
  * ADR-0117) project with streamed progress.
  * @adr 0064 @adr 0080
  */
+import { setServedTeams } from "../../autonomous/autonomous-teams";
 import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import {
   WsChannels,
@@ -117,6 +118,8 @@ export function handleProjectChannels(
       }
       // Networks (ADR-0439): a saved policy / org denylist applies to the next connection.
       setNetworkPolicy(tokens.network);
+      // Served teams (ADR-0450): `undefined` = an older server ⇒ keep the last value.
+      setServedTeams(tokens.servedTeams, ctx.profileDir);
       logger.info("project.tokens.applied", {
         aiRunTimeoutSec: tokens.aiRunTimeoutSec ?? 0,
         autoClearIdleMinutes: tokens.autoClearIdleMinutes ?? 0,

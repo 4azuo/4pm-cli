@@ -1,6 +1,6 @@
 /**
  * User role catalog (Roles).
- * Multi-role: one user can have several roles; ADMIN/MACHINE are exclusive (a single role only).
+ * Multi-role: one user can have several roles; ADMIN/MACHINE/CLIENT are exclusive (a single role only).
  */
 
 /** System roles — the values stored in `users.roles[]`. */
@@ -11,6 +11,8 @@ export const Role = {
   QA: "QA",
   BA: "BA",
   MACHINE: "MACHINE",
+  // An org's customer: sees only the projects it is a direct member of (ADR-0449).
+  CLIENT: "CLIENT",
 } as const;
 
 /** Union type of roles. */
@@ -20,7 +22,14 @@ export type Role = (typeof Role)[keyof typeof Role];
 export const ALL_ROLES: readonly Role[] = Object.values(Role);
 
 /** Exclusive roles — a user with such a role cannot have any other role. */
-export const EXCLUSIVE_ROLES: readonly Role[] = [Role.ADMIN, Role.MACHINE];
+export const EXCLUSIVE_ROLES: readonly Role[] = [Role.ADMIN, Role.MACHINE, Role.CLIENT];
+
+/**
+ * Roles that are not internal people: MACHINE (a worker) and CLIENT (a customer). Excluded from the
+ * project-people fan-outs (notifications, announcements) and from team/PM assignments.
+ * @adr 0449
+ */
+export const NON_MEMBER_ROLES: readonly Role[] = [Role.MACHINE, Role.CLIENT];
 
 /**
  * Roles a PM may assign when editing a member's roles (ADR-0051, anti-escalation):
@@ -30,7 +39,7 @@ export const EXCLUSIVE_ROLES: readonly Role[] = [Role.ADMIN, Role.MACHINE];
 export const PM_GRANTABLE_ROLES: readonly Role[] = [Role.SA_SE, Role.QA, Role.BA];
 
 /**
- * Validate a role set against the exclusivity rule (ADMIN/MACHINE only one role).
+ * Validate a role set against the exclusivity rule (ADMIN/MACHINE/CLIENT only one role).
  */
 export function isValidRoleSet(roles: readonly Role[]): boolean {
   if (roles.length === 0) return false;

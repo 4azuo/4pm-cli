@@ -68,6 +68,25 @@ export const ErrorCode = {
   TEMPLATE_NOT_FOUND: "TEMPLATE_NOT_FOUND",
   TEMPLATE_QUOTA_EXCEEDED: "TEMPLATE_QUOTA_EXCEEDED",
   TEMPLATE_FILE_TOO_LARGE: "TEMPLATE_FILE_TOO_LARGE",
+  // project libraries (ADR-0456): an attached org entry is read-only inside a project — fork it to edit
+  TEMPLATE_ORG_READONLY: "TEMPLATE_ORG_READONLY",
+  CHECKLIST_ORG_READONLY: "CHECKLIST_ORG_READONLY",
+  // doc types (ADR-0457)
+  DOC_TYPE_KEY_TAKEN: "DOC_TYPE_KEY_TAKEN",
+  DOC_TYPE_SYSTEM_READONLY: "DOC_TYPE_SYSTEM_READONLY",
+  DOC_TYPE_SOURCE_READONLY: "DOC_TYPE_SOURCE_READONLY",
+  DOC_TYPE_DISABLED: "DOC_TYPE_DISABLED",
+  DOC_TYPE_RUN_FORBIDDEN: "DOC_TYPE_RUN_FORBIDDEN",
+  DOC_TYPE_PARAM_INVALID: "DOC_TYPE_PARAM_INVALID",
+  DOC_TYPE_TEMPLATE_NOT_ALLOWED: "DOC_TYPE_TEMPLATE_NOT_ALLOWED",
+  DOC_TYPE_CLIENT_RUN: "DOC_TYPE_CLIENT_RUN",
+  // automation rules (ADR-0458)
+  RULE_EVENT_UNKNOWN: "RULE_EVENT_UNKNOWN",
+  RULE_ACTION_INVALID: "RULE_ACTION_INVALID",
+  RULE_ACTION_FORBIDDEN: "RULE_ACTION_FORBIDDEN",
+  RULE_REGEX_UNSAFE: "RULE_REGEX_UNSAFE",
+  RULE_ENFORCED: "RULE_ENFORCED",
+  RULE_LIMIT_REACHED: "RULE_LIMIT_REACHED",
   // skill/subagent marketplace (ADR-0185)
   MARKET_PACKAGE_NOT_FOUND: "MARKET_PACKAGE_NOT_FOUND",
   MARKET_VERSION_NOT_FOUND: "MARKET_VERSION_NOT_FOUND",
@@ -89,6 +108,13 @@ export const ErrorCode = {
   POST_NOT_FOUND: "POST_NOT_FOUND",
   MESSAGE_NOT_FOUND: "MESSAGE_NOT_FOUND",
   PACKAGE_ALREADY_INSTALLED: "PACKAGE_ALREADY_INSTALLED",
+  // Multi-target installer (ADR-0460/0461/0462)
+  PACKAGE_PROVIDER_UNSUPPORTED: "PACKAGE_PROVIDER_UNSUPPORTED",
+  PACKAGE_TASK_LABEL_CONFLICT: "PACKAGE_TASK_LABEL_CONFLICT",
+  PACKAGE_REQUIRED_BY: "PACKAGE_REQUIRED_BY",
+  PACKAGE_HOOKS_CHANGED: "PACKAGE_HOOKS_CHANGED",
+  PACKAGE_HOOKS_FOREIGN: "PACKAGE_HOOKS_FOREIGN",
+  PACKAGE_GUIDE_TARGET_EXISTS: "PACKAGE_GUIDE_TARGET_EXISTS",
   // org total hosted storage cap (ADR-0122/0365) — blocks text writes, uploads, memo/book writes and new AI runs
   STORAGE_QUOTA_EXCEEDED: "STORAGE_QUOTA_EXCEEDED",
   // Self-managed storage clear (ADR-0365): typed org-name confirmation mismatch; a kind the service
@@ -194,6 +220,13 @@ export const ErrorCode = {
   // ADR-0440: the approval could not be signed (KMS unreachable, no active / readable key) — never written
   // unsigned once keys are published.
   APPROVAL_SIGNING_UNAVAILABLE: "APPROVAL_SIGNING_UNAVAILABLE",
+  // Project ER (ADR-0453): an approved change request touches a field another applied one changed (meta
+  // `conflictsWith`, `entities`) — the ERC is now `conflict`, nothing applied.
+  ER_CHANGE_CONFLICT: "ER_CHANGE_CONFLICT",
+  // An ER change request does not parse (meta `module`, `line`), declares an entity twice, or changes nothing.
+  ER_CHANGE_INVALID: "ER_CHANGE_INVALID",
+  // The ER change request is not in a state that allows this (e.g. revising an applied one, deciding a non-pending one).
+  ER_CHANGE_STALE: "ER_CHANGE_STALE",
   // Networks (ADR-0439): a deny rule / block request names a system host (always allowed).
   NETWORK_RULE_SYSTEM_HOST: "NETWORK_RULE_SYSTEM_HOST",
   // An allow request / approval matches the org denylist, which a project cannot override.
@@ -205,6 +238,39 @@ export const ErrorCode = {
   CLI_VERSION_UNSUPPORTED: "CLI_VERSION_UNSUPPORTED",
   // The worker runs an update-locked image (ADR-0432/0434): a cli update is refused — pull a newer image.
   CLI_UPDATE_LOCKED: "CLI_UPDATE_LOCKED",
+  // The serving cli is too old for this feature (it lacks the needed `CliFeature`) — update the worker.
+  // meta.feature names it (ADR-0449).
+  CLI_UPDATE_REQUIRED: "CLI_UPDATE_REQUIRED",
+  // A customer (CLIENT) asked for `.git` or a gitignored path (ADR-0449).
+  CLIENT_PATH_HIDDEN: "CLIENT_PATH_HIDDEN",
+  // A CLIENT can only be a direct project member: not a team member, PM, TL or routing target (ADR-0449).
+  CLIENT_ROLE_CONSTRAINT: "CLIENT_ROLE_CONSTRAINT",
+  // A book save changed a row of a team the caller can't edit (old or new `Team` — ADR-0450). meta.ids.
+  BOOK_TEAM_FORBIDDEN: "BOOK_TEAM_FORBIDDEN",
+  // A customer changed a book row it didn't write (ADR-0450 §5). meta.ids.
+  BOOK_ROW_NOT_OWNED: "BOOK_ROW_NOT_OWNED",
+  // A USER_QA save added / deleted rows or changed a cell other than `Answer` (ADR-0454). meta.ids.
+  USER_QA_ANSWER_ONLY: "USER_QA_ANSWER_ONLY",
+  // A book save's rows were changed / deleted / taken by someone else meanwhile (ADR-0455). meta.ids, meta.kinds, meta.rest.
+  BOOK_CONFLICT: "BOOK_CONFLICT",
+  // A whole-file book save was edited from an older version of the book (ADR-0455).
+  BOOK_STALE: "BOOK_STALE",
+  // Another live team of the org already uses this code (ADR-0450).
+  TEAM_CODE_TAKEN: "TEAM_CODE_TAKEN",
+  // A routing entry serves a team not attached to the project (ADR-0450). meta.teamId.
+  ROUTING_TEAM_NOT_IN_PROJECT: "ROUTING_TEAM_NOT_IN_PROJECT",
+  // Under the project's approval policy the caller is in none of the row's approver groups (ADR-0451). meta.id.
+  APPROVAL_NOT_A_PARTY: "APPROVAL_NOT_A_PARTY",
+  // The row has linked discussions not resolved yet (ADR-0454). meta.id, meta.discussionIds.
+  APPROVAL_OPEN_QUESTIONS: "APPROVAL_OPEN_QUESTIONS",
+  // An approval request may be re-sent at most once a day (ADR-0451).
+  BOOK_REQUEST_RESEND_TOO_SOON: "BOOK_REQUEST_RESEND_TOO_SOON",
+  // The approval request is not open any more (ADR-0451).
+  BOOK_REQUEST_NOT_OPEN: "BOOK_REQUEST_NOT_OPEN",
+  // A discussion link / reopen targets a row that is already approved (ADR-0454). meta.ids.
+  DISCUSSION_LINK_APPROVED: "DISCUSSION_LINK_APPROVED",
+  // Only the author, a TL of the author's team or the PM / ADMIN may resolve / reopen (ADR-0454).
+  DISCUSSION_RESOLVE_FORBIDDEN: "DISCUSSION_RESOLVE_FORBIDDEN",
   // Admin cli version policy rejected (ADR-0363) — meta.reason: minAboveLatest | latestNotBlockable |
   // deadlinePast | invalidVersion.
   CLI_VERSION_POLICY_INVALID: "CLI_VERSION_POLICY_INVALID",
@@ -405,6 +471,10 @@ export const CLI_ERROR_CODE_MAP: Record<string, { code: ErrorCode; status: numbe
   "invalid slug": { code: ErrorCode.MARKET_INVALID_PACKAGE, status: 422 },
   "artifact not found": { code: ErrorCode.MARKET_PACKAGE_NOT_FOUND, status: 404 },
   "not installed": { code: ErrorCode.MARKET_PACKAGE_NOT_FOUND, status: 404 },
+  ALREADY_INSTALLED: { code: ErrorCode.PACKAGE_ALREADY_INSTALLED, status: 409 },
+  TASK_LABEL_CONFLICT: { code: ErrorCode.PACKAGE_TASK_LABEL_CONFLICT, status: 409 },
+  GUIDE_TARGET_EXISTS: { code: ErrorCode.PACKAGE_GUIDE_TARGET_EXISTS, status: 409 },
+  REQUIRED_BY: { code: ErrorCode.PACKAGE_REQUIRED_BY, status: 409 },
   "python3 not found": { code: ErrorCode.RAG_PYTHON_MISSING, status: 422 },
   "python3 not found on the worker": { code: ErrorCode.RAG_PYTHON_MISSING, status: 422 },
   "RAG is not installed": { code: ErrorCode.RAG_NOT_INSTALLED, status: 409 },
@@ -417,6 +487,15 @@ export const CLI_ERROR_CODE_MAP: Record<string, { code: ErrorCode; status: numbe
   "could not push the change to the base branch (retry)": { code: ErrorCode.AUTONOMOUS_BASE_PUSH_FAILED, status: 422 },
   "self-approval blocked": { code: ErrorCode.APPROVAL_SELF, status: 409 },
   "approval stale": { code: ErrorCode.APPROVAL_STALE, status: 409 },
+  CLIENT_PATH_HIDDEN: { code: ErrorCode.CLIENT_PATH_HIDDEN, status: 403 },
+  BOOK_TEAM_FORBIDDEN: { code: ErrorCode.BOOK_TEAM_FORBIDDEN, status: 403 },
+  BOOK_ROW_NOT_OWNED: { code: ErrorCode.BOOK_ROW_NOT_OWNED, status: 403 },
+  USER_QA_ANSWER_ONLY: { code: ErrorCode.USER_QA_ANSWER_ONLY, status: 422 },
+  BOOK_CONFLICT: { code: ErrorCode.BOOK_CONFLICT, status: 409 },
+  BOOK_STALE: { code: ErrorCode.BOOK_STALE, status: 409 },
+  ER_CHANGE_CONFLICT: { code: ErrorCode.ER_CHANGE_CONFLICT, status: 409 },
+  ER_CHANGE_INVALID: { code: ErrorCode.ER_CHANGE_INVALID, status: 422 },
+  ER_CHANGE_STALE: { code: ErrorCode.ER_CHANGE_STALE, status: 409 },
 };
 
 /** Resolve a cli reply's `error` string to its ErrorCode + status, or `null` when unmapped. */

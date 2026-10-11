@@ -113,8 +113,8 @@ describe("decisions", () => {
 
   it("logs a run's connections under its run id", async () => {
     policy("enforce", [{ target: "127.0.0.1", port: webPort }]);
-    await viaProxy(`http://127.0.0.1:${webPort}/`, mintEgressToken({ kind: "project", runId: "cmd-1", taskId: "TSK-0001-0001" }));
-    expect(pendingEgressForTest()[0]).toMatchObject({ decision: "allowed", runId: "cmd-1", taskId: "TSK-0001-0001", count: 1 });
+    await viaProxy(`http://127.0.0.1:${webPort}/`, mintEgressToken({ kind: "project", runId: "cmd-1", taskId: "TSK-000001-001" }));
+    expect(pendingEgressForTest()[0]).toMatchObject({ decision: "allowed", runId: "cmd-1", taskId: "TSK-000001-001", count: 1 });
   });
 
   it("holds a project-less run to its strict policy", async () => {

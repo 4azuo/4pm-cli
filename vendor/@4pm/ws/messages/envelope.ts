@@ -99,7 +99,37 @@ export interface MachineStatusPayload {
    */
   egress?: "container" | "none";
   egressReason?: string;
+  /**
+   * Optional features this cli implements (`CliFeature` values) — persisted on `MachineLink.features` so
+   * the server can refuse a feature an older serving cli would mishandle (`CLI_UPDATE_REQUIRED`).
+   * @adr 0449
+   */
+  features?: string[];
 }
+
+/**
+ * Feature flags a cli reports in `machine.status.features`.
+ * `clientViewer` — fs.list/read/download and git.diff honour `viewer: "client"`; `bookTeams`,
+ * `approvalParties`, `discussions` — see each value.
+ * @adr 0449
+ */
+export const CliFeature = {
+  CLIENT_VIEWER: "clientViewer",
+  // Book `Team` column, `servedTeams` scheduling and the bookSave write rules (ADR-0450/0454).
+  BOOK_TEAMS: "bookTeams",
+  // Party approvals merged into `parties[]` (ADR-0451).
+  APPROVAL_PARTIES: "approvalParties",
+  // Discussion batches on the books branch (ADR-0454).
+  DISCUSSIONS: "discussions",
+  // The project ER channels `er.read` / `er.write` (ADR-0453).
+  ER: "er",
+  // Row-level book patches (`bookSave.patch` / `baseHash`), server-given `userTodo` ids and server-allocated
+  // intake groups (ADR-0455).
+  BOOK_PATCH: "bookPatch",
+  // Multi-target package installer: new kinds, Codex targets, requires, `.4pm/packages.json` (ADR-0460/0461/0462).
+  PACKAGES_MULTI_TARGET: "packagesMultiTarget",
+} as const;
+export type CliFeature = (typeof CliFeature)[keyof typeof CliFeature];
 
 /** Where a command originated: server-dispatched (web) or cli-local (TUI). @adr 0057 */
 export type CommandOrigin = "server" | "local";
@@ -476,9 +506,18 @@ export interface ConfigWriteReply {
   error?: string;
 }
 
+/**
+ * Who reads a worker file: `client` = a customer account — the cli hides `.git` and every gitignored
+ * path (local secrets such as `.env` may sit in the checkout). Absent = an internal member.
+ * @adr 0449
+ */
+export type FsViewer = "client";
+
 /** fs.list request/reply. @api machine-0007 */
 export interface FsListRequest {
   path: string;
+  /** `client` ⇒ `.git` + gitignored entries are left out. @adr 0449 */
+  viewer?: FsViewer;
 }
 export interface FsListReply {
   path: string;
@@ -568,6 +607,8 @@ export interface FsUploadReply {
 export interface FsDownloadRequest {
   /** File path relative to the physic-project root; anything escaping the root is refused. */
   path: string;
+  /** `client` ⇒ a `.git` / gitignored path is refused (`error`). @adr 0449 */
+  viewer?: FsViewer;
 }
 export interface FsDownloadReply {
   /** File bytes, base64-encoded (absent on error). */
@@ -610,10 +651,11 @@ export interface AutonomousStatus {
   /** Ticks that actually invoked Claude today (local day). */
   todayTicks: number;
   /**
-   * The last tick stopped because the base branch is protected — `"<branch> (<repo>)"`, else null.
-   * @adr 0371
+   * The last tick stopped because the books branch `autonomous-books/<base>` is protected — the branch
+   * name, else null. (`<base>` itself may be protected since ADR-0448.)
+   * @adr 0448
    */
-  baseProtected?: string | null;
+  booksProtected?: string | null;
 }
 
 /**
@@ -629,6 +671,39 @@ export interface ApprovalEntry {
   h?: string;
   kid?: string;
   sig?: string;
+}
+
+/**
+ * One signed party approval of an approvals-file entry (`parties[]`) — mirrors `@4pm/dto`
+ * `ApprovalPartyEntry`.
+ * @adr 0451
+ */
+export interface ApprovalPartyEntry {
+  by: string;
+  byLabel?: string;
+  group: "teamLead" | "designated" | "client" | "member";
+  at: string;
+  h: string;
+  kid?: string;
+  sig?: string;
+}
+
+/**
+ * Mirror of `@4pm/dto` `BookPatch` (the ws package doesn't depend on dto): a book save as row operations —
+ * `prev` = hash of the row the editor started from (null = added), `cells` null = delete.
+ * @adr 0455
+ */
+export interface BookPatchPayload {
+  v: 1;
+  columns: string[];
+  rows: { id: string; prev: string | null; cells: Record<string, string> | null; after?: string | null }[];
+  rest?: { prev: string; before: string; after: string };
+}
+
+/** Mirror of `@4pm/dto` `BookConflict`. @adr 0455 */
+export interface BookConflictPayload {
+  id: string;
+  kind: "changed" | "deleted" | "duplicateId" | "rest";
 }
 
 /** approval.keys — server → cli: the published approval-signing public keys (SPKI DER, base64). @adr 0440 */
@@ -665,6 +740,15 @@ export interface AutonomousReadReply {
   attempts?: string;
   /** Intake UI mockups — repo paths of the `.html` files under `mockupDir` on `<base>`. @adr 0418 */
   mockups?: string[];
+  /** Sequence diagrams — `.md` paths under `sequenceDir` (`TSK-<id>.md` / `QA-<id>.md`). @adr 0453 */
+  sequences?: string[];
+  /** ER change-request paths (`<erDir>/changes/ERC-<n>.md`) with their state. @adr 0453 */
+  ercs?: { id: string; path: string; state: string; title: string; group: string; req: string[]; task?: string; team?: string; source: string }[];
+  /** Book attachment paths (`<root>/<BOOK>/<ROW-ID>/<file>`, any evidence root) — the Evidences rail. @adr 0453 */
+  evidence?: string[];
+  /** The configured ER / sequence folders. @adr 0453 */
+  erDir?: string;
+  sequenceDir?: string;
   /**
    * Verification state per approved row id (signature + content binding). Absent from an older cli;
    * an id without an entry in the approvals file is absent here too.
@@ -702,6 +786,8 @@ export type AutonomousWriteRequest =
       byLabel?: string;
       byIsAdmin?: boolean;
       signed?: Record<string, ApprovalEntry>;
+      parties?: Record<string, ApprovalPartyEntry[]>;
+      clearAll?: boolean;
     }
   // Batched approvals (ADR-0311): commit many approve/unapprove ids in one approvals-file write.
   | {
@@ -712,8 +798,14 @@ export type AutonomousWriteRequest =
       byLabel?: string;
       byIsAdmin?: boolean;
       signed?: Record<string, ApprovalEntry>;
+      // Party approvals (ADR-0451): signed entries merged into `parties[]` of each id (dedupe by + group);
+      // `approve` then lists only the ids whose policy is now met (their final entry is in `signed`).
+      parties?: Record<string, ApprovalPartyEntry[]>;
+      // Unapprove: true (ADMIN / the PM) ⇒ drop the whole entry; else only the caller's parties + the final.
+      clearAll?: boolean;
     }
-  | { kind: "userTodo"; content: string; by: string; byLabel?: string }
+  // `id` (ADR-0455): the row id the server allocated (`REQ-GGGGGG-001`); the cli no longer mints it.
+  | { kind: "userTodo"; content: string; id?: string; by: string; byLabel?: string }
   // Traced book save (ADR-0320): the cli diffs rows by id against the current book and stamps
   // `.autonomous.authors.json` (author = `by`/`byLabel`) for added/edited rows, so authorship can't be
   // forged in a client-written `.md` cell. `book` selects the book saved; `aiDone` (AI Verify verdicts on the
@@ -722,7 +814,11 @@ export type AutonomousWriteRequest =
   | {
       kind: "bookSave";
       book: "userTodo" | "userQa" | "aiTodo" | "aiDone";
-      content: string;
+      // A row-level patch merged onto the current book by id (ADR-0455) — or `content` (the whole file) with
+      // `baseHash` = hash of the file it was edited from (refused with `BOOK_STALE` when the book moved on).
+      patch?: BookPatchPayload;
+      content?: string;
+      baseHash?: string;
       by: string;
       byLabel?: string;
       evidence?: { stageId: string; path: string }[];
@@ -732,10 +828,32 @@ export type AutonomousWriteRequest =
       unapprove?: string[];
       signed?: Record<string, ApprovalEntry>;
       byIsAdmin?: boolean;
+      parties?: Record<string, ApprovalPartyEntry[]>;
+      clearAll?: boolean;
+      // Write rules (ADR-0450/0454), checked by the cli against the current book before anything is written:
+      // `editableTeams` — every added / changed / deleted row's old and new `Team` must be in the list
+      //   (`null` or absent = any team; "" in the list = untagged rows) ⇒ else `BOOK_TEAM_FORBIDDEN`;
+      // `ownRowsOnly` — only rows authored by `by` (or new rows) may change ⇒ else `BOOK_ROW_NOT_OWNED`;
+      // `answerOnly` — no row added / deleted and only the `Answer` cell changes ⇒ else `USER_QA_ANSWER_ONLY`.
+      editableTeams?: string[] | null;
+      ownRowsOnly?: boolean;
+      answerOnly?: boolean;
     }
   // Stage one evidence file in the profile dir until a `bookSave` commits it (ADR-0404). Server-built
   // from the multipart upload (machine-0072).
-  | { kind: "evidenceStage"; name: string; contentBase64: string; by: string; byLabel?: string };
+  | { kind: "evidenceStage"; name: string; contentBase64: string; by: string; byLabel?: string }
+  // Discussion batch (ADR-0454): write the rendered `.4pm/discussions/<DSC-ID>.md` files on the books branch in
+  // ONE commit with the trailers `4PM-Discussion-Batch: <batchId>` / `4PM-Ops: <n>`. A file whose current blob
+  // differs from `expectedSha` (edited in the repo) is skipped, not overwritten (`null` = must not exist yet,
+  // `"*"` = overwrite whatever is there — the managers' re-push).
+  | {
+      kind: "discussionBatch";
+      batchId: string;
+      opCount: number;
+      files: { path: string; content: string; expectedSha: string | null }[];
+      by: string;
+      byLabel?: string;
+    };
 // (The `cron` install/uninstall kind was retired by ADR-0392 — the daemon schedules ticks itself.)
 export interface AutonomousWriteReply {
   ok: boolean;
@@ -748,8 +866,18 @@ export interface AutonomousWriteReply {
   status?: AutonomousStatus;
   /** Rows a `userTodo` / `bookSave` added (by id diff) — counted toward the monthly book cap. @adr 0365 */
   added?: number;
+  /** The ids of the rows a `userTodo` / `bookSave` added (absent from an older cli). @adr 0449 */
+  addedIds?: string[];
+  /** `discussionBatch`: the commit holding the batch (absent when nothing changed). @adr 0454 */
+  commitSha?: string;
+  /** `discussionBatch`: the blob of every written file. */
+  files?: { path: string; blobSha: string }[];
+  /** `discussionBatch`: files left untouched (`changed` = edited in the repo since `expectedSha`). */
+  skipped?: { path: string; reason: "changed" | "invalid"; currentSha: string | null }[];
   /** The staged file's handle (`evidenceStage`). @adr 0404 */
   stageId?: string;
+  /** `bookSave` with `code: "BOOK_CONFLICT"`: the rows (or the text around the table) that could not merge. @adr 0455 */
+  conflicts?: BookConflictPayload[];
 }
 
 /** autonomous.evidence — read one committed book evidence file. @api machine-0073 @adr 0404 */
@@ -907,13 +1035,16 @@ export interface McpScanReply {
 }
 
 /**
- * Skill/subagent marketplace — the cli packs a `.claude` artifact into a file set
- * (server zips + stores it), installs a downloaded package version into `.claude/agents|skills`
- * (recording `.4pm-packages.json` with a sha256 for drift), lists what is installed (with the
- * on-disk sha256 recomputed), and removes an installed package. The server owns the registry;
- * the cli is the single `.claude`-writer (path-clamped like ADR-0153).
- * @adr 0185
+ * Marketplace packages on the worker — the cli packs a project artifact into a file set (server zips +
+ * stores it), installs a downloaded package version into its kind/provider targets (recording
+ * `.4pm/packages.json` with per-target hashes for drift), lists what is installed (with drift and the
+ * worker's enabled AI providers), and removes an installed package. The server owns the registry; the
+ * cli is the single writer (root-clamped, symlink-safe).
+ * @adr 0185 @adr 0460 @adr 0461 @adr 0462
  */
+
+/** Every package kind the cli may be asked to install (mirrors `@4pm/dto` MARKET_PACKAGE_KINDS). */
+export type PackageKind = "subagent" | "skill" | "script" | "vscode-task" | "command" | "hook" | "bundle" | "guide";
 
 /** One package payload file: path relative to the artifact root + base64 bytes. */
 export interface PackagePayloadFile {
@@ -921,38 +1052,50 @@ export interface PackagePayloadFile {
   contentBase64: string;
 }
 
-/** packages.pack — zip a project subagent/skill for publishing. */
+/** packages.pack — read a project subagent/skill/command for publishing. */
 export interface PackagesPackRequest {
-  kind: "subagent" | "skill";
-  /** The on-disk artifact name (subagent `<name>.md` / skill dir `<name>`). */
+  kind: "subagent" | "skill" | "command";
+  /** The on-disk artifact name (subagent `<name>.md` / skill dir `<name>` / command `<name>.md`). */
   name: string;
 }
 export interface PackagesPackReply {
   ok: boolean;
-  /** The artifact's files (agent.md + memory, or SKILL.md + helpers), root-relative. */
+  /** The artifact's files (agent.md + memory + agent.codex.toml / SKILL.md + helpers / command.md). */
   files: PackagePayloadFile[];
   error?: string;
 }
 
-/** packages.install — write a downloaded package version into `.claude/agents|skills`. */
+/** packages.install — write a downloaded package version into its targets. */
 export interface PackagesInstallRequest {
-  kind: "subagent" | "skill";
+  kind: PackageKind;
   slug: string;
   version: string;
   packageId: string;
   files: PackagePayloadFile[];
+  /** Provider targets for skill/subagent/hook (absent ⇒ claude, the pre-ADR-0460 behaviour). */
+  providers?: ("claude" | "codex")[];
+  /** The package's `requires` (`<kind>:<slug>`), recorded for the requiredBy bookkeeping. */
+  requires?: string[];
+  /** Bundle members (kind `bundle`) — payload under `items/<kind>/<slug>/`. */
+  members?: { kind: Exclude<PackageKind, "bundle" | "guide">; slug: string; providers?: ("claude" | "codex")[] }[];
+  /** Guide target file (kind `guide`). */
+  guideTarget?: "CLAUDE.md" | "AGENT.md";
+  /** Write the guide over an existing target (the payload is the user-accepted Adapt-with-AI text). */
+  guideOverwrite?: boolean;
 }
 export interface PackagesInstallReply {
   ok: boolean;
-  /** sha256 of the artifact as written (recorded in `.4pm-packages.json`). */
+  /** sha256 over the written targets (recorded in `.4pm/packages.json`). */
   sha256?: string;
+  /** Non-blocking notes, e.g. `CODEX_HOOKS_EXPERIMENTAL`. */
+  warnings?: string[];
   error?: string;
 }
 
-/** One installed package as read from `.4pm-packages.json` + the recomputed on-disk sha256. */
+/** One installed package as read from `.4pm/packages.json` + the recomputed on-disk state. */
 export interface InstalledPackageState {
   slug: string;
-  kind: "subagent" | "skill";
+  kind: PackageKind;
   version: string;
   packageId: string;
   installedAt: string;
@@ -960,6 +1103,14 @@ export interface InstalledPackageState {
   sha256: string;
   /** sha256 recomputed now over the on-disk artifact (differs ⇒ local edit / drift). */
   currentSha256: string;
+  /** Provider targets installed (absent from an old cli ⇒ claude). */
+  providers?: ("claude" | "codex")[];
+  /** The package's own requires. */
+  requires?: string[];
+  /** Installed packages (`<kind>:<slug>`) that require this one. */
+  requiredBy?: string[];
+  /** Guide target file (kind `guide`). */
+  guideTarget?: "CLAUDE.md" | "AGENT.md";
 }
 
 /** packages.list — the installed-package manifest with on-disk hashes for the drift guard. */
@@ -968,14 +1119,22 @@ export interface PackagesListRequest {
 }
 export interface PackagesListReply {
   installed: InstalledPackageState[];
+  /** AI providers with an enabled profile on this worker (`claude`/`codex`/`antigravity`). */
+  enabledProviders?: string[];
 }
 
-/** packages.remove — delete an installed package artifact + its manifest entry. */
+/** packages.remove — delete an installed package's targets + its manifest entry. */
 export interface PackagesRemoveRequest {
   slug: string;
+  /** Required when the slug is installed under two kinds. */
+  kind?: PackageKind;
+  /** Remove even when other installed packages require it. */
+  force?: boolean;
 }
 export interface PackagesRemoveReply {
   ok: boolean;
+  /** Set with `error: "REQUIRED_BY"` — the installed packages that still require it. */
+  requiredBy?: string[];
   error?: string;
 }
 
@@ -1104,9 +1263,13 @@ export interface RagQueryReply {
 /** git.diff request/reply — old (HEAD) vs current content of a file (Monaco diff). */
 export interface GitDiffRequest {
   path: string;
+  /** `client` ⇒ a `.git` / gitignored path replies empty with `hidden`. @adr 0449 */
+  viewer?: FsViewer;
 }
 export interface GitDiffReply {
   path: string;
+  /** True when the path is hidden from this viewer (both sides empty). @adr 0449 */
+  hidden?: boolean;
   /** File content at HEAD (empty if untracked/new). Text files only; empty when `isBinary`. */
   oldContent: string;
   /** Current working-tree content. Text files only; empty when `isBinary`. */
@@ -1197,6 +1360,8 @@ export interface GitCommitDiffRequest {
 /** fs.read request/reply — read a text file on the worker (project dashboard). */
 export interface FsReadRequest {
   path: string;
+  /** `client` ⇒ a `.git` / gitignored path is refused (`hidden`). @adr 0449 */
+  viewer?: FsViewer;
 }
 export interface FsReadReply {
   path: string;
@@ -1204,6 +1369,8 @@ export interface FsReadReply {
   content: string;
   /** Content was capped at the size limit. */
   truncated: boolean;
+  /** True when the path is hidden from this viewer (content empty). @adr 0449 */
+  hidden?: boolean;
 }
 
 /** quota.check request/reply (cli → server, before spawning an AI cli —
@@ -1595,6 +1762,12 @@ export interface ProjectTokensPayload {
    * @adr 0439
    */
   network?: NetworkPolicyPush;
+  /**
+   * The team codes this cli serves in the project (its routing entries' teams) — `null` = all teams.
+   * `undefined` (an older server) ⇒ the cli keeps its last value.
+   * @adr 0450
+   */
+  servedTeams?: string[] | null;
 }
 
 /**
@@ -1783,22 +1956,48 @@ export interface ReviewResultPayload {
 
 /** The autonomous conditions a manager must see. @adr 0371 §9 */
 export type AutonomousAlertKind =
-  | "base-protected"
+  // The books branch can't take the worker's pushes (ADR-0448; replaced `base-protected`).
+  | "books-protected"
   | "claim-lost"
   | "task-failed-limit"
   | "task-split"
   | "task-question"
   // An agent run edited the cli-owned sidecars (approvals / authors / attempts); the edit was reverted (ADR-0438).
-  | "sidecar-tamper";
+  | "sidecar-tamper"
+  // An informational cycle event for automation rules (ADR-0458): no notification, `event` carries it.
+  | "event";
 
 /** autonomous.alert — cli → server (one-way): notify the project's managers (deduplicated per day). */
 export interface AutonomousAlertPayload {
   kind: AutonomousAlertKind;
   /** The task concerned (`TSK-…`), when any. */
   task?: string;
-  /** The repo / branch concerned (base-protected). */
+  /** The repo / branch concerned (books-protected). */
   repo?: string;
   branch?: string;
   /** English detail line (the notification renders its own localized title). */
   message: string;
+  /**
+   * `kind: "event"`: the automation event — `type` from the event catalog (`task.claimed`,
+   * `task.delivered`, `task.done`, `task.failed`, `task.timeout`, `cycle.paused`, `pr.opened`) and its fields.
+   * @adr 0458
+   */
+  event?: { type: string; fields: Record<string, string | number | boolean> };
+}
+
+/**
+ * discussions.read (server → cli, reply): the discussion files on the books branch — every file's blob
+ * (`list`), the content of `paths`, and whether a batch commit exists (`batchId` → its sha, by trailer).
+ * @adr 0454
+ */
+export interface DiscussionsReadRequest {
+  list?: boolean;
+  paths?: string[];
+  batchId?: string;
+}
+export interface DiscussionsReadReply {
+  files: { path: string; blobSha: string; content?: string }[];
+  /** The commit whose trailer names `batchId`, null when none; absent when not asked. */
+  batchCommit?: string | null;
+  error?: string;
 }

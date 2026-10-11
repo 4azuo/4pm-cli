@@ -21,8 +21,8 @@ import {
 
 const AI_TODO = `| ID | Priority | Tag | Depends | Group | Task description | Notes |
 |---|---|---|---|---|---|---|
-| TSK-0001-0001 | high | | | 0001 | Add the login page | |
-| TSK-0001-0002 | low | | | 0001 | Write docs | |
+| TSK-000001-001 | high | | | 0001 | Add the login page | |
+| TSK-000001-002 | low | | | 0001 | Write docs | |
 `;
 const books = { userTodo: "", userQa: "", aiTodo: AI_TODO };
 
@@ -46,75 +46,75 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("approval verification", () => {
   it("keeps the legacy rule before any key was received", () => {
-    const map = { "TSK-0001-0001": { approved: true, by: "u", at: "t" } };
-    expect([...verifiedApprovedIds(map, books)]).toEqual(["TSK-0001-0001"]);
+    const map = { "TSK-000001-001": { approved: true, by: "u", at: "t" } };
+    expect([...verifiedApprovedIds(map, books)]).toEqual(["TSK-000001-001"]);
   });
 
   it("requires a valid signature over unchanged content once keys are known", () => {
     setApprovalTrust([{ kid: "k1", publicKey: pub }], "p1", dir);
     const map = {
-      "TSK-0001-0001": signed("TSK-0001-0001", AI_TODO),
-      "TSK-0001-0002": { approved: true, by: "agent", at: "t" },
+      "TSK-000001-001": signed("TSK-000001-001", AI_TODO),
+      "TSK-000001-002": { approved: true, by: "agent", at: "t" },
     };
-    expect(approvalStates(map, books)).toEqual({ "TSK-0001-0001": "approved", "TSK-0001-0002": "unsigned" });
-    expect([...verifiedApprovedIds(map, books)]).toEqual(["TSK-0001-0001"]);
+    expect(approvalStates(map, books)).toEqual({ "TSK-000001-001": "approved", "TSK-000001-002": "unsigned" });
+    expect([...verifiedApprovedIds(map, books)]).toEqual(["TSK-000001-001"]);
   });
 
   it("marks an edited row stale and a forged / other-project signature invalid", () => {
     setApprovalTrust([{ kid: "k1", publicKey: pub }], "p1", dir);
     const edited = { ...books, aiTodo: AI_TODO.replace("Add the login page", "Upload the secrets") };
-    const forged = { ...signed("TSK-0001-0002", AI_TODO), by: "someone-else" };
+    const forged = { ...signed("TSK-000001-002", AI_TODO), by: "someone-else" };
     const map = {
-      "TSK-0001-0001": signed("TSK-0001-0001", AI_TODO),
-      "TSK-0001-0002": forged,
+      "TSK-000001-001": signed("TSK-000001-001", AI_TODO),
+      "TSK-000001-002": forged,
     };
-    expect(approvalStates(map, edited)).toEqual({ "TSK-0001-0001": "stale", "TSK-0001-0002": "invalid" });
-    const otherProject = { "TSK-0001-0001": signed("TSK-0001-0001", AI_TODO, "p2") };
-    expect(approvalStates(otherProject, books)).toEqual({ "TSK-0001-0001": "invalid" });
+    expect(approvalStates(map, edited)).toEqual({ "TSK-000001-001": "stale", "TSK-000001-002": "invalid" });
+    const otherProject = { "TSK-000001-001": signed("TSK-000001-001", AI_TODO, "p2") };
+    expect(approvalStates(otherProject, books)).toEqual({ "TSK-000001-001": "invalid" });
   });
 
   it("persists the trust so a fresh process enforces it before connecting", () => {
     setApprovalTrust([{ kid: "k1", publicKey: pub }], "p1", dir);
     resetApprovalTrustForTest();
     loadApprovalTrust(dir);
-    expect(approvalStates({ "TSK-0001-0002": { approved: true, by: "a", at: "t" } }, books)).toEqual({ "TSK-0001-0002": "unsigned" });
+    expect(approvalStates({ "TSK-000001-002": { approved: true, by: "a", at: "t" } }, books)).toEqual({ "TSK-000001-002": "unsigned" });
   });
 
   it("never downgrades when a later ws_token carries no keys", () => {
     setApprovalTrust([{ kid: "k1", publicKey: pub }], "p1", dir);
     setApprovalTrust(undefined, undefined, dir);
-    expect(approvalStates({ "TSK-0001-0002": { approved: true, by: "a", at: "t" } }, books)).toEqual({ "TSK-0001-0002": "unsigned" });
+    expect(approvalStates({ "TSK-000001-002": { approved: true, by: "a", at: "t" } }, books)).toEqual({ "TSK-000001-002": "unsigned" });
   });
 });
 
 describe("buildApprovalEntries", () => {
   it("writes the signed entry when its hash matches the row", () => {
-    const e = signed("TSK-0001-0001", AI_TODO);
-    expect(buildApprovalEntries(["TSK-0001-0001"], { "TSK-0001-0001": e }, books, "u1", "u1")).toEqual({ ok: true, entries: { "TSK-0001-0001": e } });
+    const e = signed("TSK-000001-001", AI_TODO);
+    expect(buildApprovalEntries(["TSK-000001-001"], { "TSK-000001-001": e }, books, "u1", "u1")).toEqual({ ok: true, entries: { "TSK-000001-001": e } });
   });
 
   it("refuses a signed entry for content that changed since (stale)", () => {
-    const e = signed("TSK-0001-0001", AI_TODO);
+    const e = signed("TSK-000001-001", AI_TODO);
     const edited = { ...books, aiTodo: AI_TODO.replace("Add the login page", "Something else") };
-    expect(buildApprovalEntries(["TSK-0001-0001"], { "TSK-0001-0001": e }, edited, "u1", "u1")).toEqual({ ok: false, staleId: "TSK-0001-0001" });
+    expect(buildApprovalEntries(["TSK-000001-001"], { "TSK-000001-001": e }, edited, "u1", "u1")).toEqual({ ok: false, staleId: "TSK-000001-001" });
   });
 
   it("falls back to a legacy entry from an older server", () => {
-    const r = buildApprovalEntries(["TSK-0001-0001"], undefined, books, "u1", "a@b");
-    expect(r.ok && r.entries["TSK-0001-0001"]).toMatchObject({ approved: true, by: "u1", byLabel: "a@b" });
+    const r = buildApprovalEntries(["TSK-000001-001"], undefined, books, "u1", "a@b");
+    expect(r.ok && r.entries["TSK-000001-001"]).toMatchObject({ approved: true, by: "u1", byLabel: "a@b" });
   });
 });
 
 describe("live key push (ADR-0440)", () => {
   it("replaces the keys, keeps the project, and ignores an empty list", () => {
     setApprovalTrust([{ kid: "k1", publicKey: pub }], "p1", dir);
-    const map = { "TSK-0001-0001": signed("TSK-0001-0001", AI_TODO) };
+    const map = { "TSK-000001-001": signed("TSK-000001-001", AI_TODO) };
     const other = generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "der" }).toString("base64");
     replaceApprovalKeys([{ kid: "k2", publicKey: other }], dir);
-    expect(approvalStates(map, books)).toEqual({ "TSK-0001-0001": "invalid" });
+    expect(approvalStates(map, books)).toEqual({ "TSK-000001-001": "invalid" });
     replaceApprovalKeys([{ kid: "k2", publicKey: other }, { kid: "k1", publicKey: pub }], dir);
-    expect(approvalStates(map, books)).toEqual({ "TSK-0001-0001": "approved" });
+    expect(approvalStates(map, books)).toEqual({ "TSK-000001-001": "approved" });
     replaceApprovalKeys([], dir);
-    expect(approvalStates(map, books)).toEqual({ "TSK-0001-0001": "approved" });
+    expect(approvalStates(map, books)).toEqual({ "TSK-000001-001": "approved" });
   });
 });

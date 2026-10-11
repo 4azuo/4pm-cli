@@ -5,8 +5,9 @@
  * This module stages an uploaded file in the profile dir (outside the repo) until a `bookSave` commits it,
  * moves staged files into the books' worktree, prunes files no book references any more, carries a finished
  * task's evidence from AI_TODO to AI_DONE, lists the agent's own evidence on a task branch, and reads one
- * file for the web (`origin/<base>` → task branch → working tree) — an evidence file or an intake mockup.
- * @adr 0404 @adr 0418
+ * file for the web (`origin/autonomous-books/<base>` → `origin/<base>` → task branch → working tree) — an
+ * evidence file, an intake mockup, or a sequence diagram / ER file.
+ * @adr 0404 @adr 0418 @adr 0453
  */
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -25,6 +26,7 @@ import {
 import type { AutonomousEvidenceReply } from "@4pm/ws";
 import { mkdirInRoot, readFileInRoot, resolveEntry, resolveForRead, writeFileInRoot } from "../../utils/safe-path";
 import { execInProject } from "../agent/agent-spawn";
+import { booksBranch } from "./autonomous-tasks";
 
 // Project git runs as the agent user when uid separation is on (ADR-0430); unchanged otherwise.
 const run = execInProject;
@@ -135,18 +137,19 @@ async function removeEmptyDirs(root: string, rel: string): Promise<void> {
 }
 
 /**
- * The intake UI mockups: `.html` files under `mockupDir` on `origin/<base>` (else the working tree),
+ * The intake UI mockups: `.html` files under `mockupDir` on the books branch (ADR-0448; else `origin/<base>`,
+ * else the working tree),
  * as repo paths, sorted.
  */
 export async function listMockups(root: string, base: string | null, mockupDir: string): Promise<string[]> {
   const keep = (paths: string[]): string[] =>
     paths.filter((p) => p.startsWith(`${mockupDir}/`) && p.toLowerCase().endsWith(".html") && isSafeRepoDir(p)).sort();
-  if (base) {
+  for (const ref of base ? [`origin/${booksBranch(base)}`, `origin/${base}`] : []) {
     try {
-      const { stdout } = await run("git", ["ls-tree", "-r", "--name-only", `origin/${base}`, "--", `${mockupDir}/`], { cwd: root });
+      const { stdout } = await run("git", ["ls-tree", "-r", "--name-only", ref, "--", `${mockupDir}/`], { cwd: root });
       return keep(stdout.split("\n").map((l) => l.trim()).filter(Boolean));
     } catch {
-      // No remote base — fall back to the working tree.
+      // This ref doesn't exist (no books branch yet / no remote base) — try the next, then the working tree.
     }
   }
   return keep(await listFiles(root, mockupDir));
@@ -258,8 +261,9 @@ async function showBytes(root: string, rev: string, path: string): Promise<Buffe
 
 /**
  * Read one evidence file — or an intake mockup (`<mockupDir>/….html`) — for the web:
- * `origin/<base>` first, then `origin/<ref>` (a task branch whose PR is not merged yet), then the working tree.
- * @api machine-0073
+ * the books branch first (web-staged evidence + mockups — ADR-0448), then `origin/<base>` (evidence merged
+ * with a task PR), then `origin/<ref>` (a task branch whose PR is not merged yet), then the working tree.
+ * @api machine-0073 @adr 0448
  */
 export async function readEvidenceFile(
   root: string,
@@ -267,12 +271,16 @@ export async function readEvidenceFile(
   path: string,
   ref: string | undefined,
   mockupDir: string,
+  designDirs: readonly string[] = [],
 ): Promise<AutonomousEvidenceReply> {
   const mockup = isSafeRepoDir(path) && path.startsWith(`${mockupDir}/`) && path.toLowerCase().endsWith(".html");
-  if (!isEvidencePath(path) && !mockup) return { error: "invalid evidence path" };
+  // A sequence diagram / ER file (`.md` under `sequenceDir` / `erDir` — ADR-0453).
+  const design = isSafeRepoDir(path) && path.toLowerCase().endsWith(".md") && designDirs.some((d) => path.startsWith(`${d}/`));
+  if (!isEvidencePath(path) && !mockup && !design) return { error: "invalid evidence path" };
   if (ref && !/^[A-Za-z0-9._/-]{1,200}$/.test(ref)) return { error: "invalid ref" };
   let bytes: Buffer | null = null;
-  if (base) bytes = await showBytes(root, `origin/${base}`, path);
+  if (base) bytes = await showBytes(root, `origin/${booksBranch(base)}`, path);
+  if (!bytes && base) bytes = await showBytes(root, `origin/${base}`, path);
   if (!bytes && ref) bytes = await showBytes(root, `origin/${ref}`, path);
   if (!bytes) bytes = await readFileInRoot(root, join(root, path)).catch(() => null);
   if (!bytes) return { error: "evidence not found" };

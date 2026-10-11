@@ -58,6 +58,12 @@ export interface OrgSecuritySettings {
    * @adr 0446
    */
   mfaPolicy: MfaPolicy;
+  /**
+   * Let projects install marketplace **hook** packages published `global` by other orgs (default off;
+   * official, personal and own-org hooks are always allowed).
+   * @adr 0461
+   */
+  allowForeignHooks: boolean;
 }
 
 /** General/regional org policy, stored under `settings.general`. @adr 0039 */
@@ -236,7 +242,7 @@ export interface OrgSettings {
 
 /** Defaults applied when a settings key is absent. */
 export const DEFAULT_ORG_SETTINGS: OrgSettings = {
-  security: { allowSubAccountWithoutEmail: false, ipAllowlist: [], mfaPolicy: MfaPolicy.ADMINS },
+  security: { allowSubAccountWithoutEmail: false, ipAllowlist: [], mfaPolicy: MfaPolicy.ADMINS, allowForeignHooks: false },
   general: {
     timezone: "UTC",
     pageSize: DEFAULT_PAGE_SIZE,
@@ -311,6 +317,8 @@ export function readOrgSettings(settings: Record<string, unknown> | null | undef
       mfaPolicy: (Object.values(MfaPolicy) as string[]).includes(security.mfaPolicy as string)
         ? (security.mfaPolicy as MfaPolicy)
         : d.security.mfaPolicy,
+      allowForeignHooks:
+        typeof security.allowForeignHooks === "boolean" ? security.allowForeignHooks : d.security.allowForeignHooks,
     },
     general: {
       timezone:

@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { readFileInRoot, resolveForRead, writeFileInRoot } from "../../utils/safe-path";
 import { join } from "node:path";
 import type {
+  ApprovalEntry,
   AutonomousBooks,
   AutonomousEvidenceReply,
   AutonomousEvidenceRequest,
@@ -29,8 +30,11 @@ import {
 } from "./autonomous-config";
 import { readHistories } from "./autonomous-history";
 import { ATTEMPTS_REL, findTables, replaceRows } from "./autonomous-books";
-import { approvalStates, buildApprovalEntries, type ApprovalBooks } from "./autonomous-approvals";
-import { mutateBooksOnBase, readBaseFile, resolveBases } from "./autonomous-git";
+import { approvalStates, buildApprovalEntries, mergeApprovalWrite, unapproveIds, type ApprovalBooks } from "./autonomous-approvals";
+import { applyDiscussionBatch } from "./autonomous-discussions";
+import { applyBookPatch, bookContentHash, bookRowsById, isBookRowId, type BookConflict } from "@4pm/dto";
+import { freshBooksRef, mutateBooks, readBooksFile, resolveBases } from "./autonomous-git";
+import { listDesignEvidence } from "./autonomous-er";
 import { applyStagedEvidence, listMockups, pruneEvidence, readEvidenceFile, stageEvidence } from "./autonomous-evidence";
 import { isValidCronSchedule, reloadAutonomousSchedule } from "./autonomous-scheduler";
 import { t } from "../../i18n";
@@ -148,8 +152,8 @@ export async function getAutonomousStatus(root: string, profileDir: string): Pro
     lastResult: last?.status ?? null,
     consecutiveFails: hist.consecutiveFails,
     todayTicks: hist.ticks.day === today ? hist.ticks.count : 0,
-    // The last tick stopped on a protected base (ADR-0371 phase 0) — "<branch> (<repo>)".
-    baseProtected: /^base-protected: (.+)$/.exec(last?.note ?? "")?.[1] ?? null,
+    // The last tick stopped on a protected books branch (ADR-0448 phase 0) — "<branch>".
+    booksProtected: /^books-protected: (.+)$/.exec(last?.note ?? "")?.[1] ?? null,
   };
 }
 
@@ -173,14 +177,17 @@ export function isAutonomousRunning(root: string, profileDir: string): boolean {
 
 /** autonomous.read — the whole autonomous surface in one reply (config from the profile dir). @adr 0321 */
 export async function readAutonomous(root: string, profileDir: string): Promise<AutonomousReadReply> {
-  // The books live on `<base>` (ADR-0371): read them from `origin/<base>` — the working tree may be on a
-  // task branch while the agent works — falling back to the working tree when there is no remote base.
+  // The books live on `autonomous-books/<base>` (ADR-0448): read them from the remote books branch — the
+  // working tree may be on a task branch while the agent works — falling back to the working tree when
+  // there is no remote base.
   const base = (await resolveBases(root).catch(() => null))?.root.base ?? "";
   const read = async (rel: string, fallback = ""): Promise<string> => {
-    const remote = base ? await readBaseFile(root, base, rel) : null;
+    const remote = base ? await readBooksFile(root, base, rel) : null;
     return remote === null ? readText(root, join(root, rel), fallback) : remote || fallback;
   };
   const cfg = await readAutonomousConfig(profileDir);
+  // Sequences, ER change requests and book attachments for the Evidences rail (ADR-0453).
+  const design = await listDesignEvidence(root, base ? await freshBooksRef(root, base) : null, cfg).catch(() => ({}));
   const [settings, approvals, authors, attempts, mockups, status, ...books] = await Promise.all([
     readAutonomousConfigText(profileDir),
     read(APPROVALS_REL, "{}"),
@@ -200,7 +207,7 @@ export async function readAutonomous(root: string, profileDir: string): Promise<
     userQa: bookMap.userQa,
     aiTodo: bookMap.aiTodo,
   });
-  return { settings, status, books: bookMap, approvals, authors, attempts, mockups, approvalStates: approvalStatesById };
+  return { settings, status, books: bookMap, approvals, authors, attempts, mockups, approvalStates: approvalStatesById, ...design };
 }
 
 /** autonomous.logs — tail one day's tick log (default today). */
@@ -212,7 +219,58 @@ export async function readAutonomousLogs(root: string, date?: string): Promise<A
 }
 
 /** Result of a web book write before it is published. */
-type WebWrite = { ok: boolean; code?: "APPROVAL_SELF" | "APPROVAL_STALE"; failedId?: string; error?: string; added?: number };
+type WebWrite = {
+  ok: boolean;
+  code?: "APPROVAL_SELF" | "APPROVAL_STALE" | "BOOK_TEAM_FORBIDDEN" | "BOOK_ROW_NOT_OWNED" | "USER_QA_ANSWER_ONLY" | "BOOK_CONFLICT" | "BOOK_STALE";
+  failedId?: string;
+  /** `BOOK_CONFLICT`: the rows (or the text around the table) the patch could not merge. @adr 0455 */
+  conflicts?: BookConflict[];
+  error?: string;
+  added?: number;
+  addedIds?: string[];
+};
+
+/**
+ * Check a book save against the caller's write rules — `answerOnly`: no row added
+ * or removed and only `Answer` changes; `ownRowsOnly`: changed / removed rows were written by the caller;
+ * `editableTeams`: every changed row's old and new `Team` is in the list. Null when the save passes.
+ * @adr 0450 @adr 0454
+ */
+function checkSaveRules(
+  prevMd: string,
+  nextMd: string,
+  rules: { editableTeams?: string[] | null; ownRowsOnly?: boolean; answerOnly?: boolean },
+  authors: Record<string, unknown>,
+  by: string,
+): WebWrite | null {
+  const prev = bookRowsById(prevMd);
+  const next = bookRowsById(nextMd);
+  const added = [...next.keys()].filter((id) => !prev.has(id));
+  const removed = [...prev.keys()].filter((id) => !next.has(id));
+  const modified = [...next.keys()].filter((id) => prev.has(id) && JSON.stringify(prev.get(id)!.cells) !== JSON.stringify(next.get(id)!.cells));
+  const fail = (code: NonNullable<WebWrite["code"]>, ids: string[], error: string): WebWrite => ({ ok: false, code, failedId: ids.join(","), error });
+  if (rules.answerOnly) {
+    const beyondAnswer = modified.filter((id) => {
+      const a = { ...prev.get(id)!.cells, answer: "" };
+      const b = { ...next.get(id)!.cells, answer: "" };
+      return JSON.stringify(a) !== JSON.stringify(b);
+    });
+    const bad = [...added, ...removed, ...beyondAnswer];
+    if (bad.length) return fail("USER_QA_ANSWER_ONLY", bad, "USER_QA_ANSWER_ONLY");
+  }
+  if (rules.ownRowsOnly) {
+    const bad = [...modified, ...removed].filter((id) => entryBy(authors, id) !== by);
+    if (bad.length) return fail("BOOK_ROW_NOT_OWNED", bad, "BOOK_ROW_NOT_OWNED");
+  }
+  if (Array.isArray(rules.editableTeams)) {
+    const allowed = new Set(rules.editableTeams);
+    const bad = [...added, ...removed, ...modified].filter(
+      (id) => !allowed.has(prev.get(id)?.team ?? next.get(id)?.team ?? "") || !allowed.has(next.get(id)?.team ?? prev.get(id)?.team ?? ""),
+    );
+    if (bad.length) return fail("BOOK_TEAM_FORBIDDEN", bad, "BOOK_TEAM_FORBIDDEN");
+  }
+  return null;
+}
 
 /** The approval-targetable books as they are in `dir` (USER_TODO / USER_QA / AI_TODO). */
 async function approvalBooksIn(dir: string): Promise<ApprovalBooks> {
@@ -231,7 +289,7 @@ function stale(id: string): WebWrite {
 
 /**
  * Apply one web book edit (approvals / batch / posted request / traced book save)
- * to the books under `dir` (a side worktree of `<base>`, or the working tree when there is no remote).
+ * to the books under `dir` (a side worktree of the books branch `autonomous-books/<base>`, or the working tree when there is no remote).
  * @adr 0311 @adr 0319 @adr 0320
  */
 async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWriteRequest, by: string): Promise<WebWrite> {
@@ -244,11 +302,13 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
       }
       const map = parseJson(await readText(dir, join(dir, APPROVALS_REL), "{}")) ?? {};
       if (req.approved) {
-        // The server-signed entry, checked against the row as it is on `<base>` now (ADR-0438).
-        const built = buildApprovalEntries([req.taskId], req.signed, await approvalBooksIn(dir), by, req.byLabel ?? by);
+        // The server-signed entry, checked against the row as it is on the books branch now (ADR-0438).
+        const books = await approvalBooksIn(dir);
+        const built = buildApprovalEntries([req.taskId], req.signed, books, by, req.byLabel ?? by);
         if (!built.ok) return stale(built.staleId);
-        Object.assign(map, built.entries);
-      } else delete map[req.taskId];
+        const merged = mergeApprovalWrite(map, built.entries, req.parties, books);
+        if (!merged.ok) return stale(merged.staleId);
+      } else unapproveIds(map, [req.taskId], by, req.clearAll !== false);
       await writeFileInRoot(dir, join(dir, APPROVALS_REL), JSON.stringify(map, null, 2) + "\n");
       return { ok: true };
     }
@@ -261,20 +321,22 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
       }
       // Commit many approve/unapprove ids in ONE write so a Save's coupled batch is atomic.
       const map = parseJson(await readText(dir, join(dir, APPROVALS_REL), "{}")) ?? {};
-      const built = buildApprovalEntries(req.approve, req.signed, await approvalBooksIn(dir), by, req.byLabel ?? by);
+      const books = await approvalBooksIn(dir);
+      const built = buildApprovalEntries(req.approve, req.signed, books, by, req.byLabel ?? by);
       if (!built.ok) return stale(built.staleId);
-      Object.assign(map, built.entries);
-      for (const taskId of req.unapprove) delete map[taskId];
+      // Party approvals (ADR-0451) join `parties[]`; a final replaces the v1 entry.
+      const merged = mergeApprovalWrite(map, built.entries, req.parties, books);
+      if (!merged.ok) return stale(merged.staleId);
+      unapproveIds(map, req.unapprove, by, req.clearAll !== false);
       await writeFileInRoot(dir, join(dir, APPROVALS_REL), JSON.stringify(map, null, 2) + "\n");
       return { ok: true };
     }
     case "userTodo": {
       // USER_TODO is a content-only `| ID | Group | Depends | Request |` table: append the posted
-      // request with a fresh `REQ-{group}-{req}` id (group = the largest seen + 1) and stamp the writer.
+      // request with the id the server allocated (`REQ-GGGGGG-001`, ADR-0455) and stamp the writer.
       const cur = await readText(dir, join(dir, BOOK_FILES.userTodo));
-      const ids = [...cur.matchAll(/REQ-(\d{4})-(\d{4})/g)];
-      const maxGroup = ids.reduce((m, g) => Math.max(m, Number(g[1])), 0);
-      const id = `REQ-${String(maxGroup + 1).padStart(4, "0")}-0001`;
+      if (!req.id || !isBookRowId(req.id) || bookRowsById(cur).has(req.id)) return { ok: false, error: "invalid request id" };
+      const id = req.id;
       // Insert into the request table (not at the end of the file — a trailing `<!-- 4pm:… -->` block
       // such as the attachment map must stay after the table; ADR-0400). No table ⇒ append as before.
       const table = findTables(cur).find((tb) => tb.header.some((h) => h.toLowerCase() === "id"));
@@ -285,30 +347,61 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
       const authors = await readJsonMap(dir, join(dir, AUTHORS_REL));
       authors[id] = { by, byLabel: req.byLabel ?? by, at: new Date().toISOString() };
       await writeFileInRoot(dir, join(dir, AUTHORS_REL), JSON.stringify(authors, null, 2) + "\n");
-      return { ok: true, added: 1 };
+      return { ok: true, added: 1, addedIds: [id] };
     }
     case "bookSave": {
       // Traced book save: write the md and stamp the authors sidecar for every row this save
-      // ADDED or EDITED (diff by id vs the book on <base>) — authorship is server-filled, not a cell.
+      // ADDED or EDITED (diff by id vs the book on the books branch) — authorship is server-filled, not a cell.
       const file = BOOK_FILES[req.book];
+      // The book as it will be written (ADR-0455): the patch merged by row id onto the book as it is now (this
+      // runs again on every push retry, so it merges with whatever landed meanwhile) — a row someone else changed
+      // refuses the whole save; or a whole file, only when it was edited from the current version.
+      const current = await readText(dir, join(dir, file));
+      let content: string;
+      if (req.patch) {
+        const merged = applyBookPatch(current, req.patch);
+        if (!merged.ok) return { ok: false, code: "BOOK_CONFLICT", conflicts: merged.conflicts, error: "book conflict" };
+        content = merged.md;
+      } else if (req.content !== undefined) {
+        if (req.baseHash !== undefined && bookContentHash(current) !== req.baseHash) return { ok: false, code: "BOOK_STALE", error: "book stale" };
+        content = req.content;
+      } else return { ok: false, error: "content is required" };
+      // The caller's write rules (ADR-0450/0454) — checked against the book on the books branch first.
+      if (req.book !== "aiDone" && (req.editableTeams !== undefined || req.ownRowsOnly || req.answerOnly)) {
+        const refused = checkSaveRules(
+          await readText(dir, join(dir, file)),
+          content,
+          req,
+          await readJsonMap(dir, join(dir, AUTHORS_REL)),
+          by,
+        );
+        if (refused) return refused;
+      }
       // Approvals riding on this save (ADR-0438) are checked BEFORE anything is written: SoD counts this
       // save's edits (the editor becomes the row's author), and each signed entry must match the saved row.
       const approving = req.book !== "aiDone" ? (req.approve ?? []) : [];
-      const touchesApprovals = req.book !== "aiDone" && (approving.length > 0 || (req.unapprove?.length ?? 0) > 0);
-      let approvalEntries: Record<string, unknown> = {};
+      const touchesApprovals =
+        req.book !== "aiDone" && (approving.length > 0 || (req.unapprove?.length ?? 0) > 0 || Object.keys(req.parties ?? {}).length > 0);
+      let approvalEntries: Record<string, ApprovalEntry> = {};
+      let approvalBooksSaved: ApprovalBooks | null = null;
       if (touchesApprovals && req.book !== "aiDone") {
         const prevRows = tableRowsById(await readText(dir, join(dir, file)));
-        const nextRows = tableRowsById(req.content);
+        const nextRows = tableRowsById(content);
         const authorsNow = await readJsonMap(dir, join(dir, AUTHORS_REL));
         if (!req.byIsAdmin) {
           const self = approving.find((id) => (prevRows.get(id) !== nextRows.get(id) ? by : entryBy(authorsNow, id)) === by);
           if (self) return { ok: false, code: "APPROVAL_SELF", failedId: self, error: "self-approval blocked" };
         }
         const books = await approvalBooksIn(dir);
-        books[req.book as keyof ApprovalBooks] = req.content;
+        books[req.book as keyof ApprovalBooks] = content;
         const built = buildApprovalEntries(approving, req.signed, books, by, req.byLabel ?? by);
         if (!built.ok) return stale(built.staleId);
         approvalEntries = built.entries;
+        // Parties must bind to the saved content too (checked before anything is written).
+        const probe: Record<string, unknown> = {};
+        const partiesOk = mergeApprovalWrite(probe, {}, req.parties, books);
+        if (!partiesOk.ok) return stale(partiesOk.staleId);
+        approvalBooksSaved = books;
       }
       // Evidence (ADR-0404): move the staged files in first — a missing/invalid one aborts the whole save.
       if (req.evidence?.length) {
@@ -318,31 +411,35 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
       // AI Done is cli-written history (ADR-0400): the web only saves its `AI verify` verdicts there — no
       // authorship to stamp and no capped rows to count.
       if (req.book === "aiDone") {
-        await writeFileInRoot(dir, join(dir, file), req.content);
+        await writeFileInRoot(dir, join(dir, file), content);
         return { ok: true, added: 0 };
       }
       const prevText = await readText(dir, join(dir, file));
       const prev = tableRowsById(prevText);
-      const next = tableRowsById(req.content);
+      const next = tableRowsById(content);
       const authors = await readJsonMap(dir, join(dir, AUTHORS_REL));
       const at = new Date().toISOString();
       const byLabel = req.byLabel ?? by;
       let added = 0;
+      const addedIds: string[] = [];
       for (const [id, cells] of next) {
         if (prev.get(id) !== cells) authors[id] = { by, byLabel, at };
-        if (!prev.has(id)) added += 1;
+        if (!prev.has(id)) {
+          added += 1;
+          addedIds.push(id);
+        }
       }
-      await writeFileInRoot(dir, join(dir, file), req.content);
+      await writeFileInRoot(dir, join(dir, file), content);
       await writeFileInRoot(dir, join(dir, AUTHORS_REL), JSON.stringify(authors, null, 2) + "\n");
       if (touchesApprovals) {
         const map = parseJson(await readText(dir, join(dir, APPROVALS_REL), "{}")) ?? {};
-        Object.assign(map, approvalEntries);
-        for (const id of req.unapprove ?? []) delete map[id];
+        mergeApprovalWrite(map, approvalEntries, req.parties, approvalBooksSaved ?? (await approvalBooksIn(dir)));
+        unapproveIds(map, req.unapprove ?? [], by, req.clearAll !== false);
         await writeFileInRoot(dir, join(dir, APPROVALS_REL), JSON.stringify(map, null, 2) + "\n");
       }
       // Files whose link this save removed (and no book still references) go in the same commit (ADR-0404).
-      await pruneEvidence(dir, req.book, prevText, req.content);
-      return { ok: true, added };
+      await pruneEvidence(dir, req.book, prevText, content);
+      return { ok: true, added, addedIds };
     }
     default:
       return { ok: false, error: "not a book write" };
@@ -351,7 +448,7 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
 
 /**
  * Apply a web write (autonomous.write). Settings stay local to the worker (profile dir); book edits
- * (approvals, requests, book saves) are published straight to `<base>` through a side worktree
+ * (approvals, requests, book saves) are published straight to the books branch through a side worktree
  * — the cycle's sync would otherwise discard an unpushed edit, and the working tree may be
  * on a task branch. With no remote base they fall back to the working tree.
  * @adr 0371
@@ -364,6 +461,7 @@ export async function writeAutonomous(
 ): Promise<AutonomousWriteReply> {
   // Rows a userTodo / bookSave added — counted by the server toward the monthly book cap (ADR-0365).
   let added: number | undefined;
+  let addedIds: string[] | undefined;
   try {
     if (req.kind === "settings") {
       // The config lives in the profile dir (ADR-0321), as clean JSON (coerced — comment keys dropped).
@@ -373,7 +471,7 @@ export async function writeAutonomous(
         return { ok: false, error: t("autonomous.settingsInvalidCron") };
       }
       // Evidence / mockup folders must be safe repo-relative paths (ADR-0418); empty ⇒ the default.
-      for (const k of ["evidenceDir", "mockupDir"] as const) {
+      for (const k of ["evidenceDir", "mockupDir", "erDir", "sequenceDir"] as const) {
         const v = typeof parsed[k] === "string" ? (parsed[k] as string).trim().replace(/\/+$/, "") : "";
         if (v && !isSafeRepoDir(v)) return { ok: false, error: t("autonomous.settingsInvalidDir") };
       }
@@ -383,6 +481,9 @@ export async function writeAutonomous(
       // Book evidence upload (machine-0072, ADR-0404): kept in the profile dir until a bookSave commits it.
       const staged = await stageEvidence(profileDir, req.contentBase64);
       return staged.ok ? { ok: true, stageId: staged.stageId } : { ok: false, error: staged.error };
+    } else if (req.kind === "discussionBatch") {
+      // Discussion files (ADR-0454): one books commit with the batch trailers; its own publish path.
+      return await applyDiscussionBatch(root, req);
     } else if ((req as { kind: string }).kind === "cron") {
       // Retired (ADR-0392): an older dashboard's Install/Uninstall cron — the scheduler is always
       // armed, so answer with the live status instead of touching any crontab.
@@ -390,7 +491,7 @@ export async function writeAutonomous(
       const base = (await resolveBases(root).catch(() => null))?.root.base ?? "";
       let res: WebWrite | undefined;
       const pub = base
-        ? await mutateBooksOnBase(
+        ? await mutateBooks(
             root,
             base,
             `chore(web): ${req.kind} by ${req.byLabel ?? by}`,
@@ -403,24 +504,38 @@ export async function writeAutonomous(
         : "unchanged";
       if (res === undefined) res = await applyWebWrite(root, profileDir, req, by); // no remote base ⇒ working tree
       else if (pub === "failed") return { ok: false, error: "could not push the change to the base branch (retry)" };
-      if (!res.ok) return { ok: false, ...(res.code ? { code: res.code } : {}), ...(res.failedId ? { failedId: res.failedId } : {}), error: res.error };
+      if (!res.ok) {
+        return {
+          ok: false,
+          ...(res.code ? { code: res.code } : {}),
+          ...(res.failedId ? { failedId: res.failedId } : {}),
+          ...(res.conflicts ? { conflicts: res.conflicts } : {}),
+          error: res.error,
+        };
+      }
       added = res.added;
+      addedIds = res.addedIds;
     }
-    return { ok: true, status: await getAutonomousStatus(root, profileDir), ...(added !== undefined ? { added } : {}) };
+    return {
+      ok: true,
+      status: await getAutonomousStatus(root, profileDir),
+      ...(added !== undefined ? { added } : {}),
+      ...(addedIds?.length ? { addedIds } : {}),
+    };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
 /**
- * Read one committed book evidence file — or an intake mockup — for the web.
- * @api machine-0073 @adr 0418 @adr 0404
+ * Read one committed book evidence file — or an intake mockup, a sequence diagram or an ER file — for the web.
+ * @api machine-0073 @adr 0418 @adr 0404 @adr 0453
  */
 export async function readAutonomousEvidence(root: string, profileDir: string, req: AutonomousEvidenceRequest): Promise<AutonomousEvidenceReply> {
   try {
     const base = (await resolveBases(root).catch(() => null))?.root.base ?? null;
-    const { mockupDir } = await readAutonomousConfig(profileDir);
-    return await readEvidenceFile(root, base, req.path, req.ref, mockupDir);
+    const { mockupDir, erDir, sequenceDir } = await readAutonomousConfig(profileDir);
+    return await readEvidenceFile(root, base, req.path, req.ref, mockupDir, [erDir, sequenceDir]);
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };
   }

@@ -19,7 +19,7 @@ import { createAiStreamParser, estimateTokens, type AiUsage } from "./ai-stream"
 export type AttemptFailReason = "auth" | "limit" | "credits" | "timeout" | "other";
 
 /** The conventional exit code the executor reports for a wall-clock timeout kill. @adr 0243 */
-const TIMEOUT_EXIT = 124;
+export const TIMEOUT_EXIT = 124;
 
 /** Detect an auth failure in an attempt's output (to decide whether to try the next). */
 export function isAuthFailure(text: string): boolean {
@@ -118,7 +118,9 @@ function runAttempt(
  * attempt's wall-clock — a hung/looping AI CLI is terminated and reported as a failed attempt so
  * failover still moves on; 0 ⇒ no cap. `signal` stops the run: the current AI process is
  * killed and NO further profile is tried — the result carries `cancelled` + exit 130.
- * @adr 0243 @adr 0362
+ * `failoverOnTimeout = false` ends the run on a timed-out attempt (exit 124) instead of re-running the
+ * whole prompt on the next profile — a timeout is about the work's size, not the account.
+ * @adr 0243 @adr 0362 @adr 0452
  */
 export async function runAiFailover(
   plan: AiPlan,
@@ -127,6 +129,7 @@ export async function runAiFailover(
   handlers: AiRunHandlers,
   timeoutMs = 0,
   signal?: AbortSignal,
+  failoverOnTimeout = true,
 ): Promise<AiRunResult> {
   const total = plan.attempts.length;
   let finalExit = -1;
@@ -206,6 +209,11 @@ export async function runAiFailover(
             : isSessionLimit(captured)
               ? "limit"
               : "other";
+    // No failover on a timeout when the caller asked for it: the AI CLI is healthy (no tool-health
+    // report), the run was just too long — return the timeout as the final result.
+    if (reason === "timeout" && !failoverOnTimeout) {
+      return { exitCode: finalExit, workedDir: null, workedKey: null, workedCmd: null, usage: { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, sessionId: "" };
+    }
     if (i === total - 1) break;
     handlers.onAttemptFail(attempt.label, reason);
   }

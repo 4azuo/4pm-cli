@@ -60,9 +60,15 @@ export const WsChannels = {
   // write {settings|approvals|userTodo|cron} — the dashboard drives the worker's autonomous engine.
   AUTONOMOUS_READ: "autonomous.read",
   AUTONOMOUS_WRITE: "autonomous.write",
+  // Discussion files on the books branch (ADR-0454): list blobs / read files / find a batch commit.
+  DISCUSSIONS_READ: "discussions.read",
   AUTONOMOUS_LOGS: "autonomous.logs",
   // read one committed book evidence file (ADR-0404): origin/<base> → task branch → working tree
   AUTONOMOUS_EVIDENCE: "autonomous.evidence",
+  // Project ER on the books branch (ADR-0453): read modules / change requests / history (optionally at a
+  // version); save / withdraw / approve-and-apply / reject a change request.
+  ER_READ: "er.read",
+  ER_WRITE: "er.write",
   // subagents & skills management (ADR-0153): list/read/write .claude/agents + .claude/skills
   AGENTS_LIST: "agents.list",
   AGENTS_READ: "agents.read",
@@ -162,6 +168,9 @@ export const WsChannels = {
   // cli → server (reply): read / add the org's monthly autonomous-book counters — USER_TODO / USER_QA /
   // AI_TODO rows vs `autonomousRequestsPerMonth` (ADR-0365)
   AUTONOMOUS_BOOK_USAGE: "autonomous.bookUsage",
+  // cli → server (reply): allocate fresh book group numbers for an intake run — the AI may use only those for
+  // its new TSK / QA groups (ADR-0455)
+  AUTONOMOUS_BOOK_GROUPS: "autonomous.bookGroups",
   // cli → server (one-way): an autonomous condition the project's managers must see (ADR-0371) —
   // protected base, lost claim, attempt limit, task split, task question. The server notifies them.
   AUTONOMOUS_ALERT: "autonomous.alert",

@@ -1,0 +1,73 @@
+/**
+ * Book row ids `PREFIX-GGGGGG-NNN` (`REQ` · `TSK` · `QA`): a 6-digit group allocated by the server from the
+ * project's group counter + a 3-digit row number given by whoever owns the group. The group key
+ * `PREFIX-GGGGGG` names a group's mockups, sequences and task branches. Fixed width, so string order = numeric
+ * order. Shared by web / server / cli — every id pattern comes from here.
+ * @adr 0455
+ */
+import { z } from "zod";
+
+/** Digits of the group part. */
+export const BOOK_GROUP_DIGITS = 6;
+/** Digits of the row part. */
+export const BOOK_ROW_DIGITS = 3;
+/** The largest group / row number. */
+export const BOOK_GROUP_MAX = 10 ** BOOK_GROUP_DIGITS - 1;
+export const BOOK_ROW_MAX = 10 ** BOOK_ROW_DIGITS - 1;
+
+/** The id prefixes of the books. */
+export type BookIdPrefix = "REQ" | "TSK" | "QA";
+
+/** Regex source of any row id (no anchors / groups) — for embedding in larger patterns. */
+export const BOOK_ID_SOURCE = `[A-Z]+-\\d{${BOOK_GROUP_DIGITS}}-\\d{${BOOK_ROW_DIGITS}}`;
+/** A whole row id: groups = prefix, group digits, row digits. */
+export const BOOK_ID_RE = new RegExp(`^([A-Z]+)-(\\d{${BOOK_GROUP_DIGITS}})-(\\d{${BOOK_ROW_DIGITS}})$`);
+/** Row ids inside a text (global). */
+export const BOOK_ID_GLOBAL_RE = new RegExp(`\\b${BOOK_ID_SOURCE}\\b`, "g");
+
+/** The 6-digit group code of a group number. */
+export function bookGroupCode(group: number): string {
+  return String(group).padStart(BOOK_GROUP_DIGITS, "0");
+}
+
+/** The row id `PREFIX-GGGGGG-NNN`. */
+export function bookRowId(prefix: BookIdPrefix, group: number | string, row: number): string {
+  const g = typeof group === "number" ? bookGroupCode(group) : group;
+  return `${prefix}-${g}-${String(row).padStart(BOOK_ROW_DIGITS, "0")}`;
+}
+
+/** True for a well-formed row id. */
+export function isBookRowId(id: string): boolean {
+  return BOOK_ID_RE.test(id);
+}
+
+/** The group code (`GGGGGG`) of a row id, or null. */
+export function bookGroupOf(id: string): string | null {
+  return BOOK_ID_RE.exec(id)?.[2] ?? null;
+}
+
+/** The group key `PREFIX-GGGGGG` of a row id (e.g. `TSK-000123`), or null. */
+export function bookGroupKey(id: string): string | null {
+  const m = BOOK_ID_RE.exec(id);
+  return m ? `${m[1]}-${m[2]}` : null;
+}
+
+/** The QA ids mentioned in a text (e.g. a task's `Depends`), de-duplicated. */
+export function qaIdsIn(text: string): string[] {
+  const re = new RegExp(`\\bQA-\\d{${BOOK_GROUP_DIGITS}}-\\d{${BOOK_ROW_DIGITS}}\\b`, "g");
+  return Array.from(new Set(text.match(re) ?? []));
+}
+
+/** Most groups one allocation may ask for. */
+export const BOOK_GROUPS_PER_REQUEST = 50;
+
+/** Body POST /machines/:id/autonomous/book-groups — allocate fresh group numbers. @api machine-0082 */
+export const allocateBookGroupsSchema = z.object({
+  count: z.number().int().min(1).max(BOOK_GROUPS_PER_REQUEST).default(1),
+});
+export type AllocateBookGroupsRequest = z.infer<typeof allocateBookGroupsSchema>;
+
+/** Response of machine-0082 — group numbers never handed out before in this project. */
+export interface AllocateBookGroupsResponse {
+  groups: number[];
+}

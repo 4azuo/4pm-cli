@@ -3,8 +3,10 @@
  * cli now edits in code (claim, finish, release, question, split): `AI_TODO` tasks, the multi-row
  * `AI_PROGRESS` claims, `AI_DONE` (Done + Incidents), `USER_QA`, plus the `.autonomous.attempts.json`
  * sidecar. Cells are matched by header name, so a legacy 3-column `AI_PROGRESS` still parses. Rewrites
- * touch only the table rows — the prose around the table is kept byte-for-byte.
- * @adr 0371
+ * touch only the table rows — the prose around the table is kept byte-for-byte. Every book may carry a
+ * `Team` column (a team code, ADR-0450): it is read when present and added (after `ID`) the first time a
+ * row with a team is written.
+ * @adr 0371 @adr 0450
  */
 import { readFileInRoot, writeFileInRoot } from "../../utils/safe-path";
 import { join } from "node:path";
@@ -78,6 +80,17 @@ function get(t: MdTable, row: string[], name: string): string {
   return i >= 0 ? (row[i] ?? "") : "";
 }
 
+/** Add a `Team` column right after `ID` when `needed` and the table has none (old rows get ""). */
+function withTeamColumn(table: MdTable, needed: boolean): MdTable {
+  if (!needed || col(table.header, "Team") >= 0) return table;
+  const at = col(table.header, "ID") + 1;
+  return {
+    ...table,
+    header: [...table.header.slice(0, at), "Team", ...table.header.slice(at)],
+    rows: table.rows.map((r) => [...r.slice(0, at), "", ...r.slice(at)]),
+  };
+}
+
 /** Build a row in the table's own column order from a name → value map. */
 function build(header: string[], values: Record<string, string>): string[] {
   return header.map((h) => values[h.toLowerCase()] ?? "");
@@ -94,6 +107,8 @@ export interface TaskRow {
   group: string;
   desc: string;
   notes: string;
+  /** Team code ("" = untagged — ADR-0450). Optional on rows built before teams existed. */
+  team?: string;
 }
 
 /** Split a Depends cell into ids. */
@@ -117,6 +132,7 @@ export function parseTasks(md: string): { table: MdTable | null; tasks: TaskRow[
       group: get(table, r, "Group"),
       desc: get(table, r, "Task description"),
       notes: get(table, r, "Notes"),
+      team: get(table, r, "Team"),
     }))
     .filter((t) => /^TSK-/.test(t.id));
   return { table, tasks };
@@ -124,8 +140,9 @@ export function parseTasks(md: string): { table: MdTable | null; tasks: TaskRow[
 
 /** Rewrite the `AI_TODO` task table with `tasks`. */
 export function writeTasks(md: string, tasks: TaskRow[]): string {
-  const { table } = parseTasks(md);
-  if (!table) return md;
+  const found = parseTasks(md).table;
+  if (!found) return md;
+  const table = withTeamColumn(found, tasks.some((t) => Boolean(t.team)));
   return replaceRows(
     md,
     table,
@@ -138,6 +155,7 @@ export function writeTasks(md: string, tasks: TaskRow[]): string {
         group: t.group,
         "task description": t.desc,
         notes: t.notes,
+        team: t.team ?? "",
       }),
     ),
   );
@@ -145,13 +163,15 @@ export function writeTasks(md: string, tasks: TaskRow[]): string {
 
 // ── AI_PROGRESS (multi-row claims) ───────────────────────────────────────────────────────────────
 
-/** The multi-row `AI_PROGRESS` header. */
-export const PROGRESS_HEADER = ["Started", "ID", "Worker", "Claim", "Attempt", "Task description"];
+/** The multi-row `AI_PROGRESS` header (`Team` — ADR-0450). */
+export const PROGRESS_HEADER = ["Started", "ID", "Team", "Worker", "Claim", "Attempt", "Task description"];
 
 /** One claimed task. */
 export interface ClaimRow {
   started: string;
   id: string;
+  /** Team code ("" = untagged). */
+  team?: string;
   worker: string;
   claim: string;
   attempt: number;
@@ -166,6 +186,7 @@ export function parseClaims(md: string): { table: MdTable | null; claims: ClaimR
     .map((r) => ({
       started: get(table, r, "Started"),
       id: get(table, r, "ID"),
+      team: get(table, r, "Team"),
       worker: get(table, r, "Worker"),
       claim: get(table, r, "Claim"),
       attempt: Number(get(table, r, "Attempt")) || 1,
@@ -185,7 +206,7 @@ export function writeClaims(md: string, claims: ClaimRow[]): string {
   return replaceRows(
     src,
     table,
-    claims.map((c) => [c.started, c.id, c.worker, c.claim, String(c.attempt), c.desc]),
+    claims.map((c) => [c.started, c.id, c.team ?? "", c.worker, c.claim, String(c.attempt), c.desc]),
   );
 }
 
@@ -207,21 +228,23 @@ function insertColumns(table: MdTable, after: string, names: string[]): MdTable 
  * keeping every other column (e.g. the web's `AI verify`).
  * @adr 0400 @adr 0404
  */
-function withDoneColumns(table: MdTable): MdTable {
-  return insertColumns(insertColumns(table, "ID", ["Group", "Depends"]), "Files", ["Evidence"]);
+function withDoneColumns(table: MdTable, team = false): MdTable {
+  const base = insertColumns(insertColumns(table, "ID", ["Group", "Depends"]), "Files", ["Evidence"]);
+  return team ? insertColumns(base, "Group", ["Team"]) : base;
 }
 
 /** Append a Done row (`Timestamp | ID | Group | Depends | Task description | Files | Evidence | Notes`). */
 export function appendDone(
   md: string,
-  row: { id: string; group: string; depends: string[]; desc: string; files: string; evidence: string; notes: string },
+  row: { id: string; group: string; depends: string[]; desc: string; files: string; evidence: string; notes: string; team?: string },
 ): string {
   const found = findTables(md).find((t) => col(t.header, "ID") >= 0 && col(t.header, "Timestamp") >= 0);
   if (!found) return md;
-  const table = withDoneColumns(found);
+  const table = withDoneColumns(found, Boolean(row.team));
   const values = {
     timestamp: stamp(),
     id: row.id,
+    team: row.team ?? "",
     group: row.group,
     depends: row.depends.join(", "),
     "task description": row.desc,
@@ -252,6 +275,8 @@ export function doneRows(md: string): Map<string, string> {
 /** One `USER_QA` row. */
 export interface QaRow {
   id: string;
+  /** Team code ("" = untagged). */
+  team?: string;
   group: string;
   depends: string;
   original: string;
@@ -266,6 +291,7 @@ export function parseQa(md: string): { table: MdTable | null; rows: QaRow[] } {
   const rows = table.rows
     .map((r) => ({
       id: get(table, r, "ID"),
+      team: get(table, r, "Team"),
       group: get(table, r, "Group"),
       depends: get(table, r, "Depends"),
       original: get(table, r, "Original request"),
@@ -278,14 +304,16 @@ export function parseQa(md: string): { table: MdTable | null; rows: QaRow[] } {
 
 /** Rewrite the `USER_QA` table. */
 export function writeQa(md: string, rows: QaRow[]): string {
-  const { table } = parseQa(md);
-  if (!table) return md;
+  const found = parseQa(md).table;
+  if (!found) return md;
+  const table = withTeamColumn(found, rows.some((q) => Boolean(q.team)));
   return replaceRows(
     md,
     table,
     rows.map((q) =>
       build(table.header, {
         id: q.id,
+        team: q.team ?? "",
         group: q.group,
         depends: q.depends,
         "original request": q.original,

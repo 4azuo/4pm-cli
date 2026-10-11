@@ -26,7 +26,7 @@ import {
   type WsEnvelope,
 } from "@4pm/ws";
 import { runCommand } from "../exec/executor";
-import { runAiFailover, type AiRunHandlers, type AiRunResult } from "../ai/ai-runner";
+import { runAiFailover, TIMEOUT_EXIT, type AiRunHandlers, type AiRunResult } from "../ai/ai-runner";
 import { aiProviderOf, estimateTokens } from "../ai/ai-stream";
 import {
   getPinnedCredential,
@@ -259,11 +259,24 @@ export interface AiPromptOutcome {
   cancelled: boolean;
   exhausted: boolean;
   neverStarted: boolean;
+  /** The final attempt was killed by the wall-clock timeout (exit 124). @adr 0452 */
+  timedOut: boolean;
   output: string;
 }
 
+/**
+ * Per-call run overrides for a caller that owns its own budget (the autonomous cycle): `timeoutMs`
+ * replaces the project / machine-user AI-run timeout; `failoverOnTimeout: false` ends the run on a
+ * timed-out attempt instead of re-running it on the next profile.
+ * @adr 0452
+ */
+export interface AiRunOverrides {
+  timeoutMs?: number;
+  failoverOnTimeout?: boolean;
+}
+
 /** The outcome of a prompt refused before it ran (token cap / outbound review). */
-const REFUSED: AiPromptOutcome = { exitCode: 1, cancelled: false, exhausted: false, neverStarted: true, output: "" };
+const REFUSED: AiPromptOutcome = { exitCode: 1, cancelled: false, exhausted: false, neverStarted: true, timedOut: false, output: "" };
 
 /**
  * Run an AI prompt through the AI-CLI **profile-failover** path. Shared by a
@@ -282,13 +295,14 @@ export async function runAiPrompt(
   aiConfig?: CommandDispatchPayload["aiConfig"],
   readOnly = false,
   bypass = false,
+  overrides?: AiRunOverrides,
 ): Promise<AiPromptOutcome> {
   // Register the run so `command.cancel` can stop it from the very start (ADR-0362) — a stop that lands
   // during the outbound review or the slot wait is honoured the moment the run reaches the slot.
   const run: ActiveRun = { controller: new AbortController(), state: "queued" };
   activeRuns.set(commandId, run);
   try {
-    return await runAiPromptInner(ctx, prompt, commandId, origin, run, oneShot, images, aiConfig, readOnly, bypass);
+    return await runAiPromptInner(ctx, prompt, commandId, origin, run, oneShot, images, aiConfig, readOnly, bypass, overrides);
   } finally {
     activeRuns.delete(commandId);
     // An AI run may have committed/edited files ⇒ refresh the server's git snapshot (ADR-0369).
@@ -315,6 +329,7 @@ async function runAiPromptInner(
   // (codex full-auto) so file + git/gh/glab writes run headless without an approval prompt
   // (template "Update" → branch + PR). Mutually exclusive with `oneShot`/`readOnly`.
   bypass = false,
+  overrides?: AiRunOverrides,
 ): Promise<AiPromptOutcome> {
   const config = readProfileConfig(ctx.profileDir);
   // AI-run wall-clock ceiling (ADR-0243): the serving project's override wins over the
@@ -323,7 +338,8 @@ async function runAiPromptInner(
   const projectTimeoutSec = config.projectAiRunTimeoutSec ?? 0;
   const machineTimeoutSec = config.aiRunTimeoutSec ?? 0;
   const timeoutSec = projectTimeoutSec > 0 ? projectTimeoutSec : machineTimeoutSec;
-  const aiRunTimeoutMs = timeoutSec > 0 ? timeoutSec * 1000 : 0;
+  // A caller-owned budget (the autonomous cycle — ADR-0452) replaces both.
+  const aiRunTimeoutMs = overrides?.timeoutMs ?? (timeoutSec > 0 ? timeoutSec * 1000 : 0);
   // Per-prompt token cap (ADR-0081): reject before spawning when the prompt's estimated
   // tokens exceed the project limit. Cheaper than starting a run just to abort it.
   const perPromptLimit = config.perPromptTokenLimit ?? 0;
@@ -620,7 +636,7 @@ async function runAiPromptInner(
       if (slot.queued) ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: "", log: true, queue: null });
       run.state = "running";
       try {
-        result = await runAiFailover(plan, commandId, cwd, handlers, aiRunTimeoutMs, run.controller.signal);
+        result = await runAiFailover(plan, commandId, cwd, handlers, aiRunTimeoutMs, run.controller.signal, overrides?.failoverOnTimeout ?? true);
       } finally {
         slot.handle.release();
       }
@@ -742,6 +758,7 @@ async function runAiPromptInner(
       failReasons.length > 0 &&
       failReasons.every((r) => r === "limit" || r === "credits"),
     neverStarted,
+    timedOut: result.exitCode === TIMEOUT_EXIT,
     output: answerText,
   };
 }

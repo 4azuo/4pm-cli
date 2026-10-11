@@ -13,7 +13,9 @@ import * as B from "./autonomous-books";
 import { isMerged, type RepoBase } from "./autonomous-git";
 import { evidenceCell, moveTaskEvidence, rehomeTaskLinks } from "./autonomous-evidence";
 import { readFileInRoot } from "../../utils/safe-path";
+import { bookRowTeam } from "@4pm/dto";
 import { verifiedApprovedIds } from "./autonomous-approvals";
+import { servesTeam } from "./autonomous-teams";
 
 /** The approvals sidecar. */
 const APPROVALS_REL = ".claude/.autonomous.approvals.json";
@@ -52,15 +54,23 @@ export async function writeLocalClaim(profileDir: string, c: LocalClaim | null):
   else await rm(claimPath(profileDir), { force: true });
 }
 
-/** Group id of a task: `TSK-gggg-tttt` ⇒ `GRP-gggg` (deterministic — dependency branches derive from it). */
+/** Group id of a task: `TSK-GGGGGG-NNN` ⇒ `GRP-GGGGGG` (deterministic — dependency branches derive from it). */
 export function groupOf(taskId: string): string {
   const m = /^TSK-(\d+)-\d+/.exec(taskId);
-  return m ? `GRP-${m[1]}` : "GRP-0000";
+  return m ? `GRP-${m[1]}` : "GRP-000000";
 }
 
 /** The task branch `dev/<base>/<GROUP>/<TSK>` (ADR-0371 §1, named per ADR-0372 — `<base>/…` can't coexist with `<base>`). */
 export function taskBranch(base: string, taskId: string): string {
   return `dev/${base}/${groupOf(taskId)}/${taskId}`;
+}
+
+/**
+ * The books branch `autonomous-books/<base>`: the books + sidecars live here (not on `<base>`), so
+ * `<base>` can be protected. 4PM prefix first, like the task / template branches. @adr 0448 @adr 0372
+ */
+export function booksBranch(base: string): string {
+  return `autonomous-books/${base}`;
 }
 
 /** A `from: <branch>` hint in Notes (split children continue the parent's WIP), or null. */
@@ -117,13 +127,16 @@ export interface Candidate {
  * Pick the next eligible task: expired claims first (take-over), then `AI_TODO` in order
  * (smallest group, High → Medium → Low, line order). A task needs approval, attempts below the limit (and
  * not split-pending), its `QA-…` deps answered + approved (or folded), and its `TSK-…` deps satisfied:
- * one ⇒ done (its PR opened), two or more ⇒ all merged into `<base>`.
+ * one ⇒ done (its PR opened), two or more ⇒ all merged into `<base>`. A task of a group in `blockedGroups`
+ * (`TSK-<GGGGGG>` — its ER change request is not applied yet, ADR-0453) waits.
  */
 export async function pickTask(
   root: string,
   rootBase: RepoBase,
-  opts: { worker: string; ttlHours: number; maxAttempts: number; skip?: Set<string> },
+  opts: { worker: string; ttlHours: number; maxAttempts: number; skip?: Set<string>; profileDir?: string; blockedGroups?: ReadonlySet<string> },
 ): Promise<Candidate | null> {
+  // A team-restricted worker only takes its teams' tasks (ADR-0450).
+  const served = (team: string | undefined): boolean => (opts.profileDir ? servesTeam(opts.profileDir, team) : true);
   const [todo, prog, done, qa, attempts, approved] = await Promise.all([
     B.readBook(root, "AI_TODO.md"),
     B.readBook(root, "AI_PROGRESS.md"),
@@ -138,7 +151,8 @@ export async function pickTask(
   for (const c of claims) {
     if (skip.has(c.id) || c.worker === opts.worker || claimAgeHours(c) < opts.ttlHours) continue;
     const snap = attempts[c.id]?.task;
-    const task = snap ?? { id: c.id, priority: "Medium", tag: "", depends: [], group: groupOf(c.id), desc: c.desc, notes: "" };
+    const task = snap ?? { id: c.id, priority: "Medium", tag: "", depends: [], group: groupOf(c.id), desc: c.desc, notes: "", team: c.team ?? "" };
+    if (!served(task.team)) continue;
     return { task, takeover: c, from: null };
   }
   // 2. Fresh tasks.
@@ -151,7 +165,8 @@ export async function pickTask(
     .tasks.map((t, i) => ({ t, i }))
     .sort((a, b) => groupNum(a.t.id) - groupNum(b.t.id) || rank(a.t.priority) - rank(b.t.priority) || a.i - b.i);
   for (const { t } of tasks) {
-    if (skip.has(t.id) || claimed.has(t.id) || !approved.has(t.id)) continue;
+    if (skip.has(t.id) || claimed.has(t.id) || !approved.has(t.id) || !served(t.team)) continue;
+    if (opts.blockedGroups?.has(/^(TSK-\d{6})-/.exec(t.id)?.[1] ?? "")) continue;
     const a = attempts[t.id];
     if (a && (a.splitPending || a.count >= opts.maxAttempts)) continue;
     // QA deps: answered + approved, or already folded (absent — QA ids are never reused).
@@ -209,7 +224,7 @@ export async function applyClaim(root: string, cand: Candidate, mine: Omit<Local
     await B.writeBook(root, "AI_TODO.md", B.writeTasks(todo, tasks.filter((t) => t.id !== cand.task.id)));
     attempts[cand.task.id] = { ...(attempts[cand.task.id] ?? { count: 0, last: "", at: "" }), task: cand.task };
   }
-  const row: B.ClaimRow = { started: mine.started, id: cand.task.id, worker: mine.worker, claim: mine.claim, attempt: mine.attempt, desc: cand.task.desc };
+  const row: B.ClaimRow = { started: mine.started, id: cand.task.id, team: cand.task.team ?? "", worker: mine.worker, claim: mine.claim, attempt: mine.attempt, desc: cand.task.desc };
   await B.writeBook(root, "AI_PROGRESS.md", B.writeClaims(prog, [...claims.filter((c) => c.id !== cand.task.id), row]));
   if (cand.takeover) attempts[cand.task.id] = { ...attempts[cand.task.id]!, task: attempts[cand.task.id]?.task ?? cand.task };
   await B.writeAttempts(root, attempts);
@@ -241,7 +256,7 @@ export async function applyFinish(
 ): Promise<boolean> {
   if (!(await dropClaim(root, mine))) return false;
   const moved = await moveTaskEvidence(root, mine.id, evRoot);
-  await B.writeBook(root, "AI_DONE.md", B.appendDone(await B.readBook(root, "AI_DONE.md"), { id: mine.id, group: mine.task.group, depends: mine.task.depends, desc: rehomeTaskLinks(mine.task.desc, mine.id), files: done.files, evidence: evidenceCell([...moved, ...done.evidence]), notes: done.notes }));
+  await B.writeBook(root, "AI_DONE.md", B.appendDone(await B.readBook(root, "AI_DONE.md"), { id: mine.id, team: mine.task.team ?? "", group: mine.task.group, depends: mine.task.depends, desc: rehomeTaskLinks(mine.task.desc, mine.id), files: done.files, evidence: evidenceCell([...moved, ...done.evidence]), notes: done.notes }));
   const attempts = await B.readAttempts(root);
   delete attempts[mine.id];
   await B.writeAttempts(root, attempts);
@@ -271,7 +286,7 @@ function nextId(prefix: "TSK" | "QA", group: string, texts: string[]): string {
   const re = new RegExp(`${prefix}-${group}-(\\d+)`, "g");
   let max = 0;
   for (const t of texts) for (const m of t.matchAll(re)) max = Math.max(max, Number(m[1]));
-  return `${prefix}-${group}-${String(max + 1).padStart(4, "0")}`;
+  return `${prefix}-${group}-${String(max + 1).padStart(3, "0")}`;
 }
 
 /** Append to a Notes cell. */
@@ -297,11 +312,11 @@ export async function applyQuestion(root: string, mine: LocalClaim, question: st
     B.readBook(root, "AI_DONE.md"),
     B.readBook(root, B.ATTEMPTS_REL),
   ]);
-  const g = /^TSK-(\d+)/.exec(mine.id)?.[1] ?? "0000";
+  const g = /^TSK-(\d+)/.exec(mine.id)?.[1] ?? "000000";
   const qaId = nextId("QA", g, [qa, todo, done, attemptsText]);
   const { rows } = B.parseQa(qa);
   const qaDeps = mine.task.depends.filter((d) => d.startsWith("QA-")).join(", ");
-  await B.writeBook(root, "USER_QA.md", B.writeQa(qa, [...rows, { id: qaId, group: mine.task.group, depends: qaDeps, original: `${mine.id}: ${mine.task.desc}`, question, answer: "" }]));
+  await B.writeBook(root, "USER_QA.md", B.writeQa(qa, [...rows, { id: qaId, team: mine.task.team ?? "", group: mine.task.group, depends: qaDeps, original: `${mine.id}: ${mine.task.desc}`, question, answer: "" }]));
   const { tasks } = B.parseTasks(todo);
   const back: B.TaskRow = { ...mine.task, depends: [...mine.task.depends.filter((d) => d !== qaId), qaId], notes: appendNote(mine.task.notes, `waiting for ${qaId}; WIP on ${mine.branch}`) };
   await B.writeBook(root, "AI_TODO.md", B.writeTasks(todo, [...tasks.filter((t) => t.id !== mine.id), back]));
@@ -329,17 +344,30 @@ export async function foldTaskAnswers(root: string): Promise<boolean> {
   return true;
 }
 
-/** Is there intake work for the agent: an approved `REQ-…`, or an answered + approved intake `QA-…`? */
-export async function hasIntakeWork(root: string): Promise<boolean> {
+/**
+ * The intake work this worker may take: approved `REQ-…` and answered + approved intake `QA-…` ids — of the
+ * teams it serves. Empty = nothing to do.
+ * @adr 0450
+ */
+export async function intakeIds(root: string, profileDir?: string): Promise<string[]> {
   const [userTodo, todo, qa, approved] = await Promise.all([
     B.readBook(root, "USER_TODO.md"),
     B.readBook(root, "AI_TODO.md"),
     B.readBook(root, "USER_QA.md"),
     approvedIds(root),
   ]);
-  if ([...approved].some((id) => id.startsWith("REQ-") && userTodo.includes(id))) return true;
+  const served = (md: string, id: string): boolean => (profileDir ? servesTeam(profileDir, bookRowTeam(md, id)) : true);
+  const reqs = [...approved].filter((id) => id.startsWith("REQ-") && userTodo.includes(id) && served(userTodo, id));
   const taskDeps = new Set(B.parseTasks(todo).tasks.flatMap((t) => t.depends));
-  return B.parseQa(qa).rows.some((q) => !taskDeps.has(q.id) && q.answer.trim() && approved.has(q.id));
+  const qas = B.parseQa(qa)
+    .rows.filter((q) => !taskDeps.has(q.id) && q.answer.trim() && approved.has(q.id) && served(qa, q.id))
+    .map((q) => q.id);
+  return [...reqs, ...qas].sort();
+}
+
+/** Is there intake work for this worker (an approved request / answered question of its teams)? */
+export async function hasIntakeWork(root: string, profileDir?: string): Promise<boolean> {
+  return (await intakeIds(root, profileDir)).length > 0;
 }
 
 /**
@@ -355,7 +383,7 @@ export async function applySplit(
 ): Promise<string[] | null> {
   if (!(await dropClaim(root, mine))) return null;
   const [todo, done, prog] = await Promise.all([B.readBook(root, "AI_TODO.md"), B.readBook(root, "AI_DONE.md"), B.readBook(root, "AI_PROGRESS.md")]);
-  const g = /^TSK-(\d+)/.exec(mine.id)?.[1] ?? "0000";
+  const g = /^TSK-(\d+)/.exec(mine.id)?.[1] ?? "000000";
   const texts = [todo, done, prog, mine.id];
   const ids: string[] = [];
   const rows: B.TaskRow[] = children.map((c, i) => {
@@ -363,13 +391,13 @@ export async function applySplit(
     ids.push(id);
     const deps = i === 0 ? mine.task.depends : [ids[i - 1]!];
     const notes = [c.size ? `size: ${c.size}` : "", c.notes ?? "", `split from ${mine.id}`, i === 0 ? `from: ${mine.branch}` : ""].filter(Boolean).join("; ");
-    return { id, priority: c.priority || mine.task.priority || "Medium", tag: "", depends: deps, group: mine.task.group, desc: c.desc, notes };
+    return { id, priority: c.priority || mine.task.priority || "Medium", tag: "", depends: deps, group: mine.task.group, desc: c.desc, notes, team: mine.task.team ?? "" };
   });
   const { tasks } = B.parseTasks(todo);
   await B.writeBook(root, "AI_TODO.md", B.writeTasks(todo, [...tasks, ...rows]));
   // The parent's attachments follow it to AI Done (ADR-0404); the books' links are rewritten in place.
   const moved = await moveTaskEvidence(root, mine.id, evRoot);
-  await B.writeBook(root, "AI_DONE.md", B.appendDone(await B.readBook(root, "AI_DONE.md"), { id: mine.id, group: mine.task.group, depends: mine.task.depends, desc: rehomeTaskLinks(mine.task.desc, mine.id), files: "", evidence: evidenceCell(moved), notes: `split into ${ids.join(", ")} (after repeated attempts); WIP on ${mine.branch}` }));
+  await B.writeBook(root, "AI_DONE.md", B.appendDone(await B.readBook(root, "AI_DONE.md"), { id: mine.id, team: mine.task.team ?? "", group: mine.task.group, depends: mine.task.depends, desc: rehomeTaskLinks(mine.task.desc, mine.id), files: "", evidence: evidenceCell(moved), notes: `split into ${ids.join(", ")} (after repeated attempts); WIP on ${mine.branch}` }));
   const attempts = await B.readAttempts(root);
   delete attempts[mine.id];
   await B.writeAttempts(root, attempts);
