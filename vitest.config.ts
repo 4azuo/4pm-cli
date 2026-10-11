@@ -9,6 +9,10 @@ import { defineConfig } from "vitest/config";
 const vendor = (pkg: string): string => fileURLToPath(new URL(`./vendor/@4pm/${pkg}/index.ts`, import.meta.url));
 
 export default defineConfig({
+  test: {
+    // Several suites drive real temp git repos (bare remote + clone); shared CI runners need more than 5s.
+    testTimeout: 30_000,
+  },
   resolve: {
     alias: {
       "@4pm/constants": vendor("constants"),
