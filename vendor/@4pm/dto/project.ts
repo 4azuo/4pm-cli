@@ -7,7 +7,7 @@ import { UsageMetric, type PhysicProjectStatus, type ProjectStatus } from "@4pm/
 import { ipAllowlistSchema } from "@4pm/validation";
 import { baseRequestSchema, deletedFilterSchema, pinnedFilterSchema } from "./base";
 import type { UserResponse } from "./user";
-import { TEMPLATE_KINDS, type ProjectTemplateSelection, type TemplateKind } from "./template";
+import { TEMPLATE_KINDS, type ProjectTemplateSelection } from "./template";
 import { readMcpServers, type McpApprovedServer } from "./mcp";
 import { readProjectNetworkSettings, DEFAULT_NETWORK_MODE, type ProjectNetworkSettings } from "./network";
 
