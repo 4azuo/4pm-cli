@@ -27,16 +27,30 @@ export type UpdateResult =
   | { action: "blocked"; minSupported: string };
 
 /**
- * Simple semver comparison (major.minor.patch) — returns <0 / 0 / >0.
+ * Compare two cli versions — returns <0 / 0 / >0. Numeric major.minor.patch first; on equal numbers the
+ * re-release suffix decides: no suffix < `b` < `c` < … (shorter before longer, then alphabetical), so a
+ * re-release `1.48.1b` is NEWER than `1.48.1`. The suffix form is normalized first (`1.48.1b` ==
+ * `1.48.1-b`). Mirrors `compareSemver` in `@4pm/utils`.
  */
 export function compareSemver(a: string, b: string): number {
-  const pa = a.split(".").map((n) => parseInt(n, 10) || 0);
-  const pb = b.split(".").map((n) => parseInt(n, 10) || 0);
+  const parse = (v: string): { nums: number[]; suffix: string } => {
+    const canon = canonVersion(v);
+    const dash = canon.indexOf("-");
+    const core = dash === -1 ? canon : canon.slice(0, dash);
+    return {
+      nums: core.split(".").map((n) => parseInt(n, 10) || 0),
+      suffix: dash === -1 ? "" : canon.slice(dash + 1),
+    };
+  };
+  const pa = parse(a);
+  const pb = parse(b);
   for (let i = 0; i < 3; i++) {
-    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+    const diff = (pa.nums[i] ?? 0) - (pb.nums[i] ?? 0);
     if (diff !== 0) return diff;
   }
-  return 0;
+  if (pa.suffix === pb.suffix) return 0;
+  if (pa.suffix.length !== pb.suffix.length) return pa.suffix.length - pb.suffix.length;
+  return pa.suffix < pb.suffix ? -1 : 1;
 }
 
 /**
@@ -54,14 +68,12 @@ export function canonVersion(v: string): string {
 }
 
 /**
- * Should `current` update to `latest`? True when older, OR the same numeric x.y.z but a DIFFERENT build
- * suffix (compareSemver ignores the `-suffix`/`+build`, so "1.10.2" vs a "1.10.2-b" build reads equal —
- * treat the differing build as an available update). `canonVersion` first normalizes the suffix form
- * (`1.12.1b` == `1.12.1-b`) so the same release written two ways is NOT re-installed. Never true when
- * `current` is numerically newer than `latest`. Mirrors the server's cliOutdated.
+ * Should `current` update to `latest`? True only when `current` is strictly older — suffix-aware, so
+ * `1.48.1` updates to a `1.48.1b` re-release but `1.48.1b` never "updates" back to `1.48.1`, and the same
+ * release written two ways (`1.48.1b` / `1.48.1-b`) is NOT re-installed. Mirrors the server's cliOutdated.
  */
 export function shouldUpdateTo(current: string, latest: string): boolean {
-  return canonVersion(current) !== canonVersion(latest) && compareSemver(current, latest) <= 0;
+  return compareSemver(current, latest) < 0;
 }
 
 /**
