@@ -64,7 +64,16 @@ export interface OrgSecuritySettings {
    * @adr 0461
    */
   allowForeignHooks: boolean;
+  /**
+   * Password max age in days for org users (`0` = off). Not applied to root, SSO-only and MACHINE
+   * accounts; an expired password is replaced at the next password login.
+   * @adr 0476
+   */
+  passwordMaxAgeDays: number;
 }
+
+/** Bounds of `security.passwordMaxAgeDays` (`0` = off). @adr 0476 */
+export const PASSWORD_MAX_AGE_BOUNDS = { min: 0, max: 365 } as const;
 
 /** General/regional org policy, stored under `settings.general`. @adr 0039 */
 export interface OrgGeneralSettings {
@@ -242,7 +251,7 @@ export interface OrgSettings {
 
 /** Defaults applied when a settings key is absent. */
 export const DEFAULT_ORG_SETTINGS: OrgSettings = {
-  security: { allowSubAccountWithoutEmail: false, ipAllowlist: [], mfaPolicy: MfaPolicy.ADMINS, allowForeignHooks: false },
+  security: { allowSubAccountWithoutEmail: false, ipAllowlist: [], mfaPolicy: MfaPolicy.ADMINS, allowForeignHooks: false, passwordMaxAgeDays: 0 },
   general: {
     timezone: "UTC",
     pageSize: DEFAULT_PAGE_SIZE,
@@ -319,6 +328,12 @@ export function readOrgSettings(settings: Record<string, unknown> | null | undef
         : d.security.mfaPolicy,
       allowForeignHooks:
         typeof security.allowForeignHooks === "boolean" ? security.allowForeignHooks : d.security.allowForeignHooks,
+      passwordMaxAgeDays:
+        Number.isInteger(security.passwordMaxAgeDays) &&
+        (security.passwordMaxAgeDays as number) >= PASSWORD_MAX_AGE_BOUNDS.min &&
+        (security.passwordMaxAgeDays as number) <= PASSWORD_MAX_AGE_BOUNDS.max
+          ? (security.passwordMaxAgeDays as number)
+          : d.security.passwordMaxAgeDays,
     },
     general: {
       timezone:

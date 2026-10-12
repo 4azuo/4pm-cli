@@ -61,6 +61,12 @@ export interface UserResponse {
    */
   hasPin?: boolean;
   /**
+   * When the password expires under the org `security.passwordMaxAgeDays` (ISO); `null` when the
+   * policy is off or doesn't apply (root / SSO-only / MACHINE). Only on the self `me()` response.
+   * @adr 0476
+   */
+  passwordExpiresAt?: string | null;
+  /**
    * Tools whose last run failed on this account's cli — populated only for MACHINE users
    * (project Members), so a user sees the last tool/connect error like the admin pools. Omitted for
    * human accounts and when the cli is healthy.

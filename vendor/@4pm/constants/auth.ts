@@ -6,8 +6,11 @@
 /** Access-token lifetime (seconds) — JWT 1 hour, checked against Redis. */
 export const ACCESS_TOKEN_TTL_SEC = 60 * 60;
 
-/** Mail-token TTL (seconds) — verify/change/reset, one-time, 5 minutes. */
+/** Mail-token TTL (seconds) — verify/change/contact, one-time, 5 minutes (reset: `RESET_TOKEN_TTL_SEC`). */
 export const MAIL_TOKEN_TTL_SEC = 5 * 60;
+
+/** TTL (seconds) of a reset-password link — the new password is typed after opening it. @adr 0475 */
+export const RESET_TOKEN_TTL_SEC = 15 * 60;
 
 /** Number of consecutive failed logins before a temporary account lockout. */
 export const LOCKOUT_MAX_ATTEMPTS = 5;

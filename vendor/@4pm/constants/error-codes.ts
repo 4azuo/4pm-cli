@@ -42,6 +42,8 @@ export const ErrorCode = {
   PASSWORD_CURRENT_INVALID: "PASSWORD_CURRENT_INVALID",
   /** The new password appears in a known data breach (Have I Been Pwned). @adr 0426 */
   PASSWORD_BREACHED: "PASSWORD_BREACHED",
+  /** The new password equals the current one (forced change at login). @adr 0476 */
+  PASSWORD_REUSED: "PASSWORD_REUSED",
   IDENTITY_REQUIRED: "IDENTITY_REQUIRED",
   MFA_CODE_INVALID: "MFA_CODE_INVALID",
   MFA_CODE_EXPIRED: "MFA_CODE_EXPIRED",
