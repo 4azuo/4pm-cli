@@ -4,8 +4,9 @@
  * process env, scoped to the App host); the `gh` shim runs `git-token`. Both ask the running `4pm start`
  * daemon — found via `FOURPM_PROFILE_DIR` — over its control socket for a short-lived token under the job
  * scope (`FOURPM_JOB_ID`). They print nothing when no token applies, so git / gh fall back to the worker's
- * own credentials. Never prints anything but the credential (stdout is the git protocol).
- * @adr 0356
+ * own credentials. Never prints anything but the credential (stdout is the git protocol). On Self-managed
+ * git auth the helper / shim name their host (`--host`, `--kind`) — several hosts may be active at once.
+ * @adr 0356 @adr 0467
  */
 import { connect } from "node:net";
 import { join } from "node:path";
@@ -72,11 +73,28 @@ async function readCredentialInput(): Promise<Record<string, string>> {
   return out;
 }
 
+/** Split `[--host h] [--kind k] [action]` into the fixed host/kind (Self-managed helper) and the rest. */
+function parseFixed(args: readonly string[]): { host: string; kind: string; rest: string[] } {
+  let host = "";
+  let kind = "";
+  const rest: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i] ?? "";
+    if (a === "--host") host = args[++i] ?? "";
+    else if (a === "--kind") kind = args[++i] ?? "";
+    else rest.push(a);
+  }
+  return { host: host.toLowerCase(), kind, rest };
+}
+
 /**
- * git credential helper: answer `get` for https on the App host with `x-access-token:<token>`;
- * `store`/`erase` are no-ops (tokens are short-lived and revoked by the daemon).
+ * git credential helper: answer `get` for https on the helper's host with `x-access-token:<token>`
+ * (`oauth2` for GitLab); `store`/`erase` are no-ops (the daemon owns the tokens). The host is the App host
+ * from the env, or the `--host` a Self-managed helper was configured with.
  */
-export async function runGitCredential(action: string | undefined): Promise<void> {
+export async function runGitCredential(args: readonly string[]): Promise<void> {
+  const fixed = parseFixed(args);
+  const action = fixed.rest[0];
   if (action !== "get") {
     // Drain stdin so git doesn't see a broken pipe.
     await readCredentialInput().catch(() => undefined);
@@ -84,16 +102,18 @@ export async function runGitCredential(action: string | undefined): Promise<void
   }
   const input = await readCredentialInput();
   const host = (input.host ?? "").toLowerCase();
-  if (input.protocol !== "https" || !host || host !== (process.env[GIT_HOST_ENV] ?? "").toLowerCase()) return;
+  const expected = fixed.host || (process.env[GIT_HOST_ENV] ?? "").toLowerCase();
+  if (input.protocol !== "https" || !host || host !== expected) return;
   const token = await requestToken(host, input.path ?? "");
   // GitLab accepts the token as the password with username `oauth2` (ADR-0382); GitHub uses x-access-token.
-  const username = (process.env[GIT_HOST_KIND_ENV] ?? "") === "gitlab" ? "oauth2" : "x-access-token";
+  const kind = fixed.host ? fixed.kind : (process.env[GIT_HOST_KIND_ENV] ?? "");
+  const username = kind === "gitlab" ? "oauth2" : "x-access-token";
   if (token) process.stdout.write(`username=${username}\npassword=${token}\n`);
 }
 
-/** `gh` shim helper: print a token for the App host's primary repo (empty ⇒ nothing). */
-export async function runGitToken(): Promise<void> {
-  const host = process.env[GIT_HOST_ENV] ?? "";
+/** `gh` / `glab` shim helper: print a token for the App host (or the shim's `--host`) — empty ⇒ nothing. */
+export async function runGitToken(args: readonly string[]): Promise<void> {
+  const host = parseFixed(args).host || (process.env[GIT_HOST_ENV] ?? "");
   if (!host) return;
   const token = await requestToken(host, "");
   if (token) process.stdout.write(`${token}\n`);

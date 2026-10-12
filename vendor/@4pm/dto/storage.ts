@@ -258,6 +258,8 @@ export interface CapCounter {
 export interface PlanCapsResponse {
   memoItems: CapCounter;
   autonomousBooks: Record<AutonomousBook, CapCounter>;
+  /** Non-deleted automation rules (org + project) vs `automationRules`. @adr 0465 */
+  automationRules: CapCounter;
   /** Start of the next UTC month — when the book counters reset. */
   resetAt: string;
 }

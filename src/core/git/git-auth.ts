@@ -7,9 +7,12 @@
  *  - puts a **`gh` shim** first on `PATH` that injects `GH_TOKEN` / `GH_ENTERPRISE_TOKEN` per call;
  *  - pulls short-lived installation tokens from the server over `git.token`, per **job scope**
  *    (`FOURPM_JOB_ID`, else the link's default scope), and **revokes** them when the scope ends.
- * `self` (own creds / the rented ssh deploy key) configures nothing. The App private key never reaches
- * the worker. Never throws.
- * @adr 0356 @adr 0075 @arch 0049
+ * GitLab methods use the same helper + a `glab` shim. **`self`** uses the same path, fed by the worker's own
+ * gh / glab login (one helper per host it covers, host baked into the helper/shim): the cli reads that
+ * login's token per request and the agent never reads the login dir; nothing is revoked (the operator's
+ * own long-lived login). The rented ssh deploy key is separate (`GIT_SSH_COMMAND`). The App private key
+ * never reaches the worker. Never throws.
+ * @adr 0356 @adr 0075 @adr 0467 @arch 0049
  */
 import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpsRequest } from "node:https";
@@ -18,6 +21,7 @@ import { githubHostKind, isGitLabMethod, type GitAuthMethod } from "@4pm/dto";
 import type { GitTokenReply, GitTokenRequest } from "@4pm/ws";
 import { logger } from "../../common/logger/logger";
 import { prepareAgentRunDir, readOnlyForAgent } from "../../utils/agent-user";
+import { discoverSelfLogins, readSelfToken, type SelfLogin } from "./self-git-login";
 
 /** Env var carrying the job scope to the helper / shim (set per dispatched process). */
 export const JOB_ID_ENV = "FOURPM_JOB_ID";
@@ -28,8 +32,6 @@ export const GIT_HOST_ENV = "FOURPM_GIT_HOST";
 export const GIT_HOST_KIND_ENV = "FOURPM_GIT_HOST_KIND";
 /** The link's default scope (git outside any job). */
 export const DEFAULT_SCOPE = "link";
-/** Number of GIT_CONFIG_* entries this module adds (helper reset + helper + useHttpPath). */
-const HELPER_ENV_ENTRIES = 3;
 /** Revoke the default scope after this long without a request. */
 const DEFAULT_SCOPE_IDLE_MS = 10 * 60 * 1000;
 
@@ -46,10 +48,15 @@ interface IssuedToken {
 const state: {
   host: string | null;
   transport: GitTokenTransport | null;
-  baseEnv: { count: number; path: string } | null;
+  /** The env before this module changed it + how many GIT_CONFIG_* entries it added. */
+  baseEnv: { count: number; path: string; added: number } | null;
   scopes: Map<string, IssuedToken[]>;
   defaultTimer: ReturnType<typeof setTimeout> | null;
-} = { host: null, transport: null, baseEnv: null, scopes: new Map(), defaultTimer: null };
+  /** The worker's own logins while the project is on `self` (null otherwise). @adr 0467 */
+  self: SelfLogin[] | null;
+  /** Hosts already warned about (login without a readable token) — once per start. */
+  warned: Set<string>;
+} = { host: null, transport: null, baseEnv: null, scopes: new Map(), defaultTimer: null, self: null, warned: new Set() };
 
 /**
  * The shell-quoted invocation of this very cli: node + its loader flags (e.g. tsx in dev) + the entry
@@ -61,9 +68,12 @@ function cliInvocation(): string {
   return [process.execPath, ...process.execArgv, ...(script ? [script] : [])].map(quote).join(" ");
 }
 
-/** The command git runs as the credential helper (`!` = run through the shell). */
-function helperCommand(): string {
-  return `!${cliInvocation()} git-credential`;
+/**
+ * The command git runs as the credential helper (`!` = run through the shell). A `self` helper names its
+ * host + kind (several hosts may be active at once); the server-managed one reads them from the env.
+ */
+function helperCommand(fixed?: { host: string; kind: string }): string {
+  return `!${cliInvocation()} git-credential${fixed ? ` --host ${fixed.host} --kind ${fixed.kind}` : ""}`;
 }
 
 /** Find the real `gh` on PATH (skipping our shim dir); null when not installed. */
@@ -76,16 +86,22 @@ function findRealGh(pathValue: string, shimDir: string): string | null {
   return null;
 }
 
-/** The POSIX shim that injects the App token into one `gh` call (a caller-set token wins). */
-function shimScript(realGh: string, cli: string): string {
+/**
+ * The POSIX shim that injects the token into one `gh` call (a caller-set token wins). Server-managed: the
+ * App host/kind come from the env; `self`: they are baked in (`fixed`).
+ */
+function shimScript(realGh: string, cli: string, fixed?: { host: string; kind: string }): string {
+  const host = fixed ? fixed.host : `$${GIT_HOST_ENV}`;
+  const kind = fixed ? fixed.kind : `$${GIT_HOST_KIND_ENV}`;
+  const tokenCmd = fixed ? `${cli} git-token --host ${fixed.host}` : `${cli} git-token`;
   return `#!/bin/sh
-# 4PM gh shim (ADR-0356) — injects a short-lived GitHub-App token for the served project.
+# 4PM gh shim (ADR-0356/0467) — injects the served project's git token (App token, or the worker's own login).
 if [ -z "$GH_TOKEN$GH_ENTERPRISE_TOKEN$GITHUB_TOKEN" ]; then
-  T="$(${cli} git-token 2>/dev/null)"
+  T="$(${tokenCmd} 2>/dev/null)"
   if [ -n "$T" ]; then
-    case "$${GIT_HOST_KIND_ENV}" in
-      ghes) export GH_HOST="$${GIT_HOST_ENV}" GH_ENTERPRISE_TOKEN="$T"; unset GH_TOKEN ;;
-      ghe-cloud) export GH_HOST="$${GIT_HOST_ENV}" GH_TOKEN="$T"; unset GH_ENTERPRISE_TOKEN ;;
+    case "${kind}" in
+      ghes) export GH_HOST="${host}" GH_ENTERPRISE_TOKEN="$T"; unset GH_TOKEN ;;
+      ghe-cloud) export GH_HOST="${host}" GH_TOKEN="$T"; unset GH_ENTERPRISE_TOKEN ;;
       *) export GH_TOKEN="$T"; unset GH_ENTERPRISE_TOKEN ;;
     esac
   fi
@@ -104,13 +120,18 @@ function findRealGlab(pathValue: string, shimDir: string): string | null {
   return null;
 }
 
-/** The POSIX shim that injects the GitLab group token into one `glab` call (a caller-set token wins). */
-function glabShimScript(realGlab: string, cli: string): string {
+/**
+ * The POSIX shim that injects the GitLab token into one `glab` call (a caller-set token wins). Server-managed:
+ * the host comes from the env; `self`: it is baked in (`fixed`).
+ */
+function glabShimScript(realGlab: string, cli: string, fixedHost?: string): string {
+  const host = fixedHost ?? `$${GIT_HOST_ENV}`;
+  const tokenCmd = fixedHost ? `${cli} git-token --host ${fixedHost}` : `${cli} git-token`;
   return `#!/bin/sh
-# 4PM glab shim (ADR-0382) — injects the served project's GitLab group token.
+# 4PM glab shim (ADR-0382/0467) — injects the served project's GitLab token (server-held, or the worker's own login).
 if [ -z "$GITLAB_TOKEN" ]; then
-  T="$(${cli} git-token 2>/dev/null)"
-  if [ -n "$T" ]; then export GITLAB_HOST="$${GIT_HOST_ENV}" GITLAB_TOKEN="$T"; fi
+  T="$(${tokenCmd} 2>/dev/null)"
+  if [ -n "$T" ]; then export GITLAB_HOST="${host}" GITLAB_TOKEN="$T"; fi
 fi
 exec "${realGlab}" "$@"
 `;
@@ -119,8 +140,8 @@ exec "${realGlab}" "$@"
 /** Restore the env this module changed (helper config, PATH, host vars). */
 function clearEnv(): void {
   if (!state.baseEnv) return;
-  const { count, path } = state.baseEnv;
-  for (let i = count; i < count + HELPER_ENV_ENTRIES; i++) {
+  const { count, path, added } = state.baseEnv;
+  for (let i = count; i < count + added; i++) {
     delete process.env[`GIT_CONFIG_KEY_${i}`];
     delete process.env[`GIT_CONFIG_VALUE_${i}`];
   }
@@ -130,12 +151,135 @@ function clearEnv(): void {
   delete process.env[GIT_HOST_ENV];
   delete process.env[GIT_HOST_KIND_ENV];
   state.baseEnv = null;
+  state.self = null;
+}
+
+/** Append GIT_CONFIG_* entries after the base count (git ≥ 2.31 reads them as config). */
+function writeHelperEnv(baseCount: number, entries: [string, string][]): void {
+  entries.forEach(([key, value], i) => {
+    process.env[`GIT_CONFIG_KEY_${baseCount + i}`] = key;
+    process.env[`GIT_CONFIG_VALUE_${baseCount + i}`] = value;
+  });
+  process.env.GIT_CONFIG_COUNT = String(baseCount + entries.length);
 }
 
 /**
- * Apply the served project's git-auth from the `ws_token` (method + App host). For `github-app` with a
- * host, scope the helper + shim to it; otherwise undo any earlier configuration (and revoke what this
- * worker still holds). Returns true when the GitHub App path is active.
+ * The helper entries for one host: an empty value resets the helper list accumulated from system/global
+ * config (e.g. `gh auth git-credential`, which git would otherwise ask first), then ours. Re-adding those
+ * helpers after ours was rejected — on success git runs `store` on every helper, so a store/cache/keychain
+ * helper would persist the token on disk.
+ */
+function hostHelperEntries(host: string, fixed?: { host: string; kind: string }): [string, string][] {
+  const prefix = `credential.https://${host}`;
+  return [
+    [`${prefix}.helper`, ""],
+    [`${prefix}.helper`, helperCommand(fixed)],
+    [`${prefix}.useHttpPath`, "true"],
+  ];
+}
+
+/**
+ * Write (or remove) one tool's shim in the agent-readable run dir and return its dir; null when no shim was
+ * written (tool not installed / Windows). Under uid separation the shims sit in the cli-owned run dir the
+ * agent can execute but not change — the cli's own PATH uses them too.
+ * @adr 0430 phase 2
+ */
+function writeShim(profileDir: string, tool: "gh" | "glab", basePath: string, content: ((real: string) => string) | null): string | null {
+  if (process.platform === "win32") return null;
+  const runDir = prepareAgentRunDir(profileDir);
+  const shimDir = join(runDir ?? profileDir, "bin");
+  const real = tool === "glab" ? findRealGlab(basePath, shimDir) : findRealGh(basePath, shimDir);
+  if (!real || !content) {
+    rmSync(join(shimDir, tool), { force: true });
+    return null;
+  }
+  mkdirSync(shimDir, { recursive: true });
+  if (runDir) readOnlyForAgent(shimDir, 0o2750);
+  const shim = join(shimDir, tool);
+  writeFileSync(shim, content(real), { encoding: "utf8", mode: 0o755 });
+  chmodSync(shim, 0o755);
+  return shimDir;
+}
+
+/** The real binary of a tool on the pre-shim PATH (null when not installed). */
+function realToolOf(tool: "gh" | "glab", basePath: string): string | null {
+  return tool === "glab" ? findRealGlab(basePath, "") : findRealGh(basePath, "");
+}
+
+/** Read a `self` login's token (null when the tool is missing or the login keeps no token in its dir). */
+function selfToken(login: SelfLogin): string | null {
+  const basePath = state.baseEnv?.path ?? process.env.PATH ?? "";
+  const real = realToolOf(login.tool, basePath);
+  return real ? readSelfToken(login, real, basePath) : null;
+}
+
+/** Warn once per host when a login lists it but yields no token (keyring storage, or the tool is missing). */
+function warnMissingToken(login: SelfLogin): void {
+  if (state.warned.has(login.host)) return;
+  state.warned.add(login.host);
+  logger.warn("git.auth.self.no-token", {
+    host: login.host,
+    tool: login.tool,
+    mounted: login.mounted,
+    hint:
+      login.tool === "gh"
+        ? "gh lists this host but returned no token — if `gh auth status` on the host shows the keyring, log in again with `gh auth login --insecure-storage`, or run `gh auth login` inside the container"
+        : "glab lists this host but returned no token — if glab keeps it in a keyring, store it in the config file, or run `glab auth login` inside the container",
+  });
+}
+
+/**
+ * Configure Self-managed git auth from the worker's own gh / glab login: one helper per host it holds a
+ * token for and a shim per tool (GitHub: github.com preferred when gh covers several hosts). Re-applied only
+ * when that set changes (checked on every `ws_token`, so a later in-container login is picked up). No login ⇒
+ * nothing is configured (git keeps the worker's own setup, e.g. the ssh key).
+ * @adr 0467
+ */
+function configureSelfGitAuth(profileDir: string): void {
+  // Only hosts with a readable token get a helper — a helper resets the host's other helpers, and glab's
+  // default config lists gitlab.com even before any login.
+  const logins = discoverSelfLogins().filter((l) => {
+    if (selfToken(l)) return true;
+    if (l.mounted || l.tool === "gh") warnMissingToken(l);
+    return false;
+  });
+  const sig = (l: SelfLogin[] | null): string => (l ?? []).map((x) => `${x.tool}:${x.host}:${x.configDir}`).join("|");
+  if (state.self && sig(state.self) === sig(logins)) return;
+  clearEnv();
+  if (logins.length === 0) return;
+  const baseCount = Number(process.env.GIT_CONFIG_COUNT ?? "0") || 0;
+  const basePath = process.env.PATH ?? "";
+  const entries = logins.flatMap((l) => hostHelperEntries(l.host, { host: l.host, kind: l.kind }));
+  writeHelperEnv(baseCount, entries);
+  state.baseEnv = { count: baseCount, path: basePath, added: entries.length };
+  state.self = logins;
+  process.env[PROFILE_DIR_ENV] = resolve(profileDir);
+  const gh = logins.find((l) => l.tool === "gh" && l.host === "github.com") ?? logins.find((l) => l.tool === "gh");
+  const glab = logins.find((l) => l.tool === "glab");
+  const ghDir = writeShim(profileDir, "gh", basePath, gh ? (real) => shimScript(real, cliInvocation(), gh) : null);
+  const glabDir = writeShim(profileDir, "glab", basePath, glab ? (real) => glabShimScript(real, cliInvocation(), glab.host) : null);
+  const shimDir = ghDir ?? glabDir;
+  if (shimDir) process.env.PATH = `${shimDir}${delimiter}${basePath}`;
+  logger.info("git.auth.self", { hosts: logins.map((l) => l.host), mounted: logins.some((l) => l.mounted) });
+}
+
+/**
+ * Dev only (`tsx src/index.ts`): git runs the helper from the repo cwd, where tsx can't find the cli's
+ * tsconfig (path aliases) — point it there explicitly. The bundled dist needs nothing.
+ */
+function setDevTsconfig(): void {
+  const script = process.argv[1];
+  const devTsconfig = script ? resolve(dirname(script), "..", "tsconfig.json") : "";
+  if (process.execArgv.some((a) => a.includes("tsx")) && devTsconfig && existsSync(devTsconfig) && !process.env.TSX_TSCONFIG_PATH) {
+    process.env.TSX_TSCONFIG_PATH = devTsconfig;
+  }
+}
+
+/**
+ * Apply the served project's git-auth from the `ws_token` (method + App host). For a server-managed method
+ * with a host, scope the helper + shim to it; otherwise (`self`, legacy `deploy-key`, none) undo any earlier
+ * server-managed configuration (revoking what this worker still holds) and serve the worker's own gh / glab
+ * login instead. Returns true when a server-managed path is active.
  */
 export function configureGitAuth(
   method: GitAuthMethod | null,
@@ -149,64 +293,38 @@ export function configureGitAuth(
     const active = (method === "github-app" || isGitlab) && !!host;
     if (!active || (state.host && state.host !== host)) {
       if (state.host) void revokeAll();
-      clearEnv();
+      if (state.host) clearEnv();
       state.host = null;
     }
-    if (!active) return false;
+    if (!active) {
+      setDevTsconfig();
+      configureSelfGitAuth(profileDir);
+      return false;
+    }
+    // Leaving `self`: drop its helpers/shims before the server-managed ones are written.
+    if (state.self) clearEnv();
 
     state.transport = transport;
     if (state.host === host && state.baseEnv) return true;
     const baseCount = Number(process.env.GIT_CONFIG_COUNT ?? "0") || 0;
-    state.baseEnv = { count: baseCount, path: process.env.PATH ?? "" };
-    const prefix = `credential.https://${host}`;
-    // The App is the ONLY credential source for its host: an empty value resets the helper list
-    // accumulated from system/global config (e.g. `gh auth git-credential`, which git would otherwise
-    // ask first), then ours. Re-adding those helpers after ours was rejected — on success git runs
-    // `store` on every helper, so a store/cache/keychain helper would persist the App token on disk.
-    const entries: [string, string][] = [
-      [`${prefix}.helper`, ""],
-      [`${prefix}.helper`, helperCommand()],
-      [`${prefix}.useHttpPath`, "true"],
-    ];
-    entries.forEach(([key, value], i) => {
-      process.env[`GIT_CONFIG_KEY_${baseCount + i}`] = key;
-      process.env[`GIT_CONFIG_VALUE_${baseCount + i}`] = value;
-    });
-    process.env.GIT_CONFIG_COUNT = String(baseCount + HELPER_ENV_ENTRIES);
+    const basePath = process.env.PATH ?? "";
+    // The server-managed credential is the ONLY credential source for its host.
+    const entries = hostHelperEntries(host);
+    writeHelperEnv(baseCount, entries);
+    state.baseEnv = { count: baseCount, path: basePath, added: entries.length };
     process.env[PROFILE_DIR_ENV] = resolve(profileDir);
-    // Dev only (`tsx src/index.ts`): git runs the helper from the repo cwd, where tsx can't find the
-    // cli's tsconfig (path aliases) — point it there explicitly. The bundled dist needs nothing.
-    const script = process.argv[1];
-    const devTsconfig = script ? resolve(dirname(script), "..", "tsconfig.json") : "";
-    if (process.execArgv.some((a) => a.includes("tsx")) && devTsconfig && existsSync(devTsconfig) && !process.env.TSX_TSCONFIG_PATH) {
-      process.env.TSX_TSCONFIG_PATH = devTsconfig;
-    }
+    setDevTsconfig();
     process.env[GIT_HOST_ENV] = host;
     process.env[GIT_HOST_KIND_ENV] = isGitlab ? "gitlab" : githubHostKind(host);
 
     // Tool shim (POSIX only) — first on PATH so the agent's `gh` (GitHub) / `glab` (GitLab) picks up
     // the token. The other tool's stale shim is removed when the method switches.
-    if (process.platform !== "win32") {
-      // Under uid separation the shims sit in the cli-owned run dir the agent can execute but not change
-      // (ADR-0430 phase 2) — the cli's own PATH uses them too, so the agent must never be able to edit them.
-      const runDir = prepareAgentRunDir(profileDir);
-      const shimDir = join(runDir ?? profileDir, "bin");
-      const toolName = isGitlab ? "glab" : "gh";
-      const otherTool = isGitlab ? "gh" : "glab";
-      const realTool = isGitlab ? findRealGlab(state.baseEnv.path, shimDir) : findRealGh(state.baseEnv.path, shimDir);
-      if (realTool) {
-        mkdirSync(shimDir, { recursive: true });
-        if (runDir) readOnlyForAgent(shimDir, 0o2750);
-        const shim = join(shimDir, toolName);
-        const shimContent = isGitlab ? glabShimScript(realTool, cliInvocation()) : shimScript(realTool, cliInvocation());
-        writeFileSync(shim, shimContent, { encoding: "utf8", mode: 0o755 });
-        chmodSync(shim, 0o755);
-        process.env.PATH = `${shimDir}${delimiter}${state.baseEnv.path}`;
-      } else {
-        rmSync(join(shimDir, toolName), { force: true });
-      }
-      rmSync(join(shimDir, otherTool), { force: true });
-    }
+    const tool = isGitlab ? "glab" : "gh";
+    const shimDir = writeShim(profileDir, tool, basePath, (real) =>
+      isGitlab ? glabShimScript(real, cliInvocation()) : shimScript(real, cliInvocation()),
+    );
+    writeShim(profileDir, isGitlab ? "gh" : "glab", basePath, null);
+    if (shimDir) process.env.PATH = `${shimDir}${delimiter}${basePath}`;
     state.host = host;
     logger.info(isGitlab ? "git.auth.gitlab" : "git.auth.github-app", { host });
     return true;
@@ -230,10 +348,19 @@ function touchDefaultScope(): void {
 
 /**
  * Issue a token for `host`/`path` under `scope` (called by the control server for the helper / shim).
- * Null when the App is not active, the host differs, or the server declines (git then falls back).
+ * On `self` it is the worker's own login's token for that host. Null when no credential applies, the host
+ * differs, or the server declines (git then falls back).
  */
 export async function issueGitToken(scope: string, host: string, path: string): Promise<string | null> {
   try {
+    // `self`: the worker's own login for that host — read per request, never revoked (ADR-0467).
+    if (state.self) {
+      const login = state.self.find((l) => l.host === host.toLowerCase());
+      if (!login) return null;
+      const token = selfToken(login);
+      if (!token) warnMissingToken(login);
+      return token;
+    }
     if (!state.host || !state.transport || host.toLowerCase() !== state.host) return null;
     const s = scope || DEFAULT_SCOPE;
     const reply = await state.transport({ op: "issue", scope: s, repo: { host, path } });

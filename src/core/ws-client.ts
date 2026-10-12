@@ -688,8 +688,9 @@ export class WsClient {
         // Admin-edited overrides for cli-built prompts (ADR-0381): apply override-or-built-in on each
         // prompt build. Platform-wide; refreshed every ws_token, cleared when the server sends none.
         setPromptOverrides(token.promptOverrides ?? null);
-        // Git-auth (ADR-0356): for a GitHub-App project, scope the credential helper + gh shim to the
-        // App host (process env only) and pull per-job tokens over git.token; `self` configures nothing.
+        // Git-auth (ADR-0356): for a server-managed project, scope the credential helper + gh/glab shim to
+        // its host (process env only) and pull per-job tokens over git.token; `self` serves the worker's own
+        // gh/glab login through the same helper/shims (ADR-0467).
         configureGitAuth(token.gitAuth ?? null, token.gitAuthHost ?? null, this.context.profileDir, (req) =>
           this.request<GitTokenReply>(WsChannels.GIT_TOKEN, req),
         );

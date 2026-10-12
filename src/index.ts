@@ -130,8 +130,8 @@ async function main(): Promise<void> {
       break;
     }
     case "git-credential": {
-      // git credential helper for GitHub-App git-auth (ADR-0356) — configured by the daemon, not users.
-      await runGitCredential(rest[0]);
+      // git credential helper for git-auth (ADR-0356/0467) — configured by the daemon, not users.
+      await runGitCredential(rest);
       break;
     }
     case "net-connect": {
@@ -140,8 +140,8 @@ async function main(): Promise<void> {
       break;
     }
     case "git-token": {
-      // Token source for the `gh` shim (ADR-0356).
-      await runGitToken();
+      // Token source for the `gh` / `glab` shims (ADR-0356/0467).
+      await runGitToken(rest);
       break;
     }
     case "auto-run": {
