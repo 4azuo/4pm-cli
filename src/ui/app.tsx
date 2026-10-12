@@ -120,6 +120,9 @@ export function App({
     bus.clear();
   }, [stdout, bus]);
 
+  // A restart into an updated cli (ADR-0473) unmounts the TUI so the new process owns the terminal.
+  useEffect(() => bus.onRestart(() => exit()), [bus, exit]);
+
   useEffect(() => {
     const offTranscript = bus.onTranscript((entry) => {
       setEntries((prev) =>

@@ -95,6 +95,8 @@ export class SessionBus {
   private currentUsage: MachineUsagePayload | null = null;
   /** Tokens consumed this session (sum of AI runs), for the header. */
   private currentSessionTokens = 0;
+  /** Set once a restart into an updated cli was requested (sticky — a late subscriber still sees it). */
+  private restartPending = false;
 
   constructor() {
     // Producers/consumers may attach many listeners (banner, transcript, sink…).
@@ -385,6 +387,29 @@ export class SessionBus {
   onReconnect(fn: () => void): () => void {
     this.emitter.on("reconnect", fn);
     return () => this.emitter.off("reconnect", fn);
+  }
+
+  /** Whether a restart into an updated cli was requested. @adr 0473 */
+  get restartRequested(): boolean {
+    return this.restartPending;
+  }
+
+  /**
+   * Session → `4pm start`: the cli was updated in place — stop the session, tear down, release the
+   * lock, then re-exec (instead of re-execing while still holding them).
+   * @adr 0473
+   */
+  requestRestart(): void {
+    if (this.restartPending) return;
+    this.restartPending = true;
+    this.emitter.emit("restart");
+  }
+
+  /** Subscribe to the restart request (fires at once when it was already requested). */
+  onRestart(fn: () => void): () => void {
+    if (this.restartPending) fn();
+    this.emitter.on("restart", fn);
+    return () => this.emitter.off("restart", fn);
   }
 
   /**

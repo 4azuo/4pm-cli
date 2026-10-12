@@ -2,16 +2,15 @@
  * UpdateScheduler — runs the org-configured daily cli auto-update. The policy
  * is fed from each ws_token; at the target hour (resolved to the org timezone) it updates
  * when the cli is idle — deferring while a command runs so a job is never interrupted —
- * then re-execs the new binary (keeps `.cre`/profile, so the session reconnects). A Node
- * process cannot hot-swap its own code, so re-exec is the seamless equivalent of "no
+ * then asks `4pm start` to re-exec the new binary (keeps `.cre`/profile, so the session reconnects).
+ * A Node process cannot hot-swap its own code, so re-exec is the seamless equivalent of "no
  * restart". Gated by the org toggle AND the machine's local opt-out (`autoUpdate:false`).
- * @adr 0074
+ * @adr 0074 @adr 0473
  */
-import { spawn } from "node:child_process";
 import { logger } from "../common/logger/logger";
 import { CLI_VERSION } from "../version";
 import { readProfileConfig } from "../config/profile";
-import { CLI_UPDATE_LOCKED_REASON, reexecArgv, updateToLatest } from "./update";
+import { CLI_UPDATE_LOCKED_REASON, updateToLatest } from "./update";
 import { autoUpdateFlaggedTools, resolveInstallTimeoutMs } from "./worker/worker-tools";
 import type { SessionBus } from "./session/session-bus";
 import { t } from "../i18n";
@@ -214,15 +213,13 @@ export class UpdateScheduler {
         });
         return;
       }
-      // Updated ⇒ re-exec into the new binary — same as `4pm start`'s auto-update branch
-      // (FOURPM_NO_UPDATE=1 skips the redundant startup check on the child).
+      // Updated ⇒ ask `4pm start` to restart into the new binary. It stops this session, tears down
+      // and releases the lock BEFORE re-execing — re-execing from here (lock + WS still held) made the
+      // child refuse to start.
       logger.info("update.scheduled.updated", { version: result.version });
       this.bus.log(t("update.scheduledUpdated", { version: result.version ?? "" }));
-      const child = spawn(process.execPath, reexecArgv(), {
-        stdio: "inherit",
-        env: { ...process.env, FOURPM_NO_UPDATE: "1" },
-      });
-      child.on("exit", (code) => process.exit(code ?? 0));
+      this.stop();
+      this.bus.requestRestart();
     } catch (err) {
       logger.warn("update.scheduled.error", { error: String(err) });
       // Also surface an unexpected failure (e.g. server unreachable while updating) to the web

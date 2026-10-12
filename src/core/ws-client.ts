@@ -470,6 +470,21 @@ export class WsClient {
   }
 
   /**
+   * Stop the session for good (no reconnect): close the socket and wake a pending backoff so run()
+   * returns. Used before restarting into an updated cli, so the old session is gone before the new
+   * process connects.
+   * @adr 0473
+   */
+  stop(): void {
+    this.stopped = true;
+    this.updateScheduler.stop();
+    this.clearHeartbeat();
+    this.bus.setStatus("stopped");
+    if (this.wakeReconnect) this.wakeReconnect();
+    this.socket?.close();
+  }
+
+  /**
    * Force an immediate reconnect: wake the backoff sleep if waiting, else drop the live
    * socket so the run() loop reconnects (the next backoff is skipped). No-op if stopped.
    */
@@ -736,6 +751,11 @@ export class WsClient {
           this.bus.setStatus("stopped");
           logger.error("ws.insecure-transport-blocked", { url: wsBase });
           throw new Error(INSECURE_URL_BLOCKED);
+        }
+        // Stopped while the token was being fetched (a restart into an updated cli — ADR-0473) ⇒ don't connect.
+        if (this.stopped) {
+          resolve();
+          return;
         }
         const socket = new WebSocket(wsUrl);
         this.socket = socket;

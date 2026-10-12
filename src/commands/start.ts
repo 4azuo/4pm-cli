@@ -2,14 +2,14 @@
  * `4pm start` command — check version/auto-update, then open a WS
  * connection to the server and keep the session alive (heartbeat, reconnect,
  * receive dispatch). Requires an existing pairing (`.cre` present in the profile).
- * @adr 0015
+ * @adr 0015 @adr 0473
  */
-import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { readCredential } from "../core/profile/credential";
 import { collectFingerprint } from "../core/profile/fingerprint";
 import { fetchWhoami } from "../services/api";
-import { checkAndUpdate, reexecArgv } from "../core/update";
+import { checkAndUpdate } from "../core/update";
+import { reexecUpdated } from "../core/update-reexec";
 import { WsClient } from "../core/ws-client";
 import { initCommandHistory } from "../core/exec/command-history";
 import { initCommandOutput } from "../core/exec/command-output-store";
@@ -109,15 +109,11 @@ export async function runStart(
     return;
   }
   if (result.action === "updated") {
-    // Re-exec the new binary with the same original args (keeps the profile)
+    // Re-exec the new binary with the same original args (keeps the profile). Nothing is claimed
+    // yet (lock, sockets, WS), so the child starts like a fresh `4pm start`.
     logger.info("update.updated", { version: result.version });
     console.log(t("start.restarting"));
-    const child = spawn(process.execPath, reexecArgv(), {
-      stdio: "inherit",
-      env: { ...process.env, FOURPM_NO_UPDATE: "1" },
-    });
-    child.on("exit", (code) => process.exit(code ?? 0));
-    return;
+    await reexecUpdated();
   }
 
   // Single-instance lock per profile (ADR-0047): refuse a second `4pm start` for the
@@ -138,8 +134,11 @@ export async function runStart(
   let stopIdleClear: (() => void) | null = null;
   process.once("exit", release);
   // Ensure the "exit" handler runs on Ctrl+C / termination so the lock is released.
-  process.once("SIGINT", () => process.exit(0));
-  process.once("SIGTERM", () => process.exit(0));
+  const exitOnSignal = (): void => process.exit(0);
+  process.once("SIGINT", exitOnSignal);
+  process.once("SIGTERM", exitOnSignal);
+  // Set when the session asks to restart into an updated cli — re-exec after the teardown.
+  let restarting = false;
 
   // Toolchain (ADR-0396): the self-installed release binaries (gh/glab) come first on PATH, for the cli
   // and every child it spawns — set before anything captures PATH (git-auth's base env, AI runs).
@@ -158,6 +157,12 @@ export async function runStart(
       machine: collectFingerprint(),
       profileDir,
       bus,
+    });
+    // A self-update (daily tick / web push) asks to restart: stop the session here; the TUI exits on
+    // the same signal, and the re-exec runs only after the teardown below released everything.
+    bus.onRestart(() => {
+      restarting = true;
+      client.stop();
     });
     // Start-up self-heal (ADR-0396): install a missing gh/glab and the enabled profiles' AI CLIs in the
     // background; each success re-reports the tools snapshot. Never blocks or fails the start.
@@ -237,5 +242,13 @@ export async function runStart(
     stopControl?.();
     stopGitToken?.();
     release();
+  }
+  if (restarting) {
+    // The re-exec parent must outlive stop signals and forward them to the child instead.
+    process.off("SIGINT", exitOnSignal);
+    process.off("SIGTERM", exitOnSignal);
+    process.off("exit", release);
+    console.log(t("start.restarting"));
+    await reexecUpdated();
   }
 }
