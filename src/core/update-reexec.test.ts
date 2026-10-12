@@ -44,7 +44,7 @@ describe("reexecUpdated", () => {
   it("forwards SIGTERM to the child and exits with the child's code", async () => {
     const script = join(dir, "fixture.mjs");
     writeFileSync(script, fixtureSource());
-    const env = { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import tsx`.trim() };
+    const env: NodeJS.ProcessEnv = { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import tsx`.trim() };
     delete env.FOURPM_NO_UPDATE;
     const parent = spawn(process.execPath, [script], { env, stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
