@@ -57,6 +57,7 @@ import { t } from "../i18n";
 import { aiAccountLabels, claudeHomeDirs } from "../utils/ai-cli";
 import { activeProfileLabel, applyAiAccountMask } from "./ai/ai-account-mask";
 import { checkClaudeUsage } from "./ai/claude-usage";
+import { mountedAiLogins } from "./ai/ai-mount-profiles";
 import { pruneCommandHistoryByAge } from "./exec/command-history";
 import { sweepOldAttachments } from "./exec/command-images";
 import { pruneCommandOutputByAge } from "./exec/command-output-store";
@@ -1101,6 +1102,8 @@ export class WsClient {
       // The configured AI accounts (emails when readable) — admin-only visibility of which AI
       // account a (rented) machine runs on + the shared-account check (ADR-0354).
       aiAccounts: aiAccountLabels(config),
+      // Host logins mounted under ~/ai-creds — the Worker configs Profile-directory suggestions (ADR-0479).
+      aiMounts: mountedAiLogins(),
       // Update-locked image (ADR-0432/0434) — the web Locked badge + the server's update gate.
       cliUpdateLocked: cliUpdateLocked(),
       // Egress enforcement (ADR-0439): `container` when the launcher installed the agent-uid rules.

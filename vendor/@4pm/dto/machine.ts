@@ -366,7 +366,45 @@ export interface MachineLinkResponse {
    * @adr 0354 @adr 0402
    */
   aiAccounts?: string[];
+  /** Host-mounted AI logins the cli last reported (`machine.status`) — suggestions for the Worker configs
+   * Profile directory; same visibility as `aiAccounts` (a rented link returns `[]`).
+   * @adr 0479
+   */
+  aiMounts?: AiMount[];
   createdAt: string;
+}
+
+/** One host-mounted AI login a worker reported (`MachineLink.aiMounts`). @adr 0479 */
+export interface AiMount {
+  /** AI provider (`claude` / `codex`). */
+  provider: string;
+  /** The profile path a credential uses for it (`ai-creds/<folder>`). */
+  profile: string;
+  /** Signed-in account email when readable; null/omitted otherwise. */
+  account?: string | null;
+}
+
+/**
+ * Sanitize a stored/reported `aiMounts` JSON into a typed list (drops malformed entries; ≤ 50, strings
+ * capped). Tolerant of null / non-array values.
+ * @adr 0479
+ */
+export function readAiMounts(value: unknown): AiMount[] {
+  if (!Array.isArray(value)) return [];
+  const out: AiMount[] = [];
+  for (const v of value) {
+    if (!v || typeof v !== "object") continue;
+    const { provider, profile, account } = v as Record<string, unknown>;
+    if (typeof provider !== "string" || typeof profile !== "string") continue;
+    if (!provider.trim() || !profile.trim()) continue;
+    out.push({
+      provider: provider.trim().slice(0, 32),
+      profile: profile.trim().slice(0, 256),
+      ...(typeof account === "string" && account.trim() ? { account: account.trim().slice(0, 320) } : {}),
+    });
+    if (out.length >= 50) break;
+  }
+  return out;
 }
 
 /**

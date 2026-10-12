@@ -3,13 +3,16 @@
  * `~/ai-creds/<provider>-<host folder name>` (several per provider; older commands used the bare
  * `~/ai-creds/<provider>`); without a profile pointing there the provider would run "Not logged in". At
  * start, each mounted folder that holds a login and that no profile references is appended to the credential
- * list once — the operator's order stays first; a profile they later remove is never re-added.
- * @adr 0433 @adr 0466
+ * list once — the operator's order stays first; a profile they later remove is never re-added. The seeded
+ * `.claude` / `.codex` defaults that hold no login are then switched off once, and the mounted logins are
+ * reported to the server (`machine.status.aiMounts`) as Worker-configs suggestions.
+ * @adr 0433 @adr 0466 @adr 0479
  */
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { readProfileConfig, writeProfileConfig, type ProfileConfig } from "../../config/profile";
+import type { AiMountReport } from "@4pm/ws";
 import type { AiCredential, AiProfile, AiProvider } from "../../utils/ai-cli";
 import { logger } from "../../common/logger/logger";
 
@@ -116,4 +119,106 @@ export function adoptMountedAiLogins(profileDir: string): AiProvider[] {
     }
   }
   return added;
+}
+
+/** The seeded default profile dir of each provider (`defaultProfileConfig`). */
+const DEFAULT_DIRS: { provider: AiProvider; profile: string }[] = [
+  { provider: "claude", profile: ".claude" },
+  { provider: "codex", profile: ".codex" },
+];
+
+/** The per-profile record of default dirs already switched off — never switched off again. */
+function disabledPath(profileDir: string): string {
+  return join(profileDir, "ai-default-disabled.json");
+}
+
+/** Read the switched-off record (empty when absent / unreadable). */
+function readDisabled(profileDir: string): string[] {
+  try {
+    const v = JSON.parse(readFileSync(disabledPath(profileDir), "utf8")) as unknown;
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The login files of a provider (empty for one that cannot be mounted). */
+function loginFilesOf(provider: AiProvider): string[] {
+  return MOUNTABLE.find((m) => m.provider === provider)?.loginFiles ?? [];
+}
+
+/**
+ * Every mounted folder under `~/ai-creds` holding a login, with the profile path a credential uses for it and
+ * the signed-in claude email when the mount's `.claude.json` is readable. Empty when nothing is mounted.
+ */
+export function mountedAiLogins(): AiMountReport[] {
+  const root = resolve(homedir(), "ai-creds");
+  if (!existsSync(root)) return [];
+  const out: AiMountReport[] = [];
+  for (const m of MOUNTABLE) {
+    for (const folder of mountFolders(root, m.provider)) {
+      const dir = join(root, folder);
+      if (!hasLogin(dir, m.loginFiles)) continue;
+      const account = m.provider === "claude" ? mountAccountEmail(dir) : null;
+      out.push({ provider: m.provider, profile: `ai-creds/${folder}`, ...(account ? { account } : {}) });
+    }
+  }
+  return out;
+}
+
+/** The account email in a mounted claude login's `.claude.json` (read from the mount itself), or null. */
+function mountAccountEmail(dir: string): string | null {
+  try {
+    const raw = JSON.parse(readFileSync(join(dir, ".claude.json"), "utf8")) as { oauthAccount?: { emailAddress?: string } };
+    return raw.oauthAccount?.emailAddress?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Switch off the seeded `.claude` / `.codex` profiles that hold no login once a mounted login exists — otherwise
+ * they stay first in the failover list (every run tries them and fails "Not logged in") and show as AI accounts.
+ * Only enabled OAuth entries (no `apiKey`) whose dir has no login file are touched, each default dir once per
+ * worker profile, so an operator who re-enables one keeps it. No mount ⇒ no change (a native install may keep
+ * its login elsewhere, e.g. the macOS Keychain). Returns the dirs switched off.
+ */
+export function disableUnloggedDefaults(profileDir: string): string[] {
+  if (mountedAiLogins().length === 0) return [];
+  const done = readDisabled(profileDir);
+  const config = readProfileConfig(profileDir);
+  const switched: string[] = [];
+  /** Switch off a list's matching default entries, recording each default dir handled. */
+  const patchList = <T extends AiProfile>(list: T[] | undefined, providerOf: (p: T) => AiProvider | undefined): T[] | null => {
+    if (!Array.isArray(list)) return null;
+    let changed = false;
+    const next = list.map((p) => {
+      const provider = providerOf(p);
+      const def = DEFAULT_DIRS.find((d) => d.provider === provider);
+      if (!def || typeof p.profile !== "string" || !p.profile.trim()) return p;
+      const dir = rawDir(p.profile.trim());
+      if (dir !== rawDir(def.profile) || done.includes(def.profile)) return p;
+      if (p.enabled === false || p.apiKey || hasLogin(dir, loginFilesOf(def.provider))) return p;
+      changed = true;
+      if (!switched.includes(def.profile)) switched.push(def.profile);
+      return { ...p, enabled: false };
+    });
+    return changed ? next : null;
+  };
+  const unified = patchList<AiCredential>(config.aiProfiles, (p) => p.provider);
+  const claude = patchList<AiProfile>(config.claudeHome, () => "claude");
+  const codex = patchList<AiProfile>(config.codexHome, () => "codex");
+  if (switched.length === 0) return [];
+  writeProfileConfig(profileDir, {
+    ...(unified ? { aiProfiles: unified } : {}),
+    ...(claude ? { claudeHome: claude } : {}),
+    ...(codex ? { codexHome: codex } : {}),
+  });
+  try {
+    writeFileSync(disabledPath(profileDir), JSON.stringify([...done, ...switched]), { mode: 0o600 });
+  } catch (err) {
+    logger.warn("ai.default.disabledRecord", { error: String(err) });
+  }
+  for (const profile of switched) logger.info("ai.default.disabled", { profile });
+  return switched;
 }

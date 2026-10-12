@@ -5,6 +5,16 @@
 import type { WsChannelName } from "../channels";
 import type { RunQueueInfo } from "./run-slot";
 
+/** One host-mounted AI login the cli found (`machine.status.aiMounts`). @adr 0479 */
+export interface AiMountReport {
+  /** AI provider the folder holds a login for (`claude` / `codex`). */
+  provider: string;
+  /** The profile path a credential uses for it (`ai-creds/<folder>`). */
+  profile: string;
+  /** Signed-in account email when readable. */
+  account?: string;
+}
+
 /** Standard envelope for every message after the handshake. */
 export interface WsEnvelope {
   /** message id — correlation for the reply. */
@@ -87,6 +97,11 @@ export interface MachineStatusPayload {
    * @adr 0354
    */
   aiAccounts?: string[];
+  /** Host logins mounted under `~/ai-creds/<provider>[-*]` that hold a login — persisted on
+   * `MachineLink.aiMounts`; the Worker configs Form suggests them as profile dirs.
+   * @adr 0479
+   */
+  aiMounts?: AiMountReport[];
   /** True when the cli runs an update-locked image (`:full-locked`): it never updates
    *  itself; persisted on `MachineLink.cliUpdateLocked` (the web Locked badge + the server's update gate).
    * @adr 0432 @adr 0434

@@ -40,7 +40,7 @@ import { addToolDirToPath, ensureToolchainAtBoot, setToolchainReporter } from ".
 import { startGitTokenServer } from "../core/git/git-token-server";
 import { syncAgentSshKey } from "../core/git/git-ssh-key";
 import { prepareCredentialDir } from "../utils/ai-cred-mount";
-import { adoptMountedAiLogins } from "../core/ai/ai-mount-profiles";
+import { adoptMountedAiLogins, disableUnloggedDefaults } from "../core/ai/ai-mount-profiles";
 import { allAiProfileDirs } from "../utils/ai-cli";
 
 /**
@@ -91,6 +91,8 @@ export async function runStart(
   prepareWorkspaces(profileDir);
   // A host login mounted at ~/ai-creds/<provider> with no profile pointing at it becomes one (ADR-0433).
   adoptMountedAiLogins(profileDir);
+  // …and the seeded .claude/.codex that hold no login are switched off once, so runs don't try them first (ADR-0479).
+  disableUnloggedDefaults(profileDir);
 
   // Auto-update before connecting — keeps profile/.cre intact
   const config = readProfileConfig(profileDir);
