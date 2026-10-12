@@ -119,6 +119,9 @@ export const commandResultSinkSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("doc-generation"), runId: z.string().guid() }),
   // A rule's AI action (ADR-0458): the sink records the output on that run's action. Server-only too.
   z.object({ kind: z.literal("automation-action"), runId: z.string().guid(), index: z.number().int().min(0).max(20) }),
+  // A checklist run with AI started through the public API (ADR-0482): the sink records the verdicts as a
+  // checklist run. Server-only too.
+  z.object({ kind: z.literal("checklist-ai"), runId: z.string().guid() }),
 ]);
 export type CommandResultSink = z.infer<typeof commandResultSinkSchema>;
 

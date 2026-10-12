@@ -143,6 +143,8 @@ export const CliFeature = {
   BOOK_PATCH: "bookPatch",
   // Multi-target package installer: new kinds, Codex targets, requires, `.4pm/packages.json` (ADR-0460/0461/0462).
   PACKAGES_MULTI_TARGET: "packagesMultiTarget",
+  // `autonomous.write {kind:"runNow"}` — run one autonomous cycle now (ADR-0482).
+  AUTONOMOUS_RUN_NOW: "autonomousRunNow",
 } as const;
 export type CliFeature = (typeof CliFeature)[keyof typeof CliFeature];
 
@@ -868,7 +870,10 @@ export type AutonomousWriteRequest =
       files: { path: string; content: string; expectedSha: string | null }[];
       by: string;
       byLabel?: string;
-    };
+    }
+  // Run ONE cycle now through the daemon's own path (the `4pm auto-run` trigger, from the public API —
+  // ADR-0482). Every gate of the cycle still applies; the reply only says whether it was submitted.
+  | { kind: "runNow"; by: string; byLabel?: string };
 // (The `cron` install/uninstall kind was retired by ADR-0392 — the daemon schedules ticks itself.)
 export interface AutonomousWriteReply {
   ok: boolean;

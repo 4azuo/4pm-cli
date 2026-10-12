@@ -190,5 +190,6 @@
   "credential.imported": "✔ Đã khôi phục hồ sơ \"{profile}\" từ FOURPM_CREDENTIAL.",
   "update.lockedMandatory": "Image này bị khóa cập nhật (:full-locked) và cli {current} thấp hơn phiên bản tối thiểu {min} — hãy pull image mới và tạo lại container.",
   "update.lockedAvailable": "Đã có cli mới hơn ({latest}), nhưng image này bị khóa cập nhật (:full-locked) — hãy pull image mới để nâng cấp từ {current}.",
-  "update.locked": "Image này bị khóa cập nhật (:full-locked) — cli ({version}) không tự cập nhật được. Hãy pull image mới và tạo lại container."
+  "update.locked": "Image này bị khóa cập nhật (:full-locked) — cli ({version}) không tự cập nhật được. Hãy pull image mới và tạo lại container.",
+  "autonomous.runNowUnavailable": "Không thể chạy chế độ tự động lúc này: worker không phục vụ project nào."
 }

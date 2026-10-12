@@ -190,5 +190,6 @@
   "credential.imported": "✔ Restored profile \"{profile}\" from FOURPM_CREDENTIAL.",
   "update.lockedMandatory": "This image is update-locked (:full-locked) and cli {current} is below the minimum supported {min} — pull a newer image and recreate the container.",
   "update.lockedAvailable": "A newer cli ({latest}) is available, but this image is update-locked (:full-locked) — pull a newer image to upgrade from {current}.",
-  "update.locked": "This image is update-locked (:full-locked) — the cli ({version}) cannot update itself. Pull a newer image and recreate the container."
+  "update.locked": "This image is update-locked (:full-locked) — the cli ({version}) cannot update itself. Pull a newer image and recreate the container.",
+  "autonomous.runNowUnavailable": "Autonomous mode can't run now: the worker serves no project."
 }

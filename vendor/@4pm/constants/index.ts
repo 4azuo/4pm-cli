@@ -11,6 +11,7 @@ export * from "./preferences";
 export * from "./project-template";
 export * from "./project";
 export * from "./quota";
+export * from "./rbac/catalog";
 export * from "./roles";
 export * from "./untrusted-content";
 export * from "./worker-pool";

@@ -48,6 +48,18 @@ function onTick(): void {
   deps.submit();
 }
 
+/**
+ * Submit one cycle now, outside the schedule (the web / public API "run now" — the same bus path as
+ * `4pm auto-run`). Every gate of the cycle (paused, quiet hours, quota…) still applies inside it. False when
+ * the scheduler isn't started or the cli serves no project.
+ * @adr 0482
+ */
+export function runAutonomousNow(): boolean {
+  if (!deps || !deps.servedRoot()) return false;
+  deps.submit();
+  return true;
+}
+
 /** Start the scheduler once per process (idempotent) and arm it from the current config. */
 export function startAutonomousScheduler(d: AutonomousSchedulerDeps): void {
   if (deps) return;

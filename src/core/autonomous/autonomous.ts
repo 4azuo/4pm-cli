@@ -36,7 +36,7 @@ import { applyBookPatch, bookContentHash, bookRowsById, isBookRowId, type BookCo
 import { freshBooksRef, mutateBooks, readBooksFile, resolveBases } from "./autonomous-git";
 import { listDesignEvidence } from "./autonomous-er";
 import { applyStagedEvidence, listMockups, pruneEvidence, readEvidenceFile, stageEvidence } from "./autonomous-evidence";
-import { isValidCronSchedule, reloadAutonomousSchedule } from "./autonomous-scheduler";
+import { isValidCronSchedule, reloadAutonomousSchedule, runAutonomousNow } from "./autonomous-scheduler";
 import { t } from "../../i18n";
 
 const APPROVALS_REL = ".claude/.autonomous.approvals.json";
@@ -477,6 +477,9 @@ export async function writeAutonomous(
       }
       await writeAutonomousConfig(profileDir, parsed);
       await reloadAutonomousSchedule(); // a schedule change takes effect at once (ADR-0392)
+    } else if (req.kind === "runNow") {
+      // Run one cycle now (public API — ADR-0482): the same submit as `4pm auto-run`; the cycle's gates apply.
+      if (!runAutonomousNow()) return { ok: false, error: t("autonomous.runNowUnavailable") };
     } else if (req.kind === "evidenceStage") {
       // Book evidence upload (machine-0072, ADR-0404): kept in the profile dir until a bookSave commits it.
       const staged = await stageEvidence(profileDir, req.contentBase64);
