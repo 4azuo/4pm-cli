@@ -1410,6 +1410,13 @@ export const ragQueryQuerySchema = z.object({
 });
 export type RagQueryQuery = z.infer<typeof ragQueryQuerySchema>;
 
+/** Body PUT /machines/:id/rag/settings — this machine user's RAG search settings. @api machine-0083 @adr 0496 */
+export const ragSettingsRequestSchema = z.object({
+  minScore: z.number().min(0).max(1),
+  topK: z.number().int().min(1).max(20),
+});
+export type RagSettingsBody = z.infer<typeof ragSettingsRequestSchema>;
+
 /** Query GET /machines/:id/graph — build the docs/code dependency graph. @api machine-0036 @adr 0155 @adr 0488 */
 export const graphBuildQuerySchema = z.object({
   mode: z.enum(["docs", "code", "all"]),

@@ -90,4 +90,6 @@ export interface WsHandlerCtx {
   cloneServingRepos(): Promise<void>;
   /** Self-update the cli to latest now (idle-aware + re-exec), from a server push. @adr 0289 */
   updateCliNow(): void;
+  /** Restart the cli at its first idle moment (re-exec, same binary), from a server push. @adr 0497 */
+  restartCliWhenIdle(): void;
 }

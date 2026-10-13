@@ -533,6 +533,8 @@ export interface OrgOverviewResponse {
   teamCount: number;
   /** Non-deleted projects. */
   projectCount: number;
+  /** Enabled, non-deleted automation rules — org rules + the rules of non-deleted projects. @adr 0497 */
+  enabledRuleCount: number;
   /** This calendar month's org-wide AI-token usage vs the org quota (`limit` null = unlimited). */
   aiTokens: { used: number; limit: number | null };
   /** Hosted-storage breakdown vs the plan cap — same shape as `GET /organizations/me/storage-usage`. */

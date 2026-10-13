@@ -145,6 +145,8 @@ export const CliFeature = {
   PACKAGES_MULTI_TARGET: "packagesMultiTarget",
   // `autonomous.write {kind:"runNow"}` — run one autonomous cycle now (ADR-0482).
   AUTONOMOUS_RUN_NOW: "autonomousRunNow",
+  // `cli.restart` — restart at the first idle moment (ADR-0497).
+  RESTART: "restart",
 } as const;
 export type CliFeature = (typeof CliFeature)[keyof typeof CliFeature];
 
@@ -1303,6 +1305,24 @@ export interface RagStatusReply {
   installLog: string[];
   /** The vector index state. @adr 0157 */
   index: RagIndex;
+  /** This machine user's search settings. Absent from an older cli. @adr 0496 */
+  settings?: RagSettings;
+}
+
+/** Per-machine-user RAG search settings (`.claude/rag/settings.json`). @adr 0496 */
+export interface RagSettings {
+  /** Chunks scoring below this (0–1) are dropped; 0 = keep all. */
+  minScore: number;
+  /** Files per search when the query has no `k` (1–20). */
+  topK: number;
+}
+
+/** rag.settings — save this machine user's search settings. @adr 0496 */
+export type RagSettingsRequest = RagSettings;
+export interface RagSettingsReply {
+  ok: boolean;
+  settings: RagSettings;
+  error?: string;
 }
 
 /** rag.install — start a background install of the chosen model. */
@@ -1345,6 +1365,10 @@ export interface RagQueryResult {
   /** Doc Header title / kind. */
   title?: string;
   kind?: string;
+  /** Matching chunks in this file (results are grouped per file). @adr 0496 */
+  hits?: number;
+  /** Further matching chunks of the same file (best first, ≤ 3). @adr 0496 */
+  more?: { snippet: string; score: number }[];
 }
 
 /** rag.query — semantic search over the index. */

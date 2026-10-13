@@ -60,6 +60,8 @@
   "update.scheduledChecking": "计划自动更新：正在检查新版本…",
   "update.scheduledFailed": "计划自动更新失败：{error}",
   "update.scheduledUpdated": "已更新到 {version} — 正在重启以应用…",
+  "restart.waiting": "已请求重启 — 正在等待运行中的任务完成…",
+  "restart.now": "正在重启 CLI…",
   "update.scheduledTools": "计划工具自动更新：{tools}…",
   "start.restarting": "正在使用新版本重启…",
   "session.stoppedReconnect": "会话已停止 — 请重启 4pm 以重新连接。",

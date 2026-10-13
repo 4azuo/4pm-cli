@@ -60,6 +60,8 @@
   "update.scheduledChecking": "Scheduled auto-update: checking for a new version…",
   "update.scheduledFailed": "Scheduled auto-update failed: {error}",
   "update.scheduledUpdated": "Updated to {version} — restarting to apply…",
+  "restart.waiting": "Restart requested — waiting for the running job to finish…",
+  "restart.now": "Restarting the CLI…",
   "update.scheduledTools": "Scheduled tool auto-update: {tools}…",
   "start.restarting": "Restarting with the new version…",
   "session.stoppedReconnect": "Session stopped — restart 4pm to reconnect.",

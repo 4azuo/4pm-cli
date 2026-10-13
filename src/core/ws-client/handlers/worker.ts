@@ -31,6 +31,7 @@ import {
   type PackagesRemoveRequest,
   type RagInstallRequest,
   type RagQueryRequest,
+  type RagSettingsRequest,
   type SecretsWriteRequest,
   type WsEnvelope,
 } from "@4pm/ws";
@@ -43,7 +44,7 @@ import { readAgentTools, writeAgentTools } from "../../agent/agent-tools";
 import { scanMcpJson } from "../../../utils/agent-mcp";
 import { installPackage, listPackages, packPackage, removePackage } from "../../agent/packages";
 import { buildGraph } from "../../worker/graph";
-import { ragInstall, ragQuery, ragReindex, ragStatus } from "../../knowledge/rag";
+import { ragInstall, ragQuery, ragReindex, ragSettings, ragStatus } from "../../knowledge/rag";
 import { applyConfigText, readConfigText } from "../../profile/config-sync";
 import { listAiModels } from "../../ai/ai-models";
 import { readProfileConfig } from "../../../config/profile";
@@ -283,8 +284,18 @@ export function handleWorkerChannels(
       // Request/reply (machine-0040): semantic search over the index.
       const req = payload as unknown as RagQueryRequest;
       if (ctx.physicRoot) {
-        void ragQuery(ctx.physicRoot, req.query, req.k, Array.isArray(req.kinds) ? req.kinds : undefined).then((reply) =>
+        void ragQuery(ctx.physicRoot, req.query, typeof req.k === "number" ? req.k : undefined, Array.isArray(req.kinds) ? req.kinds : undefined).then((reply) =>
           ctx.send(WsChannels.RAG_QUERY, reply, message.id),
+        );
+      }
+      return true;
+    }
+    case WsChannels.RAG_SETTINGS: {
+      // Request/reply (machine-0083): save this machine user's search settings.
+      const req = payload as unknown as RagSettingsRequest;
+      if (ctx.physicRoot) {
+        void ragSettings(ctx.physicRoot, { minScore: Number(req.minScore), topK: Number(req.topK) }).then((reply) =>
+          ctx.send(WsChannels.RAG_SETTINGS, reply, message.id),
         );
       }
       return true;

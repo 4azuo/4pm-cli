@@ -9,8 +9,10 @@
  * agent-writable, so the cli never loads anything from it in its own process — it only spawns
  * `node engine.mjs` as the agent — and treats every file it reads back (markers, logs, `.index.json`,
  * the query reply) as untrusted: symlink-safe reads, size caps, schema checks, clamped values.
+ * Search settings (`minScore`, `topK`) live per machine user in `.claude/rag/settings.json`; hits come
+ * back grouped per file.
  * Never throws — errors map to a reply.
- * @adr 0156 @adr 0157 @adr 0489
+ * @adr 0156 @adr 0157 @adr 0489 @adr 0496
  */
 import { statfs } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -27,6 +29,8 @@ import type {
   RagQueryReply,
   RagQueryResult,
   RagReindexReply,
+  RagSettings,
+  RagSettingsReply,
   RagStatusReply,
 } from "@4pm/ws";
 import { mkdirInRoot, PathEscapeError, readFileInRoot, writeFileInRoot } from "../../utils/safe-path";
@@ -46,6 +50,8 @@ const RUNTIME_PACKAGE = {
 };
 /** Minimum Node for `node:sqlite` with extension loading. */
 const MIN_NODE: [number, number] = [22, 13];
+/** Search settings when none were saved. */
+const DEFAULT_SETTINGS: RagSettings = { minScore: 0, topK: 8 };
 /** Disk the recommended option needs (GB, model + runtime + headroom). */
 const NEED_DISK_GB = 1;
 
@@ -141,6 +147,37 @@ async function readIndexMeta(root: string, model: string): Promise<RagIndex> {
   };
 }
 
+/** Clamp settings into range (0–1 score, 1–20 files). */
+function clampSettings(s: Partial<RagSettings>): RagSettings {
+  const minScore = Number.isFinite(s.minScore) ? Math.min(Math.max(Number(s.minScore), 0), 1) : DEFAULT_SETTINGS.minScore;
+  const topK = Number.isFinite(s.topK) ? Math.min(Math.max(Math.floor(Number(s.topK)), 1), 20) : DEFAULT_SETTINGS.topK;
+  return { minScore: Math.round(minScore * 1000) / 1000, topK };
+}
+
+/** Read `.claude/rag/settings.json` (agent-writable ⇒ validated + clamped; defaults when missing/bad). */
+async function readSettings(root: string): Promise<RagSettings> {
+  const raw = await readSmall(root, "settings.json", 4 * 1024);
+  if (raw === null) return { ...DEFAULT_SETTINGS };
+  try {
+    const parsed = z.object({ minScore: z.number().optional(), topK: z.number().optional() }).parse(JSON.parse(raw));
+    return clampSettings(parsed);
+  } catch {
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+
+/** rag.settings — clamp + save this machine user's search settings. */
+export async function ragSettings(root: string, input: Partial<RagSettings>): Promise<RagSettingsReply> {
+  const settings = clampSettings(input ?? {});
+  try {
+    await mkdirInRoot(root, join(root, RAG_REL));
+    await writeFileInRoot(root, join(root, RAG_REL, "settings.json"), `${JSON.stringify(settings)}\n`);
+    return { ok: true, settings };
+  } catch (err) {
+    return { ok: false, settings: await readSettings(root), error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 /** The host the egress proxy refused in the last failed install, from its log tail (or null). */
 function blockedHost(log: string[]): string | null {
   for (const line of [...log].reverse()) {
@@ -200,6 +237,7 @@ export async function ragStatus(root: string): Promise<RagStatusReply> {
     options: optionsFor(machine),
     installLog: log,
     index: await readIndexMeta(root, model),
+    settings: await readSettings(root),
   };
 }
 
@@ -280,6 +318,13 @@ rm -f "$R/.installed" "$R/.install-failed"
   fi
   if [ $ok -eq 0 ]; then printf '%s' "$RAG_MODEL" > "$R/.installed"; echo "[install] DONE"; else touch "$R/.install-failed"; echo "[install] FAILED"; fi
 } >> "$R/install.log" 2>&1
+# A new model makes the old index stale: reindex right away (ADR-0496).
+if [ -f "$R/.installed" ]; then
+  touch "$R/.indexing"
+  rm -f "$R/.installing"
+  { echo "[reindex] $(date)"; ${engineCmd()} reindex 2>&1; } > "$R/index.log" 2>&1
+  rm -f "$R/.indexing"
+fi
 rm -f "$R/.installing"
 `;
   spawnBackground(root, script, { RAG_MODEL: model });
@@ -317,20 +362,26 @@ const queryReplySchema = z.object({
         score: z.number().finite(),
         title: z.string().max(300).optional(),
         kind: z.string().max(40).optional(),
+        hits: z.number().int().min(1).max(1000).optional(),
+        more: z.array(z.object({ snippet: z.string().max(5000), score: z.number().finite() })).max(3).optional(),
       }),
     )
     .max(50),
 });
 
-/** rag.query — semantic search over the index (synchronous, ≤ 30 s), optional Doc Header kinds. */
-export async function ragQuery(root: string, queryText: string, k = 8, kinds?: string[]): Promise<RagQueryReply> {
-  const kk = Math.min(Math.max(Math.floor(k) || 8, 1), 20);
+/**
+ * rag.query — semantic search over the index (synchronous, ≤ 30 s), optional Doc Header kinds; one
+ * result per file. `k` defaults to the machine's `topK`; chunks below `minScore` are dropped.
+ */
+export async function ragQuery(root: string, queryText: string, k?: number, kinds?: string[]): Promise<RagQueryReply> {
+  const settings = await readSettings(root);
+  const kk = Math.min(Math.max(Math.floor(k ?? settings.topK) || settings.topK, 1), 20);
   const kindList = (kinds ?? []).filter((x) => /^[a-z][a-z0-9-]{0,31}$/.test(x)).slice(0, 24);
   if (!existsSync(join(root, RAG_REL, "index.db"))) return { results: [], error: "no index — reindex first" };
   try {
     await ensureFiles(root);
     const { stdout } = await withEgressRun({ grants: ["rag"] }, () =>
-      execInProject(process.execPath, ["--disable-warning=ExperimentalWarning", `${RAG_REL}/engine.mjs`, "query", String(kk), kindList.join(",")], {
+      execInProject(process.execPath, ["--disable-warning=ExperimentalWarning", `${RAG_REL}/engine.mjs`, "query", String(kk), kindList.join(","), String(settings.minScore)], {
         cwd: root,
         timeout: 30_000,
         maxBuffer: 256 * 1024,
@@ -348,6 +399,8 @@ export async function ragQuery(root: string, queryText: string, k = 8, kinds?: s
         score: Math.round(r.score * 10000) / 10000,
         ...(r.title ? { title: r.title } : {}),
         ...(r.kind ? { kind: r.kind } : {}),
+        ...(r.hits ? { hits: r.hits } : {}),
+        ...(r.more?.length ? { more: r.more.map((m) => ({ snippet: m.snippet.slice(0, 600), score: Math.round(m.score * 10000) / 10000 })) } : {}),
       }));
     return { results };
   } catch (err) {

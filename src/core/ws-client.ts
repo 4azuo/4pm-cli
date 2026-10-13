@@ -50,6 +50,7 @@ import { deleteCredential, writeCredential, type Credential } from "./profile/cr
 import type { MachineFingerprint } from "./profile/fingerprint";
 import type { SessionBus } from "./session/session-bus";
 import { UpdateScheduler } from "./update-scheduler";
+import { RestartWhenIdle } from "./session/restart-when-idle";
 import { CliApiError, requestWsToken } from "../services/api";
 import { getWorkingProfile } from "./ai/ai-profile-state";
 import { INSECURE_URL_BLOCKED, insecureTransportAllowed, isInsecureRemoteUrl } from "../utils/secure-url";
@@ -82,7 +83,7 @@ import { CLI_VERSION } from "../version";
 import { mkdirShared } from "../utils/agent-user";
 import { envReconnectMaxSec, toDtoEntry } from "./ws-client/transcript";
 import type { WsHandlerCtx } from "./ws-client/context";
-import { handleCommandChannels, resetMemorySession, runLocalCommand } from "./ws-client/command-dispatch";
+import { activeAiRunCount, handleCommandChannels, resetMemorySession, runLocalCommand } from "./ws-client/command-dispatch";
 import { onReconnectVerifyClaim, runAutonomousCycle } from "./autonomous/autonomous-cycle";
 import { startAutonomousScheduler } from "./autonomous/autonomous-scheduler";
 import { migrateLegacyCron } from "./autonomous/autonomous-legacy-cron";
@@ -286,6 +287,8 @@ export class WsClient {
 
   /** Daily scheduled cli auto-update; policy fed from each ws_token. @adr 0074 */
   private readonly updateScheduler: UpdateScheduler;
+  /** Operator restart (`cli.restart`) — fires once idle. @adr 0497 */
+  private readonly restartWhenIdle: RestartWhenIdle;
 
   /** The narrow host handed to the extracted channel handlers + command-dispatch (built once). */
   private readonly hctx: WsHandlerCtx;
@@ -327,6 +330,7 @@ export class WsClient {
       // (the cli is still connected on the old version, so this send reaches the server).
       (result) => this.send(WsChannels.CLI_UPDATE_RESULT, result, null),
     );
+    this.restartWhenIdle = new RestartWhenIdle(context.bus, activeAiRunCount);
     this.hctx = this.buildHandlerCtx();
     // The operator's local commands (TUI input box) run through the same executor.
     context.bus.onLocalSubmit((input) => void runLocalCommand(this.hctx, input));
@@ -417,6 +421,7 @@ export class WsClient {
       physicFolderPath: (projectName) => self.physicFolderPath(projectName),
       cloneServingRepos: () => self.ensureServingReposCloned(),
       updateCliNow: () => self.updateScheduler.updateNow(),
+      restartCliWhenIdle: () => self.restartWhenIdle.request(),
     };
   }
 
@@ -1417,7 +1422,7 @@ export class WsClient {
 }
 
 /** Features reported in machine.status (`CliFeature`, ADR-0449). */
-const CLI_FEATURES: string[] = [CliFeature.CLIENT_VIEWER, CliFeature.BOOK_TEAMS, CliFeature.APPROVAL_PARTIES, CliFeature.DISCUSSIONS, CliFeature.ER, CliFeature.BOOK_PATCH, CliFeature.PACKAGES_MULTI_TARGET, CliFeature.AUTONOMOUS_RUN_NOW];
+const CLI_FEATURES: string[] = [CliFeature.CLIENT_VIEWER, CliFeature.BOOK_TEAMS, CliFeature.APPROVAL_PARTIES, CliFeature.DISCUSSIONS, CliFeature.ER, CliFeature.BOOK_PATCH, CliFeature.PACKAGES_MULTI_TARGET, CliFeature.AUTONOMOUS_RUN_NOW, CliFeature.RESTART];
 
 /** The URLs of the approved http/sse MCP servers (system egress hosts — ADR-0439). */
 function mcpRemoteUrls(list: { definition: unknown }[] | undefined): string[] {

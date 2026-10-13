@@ -60,6 +60,8 @@
   "update.scheduledChecking": "定期自動更新: 新しいバージョンを確認中…",
   "update.scheduledFailed": "定期自動更新に失敗しました: {error}",
   "update.scheduledUpdated": "{version} に更新しました — 適用のため再起動中…",
+  "restart.waiting": "再起動がリクエストされました — 実行中のジョブの完了を待っています…",
+  "restart.now": "CLI を再起動しています…",
   "update.scheduledTools": "定期ツール自動更新: {tools}…",
   "start.restarting": "新しいバージョンで再起動中…",
   "session.stoppedReconnect": "セッションが停止しました — 再接続するには 4pm を再起動してください。",

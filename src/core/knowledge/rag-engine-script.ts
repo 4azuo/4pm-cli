@@ -4,8 +4,9 @@
  * agent-writable). Node engine: transformers.js embeddings (q8 ONNX, mean-pooled, normalized) +
  * sqlite-vec on the built-in `node:sqlite`, packages from the pinned runtime in `.claude/rag/runtime`.
  * Downloads go through the egress proxy (undici `EnvHttpProxyAgent` + `NODE_USE_ENV_PROXY`).
- * Commands: `warm <model>` (download), `reindex`, `query <k> <kinds-csv>` (text in `RAG_QUERY`).
- * @adr 0489 @adr 0157
+ * Commands: `warm <model>` (download), `reindex`, `query <k> <kinds-csv> <minScore>` (text in `RAG_QUERY`;
+ * hits grouped per file).
+ * @adr 0489 @adr 0157 @adr 0496
  */
 
 /** Bumped when the index format changes — an index from another engine is reported `stale`. */
@@ -146,23 +147,36 @@ async function reindex() {
   console.log("[reindex] DONE " + rows.length + " chunks from " + docs + " docs");
 }
 
-/** Query: print {results} as JSON on stdout. */
-async function query(k, kinds) {
+/** Query: print {results} as JSON on stdout — one result per file (best chunk + hits + up to 3 more). */
+async function query(k, kinds, minScore) {
   const text = process.env.RAG_QUERY || "";
   const model = await installedModel();
   const pipe = await embedder(model);
   const [vec] = await embed(pipe, [text]);
   const db = await openDb();
   const want = kinds ? new Set(kinds.split(",").filter(Boolean)) : null;
-  const fetchK = want ? Math.min(k * 6, 120) : k;
+  // Over-fetch chunks: several usually come from the same file, and some are filtered out.
+  const fetchK = Math.min(Math.max(k * (want ? 12 : 8), 40), 200);
   const rows = db
     .prepare("SELECT path, snippet, title, kind, distance FROM chunks WHERE embedding MATCH ? AND k = ? ORDER BY distance")
     .all(new Uint8Array(new Float32Array(vec).buffer), fetchK);
   db.close();
-  const results = rows
-    .filter((r) => !want || want.has(r.kind))
+  const byPath = new Map();
+  for (const r of rows) {
+    if (want && !want.has(r.kind)) continue;
+    const score = Math.round((1 / (1 + Number(r.distance))) * 10000) / 10000;
+    if (score < minScore) continue;
+    const hit = byPath.get(r.path);
+    if (!hit) {
+      byPath.set(r.path, { path: r.path, snippet: r.snippet, score, title: r.title || undefined, kind: r.kind || undefined, hits: 1, more: [] });
+    } else {
+      hit.hits++;
+      if (hit.more.length < 3) hit.more.push({ snippet: r.snippet, score });
+    }
+  }
+  const results = [...byPath.values()]
     .slice(0, k)
-    .map((r) => ({ path: r.path, snippet: r.snippet, score: Math.round((1 / (1 + Number(r.distance))) * 10000) / 10000, title: r.title || undefined, kind: r.kind || undefined }));
+    .map((r) => (r.more.length ? r : { ...r, more: undefined }));
   process.stdout.write(JSON.stringify({ results }));
 }
 
@@ -174,11 +188,11 @@ async function warm(model) {
   console.log("[install] model ready: " + model);
 }
 
-const [cmd, a1, a2] = process.argv.slice(2);
+const [cmd, a1, a2, a3] = process.argv.slice(2);
 try {
   if (cmd === "warm") await warm(a1);
   else if (cmd === "reindex") await reindex();
-  else if (cmd === "query") await query(Math.min(Math.max(parseInt(a1 || "8", 10) || 8, 1), 20), a2 || "");
+  else if (cmd === "query") await query(Math.min(Math.max(parseInt(a1 || "8", 10) || 8, 1), 20), a2 || "", Math.min(Math.max(Number(a3) || 0, 0), 1));
   else throw new Error("unknown command " + cmd);
 } catch (e) {
   console.error("[engine] " + (e && e.stack ? e.stack : e));

@@ -44,6 +44,11 @@ export function handleMiscChannels(
       ctx.updateCliNow();
       return true;
     }
+    case WsChannels.CLI_RESTART: {
+      // server → cli (ADR-0497): restart once idle (no job is interrupted) via the restart handoff. No reply.
+      ctx.restartCliWhenIdle();
+      return true;
+    }
     case WsChannels.LOG_READ: {
       // Request/reply (machine-0019): tail this cli's own JSONL logs.
       const limit = Math.min(Math.max((payload as LogReadRequest).limit ?? 200, 1), 2000);

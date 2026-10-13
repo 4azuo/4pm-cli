@@ -60,6 +60,8 @@
   "update.scheduledChecking": "Tự động cập nhật theo lịch: đang kiểm tra phiên bản mới…",
   "update.scheduledFailed": "Tự động cập nhật theo lịch thất bại: {error}",
   "update.scheduledUpdated": "Đã cập nhật lên {version} — đang khởi động lại để áp dụng…",
+  "restart.waiting": "Đã yêu cầu khởi động lại — đang chờ tác vụ đang chạy hoàn tất…",
+  "restart.now": "Đang khởi động lại CLI…",
   "update.scheduledTools": "Tự động cập nhật công cụ theo lịch: {tools}…",
   "start.restarting": "Đang khởi động lại với phiên bản mới…",
   "session.stoppedReconnect": "Phiên đã dừng — khởi động lại 4pm để kết nối lại.",

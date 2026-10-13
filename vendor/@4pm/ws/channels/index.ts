@@ -97,6 +97,8 @@ export const WsChannels = {
   // RAG index + query (ADR-0157): reindex docs into sqlite-vec, semantic query
   RAG_REINDEX: "rag.reindex",
   RAG_QUERY: "rag.query",
+  // RAG search settings per machine user (ADR-0496)
+  RAG_SETTINGS: "rag.settings",
   // git history browse (read-through cli — ADR-0089): repos on the physic project,
   // commit log, changed files of a commit, parent↔commit diff of one file.
   GIT_REPOS: "git.repos",
@@ -143,6 +145,10 @@ export const WsChannels = {
   // FAILURES — the server persists the reason on `MachineLink.usageSnapshot.cliUpdate` so the web
   // "Update" modal shows why instead of waiting forever. One-way, no reply.
   CLI_UPDATE_RESULT: "cli.update-result",
+  // server → cli (ADR-0497): restart the cli — at its first idle moment (no busy command, no queued /
+  // running AI run) it re-execs the same binary through the ADR-0473 handoff (keeps `.cre`/profile,
+  // reconnects). Sent by the operator "Restart" action (machine-0084). No payload, no reply.
+  CLI_RESTART: "cli.restart",
   // command lifecycle
   COMMAND_ANNOUNCE: "command.announce",
   // server → cli (reply): stop an AI run (ADR-0362) — queued ⇒ leave the run-slot queue, running ⇒ kill
