@@ -208,7 +208,7 @@ export const dispatchCommandRequestSchema = z
      */
     aiConfig: aiRunConfigSchema.optional(),
     /**
-     * AI job: which of the 14 AI functions this dispatch is — the caller stamps it (the
+     * AI job: which of the 15 AI functions this dispatch is — the caller stamps it (the
      * end user never picks). With `pick:"idle"` it drives the job-aware routing over the project's
      * worker-routing table (pools before lone machines → job priority → member index, with
      * exhaustion failover). Absent ⇒ the flat idle pool (backward compatible). Ignored with an

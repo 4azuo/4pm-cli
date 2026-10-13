@@ -1288,13 +1288,13 @@ export interface RagStatusRequest {
 export interface RagStatusReply {
   installed: boolean;
   installing: boolean;
-  /** Node engine probe (ADR-0489). Absent from an older (Python-engine) cli. */
+  /** Node engine probe. Absent from an older (Python-engine) cli. */
   runtime?: { node: string; nodeOk: boolean; npm: boolean; sqliteExt: boolean };
   /** Older cli only (Python engine) — the web asks to update the worker cli. */
   python?: { found: boolean; version: string };
   /** Node engine: `{transformers, sqliteVec}`; older cli: `{pip, fastembed, sqliteVec}`. */
   deps: { transformers?: boolean; sqliteVec: boolean; pip?: boolean; fastembed?: boolean };
-  /** Ordered prerequisite checklist (ADR-0489). */
+  /** Ordered prerequisite checklist. */
   prereqs?: RagPrereq[];
   model: { present: boolean; name: string };
   machine: RagMachine;
@@ -1323,7 +1323,7 @@ export interface RagIndex {
   indexedAt: string;
   /** Built by another engine (or model) — reindex needed. @adr 0489 */
   stale?: boolean;
-  /** Docs indexed (ADR-0489). */
+  /** Docs indexed. */
   docs?: number;
 }
 
@@ -1342,7 +1342,7 @@ export interface RagQueryResult {
   path: string;
   snippet: string;
   score: number;
-  /** Doc Header title / kind (ADR-0489). */
+  /** Doc Header title / kind. */
   title?: string;
   kind?: string;
 }
@@ -1351,7 +1351,7 @@ export interface RagQueryResult {
 export interface RagQueryRequest {
   query: string;
   k?: number;
-  /** Only chunks whose Doc Header `kind` is listed (ADR-0489). */
+  /** Only chunks whose Doc Header `kind` is listed. */
   kinds?: string[];
 }
 export interface RagQueryReply {

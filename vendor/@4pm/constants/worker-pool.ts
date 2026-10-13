@@ -5,7 +5,7 @@
  */
 
 /**
- * The 14 AI functions inside a project — the "job" a pool/machine can be dedicated to. The caller
+ * The 15 AI functions inside a project — the "job" a pool/machine can be dedicated to. The caller
  * stamps the job on an AI dispatch (the end user never picks it); routing orders candidates by it.
  * Values are stable wire strings (do not rename once shipped).
  */
@@ -26,6 +26,8 @@ export const AiJob = {
   GRAPH_SUGGEST: "graph-suggest",
   /** RAG AI doc finder — which docs to read for a question (read-only agent; `aiDocInsights`). @adr 0489 */
   DOC_FIND: "doc-find",
+  /** ER AI draft — module erDiagrams drafted from the schema in the code (read-only agent; `aiDocInsights`). @adr 0491 */
+  ER_DRAFT: "er-draft",
   /** Subagent/skill content generate (one-shot). */
   AGENTS_GENERATE: "agents-generate",
   /** Template "Analyze impact" report — read-only agent. */

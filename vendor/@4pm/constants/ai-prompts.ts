@@ -519,6 +519,16 @@ const PROMPT_META: PromptMeta[] = [
     requiredVars: ["question", "hints"],
     untrustedVars: { question: "request", hints: "data" },
   },
+  {
+    key: "web.er.draft",
+    ownerApp: "web",
+    phase: 2,
+    title: "ER — AI draft",
+    description:
+      "Read-only agent: drafts the project data model (module erDiagrams) from the schema in the code (ADR-0491). Keep the fenced JSON {title, rationale, modules[{name, description, diagram}]} output.",
+    requiredVars: ["existing"],
+    untrustedVars: { existing: "data" },
+  },
 ];
 
 /**
