@@ -244,7 +244,7 @@ export function handleWorkerChannels(
       return true;
     }
     case WsChannels.GRAPH_BUILD: {
-      // Request/reply (machine-0036): build the docs/code dependency graph.
+      // Request/reply (machine-0036): build the docs / code / all structure graph (ADR-0488).
       const req = payload as unknown as GraphBuildRequest;
       if (ctx.physicRoot) {
         void buildGraph(ctx.physicRoot, req.mode).then((reply) =>
@@ -283,7 +283,7 @@ export function handleWorkerChannels(
       // Request/reply (machine-0040): semantic search over the index.
       const req = payload as unknown as RagQueryRequest;
       if (ctx.physicRoot) {
-        void ragQuery(ctx.physicRoot, req.query, req.k).then((reply) =>
+        void ragQuery(ctx.physicRoot, req.query, req.k, Array.isArray(req.kinds) ? req.kinds : undefined).then((reply) =>
           ctx.send(WsChannels.RAG_QUERY, reply, message.id),
         );
       }

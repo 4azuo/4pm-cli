@@ -14,6 +14,7 @@ import { runAutoRun } from "./commands/auto-run";
 import { runGitCredential, runGitToken } from "./commands/git-credential";
 import { runNetConnect } from "./commands/net-connect";
 import { runAiLogin } from "./commands/ai-login";
+import { runGitLogin } from "./commands/git-login";
 import { importCredentialFromEnv, runCredentialExport } from "./commands/credential";
 import { runUnlink } from "./commands/unlink";
 import { runUpdate } from "./commands/update";
@@ -164,6 +165,11 @@ async function main(): Promise<void> {
       await runAiLogin(profileDir(name), name, flagValue(rest, "ai") ?? null);
       break;
     }
+    case "git-login": {
+      // Log the worker's own gh / glab in as the cli user, kept in the volume (ADR-0487 §4, ADR-0467).
+      process.exitCode = await runGitLogin(rest[0], rest.slice(1));
+      break;
+    }
     case "credential-export": {
       // Print a profile's identity as one FOURPM_CREDENTIAL value for a secret store (ADR-0428).
       const name = await pickLinkedProfile(explicitProfile, "credential-export");
@@ -207,6 +213,7 @@ async function main(): Promise<void> {
           "  4pm attach    Open the TUI against a running headless daemon (ADR-0192)",
           "  4pm auto-run  Run one autonomous cycle now via the running daemon (ADR-0319/0392)",
           "  4pm ai-login  Log into a profile's AI CLI (claude/codex) in place (ADR-0199)",
+          "  4pm git-login <gh|glab>  Log the worker's own gh / glab in (kept in ~/.4pm/gh|glab)",
           "  4pm credential-export  Print the profile's identity as one FOURPM_CREDENTIAL",
           "                value for a secret store (ephemeral containers — ADR-0428)",
           "  4pm unlink    Delete a link (pick a profile if several)",

@@ -21,11 +21,12 @@ import { chmod, copyFile, mkdir, mkdtemp, readdir, rename, rm } from "node:fs/pr
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { homedir, tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { WORKER_TOOL_CATALOG } from "@4pm/constants";
 import { readProfileConfig } from "../../config/profile";
 import { logger } from "../../common/logger/logger";
+import { agentCanRun, exposeToAgent } from "../../utils/agent-user";
 import { isToolInstalled, runWorkerToolOp } from "./worker-tools";
 
 const run = promisify(execFile);
@@ -55,6 +56,21 @@ let reporter: (() => void) | null = null;
 /** The per-user tool dir for release binaries — on the `~/.4pm` volume in a container. */
 export function toolBinDir(): string {
   return join(homedir(), ".4pm", "tools", "bin");
+}
+
+/**
+ * Make the tools the cli installed before (the release binaries, the runtime npm prefix) runnable by the agent
+ * — trees from an older cli or a process-wide `umask 007`. The staged cli self-update stays private. Called at
+ * `start`; a no-op when separation is off or a tree is already open.
+ * @adr 0487 §1
+ */
+export function exposeInstalledTools(): void {
+  exposeToAgent(dirname(toolBinDir()));
+  const prefix = process.env.NPM_CONFIG_PREFIX;
+  const runtimeCli = process.env.FOURPM_CLI_RUNTIME_DIR;
+  if (prefix) {
+    exposeToAgent(prefix, (p) => p === runtimeCli || p === join(prefix, "lib", "node_modules", "@4pm"));
+  }
 }
 
 /** Put the tool dir first on this process's PATH (inherited by every child — AI runs, git, shims). */
@@ -167,6 +183,9 @@ async function installReleaseBinary(tool: "gh" | "glab", onLine: (line: string) 
     const bin = await findFile(out, binName);
     if (!bin) throw new Error(`${binName} not found in the archive.`);
     await mkdir(toolBinDir(), { recursive: true });
+    // The agent runs these binaries; the cli's umask 077 would leave the folders private (ADR-0487 §1).
+    await chmod(dirname(toolBinDir()), 0o755);
+    await chmod(toolBinDir(), 0o755);
     const dest = join(toolBinDir(), binName);
     // Copy then rename, so a running copy of the old binary is replaced atomically ("text file busy").
     await copyFile(bin, `${dest}.new`);
@@ -233,6 +252,11 @@ export function installTool(tool: SelfInstallTool, onLine: (line: string) => voi
       present.add(tool);
       lastFailure.delete(tool);
       logger.info("toolchain.installed", { tool });
+      if (!agentCanRun(tool)) {
+        // Installed for the cli but not runnable by the agent user — AI runs would fail (ADR-0487 §1).
+        logger.warn("toolchain.agentCannotRun", { tool });
+        onLine(`Warning: ${tool} is installed but the agent user cannot run it (permissions).`);
+      }
       reporter?.();
       return true;
     } catch (err) {

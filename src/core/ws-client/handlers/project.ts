@@ -7,7 +7,7 @@
  * @adr 0064 @adr 0080
  */
 import { setServedTeams } from "../../autonomous/autonomous-teams";
-import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
+import { existsSync, renameSync, rmSync } from "node:fs";
 import {
   WsChannels,
   type PhysicDeletePayload,
@@ -35,6 +35,7 @@ import { logger } from "../../../common/logger/logger";
 import type { WsHandlerCtx } from "../context";
 import { t } from "../../../i18n";
 import { setEgressMcpUrls, setNetworkPolicy } from "../../network/egress-state";
+import { mkdirShared } from "../../../utils/agent-user";
 
 /** Route the project-lifecycle channels; returns true when the message was handled. */
 export function handleProjectChannels(
@@ -60,7 +61,7 @@ export function handleProjectChannels(
         // No old folder to move (fresh attach), or the target already exists: drop a stale old
         // folder and ensure the new one exists (empty until provisioning clones the repos).
         if (oldPath && oldPath !== newPath && existsSync(oldPath)) rmSync(oldPath, { recursive: true, force: true });
-        mkdirSync(newPath, { recursive: true });
+        mkdirShared(newPath); // shared with the agent (ADR-0487)
       }
       ctx.physicRoot = ctx.physicFolderPath(sync.newName); // browse root follows the rename
       requestGitSnapshot("physic-sync");

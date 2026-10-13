@@ -1159,44 +1159,98 @@ export interface PackagesRemoveReply {
 }
 
 /**
- * Docs & code dependency graph — the cli builds a graph of the physic project (docs or
- * code) that the web renders in WebGL. Deterministic + bounded; orphans are unlinked nodes.
- * @adr 0155
+ * Docs & code dependency graph — the cli builds a graph of the physic project from the 4PM Doc Header
+ * (docs) and file headers + imports (code); the web renders it as a graph or a tree. Deterministic +
+ * bounded. v2 fields are optional so an older cli's reply still parses.
+ * @adr 0155 @adr 0488
  */
 
-/** One graph node — a document (docs mode) or a function (code mode). */
+/** Node layer — a document or a source file (`er` = a virtual ER-entity node in `all` mode). */
+export type GraphLayer = "doc" | "code" | "er";
+
+/** Typed edge kinds (v2). */
+export type GraphEdgeType =
+  | "parent"
+  | "implements"
+  | "uses"
+  | "extends"
+  | "supersedes"
+  | "tests"
+  | "related"
+  | "mentions"
+  | "imports";
+
+/** One graph node — a document, a source file, or (`all` mode) an ER entity. */
 export interface GraphNode {
-  /** Stable id: a doc relpath, or `file#function` for code. */
+  /** Stable id: the Doc Header `id` (else the relpath) for docs, the relpath for code, `er.<ENTITY>`. */
   id: string;
   label: string;
-  /** `doc` | `fn`. */
+  /** Doc kind (`req`, `adr`, …, `unclassified`) or code kind (`service`, …); v1: `doc` | `fn`. */
   kind: string;
-  /** The source file (relpath). */
+  /** The source file (relpath); empty for an `er` node. */
   file: string;
+  /** v2. */
+  layer?: GraphLayer;
+  title?: string;
+  feature?: string[];
+  status?: string;
+  parent?: string;
+  /** Depth in the tree (0 = root). */
+  depth?: number;
 }
 
-/** One directed edge (from → to references / links). */
+/** One directed edge (from → to). */
 export interface GraphEdge {
   from: string;
   to: string;
+  /** v2 edge type; absent from an older cli. */
+  type?: GraphEdgeType;
+}
+
+/** Deterministic structure metrics (v2). */
+export interface GraphMetrics {
+  /** 1–100. */
+  depthScore: number;
+  maxDepth: number;
+  avgDepth: number;
+  idealDepth: number;
+  cycles: number;
+  unclassified: number;
+  brokenRefs: number;
+  perRoot: { id: string; depthScore: number; maxDepth: number }[];
+}
+
+/** One lint finding (same rules as the `4pm-doc-lint` skill). */
+export interface GraphIssue {
+  id?: string;
+  file: string;
+  rule: string;
+  severity: "error" | "warn";
+  message: string;
 }
 
 /** graph.build — build the graph for one mode. */
 export interface GraphBuildRequest {
-  mode: "docs" | "code";
+  mode: "docs" | "code" | "all";
 }
 export interface GraphBuildReply {
   nodes: GraphNode[];
   edges: GraphEdge[];
-  /** Node ids with no links (unlinked) — the analysis surface. */
+  /** Node ids with no inbound and no outbound edge (v1: no inbound). */
   orphans: string[];
+  /** v2: tree roots. */
+  roots?: string[];
+  /** v2. */
+  metrics?: GraphMetrics;
+  /** v2. */
+  issues?: GraphIssue[];
 }
 
 /**
- * RAG capability + install — the dashboard checks whether a worker can run RAG and
- * installs a worker-tuned embedding model through the cli. Install runs in the background; the web
- * polls the status.
- * @adr 0156
+ * RAG capability + install — the dashboard checks whether a worker can run RAG and installs a
+ * worker-tuned embedding model through the cli (Node engine: transformers.js + sqlite-vec). Install runs
+ * in the background as the agent user; the web polls the status.
+ * @adr 0156 @adr 0489
  */
 
 /** One install option (embedding model) tuned to the worker's specs. */
@@ -1217,6 +1271,16 @@ export interface RagMachine {
   gpu: boolean;
 }
 
+/** One prerequisite check, in display order. @adr 0489 */
+export interface RagPrereq {
+  key: "node" | "npm" | "sqliteExt" | "disk" | "access" | "network";
+  ok: boolean;
+  /** Short detail (version, size); shown under the label. */
+  detail?: string;
+  /** What to do when not ok (English fallback; the web maps `key` to i18n). */
+  hint?: string;
+}
+
 /** rag.status — probe the worker's RAG capability + install state. */
 export interface RagStatusRequest {
   _?: never;
@@ -1224,8 +1288,14 @@ export interface RagStatusRequest {
 export interface RagStatusReply {
   installed: boolean;
   installing: boolean;
-  python: { found: boolean; version: string };
-  deps: { pip: boolean; fastembed: boolean; sqliteVec: boolean };
+  /** Node engine probe (ADR-0489). Absent from an older (Python-engine) cli. */
+  runtime?: { node: string; nodeOk: boolean; npm: boolean; sqliteExt: boolean };
+  /** Older cli only (Python engine) — the web asks to update the worker cli. */
+  python?: { found: boolean; version: string };
+  /** Node engine: `{transformers, sqliteVec}`; older cli: `{pip, fastembed, sqliteVec}`. */
+  deps: { transformers?: boolean; sqliteVec: boolean; pip?: boolean; fastembed?: boolean };
+  /** Ordered prerequisite checklist (ADR-0489). */
+  prereqs?: RagPrereq[];
   model: { present: boolean; name: string };
   machine: RagMachine;
   options: RagOption[];
@@ -1251,6 +1321,10 @@ export interface RagIndex {
   indexing: boolean;
   chunks: number;
   indexedAt: string;
+  /** Built by another engine (or model) — reindex needed. @adr 0489 */
+  stale?: boolean;
+  /** Docs indexed (ADR-0489). */
+  docs?: number;
 }
 
 /** rag.reindex — (re)build the docs vector index in the background. */
@@ -1268,12 +1342,17 @@ export interface RagQueryResult {
   path: string;
   snippet: string;
   score: number;
+  /** Doc Header title / kind (ADR-0489). */
+  title?: string;
+  kind?: string;
 }
 
 /** rag.query — semantic search over the index. */
 export interface RagQueryRequest {
   query: string;
   k?: number;
+  /** Only chunks whose Doc Header `kind` is listed (ADR-0489). */
+  kinds?: string[];
 }
 export interface RagQueryReply {
   results: RagQueryResult[];

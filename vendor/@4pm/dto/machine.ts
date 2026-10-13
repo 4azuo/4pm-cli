@@ -1397,16 +1397,22 @@ export const ragInstallRequestSchema = z.object({
 });
 export type RagInstallBody = z.infer<typeof ragInstallRequestSchema>;
 
-/** Query GET /machines/:id/rag/query — semantic search over the index. @api machine-0040 @adr 0157 */
+/** Query GET /machines/:id/rag/query — semantic search over the index. @api machine-0040 @adr 0157 @adr 0489 */
 export const ragQueryQuerySchema = z.object({
   q: z.string().min(1).max(2000),
   k: z.coerce.number().int().min(1).max(20).optional(),
+  /** Comma-separated Doc Header kinds (`req,api`) — only chunks of those kinds. */
+  kinds: z
+    .string()
+    .max(400)
+    .regex(/^[a-z][a-z0-9-]{0,31}(,[a-z][a-z0-9-]{0,31}){0,23}$/)
+    .optional(),
 });
 export type RagQueryQuery = z.infer<typeof ragQueryQuerySchema>;
 
-/** Query GET /machines/:id/graph — build the docs/code dependency graph. @api machine-0036 @adr 0155 */
+/** Query GET /machines/:id/graph — build the docs/code dependency graph. @api machine-0036 @adr 0155 @adr 0488 */
 export const graphBuildQuerySchema = z.object({
-  mode: z.enum(["docs", "code"]),
+  mode: z.enum(["docs", "code", "all"]),
 });
 export type GraphBuildQuery = z.infer<typeof graphBuildQuerySchema>;
 

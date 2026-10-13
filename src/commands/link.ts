@@ -5,15 +5,14 @@
  * fingerprint) ⇒ store hashcode (3) in the profile's `.cre`. Without --profile the
  * profile is keyed by the paired MACHINE userId. Pairing always proceeds
  * (no "already linked" pre-check): it renews the profile if it exists, else adds it.
- * @adr 0047 @adr 0063 @adr 0014
+ * @adr 0047 @adr 0063 @adr 0014 @adr 0487
  */
 import { randomBytes } from "node:crypto";
-import { mkdirSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { readCredential, writeCredential } from "../core/profile/credential";
 import { collectFingerprint } from "../core/profile/fingerprint";
 import { confirmPairing, pairWithToken } from "../services/api";
-import { ensureProfileConfig, prepareWorkspaces, profileDir, projectFolder, writeDefaultProfile } from "../config/profile";
+import { ensureProfileConfig, profileDir, writeDefaultProfile } from "../config/profile";
 import { assertSecureRemoteUrl } from "../utils/secure-url";
 import { initI18n, t } from "../i18n";
 
@@ -57,7 +56,7 @@ export async function runLink(
     rl.close();
     result = await confirmPairing(serverUrl, hashcode2, collectFingerprint());
   }
-  const { hashcode3, username, scope, projectName } = result;
+  const { hashcode3, username, scope } = result;
   // Explicit --profile keeps its name; otherwise name the profile after the account's
   // username (readable, no --profile needed).
   const profileName = explicitProfile ?? sanitizeProfileName(username);
@@ -74,15 +73,9 @@ export async function runLink(
   // same structure as one created via `/config init` (instead of the partial file the
   // first ws_token would otherwise write). No-op when renewing an existing profile.
   ensureProfileConfig(dir);
-  // MEMO#9 — scaffold the physic project folder inside the profile when the MACHINE
-  // user already belongs to a project (folder = project name — ADR-0064).
-  if (projectName && scope === "project") {
-    prepareWorkspaces(dir); // shared with the agent user under uid separation (ADR-0430)
-    const folder = projectFolder(dir, projectName);
-    if (!folder) return;
-    mkdirSync(folder, { recursive: true });
-    console.log(t("link.createdFolder", { folder }));
-  }
+  // No project folder here (ADR-0487): `link` may run with the agent separation off (the web pair command is a
+  // plain `docker run`), and a folder created then would stay unshared. `start` / clone-on-connect create it
+  // after the workspace is prepared.
   // Point the `default` at this profile (fallback for version/update when not picking).
   writeDefaultProfile(profileName);
   // Show scope so it is obvious WHICH account was paired: "orchestrator" = the admin

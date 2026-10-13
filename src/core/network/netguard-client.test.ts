@@ -28,6 +28,6 @@ describe("kernel egress", () => {
   it("grants the RAG hosts only to a RAG run", () => {
     setNetworkPolicy({ mode: "enforce", allow: [], deny: [], orgDeny: [], projectId: "p1" });
     expect(policyFor("project").allow).toEqual([]);
-    expect(policyFor("project", ["rag"]).allow.map((r) => r.target)).toContain("pypi.org");
+    expect(policyFor("project", ["rag"]).allow.map((r) => r.target)).toContain("registry.npmjs.org");
   });
 });

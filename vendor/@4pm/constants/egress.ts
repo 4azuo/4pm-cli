@@ -35,12 +35,12 @@ export const EGRESS_PROVIDER_HOSTS = {
 } as const satisfies Record<string, readonly EgressSystemHost[]>;
 
 /**
- * Hosts a 4PM-started RAG install / index / query needs (the Python packages + the embedding model),
+ * Hosts a 4PM-started RAG install / index / query needs (the npm engine packages + the embedding model),
  * granted only to those runs, never to the agent's own work.
+ * @adr 0489
  */
 export const EGRESS_RAG_HOSTS: readonly EgressSystemHost[] = [
-  { target: "pypi.org", port: 443 },
-  { target: "files.pythonhosted.org", port: 443 },
+  { target: "registry.npmjs.org", port: 443 },
   { target: "huggingface.co", port: 443 },
   { target: "*.huggingface.co", port: 443 },
   { target: "*.hf.co", port: 443 },

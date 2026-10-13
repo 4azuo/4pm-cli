@@ -7,7 +7,9 @@
  * @adr 0014 @adr 0047
  */
 import {
+  chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -19,7 +21,7 @@ import { basename, join, resolve } from "node:path";
 import type { Locale } from "@4pm/constants";
 import { ensureDir } from "../common/io/ensure-dir";
 import type { AiCredential, AiProfile } from "../utils/ai-cli";
-import { agentUser, registerAgentRoot, shareWithAgent, traversableByAgent } from "../utils/agent-user";
+import { agentUser, registerAgentRoot, repairWorkspaceProjects, shareWithAgent, traversableByAgent } from "../utils/agent-user";
 
 /** Legacy default profile name (pre-ADR-0047 fallback). */
 export const DEFAULT_PROFILE = "default";
@@ -280,24 +282,39 @@ function fourpmHomeMode(): number {
   return agentUser() ? 0o710 : 0o700;
 }
 
+/** Set `mode` on a cli-owned path that exists (no-op when missing or not changeable). */
+function restrictMode(path: string, mode: number): void {
+  try {
+    if (existsSync(path) && !lstatSync(path).isSymbolicLink()) chmodSync(path, mode);
+  } catch {
+    /* best-effort */
+  }
+}
+
 /**
- * Prepare the workspace of a profile for uid separation, at `start`/`link`: `umask 007` (files
- * the cli and the agent create in a project stay group-writable), `~/.4pm` traversable by the shared group,
- * `~/.4pm/workspaces/<profile>` shared (`2770`) and registered so every process run in it runs as the
- * agent. No-op when separation is off.
- * @adr 0430
+ * Prepare the workspace of a profile for uid separation, at `start`/`link`: `umask 077` — the cli creates
+ * everything private, and only its writes into an agent root are shared, explicitly (`safe-path`,
+ * `shareCreated`) — `~/.4pm` traversable by the shared group, `~/.4pm/workspaces/<profile>` shared (`2770`)
+ * and registered so every process run in it runs as the agent. No-op when separation is off.
+ * @adr 0430 @adr 0487
  */
 export function prepareWorkspaces(profileDirPath: string): void {
   if (!agentUser()) return;
-  process.umask(0o007);
+  process.umask(0o077);
   ensureDir(join(homedir(), ".4pm"), fourpmHomeMode());
   traversableByAgent(join(homedir(), ".4pm"));
+  // The agent may open known names under `~/.4pm`: keep the profile list and the default pointer private,
+  // also on volumes created before they were (ADR-0487 §5).
+  restrictMode(join(homedir(), ".4pm", "profiles"), 0o700);
+  restrictMode(defaultPointerPath(), 0o600);
   const root = workspaceRoot(profileDirPath);
   mkdirSync(root, { recursive: true });
   const parent = join(root, "..");
   if (parent !== resolve(homedir(), ".4pm")) shareWithAgent(parent);
   shareWithAgent(root);
   registerAgentRoot(root);
+  // Project folders created while separation was off are brought back to the shared modes (ADR-0487 §2).
+  repairWorkspaceProjects(root);
 }
 
 /**

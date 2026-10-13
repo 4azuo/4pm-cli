@@ -11,12 +11,9 @@ project.secrets.json
 .claude/.autonomous.histories.json
 .claude/cron.out
 
-# RAG — the sqlite-vec index + install state are generated on the worker (not committed)
-.claude/rag/index.db
-.claude/rag/.installing
-.claude/rag/.indexing
-.claude/rag/install.log
-.claude/rag/index.log
+# RAG — engine, runtime, models and index are generated on the worker (not committed; the folder
+# also carries its own .gitignore — ADR-0489)
+.claude/rag/
 
 # IDE
 .vs/

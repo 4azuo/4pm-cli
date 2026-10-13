@@ -14,7 +14,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { basename, join } from "node:path";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import WebSocket from "ws";
 import { backoffJitterMs } from "@4pm/utils";
 import {
@@ -79,6 +79,7 @@ import { projectFolder, readProfileConfig, writeProfileConfig } from "../config/
 import { detectWorkerTools } from "./worker/worker-tools";
 import { logger, readLogUpload } from "../common/logger/logger";
 import { CLI_VERSION } from "../version";
+import { mkdirShared } from "../utils/agent-user";
 import { envReconnectMaxSec, toDtoEntry } from "./ws-client/transcript";
 import type { WsHandlerCtx } from "./ws-client/context";
 import { handleCommandChannels, resetMemorySession, runLocalCommand } from "./ws-client/command-dispatch";
@@ -1053,7 +1054,7 @@ export class WsClient {
   private ensurePhysicFolderPath(folder: string): void {
     try {
       if (!existsSync(folder)) {
-        mkdirSync(folder, { recursive: true });
+        mkdirShared(folder); // shared with the agent (ADR-0487)
         this.bus.log(t("project.createdFolder", { folder }));
       }
     } catch (err) {

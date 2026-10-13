@@ -8,7 +8,7 @@
  * @adr 0380
  */
 import { spawn } from "node:child_process";
-import { rmSync, writeFileSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { ResearchAttachmentPayload } from "@4pm/ws";
 import { createAiStreamParser, estimateTokens, type AiUsage } from "../ai/ai-stream";
@@ -19,6 +19,7 @@ import { resolveCliPrompt } from "../ai/prompt-overrides";
 import type { ResolvedClaudeProfile } from "../../utils/ai-cli";
 import { agentSpawnArgs } from "../agent/agent-spawn";
 import { makeAgentTempDir, unregisterAgentRoot } from "../../utils/agent-user";
+import { writeFileInRootSync } from "../../utils/safe-path";
 
 /** Max time a research run may take (ms) — it may search/read several pages before answering. */
 const RESEARCH_TIMEOUT_MS = 9 * 60 * 1000;
@@ -97,7 +98,8 @@ function runClaudeOnce(
       attachments.forEach((a, i) => {
         const file = join(cwd, safeAttachmentName(a.name, i));
         try {
-          writeFileSync(file, Buffer.from(a.dataBase64, "base64"));
+          // Shared with the agent, which reads it (ADR-0487).
+          writeFileInRootSync(cwd, file, Buffer.from(a.dataBase64, "base64"));
           lines.push(`- \`${file}\``);
         } catch {
           // best-effort — skip an attachment that fails to write

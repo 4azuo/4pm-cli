@@ -11,11 +11,15 @@
  *   opened with `O_NOFOLLOW`;
  * - **entry** — delete / move / rename act on the entry itself (a link, not its target), so only its
  *   parent folder has to be inside the root.
- * @adr 0430 phase 0
+ *
+ * Under the agent uid separation the writers also give what they create inside an agent root its shared mode
+ * (files `0660` / `0770`, folders `02770`): the cli runs with `umask 077`, so sharing is explicit.
+ * @adr 0430 phase 0 @adr 0487
  */
 import { constants, existsSync, lstatSync, mkdirSync, openSync, closeSync, realpathSync, writeSync } from "node:fs";
 import { lstat, mkdir, open, readFile, realpath } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
+import { shareCreatedFd, shareNewDirs } from "./agent-user";
 
 /** Raised when a path would leave the project root (lexically or through a symlink). */
 export class PathEscapeError extends Error {
@@ -126,7 +130,7 @@ export function resolveEntry(root: string | null, rel: string): string | null {
 export async function mkdirInRoot(root: string, dir: string): Promise<void> {
   const realRoot = realRootSync(root);
   if (!within(realRoot, realOrAncestorSync(resolve(dir)))) throw new PathEscapeError(dir);
-  await mkdir(dir, { recursive: true });
+  shareNewDirs(await mkdir(dir, { recursive: true }), dir);
   if (!within(realRoot, await realpath(dir))) throw new PathEscapeError(dir);
 }
 
@@ -134,8 +138,13 @@ export async function mkdirInRoot(root: string, dir: string): Promise<void> {
 export function mkdirInRootSync(root: string, dir: string): void {
   const realRoot = realRootSync(root);
   if (!within(realRoot, realOrAncestorSync(resolve(dir)))) throw new PathEscapeError(dir);
-  mkdirSync(dir, { recursive: true });
+  shareNewDirs(mkdirSync(dir, { recursive: true }), dir);
   if (!within(realRoot, realpathSync(dir))) throw new PathEscapeError(dir);
+}
+
+/** Whether a requested write mode asks for an executable file. */
+function wantsExec(mode: number | undefined): boolean {
+  return mode !== undefined && (mode & 0o111) !== 0;
 }
 
 /** Read a project file (absolute or root-relative path) only when it really is inside `root`. */
@@ -162,6 +171,7 @@ export async function writeFileInRoot(root: string, path: string, data: string |
   if (!safe) throw new PathEscapeError(path);
   const handle = await open(safe, WRITE_FLAGS, mode ?? 0o666);
   try {
+    shareCreatedFd(handle.fd, safe, wantsExec(mode));
     await handle.writeFile(data);
   } finally {
     await handle.close();
@@ -177,11 +187,34 @@ export function writeFileInRootSync(root: string, path: string, data: string | U
   if (!safe) throw new PathEscapeError(path);
   const fd = openSync(safe, WRITE_FLAGS, mode ?? 0o666);
   try {
+    shareCreatedFd(fd, safe, wantsExec(mode));
     const buf = typeof data === "string" ? Buffer.from(data, "utf8") : data;
     let off = 0;
     while (off < buf.length) off += writeSync(fd, buf, off, buf.length - off);
   } finally {
     closeSync(fd);
+  }
+}
+
+/** Flags for an append that refuses to follow a symlink at the final path component. */
+const APPEND_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW;
+
+/**
+ * Append to a project file (absolute or root-relative path) only when it really is inside `root` — same
+ * guarantees as {@link writeFileInRoot} (safe parents, `O_NOFOLLOW`, shared mode in an agent root).
+ */
+export async function appendFileInRoot(root: string, path: string, data: string): Promise<void> {
+  const lexical = lexicalInRoot(root, path);
+  if (!lexical) throw new PathEscapeError(path);
+  await mkdirInRoot(root, dirname(lexical));
+  const safe = resolveForWrite(root, lexical);
+  if (!safe) throw new PathEscapeError(path);
+  const handle = await open(safe, APPEND_FLAGS, 0o666);
+  try {
+    shareCreatedFd(handle.fd, safe);
+    await handle.appendFile(data, "utf8");
+  } finally {
+    await handle.close();
   }
 }
 

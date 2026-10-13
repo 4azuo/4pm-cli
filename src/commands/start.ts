@@ -36,7 +36,7 @@ import { attachConsoleSink } from "../ui/console-sink";
 import { runTui } from "../ui/run-tui";
 import type { SessionInfo } from "../ui/session-info";
 import { CLI_VERSION } from "../version";
-import { addToolDirToPath, ensureToolchainAtBoot, setToolchainReporter } from "../core/worker/toolchain";
+import { addToolDirToPath, ensureToolchainAtBoot, exposeInstalledTools, setToolchainReporter } from "../core/worker/toolchain";
 import { startGitTokenServer } from "../core/git/git-token-server";
 import { syncAgentSshKey } from "../core/git/git-ssh-key";
 import { prepareCredentialDir } from "../utils/ai-cred-mount";
@@ -89,6 +89,8 @@ export async function runStart(
 
   // Uid separation (ADR-0430): share + register this profile's workspace before anything runs in it.
   prepareWorkspaces(profileDir);
+  // …and the tools installed before stay runnable by the agent despite the cli's private umask (ADR-0487).
+  exposeInstalledTools();
   // A host login mounted at ~/ai-creds/<provider> with no profile pointing at it becomes one (ADR-0433).
   adoptMountedAiLogins(profileDir);
   // …and the seeded .claude/.codex that hold no login are switched off once, so runs don't try them first (ADR-0479).

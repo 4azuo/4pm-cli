@@ -2,7 +2,7 @@
   "name": "@4pm/cli",
   "version": "0.0.0",
   "private": true,
-  "description": "4PM CLI — drives Claude/Codex CLIs on AI worker machines (Node + TypeScript)",
+  "description": "4PM CLI \u2014 drives Claude/Codex CLIs on AI worker machines (Node + TypeScript)",
   "license": "LicenseRef-4PM-Source-Available",
   "type": "module",
   "bin": {
@@ -17,7 +17,8 @@
     "lint": "eslint .",
     "pretypecheck": "node scripts/vendor-shared.mjs --write",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "docs-lint:emit": "node scripts/emit-doc-lint.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1147.0",

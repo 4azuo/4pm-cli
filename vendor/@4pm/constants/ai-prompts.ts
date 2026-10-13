@@ -499,6 +499,26 @@ const PROMPT_META: PromptMeta[] = [
     requiredVars: ["repoScope"],
     untrustedVars: {},
   },
+  {
+    key: "web.graph.review",
+    ownerApp: "web",
+    phase: 2,
+    title: "Graph — AI structure review",
+    description:
+      "Read-only review of the docs/code structure from the deterministic metrics, lint issues and a tree outline (ADR-0488). Keep the Markdown sections.",
+    requiredVars: ["mode", "metrics", "issues", "outline"],
+    untrustedVars: { issues: "data", outline: "data" },
+  },
+  {
+    key: "web.rag.docFind",
+    ownerApp: "web",
+    phase: 2,
+    title: "RAG — AI doc finder",
+    description:
+      "Read-only agent: reads the repo and lists the documents to read for a question (ADR-0489). Keep the fenced JSON {summary, docs[{path, why, priority}]} output.",
+    requiredVars: ["question", "hints"],
+    untrustedVars: { question: "request", hints: "data" },
+  },
 ];
 
 /**

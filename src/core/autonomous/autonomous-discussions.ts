@@ -6,9 +6,7 @@
  * discussions linked to the requests it analyses, as untrusted data.
  * @adr 0454 @adr 0421
  */
-import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { DISCUSSIONS_DIR, DISCUSSION_CODE_RE, parseDiscussionFile } from "@4pm/dto";
 import { wrapUntrusted } from "@4pm/constants";
 import type { AutonomousWriteReply, DiscussionsReadReply, DiscussionsReadRequest } from "@4pm/ws";
@@ -106,7 +104,6 @@ export async function applyDiscussionBatch(
           continue;
         }
         const abs = join(dir, f.path);
-        if (!existsSync(dirname(abs))) await mkdir(dirname(abs), { recursive: true });
         await writeFileInRoot(dir, abs, f.content);
         wrote++;
       }

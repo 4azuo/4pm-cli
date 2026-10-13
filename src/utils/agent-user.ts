@@ -24,6 +24,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  rmSync,
   statSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -69,9 +70,19 @@ export function isAgentCwd(cwd: string | undefined): boolean {
 }
 
 /**
+ * `sh` argv that runs `cmd args` under `umask` — the command and its arguments are passed positionally
+ * (`$0` / `$@`), never interpolated into the script, and `exec` keeps the pid.
+ */
+function underUmask(umask: string, cmd: string, args: string[]): string[] {
+  return ["/bin/sh", "-c", `umask ${umask} && exec "$0" "$@"`, cmd, ...args];
+}
+
+/**
  * The argv that runs `cmd args` as the agent: `setpriv --reuid/--regid=<agent> --init-groups` with the
  * inheritable + ambient capability sets cleared and `no_new_privs` (the agent ends with no capability and
- * cannot switch back to the cli's uid). Unchanged when separation is off.
+ * cannot switch back to the cli's uid), under an explicit `umask 007` so what it creates in a workspace stays
+ * shared with the cli (the cli itself runs `077`). Unchanged when separation is off.
+ * @adr 0487 §1
  */
 export function asAgent(cmd: string, args: string[]): { cmd: string; args: string[] } {
   const user = agentUser();
@@ -86,10 +97,21 @@ export function asAgent(cmd: string, args: string[]): { cmd: string; args: strin
       "--ambient-caps=-all",
       "--no-new-privs",
       "--",
-      cmd,
-      ...args,
+      ...underUmask("007", cmd, args),
     ],
   };
+}
+
+/**
+ * The argv for a tool install / update the cli runs itself (npm, pnpm): under `umask 022` while separation is
+ * on, so the installed CLIs are executable by the agent (the cli's own `umask 077` would hide them). Unchanged
+ * when off.
+ * @adr 0487 §1
+ */
+export function asToolInstall(cmd: string, args: string[]): { cmd: string; args: string[] } {
+  if (!agentUser() || process.platform === "win32") return { cmd, args };
+  const [sh, ...rest] = underUmask("022", cmd, args);
+  return { cmd: sh!, args: rest };
 }
 
 /** `asAgent` only when `cwd` is inside an agent root (project / shared temp) — else unchanged. */
@@ -98,15 +120,26 @@ export function asAgentFor(cmd: string, args: string[], cwd: string | undefined)
 }
 
 /**
- * Env entries an agent process must see instead of the cli's: its own HOME/USER, and — for git only in
+ * Env entries an agent process must see instead of the cli's: its own HOME/USER, its own gh / glab config dirs
+ * (the cli's `GH_CONFIG_DIR` / `GLAB_CONFIG_DIR` point at its private login, which the agent cannot read — gh
+ * then refuses to start; the agent authenticates through the token shims instead), and — for git only in
  * agent processes — `safe.directory=*`, because the project tree is owned by the cli user and shared via
  * the group (git would otherwise refuse it as "dubious ownership"). The cli's own git keeps the check.
  * Empty when off.
+ * @adr 0487 §4
  */
 export function agentEnvOverrides(): Record<string, string> {
   const user = agentUser();
   if (!user) return {};
-  return { HOME: agentHome(), USER: user, LOGNAME: user, GIT_CONFIG_PARAMETERS: "'safe.directory'='*'" };
+  const home = agentHome();
+  return {
+    HOME: home,
+    USER: user,
+    LOGNAME: user,
+    GH_CONFIG_DIR: join(home, ".config", "gh"),
+    GLAB_CONFIG_DIR: join(home, ".config", "glab"),
+    GIT_CONFIG_PARAMETERS: "'safe.directory'='*'",
+  };
 }
 
 /**
@@ -162,12 +195,36 @@ export function readOnlyForAgent(path: string, mode: number): void {
  */
 export function prepareAgentRunDir(profileDirPath: string): string | null {
   if (!agentUser()) return null;
-  const base = join(homedir(), ".4pm", "run");
-  const dir = join(base, basename(profileDirPath));
+  const dir = agentRunDirPath(profileDirPath);
+  const base = dirname(dir);
   mkdirSync(dir, { recursive: true });
   traversableByAgent(base);
   readOnlyForAgent(dir, 0o2750);
   return dir;
+}
+
+/** Path of a profile's run dir `~/.4pm/run/<profile>/`, whether or not it exists. */
+export function agentRunDirPath(profileDirPath: string): string {
+  return join(homedir(), ".4pm", "run", basename(profileDirPath));
+}
+
+/**
+ * Delete a folder the agent may have written into: first as the agent (its private files and folders the cli
+ * cannot enter), then as the cli for whatever remains. Both act on a symlink itself, never on its target. Off ⇒
+ * a plain delete. Throws when the cli's own pass fails.
+ * @adr 0487
+ */
+export function removeSharedTree(dir: string): void {
+  if (agentUser()) {
+    const w = asAgent("rm", ["-rf", "--", dir]);
+    try {
+      execFileSync(w.cmd, w.args, { stdio: "ignore", timeout: 120_000, env: { PATH: process.env.PATH ?? "", HOME: agentHome() } });
+    } catch (err) {
+      // Entries only the cli may remove are left to the pass below.
+      logger.debug("agent.removeTree", { dir, error: String(err) });
+    }
+  }
+  rmSync(dir, { recursive: true, force: true });
 }
 
 /** True when `p` is `base` or inside it (both absolute, normalized). */
@@ -198,12 +255,20 @@ function forbiddenCredentialDir(dir: string): string | null {
 function setGroupModeNoFollow(path: string, mode: (current: number) => number, dirOnly: boolean): boolean {
   const gid = sharedGid();
   if (gid === null) return false;
+  return changeModeNoFollow(path, mode, dirOnly, gid);
+}
+
+/**
+ * Change the mode (and the group, when `gid` is given) of a cli-owned path through an `O_NOFOLLOW`
+ * descriptor. Returns false (untouched) when it is a symlink, not owned by the cli, or cannot be opened.
+ */
+function changeModeNoFollow(path: string, mode: (current: number) => number, dirOnly: boolean, gid: number | null): boolean {
   let fd: number | null = null;
   try {
     fd = openSync(path, fsc.O_RDONLY | fsc.O_NOFOLLOW | (dirOnly ? fsc.O_DIRECTORY : 0));
     const st = fstatSync(fd);
     if (st.uid !== process.getuid?.()) return false;
-    fchownSync(fd, -1, gid);
+    if (gid !== null) fchownSync(fd, -1, gid);
     fchmodSync(fd, mode(st.mode & 0o7777));
     return true;
   } catch {
@@ -237,6 +302,202 @@ function openAncestorsForAgent(dir: string): void {
   }
 }
 
+/**
+ * Walk `dir` without following symlinks, calling `onDir` / `onFile` for every entry the cli owns (agent-owned
+ * entries are the agent's own business). A folder the cli cannot list is skipped.
+ */
+function walkOwned(
+  dir: string,
+  onDir: (path: string) => void,
+  onFile: (path: string) => void,
+  skip: (path: string) => boolean = () => false,
+): void {
+  const uid = process.getuid?.();
+  const walk = (d: string): void => {
+    let entries: string[];
+    try {
+      entries = readdirSync(d);
+    } catch {
+      return; // a folder private to the agent — nothing of the cli's inside
+    }
+    for (const name of entries) {
+      const p = join(d, name);
+      if (skip(p)) continue;
+      let st;
+      try {
+        st = lstatSync(p);
+      } catch {
+        continue;
+      }
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) {
+        if (st.uid === uid) onDir(p);
+        walk(p);
+      } else if (st.isFile() && st.uid === uid) {
+        onFile(p);
+      }
+    }
+  };
+  walk(dir);
+}
+
+/** Shared mode of a project file: `0770` when any execute bit is (or must be) set, else `0660`. */
+function sharedFileMode(current: number, exec: boolean): number {
+  return exec || (current & 0o111) !== 0 ? 0o770 : 0o660;
+}
+
+/** True when `path` is inside an agent root while separation is on — where the cli's writes are shared. */
+export function isSharedPath(path: string): boolean {
+  return agentUser() !== null && sharedGid() !== null && isAgentCwd(path);
+}
+
+/**
+ * Give an entry the cli just created inside an agent root its shared mode: folders `02770`, files `0660`
+ * (`0770` when `exec`), group `4pm-work` — through an `O_NOFOLLOW` descriptor. No-op outside an agent root or
+ * when separation is off.
+ * @adr 0487 §1
+ */
+export function shareCreated(path: string, kind: "file" | "dir", exec = false): void {
+  if (!isSharedPath(path)) return;
+  if (kind === "dir") setGroupModeNoFollow(path, () => 0o2770, true);
+  else setGroupModeNoFollow(path, (m) => sharedFileMode(m, exec), false);
+}
+
+/**
+ * Share the folders a recursive `mkdir` just created — from `first` (its return value) down to `dir`.
+ * @adr 0487 §1
+ */
+export function shareNewDirs(first: string | undefined, dir: string): void {
+  if (!first) return;
+  const top = resolve(first);
+  const created: string[] = [];
+  for (let p = resolve(dir); ; p = dirname(p)) {
+    created.push(p);
+    if (p === top || dirname(p) === p) break;
+  }
+  for (const p of created.reverse()) shareCreated(p, "dir");
+}
+
+/**
+ * `mkdir -p` for a folder the cli derives itself (a project folder in the workspace), sharing every folder it
+ * creates inside an agent root. Project-relative paths from the web go through `safe-path` instead.
+ * @adr 0487 §1
+ */
+export function mkdirShared(dir: string): void {
+  shareNewDirs(mkdirSync(dir, { recursive: true }), dir);
+}
+
+/**
+ * Share an open file descriptor the cli created inside an agent root (the `safe-path` writers): mode as
+ * {@link shareCreated}, only when the cli owns the file. No-op outside an agent root.
+ * @adr 0487 §1
+ */
+export function shareCreatedFd(fd: number, path: string, exec = false): void {
+  if (!isSharedPath(path)) return;
+  const gid = sharedGid();
+  try {
+    const st = fstatSync(fd);
+    if (gid === null || st.uid !== process.getuid?.()) return;
+    fchownSync(fd, -1, gid);
+    fchmodSync(fd, sharedFileMode(st.mode & 0o7777, exec));
+  } catch {
+    /* best-effort — the start-time repair catches what is left */
+  }
+}
+
+/**
+ * Bring a whole tree inside an agent root back to the shared modes (folders `02770`, files `0660` / `0770`,
+ * group `4pm-work`) — only entries the cli owns, symlinks skipped, every change through `O_NOFOLLOW`. Used after
+ * a template copy and by the start-time project repair. No-op when separation is off.
+ * @adr 0487 §1 §2
+ */
+export function shareTree(dir: string): void {
+  if (!agentUser() || sharedGid() === null) return;
+  setGroupModeNoFollow(dir, () => 0o2770, true);
+  walkOwned(
+    dir,
+    (p) => setGroupModeNoFollow(p, () => 0o2770, true),
+    (p) => setGroupModeNoFollow(p, (m) => sharedFileMode(m, false), false),
+  );
+}
+
+/**
+ * Make a tree of cli-installed tools runnable by the agent: cli-owned folders `0755`, files `0755` when the
+ * owner may execute them, else `0644` — never writable by the agent; symlinks skipped, `O_NOFOLLOW`. A tree
+ * whose top folder already is `0755` is not walked (installs run under `umask 022`; this repairs trees from
+ * before). Entries matched by `skip` (the staged cli update) stay private. No-op when separation is off.
+ * @adr 0487 §1
+ */
+export function exposeToAgent(dir: string, skip: (path: string) => boolean = () => false): void {
+  if (!agentUser()) return;
+  try {
+    const st = lstatSync(dir);
+    if (!st.isDirectory() || (st.mode & 0o777) === 0o755) return;
+  } catch {
+    return; // not installed yet
+  }
+  const dirMode = (): number => 0o755;
+  const fileMode = (m: number): number => ((m & 0o100) !== 0 ? 0o755 : 0o644);
+  changeModeNoFollow(dir, dirMode, true, null);
+  walkOwned(
+    dir,
+    (p) => changeModeNoFollow(p, dirMode, true, null),
+    (p) => changeModeNoFollow(p, fileMode, false, null),
+    skip,
+  );
+}
+
+/**
+ * Whether the agent resolves and may execute `cmd` on its `PATH` (the cli's `PATH`, as agent spawns get) —
+ * checked after a tool install. True when separation is off.
+ * @adr 0487 §1
+ */
+export function agentCanRun(cmd: string): boolean {
+  if (!agentUser()) return true;
+  const w = asAgent("sh", ["-c", 'command -v "$1" >/dev/null && test -x "$(command -v "$1")"', "sh", cmd]);
+  try {
+    execFileSync(w.cmd, w.args, { stdio: "ignore", timeout: 10_000, env: { PATH: process.env.PATH ?? "", HOME: agentHome() } });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Bring every project folder directly under a workspace root back to the shared modes: a folder that is not
+ * group `4pm-work` + setgid + group `rwx` (created while separation was off, e.g. by an old `4pm link`) is
+ * repaired as a whole tree with {@link shareTree}; a correct folder is not walked. Returns the repaired
+ * folders. No-op when separation is off.
+ * @adr 0487 §2
+ */
+export function repairWorkspaceProjects(root: string): string[] {
+  const gid = sharedGid();
+  if (!agentUser() || gid === null) return [];
+  let names: string[];
+  try {
+    names = readdirSync(root);
+  } catch {
+    return [];
+  }
+  const repaired: string[] = [];
+  for (const name of names) {
+    const p = join(root, name);
+    let st;
+    try {
+      st = lstatSync(p);
+    } catch {
+      continue;
+    }
+    if (!st.isDirectory()) continue;
+    const shared = st.gid === gid && (st.mode & 0o2070) === 0o2070;
+    if (shared) continue;
+    shareTree(p);
+    repaired.push(p);
+  }
+  if (repaired.length > 0) logger.info("agent.workspaceRepaired", { folders: repaired });
+  return repaired;
+}
+
 /** Credential dirs whose pre-separation (cli-owned) content was already handed over in this process. */
 const migratedCredentialDirs = new Set<string>();
 
@@ -247,31 +508,13 @@ const migratedCredentialDirs = new Set<string>();
  */
 function shareExistingContent(dir: string): boolean {
   let foundFile = false;
-  const walk = (d: string): void => {
-    let entries: string[];
-    try {
-      entries = readdirSync(d);
-    } catch {
-      return; // the agent's own private folder — nothing of the cli's inside
-    }
-    for (const name of entries) {
-      const p = join(d, name);
-      let st;
-      try {
-        st = lstatSync(p);
-      } catch {
-        continue;
-      }
-      if (st.isSymbolicLink()) continue;
-      if (st.isDirectory()) {
-        if (st.uid === process.getuid?.()) setGroupModeNoFollow(p, () => 0o2770, true);
-        walk(p);
-      } else if (st.isFile() && st.uid === process.getuid?.()) {
-        if (setGroupModeNoFollow(p, (m) => m | 0o060, false)) foundFile = true;
-      }
-    }
-  };
-  walk(dir);
+  walkOwned(
+    dir,
+    (p) => setGroupModeNoFollow(p, () => 0o2770, true),
+    (p) => {
+      if (setGroupModeNoFollow(p, (m) => m | 0o060, false)) foundFile = true;
+    },
+  );
   return foundFile;
 }
 

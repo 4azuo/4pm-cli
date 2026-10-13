@@ -5,7 +5,7 @@
  */
 
 /**
- * The 13 AI functions inside a project — the "job" a pool/machine can be dedicated to. The caller
+ * The 14 AI functions inside a project — the "job" a pool/machine can be dedicated to. The caller
  * stamps the job on an AI dispatch (the end user never picks it); routing orders candidates by it.
  * Values are stable wire strings (do not rename once shipped).
  */
@@ -22,8 +22,10 @@ export const AiJob = {
   CONSOLE_AGENT: "console-agent",
   /** Git merge / AI conflict resolve — full agent. */
   GIT_MERGE: "git-merge",
-  /** Graph add-link/add-code/delete-unused advice (one-shot). */
+  /** Graph AI structure review (one-shot; plan feature `aiDocInsights`). @adr 0488 */
   GRAPH_SUGGEST: "graph-suggest",
+  /** RAG AI doc finder — which docs to read for a question (read-only agent; `aiDocInsights`). @adr 0489 */
+  DOC_FIND: "doc-find",
   /** Subagent/skill content generate (one-shot). */
   AGENTS_GENERATE: "agents-generate",
   /** Template "Analyze impact" report — read-only agent. */

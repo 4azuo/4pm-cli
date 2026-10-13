@@ -15,6 +15,7 @@ import {
 } from "@4pm/constants";
 import type { ToolRestoreFailureItem, ToolStatus, ToolsAutoUpdateReply, ToolsListReply } from "@4pm/ws";
 import { readProfileConfig, writeProfileConfig } from "../../config/profile";
+import { asToolInstall } from "../../utils/agent-user";
 
 /** The streamed worker-tool ops: install/uninstall + update-to-latest. @adr 0252 */
 export type ToolOp = "install" | "uninstall" | "update";
@@ -265,7 +266,9 @@ export async function runWorkerToolOp(
     return { ok: false, exitCode: 1, error: resolved.error ?? "Invalid package." };
   }
   onLine(`$ ${manager} ${opArgs(op, manager, resolved.pkg).join(" ")}`);
-  const { code, out } = await run(manager, opArgs(op, manager, resolved.pkg), onLine, timeoutMs);
+  // Under the agent separation the install runs with umask 022, so the agent can execute it (ADR-0487 §1).
+  const w = asToolInstall(manager, opArgs(op, manager, resolved.pkg));
+  const { code, out } = await run(w.cmd, w.args, onLine, timeoutMs);
   if (code === 0) return { ok: true, exitCode: code };
   const detail = extractToolError(out);
   return { ok: false, exitCode: code, error: detail ? `${manager} exited ${code}: ${detail}` : `${manager} exited ${code}` };

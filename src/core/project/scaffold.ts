@@ -8,8 +8,8 @@
  * submodules are attach-only (no scaffold); only the primary is scaffolded.
  * @adr 0117 @adr 0172 @adr 0080
  */
-import { cp, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
-import { existsSync, lstatSync, readdirSync } from "node:fs";
+import { cp, mkdtemp, readdir, rm } from "node:fs/promises";
+import { existsSync, lstatSync, readdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,6 +27,7 @@ import { resolveCliPrompt } from "../ai/prompt-overrides";
 import { attachSubmoduleBranches } from "../git/submodule-branch";
 import { detachSubmodules, pruneStaleSubmodules } from "../git/submodule-detach";
 import { lexicalInRoot, PathEscapeError, readFileInRoot, resolveForRead, writeFileInRoot } from "../../utils/safe-path";
+import { agentUser, mkdirShared, removeSharedTree, shareCreated, shareTree } from "../../utils/agent-user";
 import { projectFolder } from "../../config/profile";
 import { execInProject } from "../agent/agent-spawn";
 import { reapplyInstalledHooks } from "../agent/packages";
@@ -469,11 +470,47 @@ async function updateRepo(
 }
 
 /**
+ * Whether the agent — who runs every git command on the project — sees `target` itself as a repository's
+ * top level (not a parent repo, not an unreadable `.git`).
+ */
+async function agentSeesRepo(target: string): Promise<boolean> {
+  const top = await gitOut(target, ["rev-parse", "--show-toplevel"]);
+  if (!top) return false;
+  try {
+    return resolve(top) === realpathSync(target);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether `target` already holds the project's clone. Under the agent uid separation the check runs as the
+ * agent: a `.git` it cannot open (a folder created while separation was off) is repaired once; still unusable
+ * ⇒ a clear permission error instead of git's "not a git repository".
+ * @adr 0487 §2
+ */
+async function repoPresent(target: string, emit: (step: string, message: string) => void): Promise<boolean> {
+  if (!existsSync(join(target, ".git"))) return false;
+  if (!agentUser()) return true;
+  if (await agentSeesRepo(target)) return true;
+  emit("git", "The repository folder is not shared with the agent user — repairing its permissions…");
+  shareTree(target);
+  if (await agentSeesRepo(target)) return true;
+  throw new Error("repository folder is not accessible to the agent user (permissions)");
+}
+
+/** Keep git's own files group-shared whatever umask writes them (agent separation only). @adr 0487 §2 */
+async function markSharedRepo(target: string): Promise<void> {
+  if (agentUser()) await gitOut(target, ["config", "core.sharedRepository", "group"]);
+}
+
+/**
  * Provision the ONE project repo at the physic root (ADR-0314: the project root IS the repo).
  * 4PM never creates repos — the repo is an existing one by `url`; a repo with no `url`
  * is `git init`-ed at the root (rare). `mode`: `clone` skips a present repo, `sync`
- * fetch + checkout + fast-forward pulls it, `force` deletes the root and re-clones it fresh.
- * @adr 0292
+ * fetch + checkout + fast-forward pulls it, `force` deletes the root and re-clones it fresh. Every clone
+ * runs from the parent folder, i.e. inside the workspace, so it runs as the agent like any other git command.
+ * @adr 0292 @adr 0487
  */
 async function provisionRepo(
   target: string,
@@ -482,24 +519,29 @@ async function provisionRepo(
   opts: { mode?: ProvisionMode; createMissingBranch?: boolean } = {},
 ): Promise<void> {
   const mode: ProvisionMode = opts.mode ?? "clone";
+  // A clone runs in the parent folder (inside the workspace ⇒ as the agent, ADR-0487); the target is its arg.
+  const cloneCwd = dirname(target);
   if (!repo.url) {
     // No url (rare — ADR-0172 wants an existing repo): init an empty repo at the root.
     if (!existsSync(join(target, ".git"))) {
       emit("git", "Initializing repository…");
-      await mkdir(target, { recursive: true });
+      mkdirShared(target);
       await run("git", ["init"], { cwd: target, timeout: 20_000 });
+      await markSharedRepo(target);
     }
     return;
   }
   // The root already holds a clone — apply the requested mode (ADR-0288/0292).
-  if (existsSync(join(target, ".git"))) {
+  if (await repoPresent(target, emit)) {
+    await markSharedRepo(target);
     await healUncheckedClone(target, emit);
     if (mode === "sync") {
       await updateRepo(target, repo.branch, emit);
     } else if (mode === "force") {
       emit("git", `Re-cloning ${repo.url} (force)…`);
-      await rm(target, { recursive: true, force: true });
-      await run("git", cloneArgs(repo.url, target, repo.branch), { timeout: 120_000 });
+      removeSharedTree(target);
+      await run("git", cloneArgs(repo.url, target, repo.branch), { cwd: cloneCwd, timeout: 120_000 });
+      await markSharedRepo(target);
     } else {
       emit("git", "Repository already present — skipping clone.");
     }
@@ -514,7 +556,8 @@ async function provisionRepo(
     const from = kind === "branch" ? (repo.base?.branch ?? "").trim() : "";
     if (kind === "empty") {
       emit("git", `Creating "${b}" as an empty branch (no history) in ${repo.url}…`);
-      await run("git", ["clone", "--no-checkout", repo.url, target], { timeout: 120_000 });
+      await run("git", ["clone", "--no-checkout", repo.url, target], { cwd: cloneCwd, timeout: 120_000 });
+      await markSharedRepo(target);
       await run("git", ["checkout", "--orphan", b], { cwd: target, timeout: 30_000 });
       await run("git", ["rm", "-r", "-q", "--cached", "--ignore-unmatch", "."], { cwd: target, timeout: 30_000 });
       // `--orphan` keeps the old tree on disk as untracked files — wipe it so the scaffold starts clean.
@@ -522,7 +565,8 @@ async function provisionRepo(
       return;
     }
     emit("git", `Cloning ${repo.url} (${from || "default branch"}) to create "${b}"…`);
-    await run("git", cloneArgs(repo.url, target, from || undefined), { timeout: 120_000 });
+    await run("git", cloneArgs(repo.url, target, from || undefined), { cwd: cloneCwd, timeout: 120_000 });
+    await markSharedRepo(target);
     await run("git", ["checkout", "-b", b], { cwd: target, timeout: 30_000 });
     try {
       await run("git", ["push", "-u", "origin", b], { cwd: target, timeout: 120_000 });
@@ -533,7 +577,8 @@ async function provisionRepo(
     return;
   }
   emit("git", `Cloning ${repo.url}…`);
-  await run("git", cloneArgs(repo.url, target, repo.branch), { timeout: 120_000 });
+  await run("git", cloneArgs(repo.url, target, repo.branch), { cwd: cloneCwd, timeout: 120_000 });
+  await markSharedRepo(target);
 }
 
 /**
@@ -604,7 +649,7 @@ export async function scaffoldProject(
     // The folder lives in the profile's workspace, outside the profile dir (ADR-0430); SCAFFOLD_ROOT overrides.
     const target = projectFolder(profileDir, payload.projectName);
     if (!target) throw new Error("invalid project name");
-    await mkdir(target, { recursive: true });
+    mkdirShared(target);
     // Every project declares exactly one repo (ADR-0314); the spec schema enforces it — guard here too.
     const repo = singleRepo(reposOf(payload.spec));
     if (!repo) throw new Error("A project must declare one repo (ADR-0314).");
@@ -654,7 +699,7 @@ async function scaffoldRepo(
   // `ai` (ADR-0362): the standard AI run path + org run slot for AI init; absent ⇒ fallbacks only.
   opts: { resetClaude?: boolean; ai?: AiTaskRunner } = {},
 ): Promise<void> {
-  await mkdir(dir, { recursive: true });
+  mkdirShared(dir);
   // On create (ADR-0329), reset the template-managed `.claude` config BEFORE the copy so a create
   // yields the current template — not a stale one kept alive by `force:false` (a reused worker folder
   // or a repo that committed the old `.claude`). `add` never resets (opts.resetClaude falsy).
@@ -665,6 +710,8 @@ async function scaffoldRepo(
   assertNoEscapingLinks(dir, sampleDir());
   // force:false ⇒ keep any files the clone already has instead of clobbering them.
   await cp(sampleDir(), dir, { recursive: true, force: false, errorOnExist: false });
+  // The copy is the cli's (umask 077): share it with the agent (ADR-0487).
+  shareTree(dir);
   // Installed marketplace hooks live in the settings file the reset just replaced (ADR-0461).
   if (opts.resetClaude) await reapplyInstalledHooks(dir);
   if (spec) {
@@ -712,6 +759,7 @@ async function resetTrackingFiles(target: string, emit: (step: string, message: 
     const empty = join(templates, file.replace(/\.md$/, ".empty.md"));
     if (!existsSync(empty)) continue;
     await cp(empty, join(target, file), { force: true });
+    shareCreated(join(target, file), "file");
     reset.push(file);
   }
   if (reset.length > 0) emit("copy", `Reset the 4PM tracking files: ${reset.join(", ")}.`);
@@ -811,11 +859,10 @@ async function aiInit(
   // Subagents come straight from the spec (name + description + model) — no AI call needed.
   const subagents = Array.isArray(spec.subagents) ? (spec.subagents as SubagentDecl[]) : [];
   if (subagents.length > 0) {
-    await mkdir(join(target, ".claude", "agents"), { recursive: true });
     for (const sa of subagents) {
       const name = (sa.name || "").trim().replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "");
       if (!name) continue;
-      await writeFile(join(target, ".claude", "agents", `${name}.md`), renderSubagentFile(name, sa), "utf8");
+      await writeFileInRoot(target, join(target, ".claude", "agents", `${name}.md`), renderSubagentFile(name, sa));
     }
   }
   // README + the guide file via the AI CLI (best-effort — skip on failure). Both calls run on the
@@ -932,7 +979,7 @@ export async function addProject(
     // The folder lives in the profile's workspace, outside the profile dir (ADR-0430); SCAFFOLD_ROOT overrides.
     const target = projectFolder(profileDir, payload.projectName);
     if (!target) throw new Error("invalid project name");
-    await mkdir(target, { recursive: true });
+    mkdirShared(target);
     const repo = singleRepo((payload.repos ?? []) as RepoDecl[]);
     // Clone + push with the project's CURRENT git-auth (ADR-0368/0393): an add, a provision of a worker
     // attached after it connected, and the add-existing spec write-back all carry it.
@@ -960,7 +1007,7 @@ export async function addProject(
     let publish: ScaffoldPublishResult | undefined;
     if (writeSpec && repo) {
       emit("spec", "Writing project.spec.json…");
-      await writeFile(join(target, "project.spec.json"), JSON.stringify(payload.spec, null, 2), "utf8");
+      await writeFileInRoot(target, join(target, "project.spec.json"), JSON.stringify(payload.spec, null, 2));
       publish = await commitAndPush(target, repo, emit, { message: "chore: update project spec (4PM)", paths: ["project.spec.json"] });
     }
     onProgress?.({ projectId: payload.projectId, step: "done", message: "Project added.", done: true });

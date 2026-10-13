@@ -15,7 +15,7 @@
 import { spawn } from "node:child_process";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type {
@@ -37,6 +37,7 @@ import { denySettingsArgs } from "../../utils/agent-deny";
 import { strictMcpArgs } from "../../utils/agent-mcp";
 import { agentSpawnArgs } from "../agent/agent-spawn";
 import { makeAgentTempDir, unregisterAgentRoot } from "../../utils/agent-user";
+import { writeFileInRootSync } from "../../utils/safe-path";
 
 /** Zero usage — the fallback when a run captured no token counts. */
 const NO_USAGE: AiUsage = { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
@@ -266,7 +267,7 @@ function materializeImages(images: SupportAnswerImage[], question: string): { di
   let rewritten = question;
   images.forEach((img, i) => {
     const file = join(dir, `attachment-${i + 1}.${imageExt(img.mime)}`);
-    writeFileSync(file, Buffer.from(img.dataBase64, "base64"));
+    writeFileInRootSync(dir, file, Buffer.from(img.dataBase64, "base64")); // shared with the agent (ADR-0487)
     if (img.placeholder) rewritten = rewritten.split(img.placeholder).join(file);
   });
   return { dir, question: rewritten };

@@ -11,7 +11,7 @@
  * @adr 0448 @adr 0452 @adr 0453
  */
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readdir, rm, stat } from "node:fs/promises";
+import { readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { WsHandlerCtx } from "../ws-client/context";
 import { cancelActiveRun, runAiPrompt, type AiPromptOutcome, type AiRunOverrides } from "../ws-client/command-dispatch";
@@ -70,7 +70,7 @@ import { branchProtection } from "../git/git-host";
 import { readProfileConfig } from "../../config/profile";
 import { activeProvider, claudeHomeDirs } from "../../utils/ai-cli";
 import { checkClaudeUsage } from "../ai/claude-usage";
-import { readFileInRoot } from "../../utils/safe-path";
+import { appendFileInRoot, readFileInRoot } from "../../utils/safe-path";
 import { withEgressRun } from "../network/egress-env";
 import { servedTeams, servesTeam } from "./autonomous-teams";
 import { linkedDiscussionsContext } from "./autonomous-discussions";
@@ -863,11 +863,10 @@ async function reportNewBookRows(
 /** Append a line to the per-day tick log (`<root>/.claude/logs/autonomous-tick-<day>.log`). Best-effort. */
 async function dayLog(root: string, line: string): Promise<void> {
   try {
-    const dir = join(root, ".claude", "logs");
-    await mkdir(dir, { recursive: true });
     const day = new Date().toISOString().slice(0, 10);
     const ts = new Date().toISOString().slice(0, 19).replace("T", " ");
-    await appendFile(join(dir, `autonomous-tick-${day}.log`), `${ts} ${line}\n`, "utf8");
+    // Symlink-safe + shared with the agent (ADR-0430 phase 0, ADR-0487).
+    await appendFileInRoot(root, join(root, ".claude", "logs", `autonomous-tick-${day}.log`), `${ts} ${line}\n`);
   } catch {
     /* best-effort */
   }
