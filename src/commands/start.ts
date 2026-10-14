@@ -36,7 +36,8 @@ import { attachConsoleSink } from "../ui/console-sink";
 import { runTui } from "../ui/run-tui";
 import type { SessionInfo } from "../ui/session-info";
 import { CLI_VERSION } from "../version";
-import { addToolDirToPath, ensureToolchainAtBoot, exposeInstalledTools, setToolchainReporter } from "../core/worker/toolchain";
+import { addToolDirToPath, ensureToolchainAtBoot, exposeInstalledTools, setToolchainReporter, usedAiTools } from "../core/worker/toolchain";
+import { checkAgentAiClis } from "../core/worker/agent-ai-cli";
 import { startGitTokenServer } from "../core/git/git-token-server";
 import { installAgentHelper, verifyAgentHelper } from "../core/agent/agent-helper-install";
 import { syncAgentSshKey } from "../core/git/git-ssh-key";
@@ -90,7 +91,7 @@ export async function runStart(
 
   // Uid separation (ADR-0430): share + register this profile's workspace before anything runs in it.
   prepareWorkspaces(profileDir);
-  // …and the tools installed before stay runnable by the agent despite the cli's private umask (ADR-0487).
+  // …and the tools installed before — also by an older cli — stay runnable by the agent (ADR-0487, ADR-0502).
   exposeInstalledTools();
   // A host login mounted at ~/ai-creds/<provider> with no profile pointing at it becomes one (ADR-0433).
   adoptMountedAiLogins(profileDir);
@@ -172,7 +173,16 @@ export async function runStart(
     // Start-up self-heal (ADR-0396): install a missing gh/glab and the enabled profiles' AI CLIs in the
     // background; each success re-reports the tools snapshot. Never blocks or fails the start.
     setToolchainReporter(() => client.reportToolsSnapshot());
-    void ensureToolchainAtBoot(profileDir, (line) => bus.log(line)).catch(() => undefined);
+    // Once those installs settled, the AI CLIs in use must be runnable by the agent — repaired once, else
+    // reported here instead of at the first AI run (ADR-0502).
+    void ensureToolchainAtBoot(profileDir, (line) => bus.log(line))
+      .catch(() => undefined)
+      .then(() => {
+        for (const { cmd, reason } of checkAgentAiClis(usedAiTools(profileDir))) {
+          bus.log(t("start.aiCliUnusable", { tool: cmd, reason }), "error");
+        }
+      })
+      .catch(() => undefined);
     // Expose this daemon's session over a per-profile unix socket so a `4pm attach` TUI can
     // observe/drive it (essential when headless in a container — ADR-0192 §2). Best-effort.
     stopControl = startControlServer(bus, profileDir, {

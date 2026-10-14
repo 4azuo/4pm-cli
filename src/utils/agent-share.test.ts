@@ -9,7 +9,7 @@ import { chmodSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writ
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agentEnvOverrides, asAgent, exposeToAgent, mkdirShared, registerAgentRoot, repairWorkspaceProjects, shareTree, unregisterAgentRoot } from "./agent-user";
+import { agentAccessBlocker, agentEnvOverrides, asAgent, exposeToAgent, mkdirShared, registerAgentRoot, repairWorkspaceProjects, shareTree, unregisterAgentRoot } from "./agent-user";
 import { appendFileInRoot, writeFileInRoot } from "./safe-path";
 
 /** Permission bits (incl. setgid) of a path, never following a symlink. */
@@ -98,7 +98,7 @@ describe.skipIf(process.platform === "win32")("agent share modes (separation on)
     expect(mode(outside)).toBe(0o600);
   });
 
-  it("exposeToAgent opens a tool tree read/execute-only and keeps a skipped path private", () => {
+  it("exposeToAgent opens a whole tool tree read/execute-only, the staged cli update included", () => {
     const prefix = join(base, "npm-global");
     mkdirSync(join(prefix, "bin"), { recursive: true });
     mkdirSync(join(prefix, "lib", "node_modules", "x"), { recursive: true });
@@ -106,12 +106,54 @@ describe.skipIf(process.platform === "win32")("agent share modes (separation on)
     writeFileSync(join(prefix, "lib", "node_modules", "x", "cli.js"), "", { mode: 0o700 });
     writeFileSync(join(prefix, "lib", "node_modules", "x", "package.json"), "{}", { mode: 0o600 });
     chmodSync(prefix, 0o770);
-    exposeToAgent(prefix, (p) => p === join(prefix, "4pm-cli"));
+    exposeToAgent(prefix);
     expect(mode(prefix)).toBe(0o755);
     expect(mode(join(prefix, "bin"))).toBe(0o755);
     expect(mode(join(prefix, "lib", "node_modules", "x", "cli.js"))).toBe(0o755);
     expect(mode(join(prefix, "lib", "node_modules", "x", "package.json"))).toBe(0o644);
-    expect(mode(join(prefix, "4pm-cli"))).toBe(0o700);
+    expect(mode(join(prefix, "4pm-cli"))).toBe(0o755);
+  });
+
+  it("exposeToAgent walks private folders under an already-open top (a tree an older cli wrote)", () => {
+    // The stg `mcacc2` layout (ADR-0502): prefix 0755, but bin/ and the package folder 0700.
+    const prefix = join(base, "npm-old");
+    const pkg = join(prefix, "lib", "node_modules", "@anthropic-ai", "claude-code");
+    mkdirSync(join(pkg, "bin"), { recursive: true });
+    mkdirSync(join(prefix, "bin"), { recursive: true });
+    writeFileSync(join(pkg, "bin", "claude.exe"), "#!/bin/sh\n", { mode: 0o755 });
+    symlinkSync("../lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe", join(prefix, "bin", "claude"));
+    chmodSync(join(prefix, "bin"), 0o700);
+    chmodSync(pkg, 0o700);
+    chmodSync(prefix, 0o755);
+    exposeToAgent(prefix);
+    expect(mode(join(prefix, "bin"))).toBe(0o755);
+    expect(mode(pkg)).toBe(0o755);
+    expect(mode(join(pkg, "bin", "claude.exe"))).toBe(0o755);
+    expect(lstatSync(join(prefix, "bin", "claude")).isSymbolicLink()).toBe(true);
+  });
+
+  it("agentAccessBlocker names the folder that stops the agent, and nothing inside an open tree", () => {
+    const prefix = join(base, "npm-blocked");
+    const pkg = join(prefix, "lib", "node_modules", "tool");
+    mkdirSync(pkg, { recursive: true });
+    mkdirSync(join(prefix, "bin"), { recursive: true });
+    writeFileSync(join(pkg, "tool.js"), "#!/bin/sh\n", { mode: 0o755 });
+    symlinkSync("../lib/node_modules/tool/tool.js", join(prefix, "bin", "fourpm-test-tool"));
+    chmodSync(pkg, 0o700);
+    const savedPath = process.env.PATH;
+    process.env.PATH = join(prefix, "bin");
+    try {
+      const reason = agentAccessBlocker("fourpm-test-tool");
+      expect(reason).toContain(join(prefix, "bin", "fourpm-test-tool"));
+      expect(reason).toContain("blocked at");
+      exposeToAgent(prefix);
+      // Whatever still blocks (a private temp ancestor of the test dir) is outside the exposed tree.
+      const after = agentAccessBlocker("fourpm-test-tool");
+      if (after !== null) expect(after).not.toContain(`blocked at ${prefix}`);
+      expect(agentAccessBlocker("fourpm-no-such-tool")).toBeNull();
+    } finally {
+      process.env.PATH = savedPath;
+    }
   });
 
   it("repairWorkspaceProjects repairs an unshared project folder and leaves a shared one alone", () => {

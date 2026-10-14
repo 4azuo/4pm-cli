@@ -15,6 +15,7 @@ import { promisify } from "node:util";
 import { projectAgentEnv } from "./agent-sandbox";
 import { agentEnvOverrides, agentUser, asAgent, isAgentCwd } from "../../utils/agent-user";
 import { prepareCredentialDir } from "../../utils/ai-cred-mount";
+import { agentAiCliStatus, aiToolOfCommand } from "../worker/agent-ai-cli";
 
 const execFileP = promisify(execFile);
 
@@ -72,7 +73,9 @@ const CREDENTIAL_DIR_VARS = ["CLAUDE_CONFIG_DIR", "CODEX_HOME"] as const;
 /**
  * The command, args and env for an AI CLI spawn: always the agent while separation is on —
  * the env (already allow-listed by the caller) gets the agent's HOME/USER, and the credential dir it
- * selects is made usable by the agent (phase 3). Unchanged when off.
+ * selects is made usable by the agent (phase 3), and an AI CLI is checked as the agent first.
+ * Unchanged when off.
+ * @adr 0502
  */
 export function agentSpawnArgs(
   cmd: string,
@@ -80,6 +83,8 @@ export function agentSpawnArgs(
   env: NodeJS.ProcessEnv,
 ): { cmd: string; args: string[]; env: NodeJS.ProcessEnv } {
   if (!agentUser()) return { cmd, args, env };
+  // An AI CLI the agent cannot execute is repaired here, or logged with what blocks it.
+  if (aiToolOfCommand(cmd)) agentAiCliStatus(cmd);
   for (const name of CREDENTIAL_DIR_VARS) {
     const dir = env[name];
     if (dir) prepareCredentialDir(dir);

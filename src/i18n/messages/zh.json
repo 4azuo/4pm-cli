@@ -183,6 +183,7 @@
   "start.connecting": "正在连接到 {server}（配置文件：{profile}）…",
   "start.recovered": "已从内部错误中恢复 — 正在重新连接：{message}",
   "start.agentHelperUnusable": "代理无法运行其 git 辅助程序 — 项目上的 git / gh / ssh 可能失败：{reason}",
+  "start.aiCliUnusable": "代理无法运行 {tool} CLI — 此工作机上的 AI 运行将失败：{reason}。请重启容器或拉取更新的工作机镜像。",
   "attach.attached": "已附加到配置文件 “{profile}” — worker 以无界面方式运行；输入将被转发。",
   "autoRun.done": "自主循环已完成。",
   "autoRun.failed": "自主循环调度失败：{note}",

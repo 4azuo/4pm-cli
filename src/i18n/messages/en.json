@@ -183,6 +183,7 @@
   "start.connecting": "Connecting to {server} (profile: {profile})…",
   "start.recovered": "Recovered from an internal error — reconnecting: {message}",
   "start.agentHelperUnusable": "The agent cannot run its git helper — git / gh / ssh on projects may fail: {reason}",
+  "start.aiCliUnusable": "The agent cannot run the {tool} CLI — AI runs on this worker will fail: {reason}. Restart the container or pull a newer worker image.",
   "attach.attached": "Attached to profile \"{profile}\" — the worker runs headless; input is forwarded.",
   "autoRun.done": "Autonomous cycle complete.",
   "autoRun.failed": "Autonomous cycle failed to dispatch: {note}",

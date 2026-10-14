@@ -20,13 +20,14 @@ import { createWriteStream } from "node:fs";
 import { chmod, copyFile, mkdir, mkdtemp, readdir, rename, rm } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { WORKER_TOOL_CATALOG } from "@4pm/constants";
 import { readProfileConfig } from "../../config/profile";
 import { logger } from "../../common/logger/logger";
-import { agentCanRun, exposeToAgent } from "../../utils/agent-user";
+import { agentCanRun } from "../../utils/agent-user";
+import { aiToolOfCommand, toolBinDir, type AiCliTool } from "./agent-ai-cli";
 import { isToolInstalled, runWorkerToolOp } from "./worker-tools";
 
 const run = promisify(execFile);
@@ -53,25 +54,7 @@ const lastFailure = new Map<SelfInstallTool, { at: number; error: string }>();
 /** Called after a successful install so the new snapshot reaches the server (set by `start`). */
 let reporter: (() => void) | null = null;
 
-/** The per-user tool dir for release binaries — on the `~/.4pm` volume in a container. */
-export function toolBinDir(): string {
-  return join(homedir(), ".4pm", "tools", "bin");
-}
-
-/**
- * Make the tools the cli installed before (the release binaries, the runtime npm prefix) runnable by the agent
- * — trees from an older cli or a process-wide `umask 007`. The staged cli self-update stays private. Called at
- * `start`; a no-op when separation is off or a tree is already open.
- * @adr 0487 §1
- */
-export function exposeInstalledTools(): void {
-  exposeToAgent(dirname(toolBinDir()));
-  const prefix = process.env.NPM_CONFIG_PREFIX;
-  const runtimeCli = process.env.FOURPM_CLI_RUNTIME_DIR;
-  if (prefix) {
-    exposeToAgent(prefix, (p) => p === runtimeCli || p === join(prefix, "lib", "node_modules", "@4pm"));
-  }
-}
+export { aiToolOfCommand, exposeInstalledTools, toolBinDir } from "./agent-ai-cli";
 
 /** Put the tool dir first on this process's PATH (inherited by every child — AI runs, git, shims). */
 export function addToolDirToPath(): void {
@@ -88,14 +71,6 @@ export function setToolchainReporter(fn: (() => void) | null): void {
 /** Whether a self-install for `tool` is running right now. */
 export function isInstalling(tool: SelfInstallTool): boolean {
   return inFlight.has(tool);
-}
-
-/** Map an AI-CLI command (as spawned) to its self-installable tool id, or null. */
-export function aiToolOfCommand(cmd: string): SelfInstallTool | null {
-  const base = cmd.split(/[\\/]/).pop() ?? cmd;
-  if (/^claude(\.exe|\.cmd)?$/.test(base)) return "claude";
-  if (/^codex(\.exe|\.cmd)?$/.test(base)) return "codex";
-  return null;
 }
 
 /** Release asset naming for this OS/arch, or null when the platform has no prebuilt binary. */
@@ -320,7 +295,7 @@ export async function ensureTool(profileDir: string, tool: SelfInstallTool, onLi
 }
 
 /** The AI providers used by the enabled profiles of this cli's config (unified list, else legacy). */
-function usedAiTools(profileDir: string): SelfInstallTool[] {
+export function usedAiTools(profileDir: string): SelfInstallTool[] {
   const config = readProfileConfig(profileDir);
   const out = new Set<SelfInstallTool>();
   if (Array.isArray(config.aiProfiles) && config.aiProfiles.length > 0) {
@@ -368,6 +343,6 @@ function scheduleBootRetry(profileDir: string, tools: SelfInstallTool[], onLine:
 
 /** On-use: before an AI run, install the missing AI CLIs among the plan's commands. */
 export async function ensureAiClisFor(profileDir: string, cmds: string[], onLine: (line: string) => void = () => undefined): Promise<void> {
-  const tools = new Set(cmds.map(aiToolOfCommand).filter((t): t is SelfInstallTool => t !== null));
+  const tools = new Set(cmds.map(aiToolOfCommand).filter((t): t is AiCliTool => t !== null));
   for (const tool of tools) await ensureTool(profileDir, tool, onLine);
 }

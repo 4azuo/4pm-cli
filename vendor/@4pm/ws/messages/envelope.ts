@@ -1810,6 +1810,8 @@ export interface AiModelsReply {
   cliMissing?: boolean;
   /** The cli is installing the missing CLI in the background — ask again shortly. @adr 0396 */
   installing?: boolean;
+  /** The CLI is installed but the agent user cannot execute it (after the cli's repair); `error` says why. @adr 0502 */
+  cliBlocked?: boolean;
   error: string | null;
 }
 

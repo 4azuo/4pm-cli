@@ -14,8 +14,11 @@ import {
 import { endGitScope, JOB_ID_ENV } from "../git/git-auth";
 import { agentProcessEnv, agentSpawnArgs } from "../agent/agent-spawn";
 import { agentUser } from "../../utils/agent-user";
+import { agentAiCliStatus, aiCliNotRunnableLine, aiToolOfCommand } from "../worker/agent-ai-cli";
 import { egressEnv } from "../network/egress-env";
 
+/** Exit code of a run whose AI CLI the agent cannot execute (the shell's "found but not executable"). @adr 0502 */
+const AI_CLI_NOT_RUNNABLE_EXIT_CODE = 126;
 /** Grace period after SIGTERM before a hard SIGKILL when a run is timed out. @adr 0243 */
 const KILL_GRACE_MS = 5_000;
 
@@ -75,6 +78,21 @@ export async function runCommand(
   // `error` event. Left unguarded, the throw becomes a rejected promise the caller never observes,
   // so the run never settles and the dispatch spins forever. Turn any such throw into a terminal
   // `done` (like the `error` handler) so failover moves on instead of hanging.
+  // An AI CLI the agent cannot execute (even after the repair walk) is not spawned: the run ends with one
+  // recognisable line instead of the shell's bare "Permission denied".
+  if (agentUser() && aiToolOfCommand(dispatch.cmd)) {
+    const status = agentAiCliStatus(dispatch.cmd);
+    if (status.state === "blocked") {
+      emit({
+        commandId: dispatch.commandId,
+        seq: seq++,
+        chunk: aiCliNotRunnableLine(dispatch.cmd, status.reason),
+        done: true,
+        exitCode: AI_CLI_NOT_RUNNABLE_EXIT_CODE,
+      });
+      return;
+    }
+  }
   let child: ReturnType<typeof spawn>;
   try {
     // FOURPM_JOB_ID scopes the git helper / gh shim tokens to this run (ADR-0356).

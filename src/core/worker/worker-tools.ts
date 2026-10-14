@@ -16,6 +16,7 @@ import {
 import type { ToolRestoreFailureItem, ToolStatus, ToolsAutoUpdateReply, ToolsListReply } from "@4pm/ws";
 import { readProfileConfig, writeProfileConfig } from "../../config/profile";
 import { asToolInstall } from "../../utils/agent-user";
+import { exposeInstalledTools } from "./agent-ai-cli";
 
 /** The streamed worker-tool ops: install/uninstall + update-to-latest. @adr 0252 */
 export type ToolOp = "install" | "uninstall" | "update";
@@ -269,6 +270,8 @@ export async function runWorkerToolOp(
   // Under the agent separation the install runs with umask 022, so the agent can execute it (ADR-0487 §1).
   const w = asToolInstall(manager, opArgs(op, manager, resolved.pkg));
   const { code, out } = await run(w.cmd, w.args, onLine, timeoutMs);
+  // Whatever the op left behind (also a partial install) is re-exposed to the agent (ADR-0502).
+  exposeInstalledTools();
   if (code === 0) return { ok: true, exitCode: code };
   const detail = extractToolError(out);
   return { ok: false, exitCode: code, error: detail ? `${manager} exited ${code}: ${detail}` : `${manager} exited ${code}` };

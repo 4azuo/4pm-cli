@@ -24,6 +24,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
 } from "node:fs";
@@ -440,16 +441,15 @@ export function shareTree(dir: string): void {
 
 /**
  * Make a tree of cli-installed tools runnable by the agent: cli-owned folders `0755`, files `0755` when the
- * owner may execute them, else `0644` — never writable by the agent; symlinks skipped, `O_NOFOLLOW`. A tree
- * whose top folder already is `0755` is not walked (installs run under `umask 022`; this repairs trees from
- * before). Entries matched by `skip` (the staged cli update) stay private. No-op when separation is off.
- * @adr 0487 §1
+ * owner may execute them, else `0644` — never writable by the agent; symlinks skipped, `O_NOFOLLOW`. Always
+ * walked, whatever the top folder's mode: a tree an older cli wrote (another umask) can hide private folders
+ * under a `0755` top. No-op when separation is off.
+ * @adr 0502
  */
-export function exposeToAgent(dir: string, skip: (path: string) => boolean = () => false): void {
+export function exposeToAgent(dir: string): void {
   if (!agentUser()) return;
   try {
-    const st = lstatSync(dir);
-    if (!st.isDirectory() || (st.mode & 0o777) === 0o755) return;
+    if (!lstatSync(dir).isDirectory()) return;
   } catch {
     return; // not installed yet
   }
@@ -460,14 +460,69 @@ export function exposeToAgent(dir: string, skip: (path: string) => boolean = () 
     dir,
     (p) => changeModeNoFollow(p, dirMode, true, null),
     (p) => changeModeNoFollow(p, fileMode, false, null),
-    skip,
   );
+}
+
+/** True when the agent ("other", or the shared group) has `bit` (`1` = x, `4` = r) on an entry with these stats. */
+function agentHasBit(mode: number, gid: number, bit: number): boolean {
+  return (mode & bit) !== 0 || (gid === sharedGid() && (mode & (bit << 3)) !== 0);
+}
+
+/** `<mode> <uid>:<gid>` of a stat, for messages. */
+function modeOwner(st: { mode: number; uid: number; gid: number }): string {
+  return `${(st.mode & 0o7777).toString(8).padStart(4, "0")} ${st.uid}:${st.gid}`;
+}
+
+/**
+ * Why the agent cannot execute `cmd` as the cli resolves it on its `PATH`: the resolved path and the first
+ * folder (of the PATH entry, then of the symlink target) or file the agent may not pass / execute, as an
+ * English sentence — or null when `cmd` is not on the PATH or nothing blocking is found. Read as the cli
+ * (which owns the tool trees); "other" and the shared group stand for the agent.
+ * @adr 0502
+ */
+export function agentAccessBlocker(cmd: string): string | null {
+  const candidates = cmd.includes(sep) ? [resolve(cmd)] : (process.env.PATH ?? "").split(":").filter(Boolean).map((d) => join(d, cmd));
+  for (const path of candidates) {
+    let real: string;
+    try {
+      real = realpathSync(path);
+    } catch {
+      continue; // not here
+    }
+    const dirs = new Set<string>();
+    for (const start of [dirname(path), dirname(real)]) {
+      const chain: string[] = [];
+      for (let p = start; ; p = dirname(p)) {
+        chain.unshift(p);
+        if (dirname(p) === p) break;
+      }
+      for (const d of chain) dirs.add(d);
+    }
+    for (const d of dirs) {
+      try {
+        const st = statSync(d);
+        if (!agentHasBit(st.mode, st.gid, 0o001)) {
+          return `the agent user cannot execute ${path} (blocked at ${d}, ${modeOwner(st)})`;
+        }
+      } catch {
+        /* vanished — keep looking */
+      }
+    }
+    try {
+      const st = statSync(real);
+      if (!agentHasBit(st.mode, st.gid, 0o001)) return `the agent user cannot execute ${path} (blocked at ${real}, ${modeOwner(st)})`;
+    } catch {
+      /* vanished */
+    }
+    return null;
+  }
+  return null;
 }
 
 /**
  * Whether the agent resolves and may execute `cmd` on its `PATH` (the cli's `PATH`, as agent spawns get) —
- * checked after a tool install. True when separation is off.
- * @adr 0487 §1
+ * checked after a tool install and before an AI CLI spawn. True when separation is off.
+ * @adr 0487 §1 @adr 0502
  */
 export function agentCanRun(cmd: string): boolean {
   if (!agentUser()) return true;

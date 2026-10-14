@@ -183,6 +183,7 @@
   "start.connecting": "{server} に接続中（プロファイル: {profile}）…",
   "start.recovered": "内部エラーから回復しました — 再接続中: {message}",
   "start.agentHelperUnusable": "エージェントが git ヘルパーを実行できません — プロジェクトの git / gh / ssh が失敗する可能性があります: {reason}",
+  "start.aiCliUnusable": "エージェントが {tool} CLI を実行できません — このワーカーの AI 実行は失敗します: {reason}。コンテナを再起動するか、新しいワーカーイメージを pull してください。",
   "attach.attached": "プロファイル「{profile}」にアタッチしました — worker はヘッドレスで動作し、入力は転送されます。",
   "autoRun.done": "自律サイクルが完了しました。",
   "autoRun.failed": "自律サイクルのディスパッチに失敗しました: {note}",

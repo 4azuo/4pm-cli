@@ -15,6 +15,7 @@ import { readProfileConfig } from "../../config/profile";
 import { claudeHomeDirs } from "../../utils/ai-cli";
 import { getWorkingProfile } from "./ai-profile-state";
 import { hasTool, kickInstall, recentInstallFailure } from "../worker/toolchain";
+import { agentAiCliStatus } from "../worker/agent-ai-cli";
 import { agentSpawnArgs } from "../agent/agent-spawn";
 import { agentEnv } from "../agent/agent-sandbox";
 
@@ -110,17 +111,35 @@ function missingReply(profileDir: string, provider: AiModelsReply["provider"], t
   return { provider, models: [], cliMissing: true, installing, error };
 }
 
+/**
+ * Reply for a provider whose CLI the agent user cannot execute (checked as the agent, repaired once), or
+ * null when it can. No install is started: the files are there, only their modes block the agent.
+ * @adr 0502
+ */
+function blockedReply(provider: AiModelsReply["provider"], cmd: string): AiModelsReply | null {
+  const status = agentAiCliStatus(cmd);
+  if (status.state !== "blocked") return null;
+  return { provider, models: [], cliBlocked: true, error: `The ${cmd} CLI is installed on this worker, but ${status.reason}.` };
+}
+
 /** Handle `ai.models` for this profile: cached or freshly probed list, or an empty list + the reason. */
 export async function listAiModels(profileDir: string, req: AiModelsRequest): Promise<AiModelsReply> {
   const provider = req?.provider ?? "claude";
   // No catalog for codex yet, but the create/add gate still needs to know the CLI is missing.
-  if (provider === "codex" && !(await hasTool("codex"))) return missingReply(profileDir, provider, "codex", "Codex");
+  if (provider === "codex") {
+    if (!(await hasTool("codex"))) return missingReply(profileDir, provider, "codex", "Codex");
+    const blocked = blockedReply(provider, "codex");
+    if (blocked) return blocked;
+  }
   if (provider !== "claude") return { provider, models: [], error: `No model catalog for ${provider} yet.` };
   try {
     const config = readProfileConfig(profileDir);
     const aiCli = config.aiCli && config.aiCli.includes("claude") ? config.aiCli : "claude";
     // No CLI ⇒ report it and start the self-install in the background (on use).
     if (!(await hasTool("claude"))) return missingReply(profileDir, provider, "claude", "Claude");
+    // Installed but not executable by the agent (after one repair) ⇒ say so; a reinstall would not help.
+    const blocked = blockedReply(provider, aiCli);
+    if (blocked) return blocked;
     // The profile in use first (its account decides availability), else the first configured one.
     const working = getWorkingProfile(profileDir, aiCli);
     const dir = working ?? claudeHomeDirs(config)[0] ?? null;

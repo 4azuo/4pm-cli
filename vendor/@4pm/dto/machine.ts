@@ -1601,5 +1601,7 @@ export interface AiModelsResponse {
   cliMissing: boolean;
   /** The worker is installing that CLI now — poll again. @adr 0396 */
   installing: boolean;
+  /** The CLI is installed but the worker's agent user cannot execute it; `error` names the blocking path. @adr 0502 */
+  cliBlocked: boolean;
   error: string | null;
 }

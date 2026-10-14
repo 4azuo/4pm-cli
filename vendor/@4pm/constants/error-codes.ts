@@ -295,6 +295,9 @@ export const ErrorCode = {
   AI_INIT_FAILED: "AI_INIT_FAILED",
   // AI spec-assist (suggest/review/compose) run failed on the worker cli (ADR-0100).
   AI_ASSIST_FAILED: "AI_ASSIST_FAILED",
+  // Client-side (ADR-0502): the worker's AI CLI is installed but its agent user cannot execute it — the web
+  // throws it when a failed AI dispatch's output carries the cli's `[4PM] AI_CLI_NOT_RUNNABLE` line.
+  AI_CLI_NOT_RUNNABLE: "AI_CLI_NOT_RUNNABLE",
   // Client-side guard (ADR-0255): the built AI prompt is longer than AI_PROMPT_MAX_LEN, so the
   // web blocks the dispatch and shows an actionable "spec too large" message instead of letting
   // the server reject it as a confusing VALIDATION_FAILED.
