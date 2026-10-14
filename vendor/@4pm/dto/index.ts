@@ -17,6 +17,7 @@ export * from "./mcp";
 export * from "./meta";
 export * from "./network";
 export * from "./org";
+export * from "./project-failure";
 export * from "./project";
 export * from "./storage";
 export * from "./template";

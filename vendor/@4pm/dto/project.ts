@@ -10,6 +10,7 @@ import type { UserResponse } from "./user";
 import { TEMPLATE_KINDS, type ProjectTemplateSelection } from "./template";
 import { readMcpServers, type McpApprovedServer } from "./mcp";
 import { readProjectNetworkSettings, DEFAULT_NETWORK_MODE, type ProjectNetworkSettings } from "./network";
+import { classifyProjectFailure, type ProjectFailCode } from "./project-failure";
 
 /** Lightweight project-manager (PM) summary shown in list/detail rows. */
 export interface ProjectManagerSummary {
@@ -19,8 +20,9 @@ export interface ProjectManagerSummary {
 
 /**
  * The scaffold's commit → push → pull-request outcome. Best-effort: `step` + `error` name the
- * first failed step; `step = null` means fully published.
- * @adr 0368
+ * first failed step; `step = null` means fully published. `error` is the raw worker text — the server
+ * returns it as `null` and sends the classified `errorCode` instead.
+ * @adr 0368 @adr 0501
  */
 export interface ScaffoldPublish {
   /** The worker (machine link) the step ran on. */
@@ -31,8 +33,10 @@ export interface ScaffoldPublish {
   prUrl: string | null;
   step: "submodule" | "commit" | "push" | "pr" | null;
   error: string | null;
+  /** The classified failure when `step` is set (else null). @adr 0501 */
+  errorCode: ProjectFailCode | null;
   /** Per-submodule attach outcome; empty when the project has no submodules. @adr 0370 */
-  submodules: { dir: string; ok: boolean; error: string | null }[];
+  submodules: { dir: string; ok: boolean; error: string | null; errorCode: ProjectFailCode | null }[];
   /** When this outcome was recorded (ISO). */
   at: string;
 }
@@ -44,8 +48,13 @@ export function readScaffoldPublish(raw: unknown): ScaffoldPublish | null {
   const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
   const step = r.step === "submodule" || r.step === "commit" || r.step === "push" || r.step === "pr" ? r.step : null;
   const submodules = Array.isArray(r.submodules)
-    ? (r.submodules as Record<string, unknown>[]).map((x) => ({ dir: str(x.dir) ?? "", ok: x.ok === true, error: str(x.error) }))
+    ? (r.submodules as Record<string, unknown>[]).map((x) => {
+        const ok = x.ok === true;
+        const error = str(x.error);
+        return { dir: str(x.dir) ?? "", ok, error, errorCode: ok ? null : classifyProjectFailure(error) };
+      })
     : [];
+  const error = str(r.error);
   return {
     machineLinkId: str(r.machineLinkId) ?? "",
     committed: r.committed === true,
@@ -53,7 +62,8 @@ export function readScaffoldPublish(raw: unknown): ScaffoldPublish | null {
     branch: str(r.branch),
     prUrl: str(r.prUrl),
     step,
-    error: str(r.error),
+    error,
+    errorCode: step ? classifyProjectFailure(error) : null,
     submodules,
     at: str(r.at) ?? "",
   };
@@ -68,8 +78,12 @@ export interface ProjectResponse {
   /** Avatar URL `/projects/:id/avatar`, or null when none. @adr 0043 */
   avatarUrl: string | null;
   status: ProjectStatus;
-  /** Scaffold failure reason + failing step — set when `status=failed`, else null. @adr 0263 */
-  failReason: string | null;
+  /**
+   * When `status=failed`: the classified failure, an 8-char reference to the raw error in the server log, and
+   * the failing step — else null. The raw reason is never returned. @adr 0263 @adr 0501
+   */
+  failCode: ProjectFailCode | null;
+  failRef: string | null;
   failedStep: string | null;
   /** The scaffold commit → push → PR outcome; null = not recorded. @api project-0074 @adr 0368 */
   scaffoldPublish: ScaffoldPublish | null;

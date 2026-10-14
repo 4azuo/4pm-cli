@@ -2026,6 +2026,11 @@ export interface ProjectProgressPayload {
   step: string;
   /** Human message for the step. */
   message: string;
+  /**
+   * Set by the server when it blanked `message` (a failure step or raw technical text): the classified
+   * `ProjectFailCode` (`@4pm/dto`) the web shows instead. Never sent by the cli. @adr 0501
+   */
+  failCode?: string;
   /** Terminal event. */
   done?: boolean;
 }
