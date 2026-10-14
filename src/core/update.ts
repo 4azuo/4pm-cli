@@ -6,7 +6,7 @@
  * (`npm i -g @4pm/cli@<latest>`) or self-download tarball (verify sha256). After
  * updating, verify the version at the re-exec path actually advanced before claiming
  * success, so a mis-applied update can't trigger a restart loop.
- * @api meta-0001 @adr 0015 @adr 0053 @adr 0363
+ * @api meta-0001 @adr 0015 @adr 0053 @adr 0363 @adr 0499
  */
 import { execSync } from "node:child_process";
 import { createHash, createPublicKey, verify } from "node:crypto";
@@ -18,6 +18,7 @@ import { extract } from "tar";
 import { t } from "../i18n";
 import { CLI_SIGNING_PUBLIC_KEY } from "../config/signing";
 import { CLI_VERSION } from "../version";
+import { agentUser, readableInstallTree } from "../utils/agent-user";
 import { fetchCliVersion } from "../services/api";
 
 /** Result of the startup update-check step. */
@@ -172,7 +173,8 @@ function updateViaNpm(version: string): void {
   // actual reason (E404/ENOTEMPTY/EACCES…) — like the tool-install path (ADR-0308) — and a hung
   // install becomes a reported failure instead of blocking the self-update forever (ADR-0305).
   try {
-    execSync(`npm i -g @4pm/cli@${version}`, {
+    // Under uid separation the cli runs `umask 077`; install like any tool the agent may read (umask 022).
+    execSync(`${agentUser() ? "umask 022 && " : ""}npm i -g @4pm/cli@${version}`, {
       stdio: ["ignore", "pipe", "pipe"],
       encoding: "utf8",
       timeout: NPM_INSTALL_TIMEOUT_MS,
@@ -266,6 +268,9 @@ async function updateViaDownload(
   } catch (err) {
     throw new Error(`Failed to extract the update tarball into ${installRoot}: ${String(err)}`, { cause: err });
   }
+  // The copy + extract ran under the cli's `umask 077`: give the staged tree the image's `/app` modes, so
+  // nothing that reads the cli's code as another uid finds it locked (ADR-0499).
+  readableInstallTree(installRoot);
   appliedRoot = installRoot;
 }
 

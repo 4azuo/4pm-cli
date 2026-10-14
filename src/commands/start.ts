@@ -38,6 +38,7 @@ import type { SessionInfo } from "../ui/session-info";
 import { CLI_VERSION } from "../version";
 import { addToolDirToPath, ensureToolchainAtBoot, exposeInstalledTools, setToolchainReporter } from "../core/worker/toolchain";
 import { startGitTokenServer } from "../core/git/git-token-server";
+import { installAgentHelper, verifyAgentHelper } from "../core/agent/agent-helper-install";
 import { syncAgentSshKey } from "../core/git/git-ssh-key";
 import { prepareCredentialDir } from "../utils/ai-cred-mount";
 import { adoptMountedAiLogins, disableUnloggedDefaults } from "../core/ai/ai-mount-profiles";
@@ -186,6 +187,11 @@ export async function runStart(
     // deploy key exposed read-only. No-ops when separation is off.
     stopGitToken = startGitTokenServer(profileDir);
     syncAgentSshKey(profileDir);
+    // The standalone helper agent processes run instead of the cli bundle (ADR-0499) — installed before the
+    // first git-auth / egress env is built, then checked as the agent so a broken helper shows up here.
+    installAgentHelper(profileDir);
+    const helperError = verifyAgentHelper();
+    if (helperError) bus.log(t("start.agentHelperUnusable", { reason: helperError }), "error");
     // Phase 3: the configured AI credential dirs are the agent's, host-mounted logins imported (ADR-0433);
     // dirs added later are prepared at spawn.
     for (const dir of allAiProfileDirs(config)) prepareCredentialDir(dir);

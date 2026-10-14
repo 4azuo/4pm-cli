@@ -182,6 +182,7 @@
   "slash.claudeCmd.usage": "用法：/claude-cmd /context  (转发给 AI CLI)",
   "start.connecting": "正在连接到 {server}（配置文件：{profile}）…",
   "start.recovered": "已从内部错误中恢复 — 正在重新连接：{message}",
+  "start.agentHelperUnusable": "代理无法运行其 git 辅助程序 — 项目上的 git / gh / ssh 可能失败：{reason}",
   "attach.attached": "已附加到配置文件 “{profile}” — worker 以无界面方式运行；输入将被转发。",
   "autoRun.done": "自主循环已完成。",
   "autoRun.failed": "自主循环调度失败：{note}",

@@ -14,9 +14,9 @@ import { issueGitToken } from "./git-auth";
 import { prepareAgentRunDir, readOnlyForAgent } from "../../utils/agent-user";
 import { logger } from "../../common/logger/logger";
 import { listenPrivateSocket } from "../../utils/private-socket";
+import { GIT_TOKEN_SOCKET_ENV } from "./git-helper-env";
 
-/** Env var naming the socket for the helper / shims (allow-listed into agent processes). */
-export const GIT_TOKEN_SOCKET_ENV = "FOURPM_GIT_TOKEN_SOCKET";
+export { GIT_TOKEN_SOCKET_ENV } from "./git-helper-env";
 /** Socket file name inside the run dir. */
 const SOCKET_FILE = "git-token.sock";
 /** Drop a connection that sends nothing useful within this long. */

@@ -1,6 +1,6 @@
 /**
  * Worker git-auth. For a project on the **GitHub App** method the daemon:
- *  - scopes a git **credential helper** (`4pm git-credential`) to the App's host through its own process
+ *  - scopes a git **credential helper** (`git-credential` of the standalone agent helper — ADR-0499) to the App's host through its own process
  *    environment (`GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n`, git ≥ 2.31) — every git it spawns (first clone,
  *    scaffold, sync, agents, Console commands) inherits it, and no repo / global git config is written;
  *    it is the ONLY helper for that host (the machine's own helpers are reset for it);
@@ -12,7 +12,7 @@
  * login's token per request and the agent never reads the login dir; nothing is revoked (the operator's
  * own long-lived login). The rented ssh deploy key is separate (`GIT_SSH_COMMAND`). The App private key
  * never reaches the worker. Never throws.
- * @adr 0356 @adr 0075 @adr 0467 @arch 0049
+ * @adr 0356 @adr 0075 @adr 0467 @adr 0499 @arch 0049
  */
 import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpsRequest } from "node:https";
@@ -21,15 +21,11 @@ import { githubHostKind, isGitLabMethod, type GitAuthMethod } from "@4pm/dto";
 import type { GitTokenReply, GitTokenRequest } from "@4pm/ws";
 import { logger } from "../../common/logger/logger";
 import { prepareAgentRunDir, readOnlyForAgent } from "../../utils/agent-user";
+import { agentHelperInvocation } from "../agent/agent-helper-install";
 import { discoverSelfLogins, readSelfToken, type SelfLogin } from "./self-git-login";
+import { GIT_HOST_ENV, GIT_HOST_KIND_ENV, PROFILE_DIR_ENV } from "./git-helper-env";
 
-/** Env var carrying the job scope to the helper / shim (set per dispatched process). */
-export const JOB_ID_ENV = "FOURPM_JOB_ID";
-/** Env var telling the helper / shim which profile's control socket to ask. */
-export const PROFILE_DIR_ENV = "FOURPM_PROFILE_DIR";
-/** Env vars naming the App host + its kind (read by the shim + `4pm git-token`). */
-export const GIT_HOST_ENV = "FOURPM_GIT_HOST";
-export const GIT_HOST_KIND_ENV = "FOURPM_GIT_HOST_KIND";
+export { GIT_HOST_ENV, GIT_HOST_KIND_ENV, JOB_ID_ENV, PROFILE_DIR_ENV } from "./git-helper-env";
 /** The link's default scope (git outside any job). */
 export const DEFAULT_SCOPE = "link";
 /** Revoke the default scope after this long without a request. */
@@ -59,21 +55,11 @@ const state: {
 } = { host: null, transport: null, baseEnv: null, scopes: new Map(), defaultTimer: null, self: null, warned: new Set() };
 
 /**
- * The shell-quoted invocation of this very cli: node + its loader flags (e.g. tsx in dev) + the entry
- * script, all absolute — so git / the shim re-enter the same build regardless of PATH.
- */
-function cliInvocation(): string {
-  const quote = (s: string): string => `"${s.replace(/(["\\$`])/g, "\\$1")}"`;
-  const script = process.argv[1];
-  return [process.execPath, ...process.execArgv, ...(script ? [script] : [])].map(quote).join(" ");
-}
-
-/**
  * The command git runs as the credential helper (`!` = run through the shell). A `self` helper names its
  * host + kind (several hosts may be active at once); the server-managed one reads them from the env.
  */
 function helperCommand(fixed?: { host: string; kind: string }): string {
-  return `!${cliInvocation()} git-credential${fixed ? ` --host ${fixed.host} --kind ${fixed.kind}` : ""}`;
+  return `!${agentHelperInvocation()} git-credential${fixed ? ` --host ${fixed.host} --kind ${fixed.kind}` : ""}`;
 }
 
 /** Find the real `gh` on PATH (skipping our shim dir); null when not installed. */
@@ -256,8 +242,8 @@ function configureSelfGitAuth(profileDir: string): void {
   process.env[PROFILE_DIR_ENV] = resolve(profileDir);
   const gh = logins.find((l) => l.tool === "gh" && l.host === "github.com") ?? logins.find((l) => l.tool === "gh");
   const glab = logins.find((l) => l.tool === "glab");
-  const ghDir = writeShim(profileDir, "gh", basePath, gh ? (real) => shimScript(real, cliInvocation(), gh) : null);
-  const glabDir = writeShim(profileDir, "glab", basePath, glab ? (real) => glabShimScript(real, cliInvocation(), glab.host) : null);
+  const ghDir = writeShim(profileDir, "gh", basePath, gh ? (real) => shimScript(real, agentHelperInvocation(), gh) : null);
+  const glabDir = writeShim(profileDir, "glab", basePath, glab ? (real) => glabShimScript(real, agentHelperInvocation(), glab.host) : null);
   const shimDir = ghDir ?? glabDir;
   if (shimDir) process.env.PATH = `${shimDir}${delimiter}${basePath}`;
   logger.info("git.auth.self", { hosts: logins.map((l) => l.host), mounted: logins.some((l) => l.mounted) });
@@ -321,7 +307,7 @@ export function configureGitAuth(
     // the token. The other tool's stale shim is removed when the method switches.
     const tool = isGitlab ? "glab" : "gh";
     const shimDir = writeShim(profileDir, tool, basePath, (real) =>
-      isGitlab ? glabShimScript(real, cliInvocation()) : shimScript(real, cliInvocation()),
+      isGitlab ? glabShimScript(real, agentHelperInvocation()) : shimScript(real, agentHelperInvocation()),
     );
     writeShim(profileDir, isGitlab ? "gh" : "glab", basePath, null);
     if (shimDir) process.env.PATH = `${shimDir}${delimiter}${basePath}`;

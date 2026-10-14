@@ -12,7 +12,9 @@ const devtoolsStub = fileURLToPath(
 );
 
 export default defineConfig({
-  entry: ["src/index.ts"],
+  // `agent-helper` (ADR-0499): the standalone helper agent processes run (git credential helper, gh/glab
+  // shim token source, ssh ProxyCommand) — bundled on its own so the daemon can copy it to the run dir.
+  entry: { index: "src/index.ts", "agent-helper": "src/agent-helper.ts" },
   format: ["esm"],
   target: "node24",
   outDir: "dist",

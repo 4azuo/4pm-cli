@@ -341,6 +341,23 @@ function walkOwned(
   walk(dir);
 }
 
+/**
+ * Give a cli-installed code tree the image's modes (`/app`): folders `0755`, files `0644` (`0755` when
+ * executable) — readable by everyone, writable by the cli only. Used for a self-update staged in the runtime
+ * dir; only cli-owned entries, symlinks never followed. No-op when separation is off.
+ * @adr 0499
+ */
+export function readableInstallTree(dir: string): void {
+  if (!agentUser()) return;
+  const fileMode = (m: number): number => ((m & 0o111) !== 0 ? 0o755 : 0o644);
+  changeModeNoFollow(dir, () => 0o755, true, null);
+  walkOwned(
+    dir,
+    (d) => changeModeNoFollow(d, () => 0o755, true, null),
+    (f) => changeModeNoFollow(f, fileMode, false, null),
+  );
+}
+
 /** Shared mode of a project file: `0770` when any execute bit is (or must be) set, else `0660`. */
 function sharedFileMode(current: number, exec: boolean): number {
   return exec || (current & 0o111) !== 0 ? 0o770 : 0o660;

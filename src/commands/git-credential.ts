@@ -12,8 +12,7 @@ import { connect } from "node:net";
 import { join } from "node:path";
 import { CONTROL_SOCKET_FILE, createFrameParser, encodeFrame, type ControlServerFrame } from "../core/control/control-protocol";
 import { readControlToken } from "../core/control/control-token";
-import { GIT_HOST_ENV, GIT_HOST_KIND_ENV, JOB_ID_ENV, PROFILE_DIR_ENV } from "../core/git/git-auth";
-import { GIT_TOKEN_SOCKET_ENV } from "../core/git/git-token-server";
+import { GIT_HOST_ENV, GIT_HOST_KIND_ENV, GIT_TOKEN_SOCKET_ENV, JOB_ID_ENV, PROFILE_DIR_ENV } from "../core/git/git-helper-env";
 
 /** Give up on the daemon after this long (git would otherwise hang on the helper). */
 const REQUEST_TIMEOUT_MS = 20_000;

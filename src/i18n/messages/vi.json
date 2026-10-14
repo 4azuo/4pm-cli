@@ -182,6 +182,7 @@
   "slash.claudeCmd.usage": "cách dùng: /claude-cmd /context  (chuyển tiếp tới AI CLI)",
   "start.connecting": "Đang kết nối tới {server} (hồ sơ: {profile})…",
   "start.recovered": "Đã khôi phục sau lỗi nội bộ — đang kết nối lại: {message}",
+  "start.agentHelperUnusable": "Agent không chạy được git helper — git / gh / ssh trên project có thể lỗi: {reason}",
   "attach.attached": "Đã gắn vào hồ sơ \"{profile}\" — worker chạy không giao diện; đầu vào được chuyển tiếp.",
   "autoRun.done": "Chu kỳ tự động đã hoàn tất.",
   "autoRun.failed": "Không điều phối được chu kỳ tự động: {note}",
