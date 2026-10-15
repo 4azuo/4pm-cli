@@ -21,7 +21,9 @@ import { WsChannels } from "@4pm/ws";
 import { readProfileConfig } from "../../config/profile";
 import { logger } from "../../common/logger/logger";
 import { gitRepos } from "./git-history";
-import { activeAiRunCount } from "../ws-client/command-dispatch";
+import { work } from "../session/work-tracker";
+import { lifecycle } from "../session/lifecycle";
+import { tryAcquireRepo } from "./repo-lock";
 import { execInProject } from "../agent/agent-spawn";
 
 // Project git runs as the agent user when uid separation is on (ADR-0430); unchanged otherwise.
@@ -226,10 +228,20 @@ const state: {
 async function reportNow(fetchFirst: boolean): Promise<void> {
   const host = state.host;
   const root = host?.physicRoot;
-  if (!host || !root || state.running || activeAiRunCount() > 0) return;
+  // Skipped while any work runs (ADR-0505 WorkTracker) — an autonomous cycle's git phases included.
+  if (!host || !root || state.running || !work.idle()) return;
   state.running = true;
   try {
-    if (fetchFirst) await fetchAll(root);
+    if (fetchFirst) {
+      // The fetch only try-acquires the repo lock: when the cycle or a job holds the tree, skip this round (ADR-0506).
+      const lock = tryAcquireRepo(root, "git", "snapshot-fetch");
+      if (!lock) return;
+      try {
+        await fetchAll(root);
+      } finally {
+        lock.release();
+      }
+    }
     const payload = await buildGitSnapshot(root);
     if (payload.repos.length === 0) return;
     host.send(WsChannels.GIT_SNAPSHOT, payload);
@@ -262,6 +274,8 @@ export function requestGitSnapshot(reason: string): void {
  */
 export function startGitSnapshots(host: SnapshotHost): void {
   state.host = host;
+  // A session-scoped service: stopped on every disconnect and on shutdown (ADR-0505).
+  lifecycle.register("git.snapshot", "session", stopGitSnapshots);
   if (state.periodic) clearInterval(state.periodic);
   state.periodic = null;
   const raw = readProfileConfig(host.profileDir).gitSnapshotIntervalMin;

@@ -78,8 +78,6 @@ export interface MachineStatusPayload {
   physicPath?: string | null;
   /** Does the physic project folder still exist on the machine? */
   physicPathExists?: boolean;
-  /** Is autonomous mode running? */
-  autonomousRunning?: boolean;
   /** The machine-user's own AI-run wall-clock limit in seconds (`ProfileConfig.aiRunTimeoutSec`;
    *  `0` = unlimited) — persisted on `MachineLink` so a dispatch can resolve the **effective**
    * timeout (project override else this) and derive the SSE reply windows.
@@ -120,6 +118,44 @@ export interface MachineStatusPayload {
    * @adr 0449
    */
   features?: string[];
+  /** The cli's process id — with `startedAt`, tells a restarted process from a lingering one. @adr 0505 */
+  pid?: number;
+  /** When this cli process started (ISO). @adr 0505 */
+  startedAt?: string;
+  /** Lifecycle state: `connected`, or `draining` while a restart / update waits for running work. @adr 0505 */
+  lifecycle?: "connected" | "draining";
+  /** While draining: the kinds of work still running (`command`, `aiRun`, `autonomousCycle`…). @adr 0505 */
+  drainingFor?: string[];
+  /** The worker's autonomous summary (switch, effective state, last tick, claim) — `MachineLink.autonomousSnapshot`. @adr 0507 */
+  autonomous?: AutonomousSnapshotPayload;
+}
+
+/** `machine.status.autonomous` — what the cli reports about its autonomous engine. @adr 0507 */
+export interface AutonomousSnapshotPayload {
+  /** The worker switch (`!paused`). */
+  enabled: boolean;
+  /** `projectEnabled ∧ allowed ∧ enabled` as the cli sees it. */
+  effective: boolean;
+  pausedBy?: "user" | "auto" | "projectDeleted" | "migration";
+  pausedReason?: string;
+  pausedAt?: string;
+  /** The last tick, skips included. */
+  lastCheck?: { at: string; outcome: "run" | "skip" | "error"; reason: string } | null;
+  /** The task this worker holds. */
+  claim?: { id: string; since: string } | null;
+  consecutiveFails: number;
+}
+
+/**
+ * `autonomous.policy` (server → cli, one-way) and `ws_token.autonomousPolicy`: the project switch, the
+ * server's verdict for this worker and the project-scoped knobs every worker shares.
+ * @adr 0507
+ */
+export interface AutonomousPolicyPayload {
+  projectEnabled: boolean;
+  allowed: boolean;
+  reason?: string;
+  settings: Record<string, unknown>;
 }
 
 /**
@@ -532,15 +568,33 @@ export interface ConfigWriteReply {
  */
 export type FsViewer = "client";
 
+/**
+ * Where a web file request acts: `base` = the remote base branch (`origin/<base>` — reads via `git show` /
+ * `ls-tree`, writes as a plumbing commit pushed to `<base>`, no working tree); `worktree` = the worker's
+ * checkout. Absent ⇒ `worktree`. A `base` request without a remote falls back to `worktree`; every reply
+ * names the target actually used.
+ * @adr 0511
+ */
+export type FsTarget = "base" | "worktree";
+
+/** The web user a `base` write is committed for (trailer `4PM-Edited-By`). @adr 0511 */
+export interface FsEditor {
+  /** Display name / username of the editing user (server-filled). */
+  by?: string;
+}
+
 /** fs.list request/reply. @api machine-0007 */
 export interface FsListRequest {
   path: string;
   /** `client` ⇒ `.git` + gitignored entries are left out. @adr 0449 */
   viewer?: FsViewer;
+  target?: FsTarget;
 }
 export interface FsListReply {
   path: string;
   entries: { name: string; type: "dir" | "file" }[];
+  /** The target actually used. */
+  target?: FsTarget;
 }
 
 /**
@@ -549,12 +603,27 @@ export interface FsListReply {
  * dispatch; used by manual merge-conflict resolution (`project.git_write`).
  * @api machine-0027 @adr 0151
  */
-export interface FsWriteRequest {
+export interface FsWriteRequest extends FsEditor {
   /** File path relative to the physic-project root; anything escaping the root is clamped. */
   path: string;
   /** Full new UTF-8 content (replaces the file wholesale). */
   content: string;
+  target?: FsTarget;
+  /**
+   * `base` only: the blob the edit was based on (`fs.read` `blob`); `null` = the file must not exist yet.
+   * Absent ⇒ no check. A different blob on the remote ⇒ `FILE_CHANGED_UPSTREAM`.
+   */
+  expectBlob?: string | null;
 }
+/** Who holds a project's working tree while a file is read / written from the web. @adr 0506 */
+export interface RepoBusyInfo {
+  holder: "autonomous" | "command" | "git" | "project";
+  /** The task the autonomous cycle works on, when known. */
+  task?: string;
+  /** The branch checked out in the working tree right now. */
+  branch?: string;
+}
+
 export interface FsWriteReply {
   /** True when written; false with `error` on a bad path / write failure. */
   ok: boolean;
@@ -563,6 +632,16 @@ export interface FsWriteReply {
   /** Bytes written (0 when `ok` is false). */
   bytes: number;
   error?: string;
+  /**
+   * Set when the project's working tree was held by another job (the autonomous cycle on a task branch,
+   * a Console run, a git write) at the time of this request — the web warns that the file belongs to
+   * that job's branch / may change under it. @adr 0506
+   */
+  repoBusy?: RepoBusyInfo;
+  /** The target actually used. @adr 0511 */
+  target?: FsTarget;
+  /** `base`: the commit pushed (absent when nothing changed). @adr 0511 */
+  commit?: string;
 }
 
 /** The fs-mutation operations. @api machine-0059 @adr 0260 */
@@ -574,8 +653,9 @@ export type FsMutateOp = "mkdir" | "create" | "move" | "delete";
  * `move` within the same folder. Paths are relative to the root; anything escaping it is refused.
  * @api machine-0059 @adr 0260
  */
-export interface FsMutateRequest {
+export interface FsMutateRequest extends FsEditor {
   op: FsMutateOp;
+  target?: FsTarget;
   /** Target path for `mkdir` / `create` / `delete`. */
   path?: string;
   /** Optional seed content for `create` (empty file when absent). */
@@ -591,6 +671,16 @@ export interface FsMutateReply {
   /** The resolved (clamped) path acted on. */
   path: string;
   error?: string;
+  /**
+   * Set when the project's working tree was held by another job (the autonomous cycle on a task branch,
+   * a Console run, a git write) at the time of this request — the web warns that the file belongs to
+   * that job's branch / may change under it. @adr 0506
+   */
+  repoBusy?: RepoBusyInfo;
+  /** The target actually used. @adr 0511 */
+  target?: FsTarget;
+  /** `base`: the commit pushed (absent when nothing changed). @adr 0511 */
+  commit?: string;
 }
 
 /**
@@ -599,7 +689,8 @@ export interface FsMutateReply {
  * (binary the text-only fs.write can't carry); a path escaping the root is refused outright.
  * @api machine-0061 @adr 0278
  */
-export interface FsUploadRequest {
+export interface FsUploadRequest extends FsEditor {
+  target?: FsTarget;
   /** Destination path relative to the physic-project root; anything escaping the root is refused. */
   path: string;
   /** File bytes, base64-encoded. */
@@ -615,6 +706,16 @@ export interface FsUploadReply {
   /** Bytes written (0 when `ok` is false). */
   bytes: number;
   error?: string;
+  /**
+   * Set when the project's working tree was held by another job (the autonomous cycle on a task branch,
+   * a Console run, a git write) at the time of this request — the web warns that the file belongs to
+   * that job's branch / may change under it. @adr 0506
+   */
+  repoBusy?: RepoBusyInfo;
+  /** The target actually used. @adr 0511 */
+  target?: FsTarget;
+  /** `base`: the commit pushed (absent when nothing changed). @adr 0511 */
+  commit?: string;
 }
 
 /**
@@ -626,6 +727,7 @@ export interface FsUploadReply {
 export interface FsDownloadRequest {
   /** File path relative to the physic-project root; anything escaping the root is refused. */
   path: string;
+  target?: FsTarget;
   /** `client` ⇒ a `.git` / gitignored path is refused (`error`). @adr 0449 */
   viewer?: FsViewer;
 }
@@ -650,13 +752,6 @@ export interface FsDownloadReply {
 
 /** Computed run-state of the autonomous engine on the worker (from settings + histories). */
 export interface AutonomousStatus {
-  /**
-   * The tick scheduler is armed for the served project. Always `true` from a cli with the in-process
-   * scheduler; `false` only from an older cli whose OS crontab line is absent. Kept for wire
-   * compat — "armed" is `installed &&!paused`.
-   * @adr 0392 @adr 0317
-   */
-  installed: boolean;
   /** `paused:true` in settings — the engine's on/off switch. */
   paused: boolean;
   /** Effective cron schedule from settings. */
@@ -675,6 +770,19 @@ export interface AutonomousStatus {
    * @adr 0448
    */
   booksProtected?: string | null;
+  /**
+   * The worker would run cycles now — "armed": project switch on ∧ the server's `allowed` ∧ its own
+   * switch on.
+   * @adr 0507 @adr 0317
+   */
+  effective: boolean;
+  /** The project switch as this worker last received it. @adr 0507 */
+  projectEnabled: boolean;
+  /** The server's verdict for this worker, and why not. @adr 0507 */
+  allowed: boolean;
+  allowedReason: string | null;
+  /** Who / what paused this worker. @adr 0507 */
+  pausedBy: string | null;
 }
 
 /**
@@ -926,7 +1034,8 @@ export interface AgentSummary {
 
 /** agents.list — all subagents + skills of the physic project. */
 export interface AgentsListRequest {
-  _?: never;
+  /** @adr 0511 */
+  target?: FsTarget;
 }
 export interface AgentsListReply {
   subagents: AgentSummary[];
@@ -937,6 +1046,8 @@ export interface AgentsListReply {
 export interface AgentReadRequest {
   kind: "subagent" | "skill";
   name: string;
+  /** @adr 0511 */
+  target?: FsTarget;
 }
 export interface AgentReadReply {
   content: string;
@@ -945,8 +1056,10 @@ export interface AgentReadReply {
 }
 
 /** agents.write — create/edit or delete a subagent/skill. */
-export interface AgentWriteRequest {
+export interface AgentWriteRequest extends FsEditor {
   kind: "subagent" | "skill";
+  /** `base` ⇒ committed to the remote base. @adr 0511 */
+  target?: FsTarget;
   name: string;
   action: "write" | "delete";
   /** File content (required for `write`). */
@@ -955,6 +1068,7 @@ export interface AgentWriteRequest {
 export interface AgentWriteReply {
   ok: boolean;
   error?: string;
+  target?: FsTarget;
 }
 
 /**
@@ -1483,6 +1597,7 @@ export interface GitCommitDiffRequest {
 /** fs.read request/reply — read a text file on the worker (project dashboard). */
 export interface FsReadRequest {
   path: string;
+  target?: FsTarget;
   /** `client` ⇒ a `.git` / gitignored path is refused (`hidden`). @adr 0449 */
   viewer?: FsViewer;
 }
@@ -1494,6 +1609,16 @@ export interface FsReadReply {
   truncated: boolean;
   /** True when the path is hidden from this viewer (content empty). @adr 0449 */
   hidden?: boolean;
+  /**
+   * Set when the project's working tree was held by another job (the autonomous cycle on a task branch,
+   * a Console run, a git write) at the time of this request — the web warns that the file belongs to
+   * that job's branch / may change under it. @adr 0506
+   */
+  repoBusy?: RepoBusyInfo;
+  /** The target actually used. @adr 0511 */
+  target?: FsTarget;
+  /** `base`: the file's blob id on `origin/<base>` (`null` = absent) — send it back as `expectBlob`. @adr 0511 */
+  blob?: string | null;
 }
 
 /** quota.check request/reply (cli → server, before spawning an AI cli —
@@ -2094,6 +2219,12 @@ export type AutonomousAlertKind =
   | "task-question"
   // An agent run edited the cli-owned sidecars (approvals / authors / attempts); the edit was reverted (ADR-0438).
   | "sidecar-tamper"
+  // The cycle found uncommitted changes outside a task branch and stashed them under a named stash (ADR-0506).
+  | "autosave"
+  // The worker paused itself after N consecutive failed cycles (ADR-0507).
+  | "auto-paused"
+  // A project lifecycle pause / close stopped running workers — sent once per project (ADR-0507).
+  | "suspended"
   // An informational cycle event for automation rules (ADR-0458): no notification, `event` carries it.
   | "event";
 

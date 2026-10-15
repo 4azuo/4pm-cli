@@ -1,7 +1,8 @@
 /**
  * Tests for the self-update re-exec parent: it forwards stop signals to the child (the real cli) and
- * exits with the child's code — `docker stop` must reach the child, not kill it with the container.
- * @adr 0473
+ * exits with the child's code — `docker stop` must reach the child, not kill it with the container — and
+ * the exec path replaces the process in place (same pid, the signal reaches the new cli directly).
+ * @adr 0473 @adr 0505
  */
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -21,7 +22,7 @@ if (process.env.FOURPM_NO_UPDATE === "1") {
   setInterval(() => {}, 1000);
 } else {
   const { reexecUpdated } = await import(${JSON.stringify(mod)});
-  await reexecUpdated();
+  await reexecUpdated({ preferExec: process.env.FIXTURE_EXEC === "1" });
 }
 `;
 }
@@ -41,11 +42,15 @@ describe("reexecUpdated", () => {
     expect(forwardedSignals(false)).toEqual(["SIGTERM", "SIGHUP", "SIGINT"]);
   });
 
-  it("forwards SIGTERM to the child and exits with the child's code", async () => {
+  it.each([
+    ["spawn fallback", "0"],
+    ["exec in place", "1"],
+  ])("%s: SIGTERM reaches the new cli and its exit code is kept", async (_name, exec) => {
     const script = join(dir, "fixture.mjs");
     writeFileSync(script, fixtureSource());
     const env: NodeJS.ProcessEnv = { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import tsx`.trim() };
     delete env.FOURPM_NO_UPDATE;
+    env.FIXTURE_EXEC = exec;
     const parent = spawn(process.execPath, [script], { env, stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
     let err = "";

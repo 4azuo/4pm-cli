@@ -11,7 +11,7 @@ import {
 } from "./storage";
 import { z } from "zod";
 import { MfaPolicy, PaymentProvider } from "@4pm/constants";
-import { DEFAULT_NETWORK_LOG_RETENTION_DAYS, readOrgNetworkSettings, type OrgNetworkSettings } from "./network";
+import { readOrgNetworkSettings, type OrgNetworkSettings } from "./network";
 
 /**
  * Pending paid-plan checkout recorded at register, stored under
@@ -272,7 +272,7 @@ export const DEFAULT_ORG_SETTINGS: OrgSettings = {
   storageAlerts: [],
   storageAutoClear: DEFAULT_STORAGE_AUTO_CLEAR,
   aiPoolId: null,
-  network: { deny: [], logRetentionDays: DEFAULT_NETWORK_LOG_RETENTION_DAYS },
+  network: { deny: [] },
 };
 
 /** Read a numeric TTL, clamping out-of-range values back to `def`. @adr 0056 */

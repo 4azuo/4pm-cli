@@ -103,6 +103,18 @@ export interface ProfileConfig {
    * @adr 0369 @arch 0051
    */
   gitSnapshotIntervalMin?: number;
+  /**
+   * How long a restart / update drain waits for running work before cancelling the AI runs (seconds).
+   * Absent/invalid ⇒ 600.
+   * @adr 0505
+   */
+  drainTimeoutSec?: number;
+  /**
+   * How long a job waits in the project's repo queue (the autonomous cycle or another job holds the
+   * working tree) before it gives up with `REPO_QUEUE_TIMEOUT` (minutes). Absent/invalid ⇒ 120.
+   * @adr 0506
+   */
+  repoQueueTimeoutMin?: number;
   /** The physic project folder this cli serves (assigned by the server). */
   physicPath?: string | null;
   /** Interval to upload command history to R2 (minutes) — defaults to 10. */
@@ -531,4 +543,10 @@ export function deleteProfileConfigKey(
   delete config[key];
   writeFileSync(join(dir, "config.json"), JSON.stringify(config, null, 2), "utf8");
   return config;
+}
+
+/** Drain bound (ms) from the worker config `drainTimeoutSec` (default 600 s). @adr 0505 */
+export function drainTimeoutMs(profileDir: string): number {
+  const sec = readProfileConfig(profileDir).drainTimeoutSec;
+  return (typeof sec === "number" && Number.isFinite(sec) && sec > 0 ? sec : 600) * 1000;
 }

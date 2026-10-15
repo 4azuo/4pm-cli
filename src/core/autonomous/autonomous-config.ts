@@ -6,17 +6,25 @@
  * lives only in this cli. Read by the daemon each cycle; edited from the web Autonomous → Settings tab.
  * ADR-0418: `evidenceDir` / `mockupDir` folders; the old `model` knob is gone (each AI profile's model applies)
  * and is dropped on the next save. ADR-0453: `erDir` / `sequenceDir` folders (the project ER + sequence diagrams).
- * @adr 0321
+ * ADR-0507: the project-scoped knobs (claim TTL / check, attempts, run timeout, size hints, folders) come
+ * from the server policy when one was received — `readAutonomousConfig` returns the **effective** config
+ * (worker file ⊕ policy); every write is a patch of changed keys under a mutex, carrying who paused.
+ * @adr 0321 @adr 0507
  */
 import { readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ER_ROOT, EVIDENCE_ROOT, MOCKUP_ROOT, SEQUENCE_ROOT, isSafeRepoDir } from "@4pm/dto";
+import { ER_ROOT, EVIDENCE_ROOT, MOCKUP_ROOT, PROJECT_AUTONOMOUS_KEYS, SEQUENCE_ROOT, isSafeRepoDir, type AutonomousPausedBy } from "@4pm/dto";
+import { autonomousPolicy } from "./autonomous-policy";
 
 /** The autonomous knobs (parameters only — no logic). */
 export interface AutonomousConfig {
   /** The on/off switch: when true the daemon's scheduler does not start cycles. @adr 0392 */
   paused: boolean;
+  /** Who / what paused this worker, why and when (absent while running). @adr 0507 */
+  pausedBy?: AutonomousPausedBy;
+  pausedReason?: string;
+  pausedAt?: string;
   /** Standard 5-field cron the daemon's in-process scheduler fires on (ADR-0392 — no OS crontab). */
   cronSchedule: string;
   /** Empty = run all day; `HH:MM-HH:MM` = skip within the window (may cross midnight). */
@@ -95,8 +103,13 @@ function coerce(raw: unknown): AutonomousConfig {
     const t = typeof v === "string" ? v.trim().replace(/\/+$/, "") : "";
     return t && isSafeRepoDir(t) ? t : def;
   };
+  const paused = typeof o.paused === "boolean" ? o.paused : d.paused;
+  const pausedBy = paused && ["user", "auto", "projectDeleted", "migration"].includes(String(o.pausedBy)) ? (o.pausedBy as AutonomousPausedBy) : undefined;
   return {
-    paused: typeof o.paused === "boolean" ? o.paused : d.paused,
+    paused,
+    ...(pausedBy ? { pausedBy } : {}),
+    ...(paused && typeof o.pausedReason === "string" ? { pausedReason: o.pausedReason.slice(0, 300) } : {}),
+    ...(paused && typeof o.pausedAt === "string" ? { pausedAt: o.pausedAt.slice(0, 40) } : {}),
     cronSchedule: str(o.cronSchedule, d.cronSchedule),
     quietHours: str(o.quietHours, d.quietHours),
     maxTicksPerDay: num(o.maxTicksPerDay, d.maxTicksPerDay),
@@ -126,8 +139,14 @@ function coerce(raw: unknown): AutonomousConfig {
   };
 }
 
-/** Read + parse the config (async). Missing/corrupt file ⇒ defaults. */
-export async function readAutonomousConfig(profileDir: string): Promise<AutonomousConfig> {
+/** Overlay the policy's project-scoped knobs on a worker config (no policy ⇒ unchanged). @adr 0507 */
+function withPolicy(cfg: AutonomousConfig): AutonomousConfig {
+  const pol = autonomousPolicy();
+  return pol ? { ...cfg, ...pol.settings } : cfg;
+}
+
+/** The worker file only (no policy overlay) — for writes. Missing/corrupt ⇒ defaults. */
+export async function readWorkerAutonomousConfig(profileDir: string): Promise<AutonomousConfig> {
   try {
     return coerce(JSON.parse(await readFile(autonomousConfigPath(profileDir), "utf8")));
   } catch {
@@ -135,37 +154,103 @@ export async function readAutonomousConfig(profileDir: string): Promise<Autonomo
   }
 }
 
-/** Sync read (for the coarse `machine.status` running flag). Missing/corrupt ⇒ defaults. */
+/** Read the **effective** config (async): the worker file ⊕ the server policy. @adr 0507 */
+export async function readAutonomousConfig(profileDir: string): Promise<AutonomousConfig> {
+  return withPolicy(await readWorkerAutonomousConfig(profileDir));
+}
+
+/** Sync effective read (for the coarse `machine.status` running flag / the tick). Missing/corrupt ⇒ defaults. */
 export function readAutonomousConfigSync(profileDir: string): AutonomousConfig {
   try {
-    return coerce(JSON.parse(readFileSync(autonomousConfigPath(profileDir), "utf8")));
+    return withPolicy(coerce(JSON.parse(readFileSync(autonomousConfigPath(profileDir), "utf8"))));
   } catch {
-    return { ...DEFAULT_AUTONOMOUS_CONFIG };
+    return withPolicy({ ...DEFAULT_AUTONOMOUS_CONFIG });
   }
 }
 
-/** The raw config file text for the web editor (`{}`-pretty defaults when absent). */
-export async function readAutonomousConfigText(profileDir: string): Promise<string> {
-  try {
-    return await readFile(autonomousConfigPath(profileDir), "utf8");
-  } catch {
-    return JSON.stringify(DEFAULT_AUTONOMOUS_CONFIG, null, 2) + "\n";
-  }
-}
-
-/** Persist the config (from the web Settings editor); coerced so only real keys are written. */
-export async function writeAutonomousConfig(profileDir: string, raw: unknown): Promise<void> {
-  const cfg = coerce(raw);
-  await writeFile(autonomousConfigPath(profileDir), JSON.stringify(cfg, null, 2) + "\n", "utf8");
-}
-
-/** Turn the engine off (`paused:true`) — e.g. when the served project is deleted, so the next project
- * bound to this cli starts stopped. No-op when already paused.
- * @adr 0392
+/**
+ * The config text for the web editor. Once a policy was received the project-scoped keys belong to the
+ * project, so the text carries the worker-scoped keys only; before that, the whole file.
+ * @adr 0507
  */
-export async function pauseAutonomous(profileDir: string): Promise<void> {
-  const cfg = await readAutonomousConfig(profileDir);
-  if (!cfg.paused) await writeAutonomousConfig(profileDir, { ...cfg, paused: true });
+export async function readAutonomousConfigText(profileDir: string): Promise<string> {
+  const cfg = await readWorkerAutonomousConfig(profileDir);
+  if (!autonomousPolicy()) {
+    try {
+      return await readFile(autonomousConfigPath(profileDir), "utf8");
+    } catch {
+      return JSON.stringify(DEFAULT_AUTONOMOUS_CONFIG, null, 2) + "\n";
+    }
+  }
+  const worker = Object.fromEntries(Object.entries(cfg).filter(([k]) => !(PROJECT_AUTONOMOUS_KEYS as readonly string[]).includes(k)));
+  return JSON.stringify(worker, null, 2) + "\n";
+}
+
+/** Serializes every config write (read-modify-write) in this process. */
+let writeChain: Promise<unknown> = Promise.resolve();
+/** Called after every write (the scheduler re-arms). */
+const writeListeners = new Set<() => void>();
+
+/** Subscribe to config writes (the tick scheduler re-arms on each). @adr 0507 */
+export function onAutonomousConfigWrite(fn: () => void): () => void {
+  writeListeners.add(fn);
+  return () => writeListeners.delete(fn);
+}
+
+/**
+ * Patch the worker config: under a mutex, read the **file** (never the policy overlay), apply only the
+ * given keys, coerce, write, then notify (the scheduler re-arms). A concurrent Settings save and an
+ * auto-pause therefore never revert each other. Resuming (`paused:false`) clears `pausedBy/Reason/At`.
+ * @adr 0507
+ */
+export function patchAutonomousConfig(profileDir: string, patch: Partial<AutonomousConfig>): Promise<AutonomousConfig> {
+  const run = writeChain.then(async () => {
+    const cur = await readWorkerAutonomousConfig(profileDir);
+    const merged: Record<string, unknown> = { ...cur, ...patch };
+    if (patch.paused === false) {
+      delete merged.pausedBy;
+      delete merged.pausedReason;
+      delete merged.pausedAt;
+    }
+    const cfg = coerce(merged);
+    await writeFile(autonomousConfigPath(profileDir), JSON.stringify(cfg, null, 2) + "\n", "utf8");
+    for (const fn of [...writeListeners]) {
+      try {
+        fn();
+      } catch {
+        /* a listener must not fail the write */
+      }
+    }
+    return cfg;
+  });
+  writeChain = run.catch(() => undefined);
+  return run;
+}
+
+/**
+ * Persist a Settings save from the web: the worker-scoped keys it carries (a project-scoped key is
+ * ignored once a policy exists — the server refuses it anyway). Flipping `paused` records who did it.
+ * @adr 0507
+ */
+export async function writeAutonomousConfig(profileDir: string, raw: unknown): Promise<void> {
+  const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const policyOwned = autonomousPolicy() ? new Set<string>(PROJECT_AUTONOMOUS_KEYS) : new Set<string>();
+  const patch = Object.fromEntries(
+    Object.entries(o).filter(([k]) => !policyOwned.has(k) && k !== "pausedBy" && k !== "pausedReason" && k !== "pausedAt"),
+  ) as Partial<AutonomousConfig>;
+  const cur = await readWorkerAutonomousConfig(profileDir);
+  if (patch.paused === true && !cur.paused) Object.assign(patch, { pausedBy: "user", pausedAt: new Date().toISOString() });
+  await patchAutonomousConfig(profileDir, patch);
+}
+
+/** Turn the engine off (`paused:true`) with who / why — e.g. when the served project is deleted, so the
+ * next project bound to this cli starts stopped. No-op when already paused.
+ * @adr 0392 @adr 0507
+ */
+export async function pauseAutonomous(profileDir: string, by: AutonomousPausedBy = "projectDeleted", reason?: string): Promise<void> {
+  const cfg = await readWorkerAutonomousConfig(profileDir);
+  if (cfg.paused) return;
+  await patchAutonomousConfig(profileDir, { paused: true, pausedBy: by, pausedAt: new Date().toISOString(), ...(reason ? { pausedReason: reason } : {}) });
 }
 
 /**

@@ -2,8 +2,12 @@
  * Worker filesystem channel handlers (machine-0007/0027/0059/0061/0062): browse/read/write/mutate
  * files + binary upload/download inside the served physic project root for the dashboard Files + Git
  * tabs. Every op is clamped to `ctx.physicRoot` so the web can only go inward, never out. A customer
- * viewer (`viewer: "client"`) never sees `.git` or gitignored paths.
- * @adr 0449
+ * viewer (`viewer: "client"`) never sees `.git` or gitignored paths. While another job holds the
+ * project's working tree (the autonomous cycle on its task branch, a Console run, a git write), read /
+ * write replies carry `repoBusy` so the web warns that the file belongs to that job's branch and may
+ * change under it. A request with `target: "base"` reads `origin/<base>` / commits to `<base>` instead
+ * (`fs-base`), falling back to the working tree when the project has no remote base.
+ * @adr 0449 @adr 0506 @adr 0511
  */
 import {
   WsChannels,
@@ -18,9 +22,13 @@ import {
 import { listDir } from "../../fs/fs-browse";
 import { readWorkerFile } from "../../fs/fs-read";
 import { writeWorkerFile } from "../../fs/fs-write";
+import { repoLockHolder } from "../../git/repo-lock";
+import { currentBranch } from "../../autonomous/autonomous-git";
+import type { RepoBusyInfo } from "@4pm/ws";
 import { mutateFs } from "../../fs/fs-mutate";
 import { downloadBinaryFile, uploadBinaryFile } from "../../fs/fs-transfer";
 import { clientHidden, filterListingForClient } from "../../fs/client-visibility";
+import { baseDownload, baseList, baseMutate, baseRead, baseUpload, baseWrite } from "../../fs/fs-base";
 import { relative, resolve } from "node:path";
 import type { WsHandlerCtx } from "../context";
 
@@ -36,7 +44,8 @@ export function handleFsChannels(
       // the physic project root — the browser can only go inward, never out.
       const req = payload as unknown as FsListRequest;
       const root = ctx.physicRoot;
-      void listDir(req.path, root)
+      void (req.target === "base" && root ? baseList(root, req.path) : Promise.resolve(null))
+        .then((based) => based ?? listDir(req.path, root))
         .then(async (reply) =>
           req.viewer === "client" && root
             ? { ...reply, entries: await filterListingForClient(root, relative(resolve(root), reply.path), reply.entries) }
@@ -51,8 +60,11 @@ export function handleFsChannels(
       const req = payload as unknown as FsReadRequest;
       void clientHidden(ctx.physicRoot, req.path, req.viewer)
         .then((hidden) =>
-          hidden ? { path: req.path, content: "", truncated: false, hidden: true } : readWorkerFile(ctx.physicRoot, req.path),
+          hidden
+            ? { path: req.path, content: "", truncated: false, hidden: true }
+            : orWorktree(req.target === "base" && ctx.physicRoot ? baseRead(ctx.physicRoot, req.path) : null, () => readWorkerFile(ctx.physicRoot, req.path)),
         )
+        .then((reply) => (reply.target === "base" ? reply : withRepoBusy(ctx.physicRoot, reply)))
         .then((reply) => ctx.send(WsChannels.FS_READ, reply, message.id));
       return true;
     }
@@ -60,27 +72,35 @@ export function handleFsChannels(
       // Request/reply (machine-0027, ADR-0151): write a file, clamped to the physic root —
       // the Git tab's manual conflict resolution.
       const req = payload as unknown as FsWriteRequest;
-      void writeWorkerFile(ctx.physicRoot, req.path, req.content).then((reply) =>
-        ctx.send(WsChannels.FS_WRITE, reply, message.id),
-      );
+      void orWorktree(
+        req.target === "base" && ctx.physicRoot ? baseWrite(ctx.physicRoot, req, actorOf(ctx, req.by)) : null,
+        () => writeWorkerFile(ctx.physicRoot, req.path, req.content),
+        failed(req.path),
+      )
+        .then((reply) => (reply.target === "base" ? reply : withRepoBusy(ctx.physicRoot, reply)))
+        .then((reply) => ctx.send(WsChannels.FS_WRITE, reply, message.id));
       return true;
     }
     case WsChannels.FS_MUTATE: {
       // Request/reply (machine-0059, ADR-0260): create/rename/move/delete a file or folder,
       // each op clamped to the physic root (`project.files_write`).
       const req = payload as unknown as FsMutateRequest;
-      void mutateFs(ctx.physicRoot, req).then((reply) =>
-        ctx.send(WsChannels.FS_MUTATE, reply, message.id),
-      );
+      void orWorktree(req.target === "base" && ctx.physicRoot ? baseMutate(ctx.physicRoot, req, actorOf(ctx, req.by)) : null, () => mutateFs(ctx.physicRoot, req), failed(req.path ?? req.from))
+        .then((reply) => (reply.target === "base" ? reply : withRepoBusy(ctx.physicRoot, reply)))
+        .then((reply) => ctx.send(WsChannels.FS_MUTATE, reply, message.id));
       return true;
     }
     case WsChannels.FS_UPLOAD: {
       // Request/reply (machine-0061, ADR-0278): write an uploaded/pasted file's base64 bytes into
       // the tree, clamped to the physic root + size-capped (`project.files_write`).
       const req = payload as unknown as FsUploadRequest;
-      void uploadBinaryFile(ctx.physicRoot, req.path, req.contentBase64).then((reply) =>
-        ctx.send(WsChannels.FS_UPLOAD, reply, message.id),
-      );
+      void orWorktree(
+        req.target === "base" && ctx.physicRoot ? baseUpload(ctx.physicRoot, req.path, req.contentBase64, actorOf(ctx, req.by)) : null,
+        () => uploadBinaryFile(ctx.physicRoot, req.path, req.contentBase64),
+        failed(req.path),
+      )
+        .then((reply) => (reply.target === "base" ? reply : withRepoBusy(ctx.physicRoot, reply)))
+        .then((reply) => ctx.send(WsChannels.FS_UPLOAD, reply, message.id));
       return true;
     }
     case WsChannels.FS_DOWNLOAD: {
@@ -88,11 +108,45 @@ export function handleFsChannels(
       // save, clamped to the physic root + size-capped (`project.read`).
       const req = payload as unknown as FsDownloadRequest;
       void clientHidden(ctx.physicRoot, req.path, req.viewer)
-        .then((hidden) => (hidden ? { error: "CLIENT_PATH_HIDDEN" } : downloadBinaryFile(ctx.physicRoot, req.path)))
+        .then((hidden) =>
+          hidden
+            ? { error: "CLIENT_PATH_HIDDEN" }
+            : orWorktree(req.target === "base" && ctx.physicRoot ? baseDownload(ctx.physicRoot, req.path) : null, () => downloadBinaryFile(ctx.physicRoot, req.path)),
+        )
         .then((reply) => ctx.send(WsChannels.FS_DOWNLOAD, reply, message.id));
       return true;
     }
     default:
       return false;
   }
+}
+
+/** The `base` reply, or the working-tree one when there is no remote base (or `base` was not asked). */
+async function orWorktree<T>(based: Promise<T | null> | null, worktree: () => Promise<T>, onError?: (err: unknown) => T): Promise<T> {
+  let r: T | null = null;
+  try {
+    r = based ? await based : null;
+  } catch (err) {
+    // A write never silently lands in the working tree after a failed base attempt; a read falls back.
+    if (onError) return onError(err);
+  }
+  return r ?? worktree();
+}
+
+/** A failed `base` write as an `ok:false` reply. */
+function failed(path: string | undefined) {
+  return (err: unknown) => ({ ok: false, path: path ?? "", bytes: 0, error: err instanceof Error ? err.message : String(err), target: "base" as const });
+}
+
+/** The committer of a `base` edit: the web user (server-filled) and this worker's machine user. */
+function actorOf(ctx: WsHandlerCtx, by: string | undefined): { by?: string; machineUsername?: string } {
+  return { ...(by ? { by } : {}), ...(ctx.machineUsername ? { machineUsername: ctx.machineUsername } : {}) };
+}
+
+/** Attach `repoBusy` (holder, task, checked-out branch) when another job holds the working tree. @adr 0506 */
+async function withRepoBusy<T extends object>(root: string | null, reply: T): Promise<T & { repoBusy?: RepoBusyInfo }> {
+  const held = root ? repoLockHolder(root) : null;
+  if (!root || !held) return reply;
+  const branch = await currentBranch(root).catch(() => "");
+  return { ...reply, repoBusy: { holder: held.holder, ...(held.task ? { task: held.task } : {}), ...(branch ? { branch } : {}) } };
 }

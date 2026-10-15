@@ -32,6 +32,14 @@ export function setEgressEventSink(send: (payload: NetworkEventsPayload) => bool
   }
 }
 
+/** Flush what is pending, then stop the timer and drop the sink (the daemon is shutting down). @adr 0505 */
+export function stopEgressEventSink(): void {
+  flushEgressEvents();
+  if (timer) clearInterval(timer);
+  timer = null;
+  sink = null;
+}
+
 /** Record one decision. */
 export function recordEgress(e: {
   host: string;

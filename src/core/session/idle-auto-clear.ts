@@ -5,10 +5,12 @@
  * knob had no effect on the console-sync transcript the web Console observes. This driver restores
  * the same behavior for the headless path: every `autoClearIdleMinutes` with no transcript activity
  * (and not mid-response), it wipes the session transcript so an idle session's buffer stays bounded.
- * @adr 0057 @adr 0150
+ * Never while work runs (the WorkTracker — ADR-0505).
+ * @adr 0057 @adr 0150 @adr 0505
  */
 import type { SessionBus } from "./session-bus";
 import { t } from "../../i18n";
+import { work } from "./work-tracker";
 
 /**
  * Start the headless idle auto-clear loop; returns a stop function. `idleMinutes` is a **getter**
@@ -27,7 +29,7 @@ export function startIdleAutoClear(bus: SessionBus, idleMinutes: () => number): 
     const idleMs = Math.max(0, idleMinutes()) * 60_000;
     if (idleMs <= 0) return; // disabled (or no serving project yet)
     // Never clear mid-response (a tool is still running) or when there is nothing to clear.
-    if (bus.busy !== null || bus.snapshot().length === 0) return;
+    if (bus.busy !== null || !work.idle() || bus.snapshot().length === 0) return;
     if (Date.now() - lastActivity < idleMs) return;
     bus.clear();
     bus.log(t("session.autoCleared", { min: Math.round(idleMs / 60_000) }));

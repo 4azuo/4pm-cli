@@ -4,8 +4,9 @@
  * when the cli is idle — deferring while a command runs so a job is never interrupted —
  * then asks `4pm start` to re-exec the new binary (keeps `.cre`/profile, so the session reconnects).
  * A Node process cannot hot-swap its own code, so re-exec is the seamless equivalent of "no
- * restart". Gated by the org toggle AND the machine's local opt-out (`autoUpdate:false`).
- * @adr 0074 @adr 0473
+ * restart". Gated by the org toggle AND the machine's local opt-out (`autoUpdate:false`). "Idle" is
+ * the WorkTracker (no open lease — ADR-0505), and the restart that follows is the lifecycle drain.
+ * @adr 0074 @adr 0473 @adr 0505
  */
 import { logger } from "../common/logger/logger";
 import { CLI_VERSION } from "../version";
@@ -14,6 +15,7 @@ import { CLI_UPDATE_LOCKED_REASON, updateToLatest } from "./update";
 import { autoUpdateFlaggedTools, resolveInstallTimeoutMs } from "./worker/worker-tools";
 import type { SessionBus } from "./session/session-bus";
 import { t } from "../i18n";
+import { work } from "./session/work-tracker";
 
 /** How often the scheduler re-evaluates whether the daily update is due (ms). */
 const TICK_MS = 60_000;
@@ -137,7 +139,7 @@ export class UpdateScheduler {
     // A pushed / connect-triggered update (ADR-0289) runs as soon as the cli is idle, independent of
     // the daily policy — so a manual "Update" or an outdated reconnect updates promptly.
     if (this.forcedPending) {
-      if (this.bus.busy !== null) return; // defer until the running command finishes
+      if (!work.idle()) return; // defer until the running work finishes
       this.forcedPending = false;
       // An explicit operator "Update" (ADR-0289) installs the server's latest unconditionally — see
       // updateToLatest(force) — so it never no-ops as "already latest" on a version compare quirk.
@@ -160,8 +162,8 @@ export class UpdateScheduler {
     }
     if (this.pendingDateKey !== clock.dateKey) return; // not due yet today
 
-    // A command is running ⇒ defer until idle rather than interrupt the job.
-    if (this.bus.busy !== null) return;
+    // Work is running ⇒ defer until idle rather than interrupt the job.
+    if (!work.idle()) return;
 
     this.lastDoneDateKey = clock.dateKey;
     this.pendingDateKey = null;
@@ -172,6 +174,7 @@ export class UpdateScheduler {
    *  server's latest unconditionally (an operator push) vs. the conditional daily-scheduled update. */
   private async runUpdate(force: boolean): Promise<void> {
     this.updating = true;
+    const lease = work.begin("cliUpdate", "cli-update");
     try {
       // Per-tool worker auto-update (ADR-0253) runs FIRST — the cli self-update below re-execs the
       // process on success, which would otherwise skip the flagged tools. Best-effort; a failed tool
@@ -219,7 +222,8 @@ export class UpdateScheduler {
       logger.info("update.scheduled.updated", { version: result.version });
       this.bus.log(t("update.scheduledUpdated", { version: result.version ?? "" }));
       this.stop();
-      this.bus.requestRestart();
+      lease.end(); // the drain must not wait for this update itself
+      this.bus.requestRestart("update");
     } catch (err) {
       logger.warn("update.scheduled.error", { error: String(err) });
       // Also surface an unexpected failure (e.g. server unreachable while updating) to the web
@@ -232,6 +236,7 @@ export class UpdateScheduler {
         at: new Date().toISOString(),
       });
     } finally {
+      lease.end();
       this.updating = false;
     }
   }

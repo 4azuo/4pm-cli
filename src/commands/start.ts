@@ -1,8 +1,10 @@
 /**
  * `4pm start` command — check version/auto-update, then open a WS
  * connection to the server and keep the session alive (heartbeat, reconnect,
- * receive dispatch). Requires an existing pairing (`.cre` present in the profile).
- * @adr 0015 @adr 0473
+ * receive dispatch). Requires an existing pairing (`.cre` present in the profile). The process-scoped
+ * services register with the daemon lifecycle; a restart / update / stop signal / quit drains running
+ * work, stops every service, then execs the new binary in place (or exits).
+ * @adr 0015 @adr 0473 @adr 0505
  */
 import { join } from "node:path";
 import { readCredential } from "../core/profile/credential";
@@ -24,6 +26,7 @@ import {
   prepareWorkspaces,
   readProfileConfig,
   resolveIdleAutoClearMinutes,
+  drainTimeoutMs,
 } from "../config/profile";
 import { logger, type LogLevel } from "../common/logger/logger";
 import { initI18n, t } from "../i18n";
@@ -44,6 +47,14 @@ import { syncAgentSshKey } from "../core/git/git-ssh-key";
 import { prepareCredentialDir } from "../utils/ai-cred-mount";
 import { adoptMountedAiLogins, disableUnloggedDefaults } from "../core/ai/ai-mount-profiles";
 import { allAiProfileDirs } from "../utils/ai-cli";
+import { lifecycle } from "../core/session/lifecycle";
+import { stopEgressProxy } from "../core/network/egress-proxy";
+import { stopNetguardSync } from "../core/network/netguard-client";
+import { stopEgressEventSink } from "../core/network/egress-events";
+import { stopCommandHistoryUpload } from "../core/exec/command-history";
+
+/** Drain bound for a stop signal / quit: short, so `docker stop`'s grace still covers the teardown. */
+const SIGNAL_DRAIN_MS = 10_000;
 
 /**
  * Resolve the log level: `--verbose` ⇒ debug (highest priority), else FOURPM_LOG_LEVEL,
@@ -133,14 +144,17 @@ export async function runStart(
     return;
   }
   const release = (): void => releaseInstanceLock(profileDir);
-  // Control channel (ADR-0192 §2) — declared here so the finally can stop it.
-  let stopControl: (() => void) | null = null;
-  let stopGitToken: (() => void) | null = null;
-  // Headless idle transcript auto-clear (ADR-0150) — declared here so the finally can stop it.
-  let stopIdleClear: (() => void) | null = null;
   process.once("exit", release);
-  // Ensure the "exit" handler runs on Ctrl+C / termination so the lock is released.
-  const exitOnSignal = (): void => process.exit(0);
+  // Ctrl+C / termination: drain briefly and stop every service, then exit (the "exit" handler releases
+  // the lock). A second signal exits at once.
+  let signalled = false;
+  const exitOnSignal = (): void => {
+    if (signalled) process.exit(0);
+    signalled = true;
+    void lifecycle
+      .shutdown("signal", { drainMs: SIGNAL_DRAIN_MS, cancelGraceMs: 5_000 })
+      .finally(() => process.exit(0));
+  };
   process.once("SIGINT", exitOnSignal);
   process.once("SIGTERM", exitOnSignal);
   // Set when the session asks to restart into an updated cli — re-exec after the teardown.
@@ -154,6 +168,7 @@ export async function runStart(
     // Local command history (per cli) + periodic R2 upload (config-gated) + per-command
     // output capture (for /output — ADR-0057).
     initCommandHistory(profileDir, profileName, config.commandHistoryUploadMinutes ?? 10);
+    lifecycle.register("command-history.upload", "process", stopCommandHistoryUpload);
     initCommandOutput(profileDir);
 
     // Presentation bridge (ADR-0057): TUI on a TTY, else the plain console sink.
@@ -164,11 +179,17 @@ export async function runStart(
       profileDir,
       bus,
     });
-    // A self-update (daily tick / web push) asks to restart: stop the session here; the TUI exits on
-    // the same signal, and the re-exec runs only after the teardown below released everything.
+    // Started by the WS client's constructor — process-scoped services (ADR-0505).
+    lifecycle.register("egress.proxy", "process", () => stopEgressProxy());
+    lifecycle.register("egress.events", "process", stopEgressEventSink);
+    lifecycle.register("netguard.sync", "process", stopNetguardSync);
+    // GitHub-App tokens are revoked as the last service step (no stale process keeps them).
+    lifecycle.register("git.tokens", "process", () => revokeAll().catch(() => undefined));
+    // A self-update (daily tick / web push) or an operator restart: drain, stop every service and close
+    // the session; the TUI exits once stopped, and the exec runs only after the teardown below.
     bus.onRestart(() => {
       restarting = true;
-      client.stop();
+      void lifecycle.shutdown(bus.restartReason, { drainMs: drainTimeoutMs(profileDir) });
     });
     // Start-up self-heal (ADR-0396): install a missing gh/glab and the enabled profiles' AI CLIs in the
     // background; each success re-reports the tools snapshot. Never blocks or fails the start.
@@ -185,7 +206,7 @@ export async function runStart(
       .catch(() => undefined);
     // Expose this daemon's session over a per-profile unix socket so a `4pm attach` TUI can
     // observe/drive it (essential when headless in a container — ADR-0192 §2). Best-effort.
-    stopControl = startControlServer(bus, profileDir, {
+    const stopControl = startControlServer(bus, profileDir, {
       version: CLI_VERSION,
       scope: credential.scope,
       profile: profileName,
@@ -195,7 +216,9 @@ export async function runStart(
     });
     // Uid separation (ADR-0430 phase 2): a token-only socket for the agent's git helper / gh shims, and the
     // deploy key exposed read-only. No-ops when separation is off.
-    stopGitToken = startGitTokenServer(profileDir);
+    const stopGitToken = startGitTokenServer(profileDir);
+    lifecycle.register("control.socket", "process", stopControl);
+    lifecycle.register("git-token.socket", "process", stopGitToken);
     syncAgentSshKey(profileDir);
     // The standalone helper agent processes run instead of the cli bundle (ADR-0499) — installed before the
     // first git-auth / egress env is built, then checked as the agent so a broken helper shows up here.
@@ -244,23 +267,28 @@ export async function runStart(
       // The WS loop runs concurrently, feeding the bus; the TUI resolves on quit.
       void runResilient();
       await tui;
+      // The TUI ended: by a restart (already stopped) or by /quit — drain briefly and stop everything.
+      await lifecycle.shutdown("quit", { drainMs: SIGNAL_DRAIN_MS, cancelGraceMs: 5_000 });
     } else {
       attachConsoleSink(bus);
       // Headless has no Ink TUI, so drive the idle transcript auto-clear here (the TUI runs its
       // own in ui/app.tsx) — otherwise the config knob is a no-op in a container (ADR-0150). The
       // window is re-read each tick so the project override (ws_token — ADR-0244) applies live.
-      stopIdleClear = startIdleAutoClear(bus, () =>
+      const stopIdleClear = startIdleAutoClear(bus, () =>
         resolveIdleAutoClearMinutes(readProfileConfig(profileDir)),
       );
+      lifecycle.register("idle.auto-clear", "process", stopIdleClear);
       bus.log(t("start.connecting", { server: credential.serverUrl, profile: profileName }));
       await runResilient();
+      // run() returns only after the session closed for good — make sure every service is stopped.
+      await lifecycle.shutdown(lifecycle.reason ?? "quit", { drainMs: SIGNAL_DRAIN_MS, cancelGraceMs: 5_000 });
     }
   } finally {
-    stopIdleClear?.();
-    // Revoke any GitHub-App tokens this worker still holds (ADR-0356); the server backstop covers a crash.
-    await revokeAll().catch(() => undefined);
-    stopControl?.();
-    stopGitToken?.();
+    // Every service (control / git-token sockets, idle clear, GitHub-App token revoke — ADR-0356 …) is a
+    // lifecycle service; an error path that skipped the shutdown still stops them all (idempotent).
+    if (lifecycle.state !== "stopped") {
+      await lifecycle.shutdown(lifecycle.reason ?? "quit", { drainMs: 0, cancelGraceMs: 0 }).catch(() => undefined);
+    }
     release();
   }
   if (restarting) {

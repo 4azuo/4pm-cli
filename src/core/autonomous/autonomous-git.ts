@@ -274,11 +274,18 @@ async function mergeBaseIntoBooks(root: string, base: string): Promise<void> {
  * dirty task branch is first saved (`wip:` commit — nothing is lost); a dirty tree on any other branch is
  * stashed. A repo without a remote `<base>` keeps working on the local base.
  */
-export async function syncBooks(root: string, base: string): Promise<void> {
+export async function syncBooks(root: string, base: string): Promise<string | null> {
   const cur = await currentBranch(root);
+  // Uncommitted changes outside a task branch are stashed under a NAMED stash, returned so the cycle can
+  // tell the managers where they went (ADR-0506) — never silently.
+  let stashed: string | null = null;
   if ((await gitQuiet(root, ["status", "--porcelain"])).trim()) {
     if (cur.startsWith("dev/") || cur.includes("/dev/")) await wipCommit(root, "wip: autosave before sync (4PM)");
-    else await gitQuiet(root, ["stash", "push", "-u", "-m", "4PM autosave"]);
+    else {
+      const name = `4PM autosave ${new Date().toISOString()} ${cur || "detached"}`;
+      await gitQuiet(root, ["stash", "push", "-u", "-m", name]);
+      stashed = name;
+    }
   }
   await git(root, ["fetch", "-q", "--prune", "origin"]);
   const ref = await ensureBooksBranch(root, base);
@@ -288,6 +295,7 @@ export async function syncBooks(root: string, base: string): Promise<void> {
   } else await git(root, ["checkout", "-q", base]);
   await gitQuiet(root, ["submodule", "update", "--init", "-q"], 300_000);
   await attachSubmoduleBranches(root);
+  return stashed;
 }
 
 /** Outcome of a books publish. */

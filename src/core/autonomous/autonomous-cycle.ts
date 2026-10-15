@@ -8,11 +8,13 @@
  * claim is re-verified during the run and on reconnect; a lost claim stops the run without pushing.
  * Intake also writes sequence diagrams + ER change requests (numbered here), a task waits for its group's
  * change request, and an implement change request / question sequence reaches the books.
- * @adr 0448 @adr 0452 @adr 0453
+ * A whole cycle is one WorkTracker lease; a run stopped by a restart drain keeps its claim.
+ * @adr 0448 @adr 0452 @adr 0453 @adr 0505
  */
 import { randomUUID } from "node:crypto";
 import { readdir, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { logger } from "../../common/logger/logger";
 import type { WsHandlerCtx } from "../ws-client/context";
 import { cancelActiveRun, runAiPrompt, type AiPromptOutcome, type AiRunOverrides } from "../ws-client/command-dispatch";
 import { resolveCliPrompt } from "../ai/prompt-overrides";
@@ -24,7 +26,7 @@ import {
   isInQuietHours,
   readAutonomousConfig,
   repoDirsOf,
-  writeAutonomousConfig,
+  pauseAutonomous,
   type AutonomousConfig,
 } from "./autonomous-config";
 import { pushRecord, readHistories, todayTickCount, writeHistories, type Histories } from "./autonomous-history";
@@ -85,6 +87,10 @@ import {
 } from "./autonomous-er";
 import type { NewErcFile } from "./autonomous-er-store";
 import { bookRowTeam } from "@4pm/dto";
+import { lifecycle } from "../session/lifecycle";
+import { work } from "../session/work-tracker";
+import { acquireRepo, type RepoLockHandle } from "../git/repo-lock";
+import { onAutonomousPolicy, policyBlockReason } from "./autonomous-policy";
 
 // ── Prompts (the agent's parts only) ──────────────────────────────────────────────────────────────
 
@@ -308,6 +314,21 @@ async function wipDiff(root: string, mine: LocalClaim): Promise<string> {
 
 // Serialize cycles: at most one per served project at a time (ADR-0321).
 const running = new Set<string>();
+/** The offline skip is logged once per outage, not on every tick. @adr 0505 */
+let offlineLogged = false;
+/** The AI run the cycle is waiting on now — cancelled when the policy turns blocking. @adr 0507 */
+let currentCycleRun: string | null = null;
+
+/** A fresh command id for a cycle AI run, remembered as the current one. */
+function cycleRunId(): string {
+  currentCycleRun = randomUUID();
+  return currentCycleRun;
+}
+
+/** True when a cancelled run was stopped by a restart drain or a blocking policy (keep the work). @adr 0505 @adr 0507 */
+function stoppedFromOutside(out: AiPromptOutcome): boolean {
+  return out.cancelled && (lifecycle.stopping || policyBlockReason() !== null);
+}
 
 /**
  * Run one autonomous cycle: gates → guard (books-branch protection) → sync the books branch → resume / release a
@@ -327,8 +348,20 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     ctx.bus.autonomousDone(false, "a cycle is already running");
     return;
   }
+  // The daemon is draining for a restart / update: start nothing (ADR-0505).
+  if (lifecycle.stopping) {
+    ctx.bus.autonomousDone(false, "cli restarting");
+    return;
+  }
   running.add(root);
+  // The whole cycle — git phases included — is one WorkTracker lease, so a restart waits for it.
+  const lease = work.begin("autonomousCycle", "autonomous-cycle");
+  let repo: RepoLockHandle | null = null;
   const log = (line: string): Promise<void> => dayLog(root, line);
+  // The policy turns blocking mid-cycle (project paused / switched off — ADR-0507): stop the AI run now.
+  const offPolicy = onAutonomousPolicy(() => {
+    if (policyBlockReason() && currentCycleRun) cancelActiveRun(currentCycleRun);
+  });
   try {
     const cfg = await readAutonomousConfig(profileDir);
     await pruneLogs(root, cfg.logRetentionDays);
@@ -337,13 +370,22 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
 
     // --- Preconditions + cheap gates (no token spend) ------------------------------------------
     if (!ctx.isReady) {
-      await log("[skip] cli offline (no WS connection)");
+      if (!offlineLogged) await log("[skip] cli offline (no WS connection)");
+      offlineLogged = true;
       ctx.bus.autonomousDone(false, "cli offline");
       return;
     }
+    offlineLogged = false;
     if (cfg.paused) {
       await log("[skip] paused");
       ctx.bus.autonomousDone(false, "paused");
+      return;
+    }
+    // The server's policy (ADR-0507): the project switch and this worker's `allowed`.
+    const blocked = policyBlockReason();
+    if (blocked) {
+      await log(blocked === "projectDisabled" ? "[skip] autonomous paused for the project" : `[skip] not allowed by the server (${blocked})`);
+      ctx.bus.autonomousDone(false, `policy: ${blocked}`);
       return;
     }
     if (isInQuietHours(cfg.quietHours)) {
@@ -377,8 +419,22 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       return;
     }
 
+    // --- The repo lock (ADR-0506): from Sync to its last publish the cycle owns the working tree; Console
+    // runs, git writes and clones wait in the lock's FIFO meanwhile.
+    try {
+      repo = await acquireRepo(root, { holder: "autonomous", label: "autonomous-cycle" });
+    } catch (err) {
+      await log(`[skip] project working tree busy (${err instanceof Error ? err.message : String(err)})`);
+      ctx.bus.autonomousDone(false, "working tree busy");
+      return;
+    }
+
     // --- Phase 1: sync the books branch (current books + current <base>) -------------------------
-    await syncBooks(root, rootBase.base);
+    const stashed = await syncBooks(root, rootBase.base);
+    if (stashed) {
+      await log(`[autosave] uncommitted changes were stashed as "${stashed}"`);
+      alert(ctx, { kind: "autosave", message: `Uncommitted changes in the project folder were stashed by the autonomous cycle as "${stashed}" (git stash list).` });
+    }
 
     // --- Phase 2: a held claim? (resume / release / lost) ----------------------------------------
     let mine = await readLocalClaim(profileDir);
@@ -446,7 +502,14 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
         else {
           const context = await linkedDiscussionsContext(root, rootBase.base, ids);
           const erOpenNote = await openErcNote(root, cfg.erDir).catch(() => "");
-          const out = await runAiPrompt(ctx, buildIntakePrompt(cfg, ids, erOpenNote, groups) + context, randomUUID(), "local", false, undefined, undefined, false, true, runOverrides(cfg));
+          const out = await runAiPrompt(ctx, buildIntakePrompt(cfg, ids, erOpenNote, groups) + context, cycleRunId(), "local", false, undefined, undefined, false, true, runOverrides(cfg));
+          if (stoppedFromOutside(out)) {
+            // Stopped by a restart or the policy: drop the half intake, nothing counted (re-run later).
+            await gitQuiet(root, ["checkout", "--", "."]);
+            await log("[stop] intake stopped (cli restart / autonomous paused)");
+            ctx.bus.autonomousDone(false, "stopped");
+            return;
+          }
           if (out.exhausted) {
             await gitQuiet(root, ["checkout", "--", "."]);
             await log("[skip] usage limit during intake");
@@ -520,6 +583,7 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     }
 
     // --- Phase 5: task branches (root + submodules) --------------------------------------------
+    repo.setTask(mine.id); // waiters see which task holds the tree
     const from = mine.from ?? null;
     await checkoutTaskBranch(root, mine.branch, rootBase.base, from);
     const hadWork = (await aheadOf(root, mine.branch, rootBase.base)) > 0;
@@ -528,7 +592,7 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     for (const s of subs) await checkoutTaskBranch(join(root, s.sub.dir), s.branch, s.sub.base, s.from).catch((e) => log(`[warn] submodule ${s.sub.dir}: ${String(e)}`));
 
     // --- Phase 6: implement (agent), claim watched ---------------------------------------------
-    const commandId = randomUUID();
+    const commandId = cycleRunId();
     Object.assign(watch, { commandId, claim: mine, root, lost: false });
     // Work state before the run: a timeout is judged by whether it changed (ADR-0452).
     const workDirs = [root, ...subs.map((s) => join(root, s.sub.dir))];
@@ -561,6 +625,16 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       await writeLocalClaim(profileDir, null);
       await syncBooks(root, rootBase.base);
       ctx.bus.autonomousDone(false, "claim lost");
+      return;
+    }
+    if (stoppedFromOutside(out)) {
+      // Stopped by the restart drain (ADR-0505) or a blocking policy (ADR-0507): like running out of time —
+      // keep the claim + save the work; the next allowed cycle resumes it. Not a failure, no attempt counted.
+      const why = lifecycle.stopping ? "cli restart" : "autonomous paused";
+      for (const s of subs) await wipCommit(join(root, s.sub.dir), `wip(${mine.id}): ${why}`);
+      await wipCommit(root, `wip(${mine.id}): ${why}`);
+      await log(`[wait] ${mine.id}: ${why} — claim kept, resumes later`);
+      ctx.bus.autonomousDone(false, `${why} — task kept`);
       return;
     }
     if (out.exhausted) {
@@ -612,7 +686,10 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       hist = await readHistories(root);
       if (!progressed) hist.consecutiveFails += 1;
       await recordRun(root, hist, "failure", `${mine.id}: ${reason}`, today);
-      await maybeAutoPause(root, profileDir, cfg, hist, log, (reason) => emitEvent(ctx, "cycle.paused", undefined, { reason }));
+      await maybeAutoPause(root, profileDir, cfg, hist, log, (reason) => {
+        emitEvent(ctx, "cycle.paused", undefined, { reason });
+        alert(ctx, { kind: "auto-paused", message: `${worker} paused its autonomous mode after ${reason}.` });
+      });
       ctx.bus.autonomousDone(false, reason);
       return;
     }
@@ -669,7 +746,11 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     await dayLog(root, `[warn] cycle error: ${err instanceof Error ? err.message : String(err)}`).catch(() => undefined);
     ctx.bus.autonomousDone(false, err instanceof Error ? err.message : String(err));
   } finally {
+    offPolicy();
+    currentCycleRun = null;
+    repo?.release();
     running.delete(root);
+    lease.end();
   }
 }
 
@@ -754,7 +835,7 @@ async function releaseTask(ctx: WsHandlerCtx, root: string, rootBase: RepoBase, 
       await publishBooks(root, rootBase.base, `chore(auto): ${mine.id} needs a decision`, async () => (await applyQuestion(root, mine, q, true)) !== null);
       alert(ctx, { kind: "task-failed-limit", task: mine.id, message: `${mine.id} failed ${next} times; a decision was requested in USER_QA.` });
     } else {
-      const out = await runAiPrompt(ctx, buildSplitPrompt(mine, reasons, await wipDiff(root, mine)), randomUUID(), "local", false, undefined, undefined, true, false, runOverrides(cfg));
+      const out = await runAiPrompt(ctx, buildSplitPrompt(mine, reasons, await wipDiff(root, mine)), cycleRunId(), "local", false, undefined, undefined, true, false, runOverrides(cfg));
       const children = parseJsonReply<{ children?: { desc: string; priority?: string; size?: string; notes?: string }[] }>(out.output)?.children?.filter((c) => c?.desc?.trim()) ?? [];
       await syncBooks(root, rootBase.base);
       if (children.length >= 2) {
@@ -798,7 +879,8 @@ async function maybeAutoPause(
   onPaused?: (reason: string) => void,
 ): Promise<void> {
   if (cfg.stopOnConsecutiveFailures > 0 && hist.consecutiveFails >= cfg.stopOnConsecutiveFailures) {
-    await writeAutonomousConfig(profileDir, { ...cfg, paused: true });
+    // A patch of `paused` only (ADR-0507): never reverts a Settings save made during the cycle.
+    await pauseAutonomous(profileDir, "auto", `${hist.consecutiveFails} consecutive failed cycles`);
     await log(`[stop] ${hist.consecutiveFails} consecutive failures → paused`);
     onPaused?.(`${hist.consecutiveFails} consecutive failures`);
   }
@@ -862,6 +944,8 @@ async function reportNewBookRows(
 
 /** Append a line to the per-day tick log (`<root>/.claude/logs/autonomous-tick-<day>.log`). Best-effort. */
 async function dayLog(root: string, line: string): Promise<void> {
+  // Also a structured cli log record, so tick decisions leave the worker with the log upload (ADR-0509).
+  logger.info("autonomous.tick", { project: basename(root), line: line.slice(0, 1000) });
   try {
     const day = new Date().toISOString().slice(0, 10);
     const ts = new Date().toISOString().slice(0, 19).replace("T", " ");

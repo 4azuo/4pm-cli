@@ -4,8 +4,11 @@
  * command), runs an AI prompt through the profile-failover path (shared by locally-typed and
  * server-dispatched prompts), runs a web-dispatched 4pm-cli slash command, and maintains the shared
  * AI memory. Kept together because these pieces call each other and share the memory /
- * session-pressure helpers below.
- * @adr 0057 @adr 0245
+ * session-pressure helpers below. Every run is a WorkTracker lease; a dispatch is refused while the
+ * daemon drains (`CLI_RESTARTING`), and a run that changes the served working tree first takes the
+ * project's repo lock — waiting in its FIFO, re-checked by the server — while the autonomous cycle or
+ * another job holds it.
+ * @adr 0057 @adr 0245 @adr 0505 @adr 0506
  */
 import { basename } from "node:path";
 import { randomUUID as randomCommandId } from "node:crypto";
@@ -20,6 +23,7 @@ import {
   type CommandHistoryPayload,
   type CommandImageRef,
   type CommandOrigin,
+  type CommandRecheckReply,
   type MemoryUpdatePayload,
   type ReviewResultPayload,
   type UsageReportPayload,
@@ -67,6 +71,9 @@ import { acquireRunSlot } from "./run-slot";
 import { t } from "../../i18n";
 import { requestGitSnapshot } from "../git/git-snapshot";
 import { ensureAiClisFor } from "../worker/toolchain";
+import { lifecycle } from "../session/lifecycle";
+import { work } from "../session/work-tracker";
+import { acquireRepo, RepoBusyError, RepoQueueTimeoutError, RepoWaitCancelledError, type RepoHolder, type RepoLockHandle } from "../git/repo-lock";
 
 /** Preamble prepended before the shared AI memory when seeding a fresh native session. */
 const MEMORY_SEED_HEADER =
@@ -98,9 +105,117 @@ function changesGitState(cmd: string, args: string[]): boolean {
   return GIT_STATE_SUBCOMMANDS.has(args[i] ?? "");
 }
 
-/** How many AI runs are in flight (queued or running) — git snapshots wait while > 0. @adr 0369 */
+/** How many AI runs are in flight (queued or running). @adr 0369 */
 export function activeAiRunCount(): number {
   return activeRuns.size;
+}
+
+/** Stop every in-flight AI run — the lifecycle drain bound was reached. @adr 0505 */
+export function cancelAllActiveRuns(): void {
+  for (const run of activeRuns.values()) run.controller.abort();
+}
+
+/**
+ * Seq numbers of the status frames this module sends outside a run (repo queue, refusals) — far above
+ * any run chunk seq (0..N), so the web's per-stream seq dedupe keeps both.
+ * @adr 0506
+ */
+let statusSeq = 2_000_000_000;
+
+/** Send one status line on a command's stream (+ the local transcript). */
+function statusLine(ctx: WsHandlerCtx, commandId: string, origin: CommandOrigin, text: string, extra: Record<string, unknown> = {}, level?: "warn"): void {
+  ctx.bus.push({ source: origin, kind: "log", text, ...(level ? { level } : {}) });
+  ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: statusSeq++, chunk: `${text}\n`, log: true, ...extra });
+}
+
+/** End a command that never ran with `code` (exit 1) — a refused dispatch. @adr 0505 @adr 0506 */
+function refuseCommand(ctx: WsHandlerCtx, commandId: string, origin: CommandOrigin, code: string, text: string): void {
+  logger.info("command.refused", { commandId, code });
+  statusLine(ctx, commandId, origin, `${code}: ${text}`, {}, "warn");
+  ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: statusSeq++, chunk: "", done: true, exitCode: 1 });
+}
+
+/** Refuse a dispatch while the daemon drains for a restart / update. @adr 0505 */
+function refuseRestarting(ctx: WsHandlerCtx, commandId: string, origin: CommandOrigin): void {
+  refuseCommand(ctx, commandId, origin, "CLI_RESTARTING", "the worker is restarting — resend once it is back");
+}
+
+/**
+ * Run `fn` holding the served root's repo lock. While another holder has the tree the command waits in
+ * the FIFO (queue frames `reason: "repo"`, Stop leaves it); once granted after a wait the server
+ * re-checks the dispatcher (`command.recheck`). Refusals end the command with their code. Returns
+ * false when `fn` did not run. No served root ⇒ `fn` runs without a lock.
+ * @adr 0506
+ */
+async function underRepoLock(
+  ctx: WsHandlerCtx,
+  commandId: string,
+  origin: CommandOrigin,
+  holder: RepoHolder,
+  label: string,
+  fn: () => Promise<unknown>,
+): Promise<boolean> {
+  const root = ctx.physicRoot;
+  if (!root) {
+    await fn();
+    return true;
+  }
+  // Stop while waiting: registered like a queued AI run so `command.cancel` reaches it (ADR-0362).
+  const waiting: ActiveRun = { controller: new AbortController(), state: "queued" };
+  const ownEntry = !activeRuns.has(commandId);
+  if (ownEntry) activeRuns.set(commandId, waiting);
+  let queued = false;
+  let handle: RepoLockHandle;
+  try {
+    handle = await acquireRepo(root, {
+      holder,
+      label,
+      signal: waiting.controller.signal,
+      onQueued: (info) => {
+        queued = true;
+        const who = info.holder === "autonomous" ? `the autonomous cycle${info.task ? ` (${info.task})` : ""}` : "another job";
+        statusLine(ctx, commandId, origin, `⏳ waiting for ${who} — ${info.position} ahead`, {
+          queue: { position: info.position, limit: 0, running: 0, reason: "repo", holder: info.holder, ...(info.task ? { task: info.task } : {}) },
+        });
+      },
+    });
+  } catch (err) {
+    if (ownEntry) activeRuns.delete(commandId);
+    if (err instanceof RepoWaitCancelledError) {
+      statusLine(ctx, commandId, origin, "■ stopped", {}, "warn");
+      ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: statusSeq++, chunk: "", done: true, exitCode: COMMAND_CANCELLED_EXIT_CODE, cancelled: true });
+    } else if (err instanceof RepoBusyError || err instanceof RepoQueueTimeoutError) {
+      refuseCommand(ctx, commandId, origin, err.code, err.message);
+    } else if (lifecycle.stopping) {
+      refuseRestarting(ctx, commandId, origin);
+    } else {
+      refuseCommand(ctx, commandId, origin, "REPO_BUSY", String(err instanceof Error ? err.message : err));
+    }
+    return false;
+  }
+  if (ownEntry) activeRuns.delete(commandId);
+  try {
+    if (queued) {
+      ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: statusSeq++, chunk: "", log: true, queue: null });
+      if (lifecycle.stopping) {
+        refuseRestarting(ctx, commandId, origin);
+        return false;
+      }
+      // The job waited: is its dispatcher still allowed, the project still active? An older server
+      // without the channel (or a lost reply) lets it run — the dispatch was authorized when sent.
+      const verdict = await ctx
+        .request<CommandRecheckReply>(WsChannels.COMMAND_RECHECK, { commandId })
+        .catch(() => ({ ok: true }) as CommandRecheckReply);
+      if (!verdict.ok) {
+        refuseCommand(ctx, commandId, origin, verdict.errorCode ?? "FORBIDDEN", "no longer allowed to run after waiting");
+        return false;
+      }
+    }
+    await fn();
+    return true;
+  } finally {
+    handle.release();
+  }
 }
 
 /**
@@ -143,6 +258,11 @@ export function handleCommandChannels(
     return true;
   }
   ctx.markCommandHandled(dispatch.commandId);
+  // Draining for a restart / update: accept nothing new (ADR-0505).
+  if (lifecycle.stopping) {
+    refuseRestarting(ctx, dispatch.commandId, "server");
+    return true;
+  }
   logger.info("command.dispatch", {
     commandId: dispatch.commandId,
     cmd: dispatch.cmd,
@@ -158,20 +278,42 @@ export function handleCommandChannels(
     if (dispatch.cmd.trimStart().startsWith("/")) {
       void runWebSlashCommand(ctx, dispatch.cmd, dispatch.commandId);
     } else {
-      void runAiPrompt(
-        ctx,
-        dispatch.cmd,
-        dispatch.commandId,
-        "server",
-        dispatch.aiOneShot ?? false,
-        dispatch.images,
-        dispatch.aiConfig,
-        dispatch.aiReadOnly ?? false,
-        dispatch.aiBypass ?? false,
-      );
+      const run = (): Promise<AiPromptOutcome> =>
+        runAiPrompt(
+          ctx,
+          dispatch.cmd,
+          dispatch.commandId,
+          "server",
+          dispatch.aiOneShot ?? false,
+          dispatch.images,
+          dispatch.aiConfig,
+          dispatch.aiReadOnly ?? false,
+          dispatch.aiBypass ?? false,
+        );
+      // A one-shot run has no tools (text in → text out), so it never touches the tree; every agent
+      // run (full, read-only, bypass) reads or writes it ⇒ take the repo lock (ADR-0506).
+      if (dispatch.aiOneShot) void run();
+      else void underRepoLock(ctx, dispatch.commandId, "server", "command", "console-ai", run);
     }
     return true;
   }
+  if (changesGitState(dispatch.cmd, dispatch.args)) {
+    // A git / gh write (Git tab) changes the working tree ⇒ under the repo lock (ADR-0506).
+    void underRepoLock(ctx, dispatch.commandId, "server", "git", `${dispatch.cmd} ${dispatch.args[0] ?? ""}`.trim(), () =>
+      runRawCommand(ctx, dispatch),
+    );
+    return true;
+  }
+  void runRawCommand(ctx, dispatch);
+  return true;
+}
+
+/** Run a raw (non-AI) dispatched command; resolves once it is done. */
+function runRawCommand(ctx: WsHandlerCtx, dispatch: CommandDispatchPayload): Promise<void> {
+  let settle: () => void = () => undefined;
+  const done = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
   recordCommand({
     commandId: dispatch.commandId,
     projectId: dispatch.projectId,
@@ -211,9 +353,10 @@ export function handleCommandChannels(
         level: code === 0 ? "info" : "error",
         durationMs: Date.now() - cmdStartMs,
       });
+      settle();
     }
   });
-  return true;
+  return done;
 }
 
 /**
@@ -244,8 +387,13 @@ export async function runLocalCommand(ctx: WsHandlerCtx, input: string): Promise
       return;
     }
   }
+  if (lifecycle.stopping) {
+    ctx.bus.log(t("session.stoppedPrompts"), "warn");
+    return;
+  }
   const commandId = randomCommandId();
-  await runAiPrompt(ctx, prompt, commandId, "local");
+  // A TUI prompt is a full agent run in the served root ⇒ under the repo lock (ADR-0506).
+  await underRepoLock(ctx, commandId, "local", "command", "tui-ai", () => runAiPrompt(ctx, prompt, commandId, "local"));
 }
 
 /**
@@ -301,9 +449,12 @@ export async function runAiPrompt(
   // during the outbound review or the slot wait is honoured the moment the run reaches the slot.
   const run: ActiveRun = { controller: new AbortController(), state: "queued" };
   activeRuns.set(commandId, run);
+  // The whole run — review, image fetch, AI-CLI install, slot wait, the run itself — is one lease (ADR-0505).
+  const lease = work.begin("aiRun", commandId);
   try {
     return await runAiPromptInner(ctx, prompt, commandId, origin, run, oneShot, images, aiConfig, readOnly, bypass, overrides);
   } finally {
+    lease.end();
     activeRuns.delete(commandId);
     // An AI run may have committed/edited files ⇒ refresh the server's git snapshot (ADR-0369).
     if (!readOnly) requestGitSnapshot("ai-run");
@@ -621,9 +772,13 @@ async function runAiPromptInner(
       ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: `${text}\n`, log: true });
       result = { exitCode: 1, workedDir: null, workedKey: null, workedCmd: null, usage: { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, sessionId: "" };
     } else if (slot.kind === "denied") {
-      // The org's hosted storage is full (ADR-0365): the server refuses new runs until space is cleared.
+      // The org's hosted storage is full (ADR-0365), or the project is paused / closed (ADR-0507): the
+      // server refuses new runs.
       neverStarted = true;
-      const text = "STORAGE_QUOTA_EXCEEDED: the organization's hosted storage is full — clear storage in Settings › Storage, then retry";
+      const text =
+        slot.reason === "project_inactive"
+          ? "PROJECT_NOT_ACTIVE: the project is paused or closed — no new AI runs until it is resumed"
+          : "STORAGE_QUOTA_EXCEEDED: the organization's hosted storage is full — clear storage in Settings › Storage, then retry";
       ctx.bus.push({ source: origin, kind: "log", text, level: "warn" });
       ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: `${text}\n`, log: true });
       result = { exitCode: 1, workedDir: null, workedKey: null, workedCmd: null, usage: { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, sessionId: "" };

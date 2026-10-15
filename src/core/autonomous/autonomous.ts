@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { readFileInRoot, resolveForRead, writeFileInRoot } from "../../utils/safe-path";
 import { join } from "node:path";
 import type {
+  AutonomousSnapshotPayload,
   ApprovalEntry,
   AutonomousBooks,
   AutonomousEvidenceReply,
@@ -29,6 +30,7 @@ import {
   writeAutonomousConfig,
 } from "./autonomous-config";
 import { readHistories } from "./autonomous-history";
+import { autonomousPolicy, lastAutonomousCheck } from "./autonomous-policy";
 import { ATTEMPTS_REL, findTables, replaceRows } from "./autonomous-books";
 import { approvalStates, buildApprovalEntries, mergeApprovalWrite, unapproveIds, type ApprovalBooks } from "./autonomous-approvals";
 import { applyDiscussionBatch } from "./autonomous-discussions";
@@ -144,9 +146,16 @@ export async function getAutonomousStatus(root: string, profileDir: string): Pro
   const [cfg, hist] = await Promise.all([readAutonomousConfig(profileDir), readHistories(root)]);
   const last = hist.records[hist.records.length - 1];
   const today = new Date().toISOString().slice(0, 10);
+  const pol = autonomousPolicy();
   return {
-    installed: true,
     paused: cfg.paused,
+    // Multi-worker authority (ADR-0507): the project switch, the server verdict, the effective state.
+    // No policy ⇒ not assigned a ready project ⇒ never effective (ADR-0511).
+    effective: !cfg.paused && !!pol && pol.projectEnabled && pol.allowed,
+    projectEnabled: pol?.projectEnabled ?? false,
+    allowed: pol?.allowed ?? false,
+    allowedReason: !pol ? "notAssigned" : !pol.allowed ? (pol.reason ?? null) : null,
+    pausedBy: cfg.pausedBy ?? null,
     cronSchedule: cfg.cronSchedule,
     lastTickAt: last?.ts ?? null,
     lastResult: last?.status ?? null,
@@ -157,22 +166,42 @@ export async function getAutonomousStatus(root: string, profileDir: string): Pro
   };
 }
 
-/** Coarse, synchronous "is it running?" for machine.status — !paused (profile config) and a recent tick. */
-export function isAutonomousRunning(root: string, profileDir: string): boolean {
+/**
+ * The worker snapshot for `machine.status.autonomous` (synchronous — read on every heartbeat): its
+ * switch + who paused it, the effective state under the policy, the last tick, the held claim and the
+ * consecutive failures of the served project.
+ * @adr 0507
+ */
+export function buildAutonomousSnapshot(root: string | null, profileDir: string): AutonomousSnapshotPayload {
+  const cfg = readAutonomousConfigSync(profileDir);
+  const pol = autonomousPolicy();
+  const enabled = !cfg.paused;
+  let claim: AutonomousSnapshotPayload["claim"] = null;
   try {
-    if (readAutonomousConfigSync(profileDir).paused) return false;
-    const histPath = resolveForRead(root, join(root, ".claude/.autonomous.histories.json"));
-    if (!histPath) throw new Error("outside the project");
-    const h = JSON.parse(readFileSync(histPath, "utf8")) as {
-      records?: { ts?: string }[];
-    };
-    const ts = h.records?.[h.records.length - 1]?.ts;
-    if (!ts) return false;
-    const t = Date.parse(ts.replace(" ", "T"));
-    return Number.isFinite(t) && Date.now() - t < 6 * 3600 * 1000; // ran within 6h
+    const c = JSON.parse(readFileSync(join(profileDir, "autonomous-claim.json"), "utf8")) as { id?: string; started?: string };
+    if (c.id) claim = { id: c.id, since: c.started ?? "" };
   } catch {
-    return false;
+    /* no claim */
   }
+  let consecutiveFails = 0;
+  if (root) {
+    try {
+      const histPath = resolveForRead(root, join(root, ".claude/.autonomous.histories.json"));
+      if (histPath) consecutiveFails = Number((JSON.parse(readFileSync(histPath, "utf8")) as { consecutiveFails?: number }).consecutiveFails) || 0;
+    } catch {
+      /* no histories yet */
+    }
+  }
+  return {
+    enabled,
+    effective: enabled && !!root && !!pol && pol.projectEnabled && pol.allowed,
+    ...(cfg.pausedBy ? { pausedBy: cfg.pausedBy } : {}),
+    ...(cfg.pausedReason ? { pausedReason: cfg.pausedReason } : {}),
+    ...(cfg.pausedAt ? { pausedAt: cfg.pausedAt } : {}),
+    lastCheck: lastAutonomousCheck(),
+    claim,
+    consecutiveFails,
+  };
 }
 
 /** autonomous.read — the whole autonomous surface in one reply (config from the profile dir). @adr 0321 */
@@ -487,9 +516,6 @@ export async function writeAutonomous(
     } else if (req.kind === "discussionBatch") {
       // Discussion files (ADR-0454): one books commit with the batch trailers; its own publish path.
       return await applyDiscussionBatch(root, req);
-    } else if ((req as { kind: string }).kind === "cron") {
-      // Retired (ADR-0392): an older dashboard's Install/Uninstall cron — the scheduler is always
-      // armed, so answer with the live status instead of touching any crontab.
     } else {
       const base = (await resolveBases(root).catch(() => null))?.root.base ?? "";
       let res: WebWrite | undefined;

@@ -4,6 +4,7 @@
  */
 import type { McpServerDefinition } from "./mcp";
 import type { ApprovalPublicKey } from "./autonomous-approval";
+import type { AutonomousPolicy } from "./autonomous-policy";
 import type { NetworkPolicy, NetworkPolicyRule } from "./network";
 import { z } from "zod";
 import type {
@@ -220,6 +221,12 @@ export interface WsTokenResponse {
    */
   servedTeams?: string[] | null;
   /**
+   * The served project's autonomous policy for this worker — project switch, the server's `allowed`
+   * verdict, the project-scoped knobs; null for an idle / orchestrator link.
+   * @adr 0507
+   */
+  autonomousPolicy?: AutonomousPolicy | null;
+  /**
    * Network egress policy for the cli's proxy: the served project's policy (org deny merged into `deny`)
    * + the org denylist alone for project-less runs. Absent from an older server ⇒ the cli keeps Audit with
    * no rules. `null` mode fields never occur — an idle link gets the org part with mode `audit`.
@@ -346,6 +353,8 @@ export interface MachineLinkResponse {
   cliVersionNote?: string | null;
   /** True when the worker runs an update-locked image — a cli update is refused. @adr 0432 @adr 0434 */
   cliUpdateLocked?: boolean;
+  /** True while the connected cli drains for a restart / update — it refuses new work until it is back. @adr 0505 */
+  cliRestarting?: boolean;
   /** Latest worker network probe — the machine-user page shows outbound/inbound posture
    *  and warns when it's open. Null when the cli hasn't reported one yet (old clients / offline).
    * @adr 0221
@@ -700,6 +709,8 @@ export interface MachineUsageStatus {
   cliVersionNote?: string | null;
   /** True when the worker runs an update-locked image — a cli update is refused. @adr 0432 @adr 0434 */
   cliUpdateLocked?: boolean;
+  /** True while the connected cli drains for a restart / update — it refuses new work until it is back. @adr 0505 */
+  cliRestarting?: boolean;
   /** The latest cli release version (for the "please update" hint); null if not resolved. */
   latestCliVersion?: string | null;
   /** The minimum cli version the server still accepts (for the "unsupported" red hint); null if
@@ -811,7 +822,7 @@ export type PutPhysicProjectRequest = z.infer<
 export const patchPhysicProjectRequestSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   projectId: z.string().guid().optional(),
-  isAutonomous: z.boolean().optional(),
+  // `isAutonomous` retired by ADR-0507 — autonomous on/off is the project switch + each worker's switch.
   disabled: z.boolean().optional(),
 });
 export type PatchPhysicProjectRequest = z.infer<
@@ -832,6 +843,25 @@ export type UpdateMachineLinkRequest = z.infer<
   typeof updateMachineLinkRequestSchema
 >;
 
+/**
+ * Where a web file request acts: `base` = the remote base branch (read from `origin/<base>`, a write is a
+ * commit pushed to `<base>`), `worktree` = the worker's checkout (default). A `base` request on a project
+ * without a remote falls back to `worktree`; responses name the target used.
+ * @adr 0511
+ */
+export type FsTarget = "base" | "worktree";
+
+/** Zod for an optional `target`. */
+export const fsTargetSchema = z.enum(["base", "worktree"]).optional();
+
+/** The base-commit outcome of a web file write. @adr 0511 */
+export interface FsWriteOutcome {
+  /** The target actually used. */
+  target?: FsTarget;
+  /** `base`: the commit pushed to the remote base (absent when nothing changed). */
+  commit?: string;
+}
+
 /** One entry in a worker directory listing. @api machine-0007 */
 export interface FsEntry {
   name: string;
@@ -843,15 +873,36 @@ export interface FsListResponse {
   /** Normalized absolute path on the worker. */
   path: string;
   entries: FsEntry[];
+  /** The target actually used. @adr 0511 */
+  target?: FsTarget;
 }
 
 /** Data GET /machines/:id/file — a text file's content on the worker (project dashboard). */
+/**
+ * Who held a project's working tree when a file was read / written from the web — the autonomous cycle
+ * on its task branch, a Console run, a git write or a provisioning job.
+ * @adr 0506
+ */
+export interface RepoBusy {
+  holder: "autonomous" | "command" | "git" | "project";
+  /** The task the autonomous cycle works on, when known. */
+  task?: string;
+  /** The branch checked out in the working tree at that moment. */
+  branch?: string;
+}
+
 export interface FsReadResponse {
   path: string;
   /** UTF-8 content (empty when unreadable). */
   content: string;
   /** Content was capped at the size limit. */
   truncated: boolean;
+  /** Set when another job held the project's working tree (e.g. the autonomous cycle) — the web warns. @adr 0506 */
+  repoBusy?: RepoBusy;
+  /** The target actually used. @adr 0511 */
+  target?: FsTarget;
+  /** `base`: the file's blob id on the remote base (`null` = absent) — sent back as `expectBlob`. @adr 0511 */
+  blob?: string | null;
 }
 
 /** Data GET /machines/:id/config — the paired profile's config.json as text. @api machine-0025 @adr 0141 */
@@ -1071,15 +1122,21 @@ export const fsWriteRequestSchema = z.object({
   path: z.string().min(1).max(1024),
   /** Full new UTF-8 content (replaces the file wholesale). */
   content: z.string().max(FILE_WRITE_MAX_BYTES),
+  /** `base` ⇒ commit to the remote base. @adr 0511 */
+  target: fsTargetSchema,
+  /** `base`: the blob read (`null` = must not exist); a different remote blob ⇒ `FILE_CHANGED_UPSTREAM`. */
+  expectBlob: z.string().regex(/^[0-9a-f]{40,64}$/).nullable().optional(),
 });
 export type FsWriteRequestBody = z.infer<typeof fsWriteRequestSchema>;
 
 /** Data PUT /machines/:id/file — result of the worker write. @api machine-0027 */
-export interface FsWriteResponse {
+export interface FsWriteResponse extends FsWriteOutcome {
   /** The resolved (clamped) path written. */
   path: string;
   /** Bytes written. */
   bytes: number;
+  /** Set when another job held the project's working tree (e.g. the autonomous cycle) — the web warns. @adr 0506 */
+  repoBusy?: RepoBusy;
 }
 
 /**
@@ -1092,13 +1149,17 @@ export const fsMutateRequestSchema = z.object({
   content: z.string().max(FILE_WRITE_MAX_BYTES).optional(),
   from: z.string().max(1024).optional(),
   to: z.string().max(1024).optional(),
+  /** `base` ⇒ commit to the remote base. @adr 0511 */
+  target: fsTargetSchema,
 });
 export type FsMutateRequestBody = z.infer<typeof fsMutateRequestSchema>;
 
 /** Data POST /machines/:id/fs/mutate — result of the worker mutation. @api machine-0059 */
-export interface FsMutateResponse {
+export interface FsMutateResponse extends FsWriteOutcome {
   /** The resolved (clamped) path acted on. */
   path: string;
+  /** Set when another job held the project's working tree (e.g. the autonomous cycle) — the web warns. @adr 0506 */
+  repoBusy?: RepoBusy;
 }
 
 /**
@@ -1124,15 +1185,19 @@ export const fsUploadRequestSchema = z.object({
   contentBase64: z.string().min(1).max(FS_TRANSFER_MAX_BASE64),
   /** Optional MIME type from the browser (informational). */
   contentType: z.string().max(255).optional(),
+  /** `base` ⇒ commit to the remote base. @adr 0511 */
+  target: fsTargetSchema,
 });
 export type FsUploadRequestBody = z.infer<typeof fsUploadRequestSchema>;
 
 /** Data POST /machines/:id/fs/upload — result of the worker upload. @api machine-0061 */
-export interface FsUploadResponse {
+export interface FsUploadResponse extends FsWriteOutcome {
   /** The resolved (clamped) path written. */
   path: string;
   /** Bytes written. */
   bytes: number;
+  /** Set when another job held the project's working tree (e.g. the autonomous cycle) — the web warns. @adr 0506 */
+  repoBusy?: RepoBusy;
 }
 
 /** Data GET /machines/:id/fs/download — a file's raw bytes for the browser to save. @api machine-0062 */
@@ -1388,6 +1453,8 @@ const agentNameSchema = z.string().min(1).max(64).regex(/^[\w.-]+$/);
 export const agentReadQuerySchema = z.object({
   kind: z.enum(["subagent", "skill"]),
   name: agentNameSchema,
+  /** `base` ⇒ read from the remote base. @adr 0511 */
+  target: fsTargetSchema,
 });
 export type AgentReadQuery = z.infer<typeof agentReadQuerySchema>;
 
@@ -1445,6 +1512,8 @@ export const agentWriteRequestSchema = z
     name: agentNameSchema,
     action: z.enum(["write", "delete"]),
     content: z.string().max(128 * 1024).optional(),
+    /** `base` ⇒ commit to the remote base. @adr 0511 */
+    target: fsTargetSchema,
   })
   .superRefine((v, ctx) => {
     if (v.action === "write" && (v.content === undefined || v.content.length === 0)) {

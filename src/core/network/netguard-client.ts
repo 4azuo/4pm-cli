@@ -90,6 +90,15 @@ export function startNetguardSync(desired: () => KernelEgress): void {
   requestNetguardSync();
 }
 
+/** Stop the periodic resync (the daemon is shutting down — a stale process must never re-apply rules). @adr 0505 */
+export function stopNetguardSync(): void {
+  if (timer) clearInterval(timer);
+  if (debounce) clearTimeout(debounce);
+  timer = null;
+  debounce = null;
+  source = null;
+}
+
 /** Ask for a sync soon (debounced — a burst of policy updates sends one request). */
 export function requestNetguardSync(): void {
   if (debounce) clearTimeout(debounce);

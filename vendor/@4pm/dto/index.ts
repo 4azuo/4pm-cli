@@ -3,6 +3,7 @@
  */
 export * from "./attachment";
 export * from "./autonomous-approval";
+export * from "./autonomous-policy";
 export * from "./base";
 export * from "./book-ids";
 export * from "./book-patch";

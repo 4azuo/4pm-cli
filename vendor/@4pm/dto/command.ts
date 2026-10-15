@@ -295,10 +295,16 @@ export type CommandActivityStatus = "queued" | "running" | "done" | "failed" | "
 export interface CommandQueueInfo {
   /** Runs ahead of it in the org's FIFO queue (0 = next). */
   position: number;
-  /** The org plan's `maxConcurrentRuns`. */
+  /** The org plan's `maxConcurrentRuns` (0 for a repo wait). */
   limit: number;
-  /** Runs currently holding a slot. */
+  /** Runs currently holding a slot (0 for a repo wait). */
   running: number;
+  /** Why it waits: the org's run slots (default) or the project's working tree. @adr 0506 */
+  reason?: "slot" | "repo";
+  /** `reason: repo` — who holds the working tree. */
+  holder?: "autonomous" | "command" | "git" | "project";
+  /** `reason: repo` — the task the autonomous holder works on, when known. */
+  task?: string;
 }
 
 /**

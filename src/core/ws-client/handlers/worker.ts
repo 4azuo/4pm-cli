@@ -6,12 +6,16 @@
  * list. Each project
  * op is a no-op on an idle cli (no `physicRoot`); config.json ops target the profile dir directly.
  * The project ER (`er.read` / `er.write` — ADR-0453) rides here too.
- * @adr 0152 @adr 0153 @adr 0154 @adr 0183 @adr 0185 @adr 0155 @adr 0156 @adr 0157 @adr 0141 @adr 0394 @adr 0453
+ * Book / ER writes are WorkTracker leases and are refused while the daemon drains.
+ * @adr 0152 @adr 0153 @adr 0154 @adr 0183 @adr 0185 @adr 0155 @adr 0156 @adr 0157 @adr 0141 @adr 0394 @adr 0453 @adr 0505
  */
+import { lifecycle } from "../../session/lifecycle";
+import { work } from "../../session/work-tracker";
 import {
   WsChannels,
   type AiModelsRequest,
   type AgentReadRequest,
+  type AgentsListRequest,
   type AgentToolsReadRequest,
   type AgentToolsWriteRequest,
   type AgentWriteRequest,
@@ -106,7 +110,8 @@ export function handleWorkerChannels(
       // Request/reply (machine-0078/0079): save / withdraw / decide a change request; `by` is server-filled.
       const req = payload as unknown as ErWriteRequest;
       if (ctx.physicRoot) {
-        void writeEr(ctx.physicRoot, ctx.profileDir, req).then((reply) => ctx.send(WsChannels.ER_WRITE, reply, message.id));
+        const root = ctx.physicRoot;
+        void work.track("bookWrite", "er.write", () => writeEr(root, ctx.profileDir, req)).then((reply) => ctx.send(WsChannels.ER_WRITE, reply, message.id));
       }
       return true;
     }
@@ -124,17 +129,24 @@ export function handleWorkerChannels(
       // Request/reply (machine-0029): settings/approvals/userTodo/cron. `by` (the
       // author, for trace) is filled server-side and rides the payload.
       const req = payload as unknown as AutonomousWriteRequest & { by?: string };
+      // Draining for a restart: refuse the write (the web retries once the worker is back — ADR-0505).
+      if (lifecycle.stopping) {
+        ctx.send(WsChannels.AUTONOMOUS_WRITE, { ok: false, code: "CLI_RESTARTING", error: "CLI_RESTARTING" }, message.id);
+        return true;
+      }
       if (ctx.physicRoot) {
-        void writeAutonomous(ctx.physicRoot, ctx.profileDir, req, req.by ?? "unknown").then((reply) =>
-          ctx.send(WsChannels.AUTONOMOUS_WRITE, reply, message.id),
-        );
+        const root = ctx.physicRoot;
+        // A book write (side worktree + books-branch push) is a WorkTracker lease, so a restart waits for it.
+        void work
+          .track("bookWrite", `autonomous.write:${req.kind}`, () => writeAutonomous(root, ctx.profileDir, req, req.by ?? "unknown"))
+          .then((reply) => ctx.send(WsChannels.AUTONOMOUS_WRITE, reply, message.id));
       }
       return true;
     }
     case WsChannels.AGENTS_LIST:
       // Request/reply (machine-0031): list subagents + skills.
       if (ctx.physicRoot) {
-        void listAgents(ctx.physicRoot).then((reply) =>
+        void listAgents(ctx.physicRoot, (payload as unknown as AgentsListRequest).target).then((reply) =>
           ctx.send(WsChannels.AGENTS_LIST, reply, message.id),
         );
       }
@@ -143,7 +155,7 @@ export function handleWorkerChannels(
       // Request/reply (machine-0032): one subagent/skill's content (+ subagent memory).
       const req = payload as unknown as AgentReadRequest;
       if (ctx.physicRoot) {
-        void readAgent(ctx.physicRoot, req.kind, req.name).then((reply) =>
+        void readAgent(ctx.physicRoot, req.kind, req.name, req.target).then((reply) =>
           ctx.send(WsChannels.AGENTS_READ, reply, message.id),
         );
       }
@@ -153,7 +165,10 @@ export function handleWorkerChannels(
       // Request/reply (machine-0033): create/edit or delete a subagent/skill.
       const req = payload as unknown as AgentWriteRequest;
       if (ctx.physicRoot) {
-        void writeAgent(ctx.physicRoot, req).then((reply) =>
+        void writeAgent(ctx.physicRoot, req, {
+          ...(req.by ? { by: req.by } : {}),
+          ...(ctx.machineUsername ? { machineUsername: ctx.machineUsername } : {}),
+        }).then((reply) =>
           ctx.send(WsChannels.AGENTS_WRITE, reply, message.id),
         );
       }

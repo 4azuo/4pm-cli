@@ -34,7 +34,8 @@ export type RunSlotRequest =
 export type RunSlotReply =
   | { granted: true; lease: string | null; leaseTtlSec: number }
   // Refused outright (no queue): the org's hosted storage is full (ADR-0365) — the cli fails the run.
-  | { granted: false; denied: "storage_full" }
+  // `project_inactive`: the served project is paused / closed — no new AI work (ADR-0507).
+  | { granted: false; denied: "storage_full" | "project_inactive" }
   | { granted: false; ticket: string; position: number; limit: number; running: number; retryAfterMs: number }
   | { ok: boolean };
 
@@ -42,10 +43,19 @@ export type RunSlotReply =
 export interface RunQueueInfo {
   /** Tickets ahead of this run in the org's FIFO queue (0 = next). */
   position: number;
-  /** The org plan's `maxConcurrentRuns`. */
+  /** The org plan's `maxConcurrentRuns` (0 for a repo wait). */
   limit: number;
-  /** Runs currently holding a slot. */
+  /** Runs currently holding a slot (0 for a repo wait). */
   running: number;
+  /**
+   * Why it waits: `slot` (default — the org's run-slot queue) or `repo` (the project's working tree is
+   * held by the autonomous cycle / another job — ADR-0506).
+   */
+  reason?: "slot" | "repo";
+  /** `reason: repo` — who holds the tree. */
+  holder?: "autonomous" | "command" | "git" | "project";
+  /** `reason: repo` — the task the autonomous holder works on, when known. */
+  task?: string;
 }
 
 /** Exit code of a run stopped via `command.cancel` — the shell convention for SIGINT. */
@@ -63,4 +73,15 @@ export interface CommandCancelRequest {
 export interface CommandCancelReply {
   ok: boolean;
   state: "queued" | "running" | "unknown";
+}
+
+/** cli → server `command.recheck`: may this job, which waited in the repo queue, still run? @adr 0506 */
+export interface CommandRecheckRequest {
+  commandId: string;
+}
+
+/** The server's verdict: `ok:false` + the error code that ends the job (e.g. `PROJECT_NOT_ACTIVE`). */
+export interface CommandRecheckReply {
+  ok: boolean;
+  errorCode?: string;
 }

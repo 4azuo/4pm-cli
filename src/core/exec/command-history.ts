@@ -146,6 +146,12 @@ export function initCommandHistory(
   uploadTimer.unref();
 }
 
+/** Stop the periodic R2 uploader (the daemon is shutting down). @adr 0505 */
+export function stopCommandHistoryUpload(): void {
+  if (uploadTimer) clearInterval(uploadTimer);
+  uploadTimer = null;
+}
+
 /** Record a newly dispatched command (status = running). */
 export function recordCommand(
   entry: Pick<CommandHistoryEntry, "commandId" | "projectId" | "cmd" | "args">,

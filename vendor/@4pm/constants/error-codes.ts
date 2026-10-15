@@ -12,9 +12,6 @@ export const ErrorCode = {
   IP_NOT_ALLOWED: "IP_NOT_ALLOWED",
   // A user's IP allowlist entry falls outside the org allowlist (ADR-0044).
   IP_OUTSIDE_ORG_ALLOWLIST: "IP_OUTSIDE_ORG_ALLOWLIST",
-  // An allowlist entry falls outside its parent tier: a team/project outside the
-  // org, or a user outside the union of their teams'/projects' allowlists (ADR-0050).
-  IP_OUTSIDE_PARENT_ALLOWLIST: "IP_OUTSIDE_PARENT_ALLOWLIST",
   NOT_FOUND: "NOT_FOUND",
   CONFLICT: "CONFLICT",
   RATE_LIMITED: "RATE_LIMITED",
@@ -213,9 +210,9 @@ export const ErrorCode = {
   WORKER_NOT_FOUND: "WORKER_NOT_FOUND",
   PHYSIC_PROJECT_NOT_FOUND: "PHYSIC_PROJECT_NOT_FOUND",
   PHYSIC_PATH_OCCUPIED: "PHYSIC_PATH_OCCUPIED",
-  AUTONOMOUS_CONFLICT: "AUTONOMOUS_CONFLICT",
+
   // A disruptive worker op (repo (re)provision / CLI update) was refused because the target
-  // worker's autonomous mode is armed (installed && !paused) — stop it first (ADR-0317).
+  // worker's autonomous mode is armed (its effective state — ADR-0317, ADR-0507) — stop it first.
   AUTONOMOUS_ACTIVE: "AUTONOMOUS_ACTIVE",
   // Separation of duties (ADR-0320): a non-ADMIN tried to approve a row they wrote — the writer can't
   // be the approver of their own row (ADMIN may self-approve).
@@ -247,6 +244,22 @@ export const ErrorCode = {
   // The serving cli is too old for this feature (it lacks the needed `CliFeature`) — update the worker.
   // meta.feature names it (ADR-0449).
   CLI_UPDATE_REQUIRED: "CLI_UPDATE_REQUIRED",
+  // The serving worker cli is draining for a restart / update and accepts no new work (ADR-0505).
+  CLI_RESTARTING: "CLI_RESTARTING",
+  // The worker's repo queue for the project is full while its working tree is held (ADR-0506).
+  REPO_BUSY: "REPO_BUSY",
+  // A queued job waited past `repoQueueTimeoutMin` for the project's working tree (ADR-0506).
+  REPO_QUEUE_TIMEOUT: "REPO_QUEUE_TIMEOUT",
+  // A worker settings write carries a project-scoped autonomous key, or the reverse (ADR-0507).
+  AUTONOMOUS_SETTING_SCOPE: "AUTONOMOUS_SETTING_SCOPE",
+  // A direct write dispatch on a ready project whose changes must go through autonomous (ADR-0511).
+  AUTONOMOUS_PATH_ENFORCED: "AUTONOMOUS_PATH_ENFORCED",
+  // A web file edit was based on a version of the file the remote base no longer holds (ADR-0511).
+  FILE_CHANGED_UPSTREAM: "FILE_CHANGED_UPSTREAM",
+  // The remote refused the push of a web file edit to the base branch (protected / no permission) (ADR-0511).
+  BASE_PUSH_REJECTED: "BASE_PUSH_REJECTED",
+  // "Run now" found no worker whose autonomous state is effective (ADR-0507).
+  AUTONOMOUS_NOT_RUNNING: "AUTONOMOUS_NOT_RUNNING",
   // A customer (CLIENT) asked for `.git` or a gitignored path (ADR-0449).
   CLIENT_PATH_HIDDEN: "CLIENT_PATH_HIDDEN",
   // A CLIENT can only be a direct project member: not a team member, PM, TL or routing target (ADR-0449).
@@ -466,6 +479,11 @@ export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
  */
 export const CLI_ERROR_CODE_MAP: Record<string, { code: ErrorCode; status: number }> = {
   "path escapes the project root": { code: ErrorCode.WORKER_PATH_ESCAPES_ROOT, status: 422 },
+  // The worker is draining for a restart / update (ADR-0505).
+  CLI_RESTARTING: { code: ErrorCode.CLI_RESTARTING, status: 409 },
+  // Web file edits committed to the remote base (ADR-0511).
+  FILE_CHANGED_UPSTREAM: { code: ErrorCode.FILE_CHANGED_UPSTREAM, status: 409 },
+  BASE_PUSH_REJECTED: { code: ErrorCode.BASE_PUSH_REJECTED, status: 409 },
   "no project served": { code: ErrorCode.WORKER_NO_PROJECT, status: 409 },
   "no project": { code: ErrorCode.WORKER_NO_PROJECT, status: 409 },
   "This worker has no project folder.": { code: ErrorCode.WORKER_NO_PROJECT, status: 409 },

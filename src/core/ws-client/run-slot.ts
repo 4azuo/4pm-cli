@@ -41,7 +41,7 @@ export type RunSlotOutcome =
   | { kind: "granted"; handle: RunSlotHandle; queued: boolean }
   | { kind: "timeout"; limit: number }
   | { kind: "cancelled" }
-  | { kind: "denied"; reason: "storage_full" };
+  | { kind: "denied"; reason: "storage_full" | "project_inactive" };
 
 /** A handle with nothing to renew or release (unlimited plan / fail-open). */
 const NO_SLOT: RunSlotHandle = { release: () => undefined };

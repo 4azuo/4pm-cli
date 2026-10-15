@@ -19,6 +19,8 @@ import { CommandInput, Hint } from "./command-input";
 import { Spinner } from "./spinner";
 import { runSlashCommand } from "./slash-commands";
 import { t } from "../i18n";
+import { lifecycle } from "../core/session/lifecycle";
+import { work } from "../core/session/work-tracker";
 
 /** Rows the fixed chrome takes (header + 3 rules + processing + suggestion + input + hint). */
 const CHROME_ROWS = 12;
@@ -121,7 +123,16 @@ export function App({
   }, [stdout, bus]);
 
   // A restart into an updated cli (ADR-0473) unmounts the TUI so the new process owns the terminal.
-  useEffect(() => bus.onRestart(() => exit()), [bus, exit]);
+  // A restart drains first (ADR-0505): keep the TUI up while the work finishes, exit once the
+  // daemon reached `stopped`.
+  useEffect(() => {
+    const off = lifecycle.onState((state) => {
+      if (state === "stopped") exit();
+    });
+    return () => {
+      off();
+    };
+  }, [exit]);
 
   useEffect(() => {
     const offTranscript = bus.onTranscript((entry) => {
@@ -178,7 +189,7 @@ export function App({
     const timer = setInterval(() => {
       const idleMs = resolveIdleAutoClearMinutes(readProfileConfig(info.profileDir)) * 60_000;
       if (idleMs <= 0) return; // disabled (or no serving project yet)
-      if (busyRef.current !== null || pendingConfirmRef.current || entriesLenRef.current === 0) return;
+      if (busyRef.current !== null || !work.idle() || pendingConfirmRef.current || entriesLenRef.current === 0) return;
       if (Date.now() - lastActivityRef.current < idleMs) return;
       clearTranscript();
       bus.push({

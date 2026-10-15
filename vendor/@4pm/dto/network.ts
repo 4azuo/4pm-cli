@@ -20,10 +20,8 @@ export type NetworkRuleSource = (typeof NETWORK_RULE_SOURCES)[number];
 
 /** Max rules per list (project allow, project deny, org deny). */
 export const NETWORK_RULES_MAX = 200;
-/** Default days a network event is kept (org value; a project may set a shorter one). */
-export const DEFAULT_NETWORK_LOG_RETENTION_DAYS = 30;
-/** Hard upper bound of a retention value (the plan's `retentionDays` caps it further). */
-export const NETWORK_LOG_RETENTION_MAX_DAYS = 3650;
+/** Days a network event is kept — fixed for every org and project (no setting). @adr 0504 */
+export const NETWORK_LOG_RETENTION_DAYS = 30;
 
 /** One stored rule (`settings.network.allow|deny[]`). `port` null = any port. */
 export interface NetworkRule {
@@ -42,14 +40,11 @@ export interface ProjectNetworkSettings {
   mode: NetworkMode;
   allow: NetworkRule[];
   deny: NetworkRule[];
-  /** Shorter retention for this project's events; null = the org value. */
-  logRetentionDays: number | null;
 }
 
 /** The org part (`organizations.settings.network`). */
 export interface OrgNetworkSettings {
   deny: NetworkRule[];
-  logRetentionDays: number;
 }
 
 // ── Targets ──────────────────────────────────────────────────────────────────────────────────────────
@@ -266,11 +261,6 @@ function readRules(raw: unknown): NetworkRule[] {
   return out;
 }
 
-/** A retention value within [1, max], else null. */
-function readDays(v: unknown): number | null {
-  return typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= NETWORK_LOG_RETENTION_MAX_DAYS ? v : null;
-}
-
 /** Read `project.settings.network` with defaults (mode `audit`). */
 export function readProjectNetworkSettings(raw: unknown): ProjectNetworkSettings {
   const n = (raw ?? {}) as Partial<Record<keyof ProjectNetworkSettings, unknown>>;
@@ -278,14 +268,13 @@ export function readProjectNetworkSettings(raw: unknown): ProjectNetworkSettings
     mode: NETWORK_MODES.includes(n.mode as NetworkMode) ? (n.mode as NetworkMode) : DEFAULT_NETWORK_MODE,
     allow: readRules(n.allow),
     deny: readRules(n.deny),
-    logRetentionDays: readDays(n.logRetentionDays),
   };
 }
 
-/** Read `organizations.settings.network` with defaults (30 days). */
+/** Read `organizations.settings.network` (a stored legacy `logRetentionDays` is ignored). */
 export function readOrgNetworkSettings(raw: unknown): OrgNetworkSettings {
   const n = (raw ?? {}) as Partial<Record<keyof OrgNetworkSettings, unknown>>;
-  return { deny: readRules(n.deny), logRetentionDays: readDays(n.logRetentionDays) ?? DEFAULT_NETWORK_LOG_RETENTION_DAYS };
+  return { deny: readRules(n.deny) };
 }
 
 /** The pushed / evaluated policy of a project (project deny + org deny). */
@@ -323,14 +312,12 @@ export const putProjectNetworkRequestSchema = z.object({
   mode: z.enum(NETWORK_MODES),
   allow: ruleListSchema,
   deny: ruleListSchema,
-  logRetentionDays: z.number().int().min(1).max(NETWORK_LOG_RETENTION_MAX_DAYS).nullable().optional(),
 });
 export type PutProjectNetworkRequest = z.infer<typeof putProjectNetworkRequestSchema>;
 
 /** Body of the org `settings.network` namespace. */
 export const orgNetworkSettingsInputSchema = z.object({
   deny: ruleListSchema.optional(),
-  logRetentionDays: z.number().int().min(1).max(NETWORK_LOG_RETENTION_MAX_DAYS).optional(),
 });
 
 /** Kind of a system host (shown locked). */
@@ -343,9 +330,6 @@ export type NetworkEgressCapability = "container" | "none";
 export interface ProjectNetworkResponse extends ProjectNetworkSettings {
   orgDeny: NetworkRule[];
   systemHosts: { target: string; port: number | null; kind: NetworkSystemHostKind }[];
-  orgLogRetentionDays: number;
-  /** Plan cap of any retention value (days). */
-  retentionCapDays: number;
   workers: { machineLinkId: string; name: string; online: boolean; egress: NetworkEgressCapability | null; reason?: string }[];
   pendingRequests: number;
 }

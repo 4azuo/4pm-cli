@@ -1,50 +1,31 @@
 /**
- * Operator restart (`cli.restart`): marks a restart pending and, at the cli's first idle moment — no
- * busy command and no queued/running AI run — asks `4pm start` to re-exec the same binary through the
- * SessionBus restart handoff (keeps `.cre`/profile, reconnects). A running job is never interrupted.
- * @adr 0497 @adr 0473
+ * Operator restart (`cli.restart`): asks `4pm start` to restart the daemon. The restart is a lifecycle
+ * drain — new work is refused at once and the running work (commands, AI runs, an autonomous cycle,
+ * book writes, clones) finishes first — so a running job is never interrupted and a busy worker is not
+ * starved of its restart by new work arriving.
+ * @adr 0497 @adr 0505
  */
 import { logger } from "../../common/logger/logger";
 import { t } from "../../i18n";
 import type { SessionBus } from "./session-bus";
-
-/** Re-check interval while waiting — AI-run bookkeeping has no event of its own (ms). */
-const POLL_MS = 2_000;
+import { work } from "./work-tracker";
 
 export class RestartWhenIdle {
   private pending = false;
-  private timer: NodeJS.Timeout | null = null;
-  private offBusy: (() => void) | null = null;
 
-  constructor(
-    private readonly bus: SessionBus,
-    /** In-flight AI runs (queued or running). */
-    private readonly activeAiRuns: () => number,
-  ) {}
+  constructor(private readonly bus: SessionBus) {}
 
-  /** Request a restart: now when idle, else once the running work finishes. A repeat while pending is a no-op. */
+  /** Request a restart; the drain waits for running work. A repeat while pending is a no-op. */
   request(): void {
     if (this.pending) return;
     this.pending = true;
-    logger.info("restart.requested", { busy: this.bus.busy, aiRuns: this.activeAiRuns() });
-    if (this.tryRestart()) return;
-    this.bus.log(t("restart.waiting"));
-    this.offBusy = this.bus.onBusy(() => void this.tryRestart());
-    this.timer = setInterval(() => void this.tryRestart(), POLL_MS);
-    this.timer.unref?.();
+    logger.info("restart.requested", { leases: work.leases().map((l) => l.label) });
+    this.bus.log(work.idle() ? t("restart.now") : t("restart.waiting"));
+    this.bus.requestRestart("restart");
   }
 
-  /** Fire the restart handoff when pending and idle; true once fired. */
-  private tryRestart(): boolean {
-    if (!this.pending || this.bus.busy !== null || this.activeAiRuns() > 0) return false;
+  /** Forget a pending request (the daemon is shutting down anyway). */
+  stop(): void {
     this.pending = false;
-    this.offBusy?.();
-    this.offBusy = null;
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
-    logger.info("restart.firing");
-    this.bus.log(t("restart.now"));
-    this.bus.requestRestart();
-    return true;
   }
 }

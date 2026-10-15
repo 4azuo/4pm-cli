@@ -2,23 +2,24 @@
  * Auto-update on startup:
  * GET /meta/cli-version?version=<current> ⇒ current < minSupported or status `unsupported` (admin
  * cli version policy) = mandatory update;
- * current < latest + autoUpdate ⇒ auto-update. Supports two paths: npm global
- * (`npm i -g @4pm/cli@<latest>`) or self-download tarball (verify sha256). After
- * updating, verify the version at the re-exec path actually advanced before claiming
- * success, so a mis-applied update can't trigger a restart loop.
- * @api meta-0001 @adr 0015 @adr 0053 @adr 0363 @adr 0499
+ * current < latest + autoUpdate ⇒ auto-update. One path for every install: download the
+ * release tarball, verify its sha256 and its **mandatory** ed25519 signature against the embedded keys,
+ * extract it over the running install root — also for a cli first installed with npm (npm is only a
+ * first-install channel; the cli never runs `npm i -g` to update itself). After updating, verify the
+ * version at the re-exec path actually advanced before claiming success, so a mis-applied update can't
+ * trigger a restart loop.
+ * @api meta-0001 @adr 0015 @adr 0053 @adr 0363 @adr 0499 @adr 0508
  */
-import { execSync } from "node:child_process";
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { accessSync, constants as fsConstants, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, sep } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extract } from "tar";
 import { t } from "../i18n";
-import { CLI_SIGNING_PUBLIC_KEY } from "../config/signing";
+import { CLI_SIGNING_PUBLIC_KEYS } from "../config/signing";
 import { CLI_VERSION } from "../version";
-import { agentUser, readableInstallTree } from "../utils/agent-user";
+import { readableInstallTree } from "../utils/agent-user";
 import { fetchCliVersion } from "../services/api";
 
 /** Result of the startup update-check step. */
@@ -123,16 +124,6 @@ export function reexecArgv(): string[] {
 }
 
 /**
- * Was the CLI invoked via an npm-global bin? — the invoked path lives in node_modules.
- * Kept on `process.argv[1]` (the invoked bin), NOT the resolved module path: a bin
- * symlink lands outside node_modules ⇒ the reliable self-download path is chosen (it
- * extracts over the real install root, which works for tarball/private installs too).
- */
-function installedViaNpm(): boolean {
-  return (process.argv[1] ?? "").split(sep).includes("node_modules");
-}
-
-/**
  * Version the re-exec would actually load — read from the package.json at the running
  * install root (same file version.ts reads). Used to verify an update really
  * landed on the running install before claiming success. "0.0.0" when unreadable.
@@ -147,53 +138,37 @@ function readInstalledVersion(): string {
   }
 }
 
-/**
- * Update via npm global — a shared binary, applies to every instance.
- * @adr 0014
- */
-/** Max wall-clock for the global npm install before we treat it as a hang. @adr 0305 @adr 0308 */
-const NPM_INSTALL_TIMEOUT_MS = 180_000;
 /** Max wall-clock for the tarball self-download before we treat it as a hang. */
 const DOWNLOAD_TIMEOUT_MS = 60_000;
 
-/** Keep only the last ~800 chars of a captured npm log so the reported reason stays readable. */
-function tailReason(raw: string): string {
-  const s = raw.trim();
-  return s.length > 800 ? `…${s.slice(-800)}` : s;
-}
-
-function updateViaNpm(version: string): void {
-  // `version` comes from the server's update manifest and is interpolated into a shell
-  // command — require a plain semver before exec so a malformed/hostile value can't inject
-  // shell (the self-download path already gates on sha256 + optional signature).
-  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
-    throw new Error(`Refusing to update: invalid version string "${version}".`);
-  }
-  // Capture stderr/stdout (not `inherit`) + a wall-clock timeout so a real npm failure surfaces the
-  // actual reason (E404/ENOTEMPTY/EACCES…) — like the tool-install path (ADR-0308) — and a hung
-  // install becomes a reported failure instead of blocking the self-update forever (ADR-0305).
-  try {
-    // Under uid separation the cli runs `umask 077`; install like any tool the agent may read (umask 022).
-    execSync(`${agentUser() ? "umask 022 && " : ""}npm i -g @4pm/cli@${version}`, {
-      stdio: ["ignore", "pipe", "pipe"],
-      encoding: "utf8",
-      timeout: NPM_INSTALL_TIMEOUT_MS,
-    });
-  } catch (err) {
-    const e = err as { stderr?: string | Buffer | null; stdout?: string | Buffer | null; killed?: boolean; message?: string };
-    if (e.killed) {
-      throw new Error(`npm install timed out after ${NPM_INSTALL_TIMEOUT_MS / 1000}s (\`npm i -g @4pm/cli@${version}\`).`, { cause: err });
-    }
-    const out = `${e.stderr?.toString() ?? ""}\n${e.stdout?.toString() ?? ""}`;
-    const reason = tailReason(out) || e.message || "npm install failed";
-    throw new Error(`npm install failed: ${reason}`, { cause: err });
-  }
-}
-
 /**
- * Self-download the tarball from the server (machine without npm): verify sha256
- * before extracting over the current installation directory.
+ * Download the release tarball, verify its sha256 and its mandatory signature, then extract it over
+ * the current installation directory (every install — ADR-0508).
  */
+/**
+ * Verify the release signature against the embedded public keys (a list, for rotation): one must
+ * verify. No key, no signature or no match ⇒ throws — the update never installs unsigned code.
+ * @adr 0508
+ */
+export function verifyTarballSignature(buf: Buffer, signature: string | undefined, keys: readonly string[] = CLI_SIGNING_PUBLIC_KEYS): void {
+  if (keys.length === 0) throw new Error("No release signing key is embedded — refusing to update (ADR-0508).");
+  if (!signature) throw new Error("Missing tarball signature — aborting update (ADR-0508).");
+  const sig = Buffer.from(signature, "base64");
+  for (const key of keys) {
+    // Accept the key as PEM (`-----BEGIN…`) or raw base64 SPKI (DER).
+    const trimmed = key.trim();
+    try {
+      const publicKey = trimmed.includes("BEGIN")
+        ? createPublicKey(trimmed)
+        : createPublicKey({ key: Buffer.from(trimmed, "base64"), format: "der", type: "spki" });
+      if (verify(null, buf, publicKey, sig)) return;
+    } catch {
+      /* a malformed key never verifies — try the next one */
+    }
+  }
+  throw new Error("Invalid tarball signature — aborting update (ADR-0508).");
+}
+
 async function updateViaDownload(
   tarballUrl: string,
   checksum: string,
@@ -222,27 +197,8 @@ async function updateViaDownload(
   if (actual !== checksum) {
     throw new Error("Tarball checksum mismatch — aborting update (ADR-0015).");
   }
-  // Optional ed25519 signature over the raw tarball bytes. Enforced only when a
-  // public key is embedded (CLI_SIGNING_PUBLIC_KEY); then a valid signature is
-  // required — a missing/invalid one aborts the update.
-  if (CLI_SIGNING_PUBLIC_KEY) {
-    if (!signature) {
-      throw new Error("Missing tarball signature — aborting update (ADR-0015).");
-    }
-    // Accept the key as PEM (`-----BEGIN…`) or raw base64 SPKI (DER).
-    const trimmed = CLI_SIGNING_PUBLIC_KEY.trim();
-    const publicKey = trimmed.includes("BEGIN")
-      ? createPublicKey(trimmed)
-      : createPublicKey({
-          key: Buffer.from(trimmed, "base64"),
-          format: "der",
-          type: "spki",
-        });
-    const ok = verify(null, buf, publicKey, Buffer.from(signature, "base64"));
-    if (!ok) {
-      throw new Error("Invalid tarball signature — aborting update (ADR-0015).");
-    }
-  }
+  // Mandatory ed25519 signature over the raw tarball bytes (ADR-0508): a missing / invalid one aborts.
+  verifyTarballSignature(buf, signature);
   const tmp = join(mkdtempSync(join(tmpdir(), "4pm-update-")), "cli.tgz");
   writeFileSync(tmp, buf);
   // Extract over the RUNNING install root (parent of dist/ — resolved from
@@ -321,15 +277,7 @@ export async function updateToLatest(serverUrl: string, force = false): Promise<
   if (cliUpdateLocked()) return { action: "locked", version: CLI_VERSION, latest: meta.latest };
   console.log(t("update.updating", { from: CLI_VERSION, to: meta.latest }));
   try {
-    if (installedViaNpm()) {
-      updateViaNpm(meta.latest);
-    } else {
-      await updateViaDownload(
-        meta.source.tarballUrl,
-        meta.source.checksum,
-        meta.source.signature,
-      );
-    }
+    await updateViaDownload(meta.source.tarballUrl, meta.source.checksum, meta.source.signature);
   } catch (err) {
     return { action: "failed", error: String(err), toVersion: meta.latest };
   }
@@ -406,15 +354,7 @@ export async function checkAndUpdate(
     }),
   );
   try {
-    if (installedViaNpm()) {
-      updateViaNpm(meta.latest);
-    } else {
-      await updateViaDownload(
-        meta.source.tarballUrl,
-        meta.source.checksum,
-        meta.source.signature,
-      );
-    }
+    await updateViaDownload(meta.source.tarballUrl, meta.source.checksum, meta.source.signature);
   } catch (err) {
     if (mandatory) {
       console.error(t("update.failed", { error: String(err) }));

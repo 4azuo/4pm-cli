@@ -3,11 +3,14 @@
  * reads and writes `.claude/agents/<name>.md` (subagents, + short/long memory) and
  * `.claude/skills/<name>/SKILL.md` (skills) under the serving physic project. Names are sanitized
  * to a safe file stem so a request can never escape the `.claude/` tree. Never throws — errors map
- * to a failing reply.
+ * to a failing reply. With `target: "base"` the items are read from `origin/<base>` and a write / delete is a
+ * commit pushed to `<base>` (no working tree); a project without a remote base falls back to the tree.
+ * @adr 0153 @adr 0511
  */
 import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { readFileInRoot, resolveEntry, resolveForRead, writeFileInRoot } from "../../utils/safe-path";
+import { baseList, baseMutate, baseRead, baseWrite, type BaseActor } from "../fs/fs-base";
 import type {
   AgentReadReply,
   AgentSummary,
@@ -40,6 +43,35 @@ async function listInRoot(root: string, dir: string): Promise<import("node:fs").
   return real ? readdir(real, { withFileTypes: true }) : [];
 }
 
+/** How a listing / read reaches the files: the working tree, or `origin/<base>`. */
+interface AgentsIo {
+  readText(path: string): Promise<string>;
+  list(dir: string): Promise<{ name: string; type: "dir" | "file" }[]>;
+}
+
+/** The working-tree io. */
+function treeIo(root: string): AgentsIo {
+  return {
+    readText: (path) => readText(root, path),
+    list: async (dir) =>
+      (await listInRoot(root, dir).catch(() => [])).map((e) => ({ name: e.name, type: e.isDirectory() ? ("dir" as const) : ("file" as const) })),
+  };
+}
+
+/** The `origin/<base>` io; null when the project has no remote base. */
+async function baseIo(root: string): Promise<AgentsIo | null> {
+  if (!(await baseList(root, ""))) return null;
+  return {
+    readText: async (path) => (await baseRead(root, path))?.content ?? "",
+    list: async (dir) => (await baseList(root, dir))?.entries ?? [],
+  };
+}
+
+/** The io for a request target. */
+async function ioFor(root: string, target: "base" | "worktree" | undefined): Promise<AgentsIo> {
+  return (target === "base" ? await baseIo(root).catch(() => null) : null) ?? treeIo(root);
+}
+
 /** Extract `name`/`description` from a `---`-delimited frontmatter block. */
 function frontmatter(text: string): { name: string; description: string } {
   const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
@@ -50,22 +82,23 @@ function frontmatter(text: string): { name: string; description: string } {
 }
 
 /** agents.list — parse every subagent + skill of the physic project. */
-export async function listAgents(root: string): Promise<AgentsListReply> {
+export async function listAgents(root: string, target?: "base" | "worktree"): Promise<AgentsListReply> {
+  const io = await ioFor(root, target);
   const subagents: AgentSummary[] = [];
   const skills: AgentSummary[] = [];
   try {
-    for (const e of await listInRoot(root, join(root, AGENTS_REL))) {
-      if (!e.isFile() || !e.name.endsWith(".md") || MEMORY_DIRS.has(e.name)) continue;
-      const fm = frontmatter(await readText(root, join(root, AGENTS_REL, e.name)));
+    for (const e of await io.list(join(root, AGENTS_REL))) {
+      if (e.type !== "file" || !e.name.endsWith(".md") || MEMORY_DIRS.has(e.name)) continue;
+      const fm = frontmatter(await io.readText(join(root, AGENTS_REL, e.name)));
       subagents.push({ name: e.name.replace(/\.md$/, ""), description: fm.description });
     }
   } catch {
     // no agents dir ⇒ empty
   }
   try {
-    for (const e of await listInRoot(root, join(root, SKILLS_REL))) {
-      if (!e.isDirectory()) continue;
-      const fm = frontmatter(await readText(root, join(root, SKILLS_REL, e.name, "SKILL.md")));
+    for (const e of await io.list(join(root, SKILLS_REL))) {
+      if (e.type !== "dir") continue;
+      const fm = frontmatter(await io.readText(join(root, SKILLS_REL, e.name, "SKILL.md")));
       skills.push({ name: e.name, description: fm.description });
     }
   } catch {
@@ -89,10 +122,13 @@ export async function readAgent(
   root: string,
   kind: "subagent" | "skill",
   name: string,
+  target?: "base" | "worktree",
 ): Promise<AgentReadReply> {
-  const content = await readText(root, itemPath(root, kind, name));
+  const io = await ioFor(root, target);
+  const content = await io.readText(itemPath(root, kind, name));
   if (kind !== "subagent") return { content };
   const n = safeName(name);
+  // Memory is the agent's own runtime state in the working tree, not a shared edit.
   const [short, long] = await Promise.all([
     readText(root, join(root, AGENTS_REL, "short-memory", `${n}.md`)),
     readText(root, join(root, AGENTS_REL, "long-memory", `${n}.md`)),
@@ -101,10 +137,19 @@ export async function readAgent(
 }
 
 /** agents.write — create/edit or delete a subagent/skill. Never throws. */
-export async function writeAgent(root: string, req: AgentWriteRequest): Promise<AgentWriteReply> {
+export async function writeAgent(root: string, req: AgentWriteRequest, actor: BaseActor = {}): Promise<AgentWriteReply> {
   const n = safeName(req.name);
   if (!n) return { ok: false, error: "invalid name" };
   try {
+    if (req.target === "base") {
+      const based =
+        req.action === "delete"
+          ? await baseMutate(root, { op: "delete", path: req.kind === "subagent" ? itemPath(root, "subagent", n) : join(root, SKILLS_REL, n) }, actor)
+          : req.content === undefined
+            ? { ok: false, error: "content is required" }
+            : await baseWrite(root, { path: itemPath(root, req.kind, n), content: req.content }, actor);
+      if (based) return { ok: based.ok, ...(based.error ? { error: based.error } : {}), target: "base" };
+    }
     if (req.action === "delete") {
       // Symlink-safe (ADR-0430): removes the entry itself, never a link's target.
       const target = resolveEntry(root, req.kind === "subagent" ? itemPath(root, "subagent", n) : join(root, SKILLS_REL, n));

@@ -8,6 +8,7 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import type { MachineUsagePayload } from "@4pm/ws";
+import { work, type WorkLease } from "./work-tracker";
 
 /** Connection status shown in the banner + used to gate the input box. */
 export type SessionStatus =
@@ -83,6 +84,8 @@ export class SessionBus {
   private readonly history: TranscriptEntry[] = [];
   /** Labels of in-flight commands (tool names) — top = the one shown as "processing". */
   private readonly busyStack: string[] = [];
+  /** One WorkTracker lease per busy label (parallel to `busyStack`) — busy work blocks a restart. @adr 0505 */
+  private readonly busyLeases: WorkLease[] = [];
   /** The AI-CLI profile that last authenticated (shown in the header). */
   private currentActiveProfile: string | null = null;
   /** Link scope learned from the server at connect time (heals the header/.cre). */
@@ -97,6 +100,8 @@ export class SessionBus {
   private currentSessionTokens = 0;
   /** Set once a restart into an updated cli was requested (sticky — a late subscriber still sees it). */
   private restartPending = false;
+  /** Why the restart was requested: a self-update or an operator restart. @adr 0505 */
+  private restartWhy: "update" | "restart" = "restart";
 
   constructor() {
     // Producers/consumers may attach many listeners (banner, transcript, sink…).
@@ -215,14 +220,18 @@ export class SessionBus {
   /** Mark a tool as processing (shown above the input box). */
   startBusy(label: string): void {
     this.busyStack.push(label);
+    this.busyLeases.push(work.begin("command", label));
     this.emitter.emit("busy", this.busy);
   }
 
   /** Clear one in-flight tool (matching label, else the most recent). */
   endBusy(label: string): void {
     const idx = this.busyStack.lastIndexOf(label);
-    if (idx >= 0) this.busyStack.splice(idx, 1);
-    else this.busyStack.pop();
+    const at = idx >= 0 ? idx : this.busyStack.length - 1;
+    if (at >= 0) {
+      this.busyStack.splice(at, 1);
+      this.busyLeases.splice(at, 1)[0]?.end();
+    }
     this.emitter.emit("busy", this.busy);
   }
 
@@ -232,6 +241,7 @@ export class SessionBus {
    * @adr 0192 §2
    */
   setBusy(label: string | null): void {
+    for (const l of this.busyLeases.splice(0)) l.end(); // a mirror holds no work of its own
     this.busyStack.length = 0;
     if (label) this.busyStack.push(label);
     this.emitter.emit("busy", this.busy);
@@ -394,14 +404,20 @@ export class SessionBus {
     return this.restartPending;
   }
 
+  /** Why the pending restart was requested. @adr 0505 */
+  get restartReason(): "update" | "restart" {
+    return this.restartWhy;
+  }
+
   /**
-   * Session → `4pm start`: the cli was updated in place — stop the session, tear down, release the
-   * lock, then re-exec (instead of re-execing while still holding them).
-   * @adr 0473
+   * Session → `4pm start`: restart the daemon (after a self-update, or an operator restart) — `4pm
+   * start` drains, tears everything down, releases the lock, then execs the binary.
+   * @adr 0473 @adr 0505
    */
-  requestRestart(): void {
+  requestRestart(reason: "update" | "restart" = "restart"): void {
     if (this.restartPending) return;
     this.restartPending = true;
+    this.restartWhy = reason;
     this.emitter.emit("restart");
   }
 

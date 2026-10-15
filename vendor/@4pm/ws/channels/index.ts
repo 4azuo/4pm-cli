@@ -154,6 +154,9 @@ export const WsChannels = {
   // server → cli (reply): stop an AI run (ADR-0362) — queued ⇒ leave the run-slot queue, running ⇒ kill
   // the AI process with no failover; the cli then ends the stream with `command.output {done, cancelled}`.
   COMMAND_CANCEL: "command.cancel",
+  // cli → server (reply, ADR-0506): before a job that waited in the project's repo queue runs, the server
+  // re-checks its dispatcher's permission + the project status; a refusal ends the job with that code.
+  COMMAND_RECHECK: "command.recheck",
   // console transcript sync (ADR-0150): the cli streams its authoritative SessionBus
   // transcript so the web Console renders it verbatim; gated by console.watch (server → cli:
   // whether a web viewer is attached) so an unwatched cli syncs nothing.
@@ -180,6 +183,9 @@ export const WsChannels = {
   // cli → server (one-way): an autonomous condition the project's managers must see (ADR-0371) —
   // protected base, lost claim, attempt limit, task split, task question. The server notifies them.
   AUTONOMOUS_ALERT: "autonomous.alert",
+  // server → cli (one-way): the project's autonomous policy — the project switch, the server's `allowed`
+  // verdict for this worker and the project-scoped settings; persisted by the cli (ADR-0507).
+  AUTONOMOUS_POLICY: "autonomous.policy",
   // cli → server (one-way): a batch of aggregated network egress decisions of the cli's egress proxy
   // (ADR-0439) — stored as NetworkEgressEvent rows (the Networks log).
   NETWORK_EVENTS: "network.events",

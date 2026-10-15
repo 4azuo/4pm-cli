@@ -9,8 +9,10 @@
  * channel router, encrypted send/request, the offline buffer, heartbeat + usage/log/KB
  * timers, console-sync + worker-metrics leases, and logout. The channel handlers and the
  * AI/command dispatch path are extracted into `./ws-client/*` as pure functions over a
- * `WsHandlerCtx` this class builds (see `buildHandlerCtx`).
- * @arch 0011
+ * `WsHandlerCtx` this class builds (see `buildHandlerCtx`). Every way of ending the session goes
+ * through the daemon lifecycle (`lifecycle.shutdown`), whose drain waits for running work; the session
+ * timers are lifecycle services, stopped on disconnect and on shutdown.
+ * @arch 0011 @adr 0505
  */
 import { randomUUID } from "node:crypto";
 import { basename, join } from "node:path";
@@ -64,7 +66,7 @@ import { sweepOldAttachments } from "./exec/command-images";
 import { pruneCommandOutputByAge } from "./exec/command-output-store";
 import { refreshSupportKb } from "./knowledge/support-answer";
 import { setToolHealthSink } from "./worker/tool-health";
-import { isAutonomousRunning } from "./autonomous/autonomous";
+import { buildAutonomousSnapshot } from "./autonomous/autonomous";
 import { probeNetwork } from "./worker/network-probe";
 import { configureGitAuth } from "./git/git-auth";
 import { setPromptOverrides } from "./ai/prompt-overrides";
@@ -76,17 +78,20 @@ import { startEgressProxy } from "./network/egress-proxy";
 import { startNetguardSync } from "./network/netguard-client";
 import { setEgressEventSink } from "./network/egress-events";
 import { startGitSnapshots } from "./git/git-snapshot";
-import { projectFolder, readProfileConfig, writeProfileConfig } from "../config/profile";
+import { drainTimeoutMs, projectFolder, readProfileConfig, writeProfileConfig } from "../config/profile";
 import { detectWorkerTools } from "./worker/worker-tools";
 import { logger, readLogUpload } from "../common/logger/logger";
 import { CLI_VERSION } from "../version";
 import { mkdirShared } from "../utils/agent-user";
 import { envReconnectMaxSec, toDtoEntry } from "./ws-client/transcript";
 import type { WsHandlerCtx } from "./ws-client/context";
-import { activeAiRunCount, handleCommandChannels, resetMemorySession, runLocalCommand } from "./ws-client/command-dispatch";
+import { cancelAllActiveRuns, handleCommandChannels, resetMemorySession, runLocalCommand } from "./ws-client/command-dispatch";
+import { lifecycle, type ShutdownReason } from "./session/lifecycle";
+import { configureRepoLock, failAllRepoWaiters, withRepoLock } from "./git/repo-lock";
+import { loadAutonomousPolicy, recordLastCheck, setAutonomousPolicy } from "./autonomous/autonomous-policy";
+import { work } from "./session/work-tracker";
 import { onReconnectVerifyClaim, runAutonomousCycle } from "./autonomous/autonomous-cycle";
 import { startAutonomousScheduler } from "./autonomous/autonomous-scheduler";
-import { migrateLegacyCron } from "./autonomous/autonomous-legacy-cron";
 import { handleFsChannels } from "./ws-client/handlers/fs";
 import { handleGitChannels } from "./ws-client/handlers/git";
 import { handleMiscChannels } from "./ws-client/handlers/misc";
@@ -330,7 +335,24 @@ export class WsClient {
       // (the cli is still connected on the old version, so this send reaches the server).
       (result) => this.send(WsChannels.CLI_UPDATE_RESULT, result, null),
     );
-    this.restartWhenIdle = new RestartWhenIdle(context.bus, activeAiRunCount);
+    this.restartWhenIdle = new RestartWhenIdle(context.bus);
+    // Lifecycle wiring (ADR-0505/0506): the engine services stop on drain, the WS is closed for good after
+    // the drain, a drain that hits its bound cancels the AI runs, and queued repo waiters never start.
+    lifecycle.register("update.scheduler", "engine", () => this.updateScheduler.stop());
+    lifecycle.register("restart.request", "engine", () => this.restartWhenIdle.stop());
+    lifecycle.setSessionCloser(() => this.closeForGood());
+    lifecycle.onDrainTimeout(() => cancelAllActiveRuns());
+    lifecycle.onState((state) => {
+      if (state === "draining") {
+        failAllRepoWaiters(new Error("CLI_RESTARTING"));
+        this.sendMachineStatus(); // the web shows "Restarting" while the work finishes
+      }
+    });
+    configureRepoLock(context.profileDir, readProfileConfig(context.profileDir).repoQueueTimeoutMin);
+    // Multi-worker autonomous (ADR-0507): the last policy received (an offline restart keeps honouring it)
+    // and every tick's outcome for the worker snapshot.
+    loadAutonomousPolicy(context.profileDir);
+    context.bus.onAutonomousDone((ok, note) => recordLastCheck(ok ? "run" : checkOutcome(note), ok ? "cycle ran" : (note ?? "")));
     this.hctx = this.buildHandlerCtx();
     // The operator's local commands (TUI input box) run through the same executor.
     context.bus.onLocalSubmit((input) => void runLocalCommand(this.hctx, input));
@@ -434,9 +456,15 @@ export class WsClient {
    */
   private ensureServingReposCloned(): Promise<void> {
     const next = this.cloneQueue.then(async () => {
-      if (!this.physicRoot || this.servingRepos.length === 0) return;
+      const root = this.physicRoot;
+      if (!root || this.servingRepos.length === 0 || lifecycle.stopping) return;
       try {
-        await ensureReposCloned(this.physicRoot, this.servingRepos, (_step, message) => this.bus.log(message));
+        // A clone writes the working tree ⇒ under the repo lock, as a `clone` lease (ADR-0505/0506).
+        await withRepoLock(root, { holder: "project", label: "clone-on-connect" }, () =>
+          work.track("clone", "clone-on-connect", () =>
+            ensureReposCloned(root, this.servingRepos, (_step, message) => this.bus.log(message)),
+          ),
+        );
       } catch (err) {
         logger.warn("repos.clone.failed", { error: err instanceof Error ? err.message : String(err) });
       }
@@ -483,6 +511,22 @@ export class WsClient {
    * @adr 0473
    */
   stop(): void {
+    this.closeForGood();
+  }
+
+  /**
+   * Shut the daemon down through the lifecycle (drain → stop every service → close the WS). Used by
+   * every terminal condition (logout, replaced, version rejected, insecure transport).
+   * @adr 0505
+   */
+  private shutdown(reason: ShutdownReason): void {
+    void lifecycle.shutdown(reason, { drainMs: drainTimeoutMs(this.context.profileDir) });
+  }
+
+  /** Close the WS session for good (no reconnect) — the lifecycle's last session step. */
+  private closeForGood(): void {
+    // The last log lines before a restart / stop reach the server (and the ops stream — ADR-0509).
+    if (this.sessionKey) this.uploadLog();
     this.stopped = true;
     this.updateScheduler.stop();
     this.clearHeartbeat();
@@ -703,6 +747,8 @@ export class WsClient {
         setApprovalTrust(token.approvalKeys, token.approvalProjectId, this.context.profileDir);
         // The teams this cli serves (ADR-0450): the autonomous cycle takes only their rows; absent ⇒ keep.
         setServedTeams(token.servedTeams, this.context.profileDir);
+        // The autonomous policy (ADR-0507): project switch, `allowed`, project-scoped knobs; absent ⇒ keep.
+        setAutonomousPolicy(token.autonomousPolicy);
         // Networks (ADR-0439): the served project's egress policy + what counts as a system host.
         setNetworkPolicy(token.network);
         setEgressMcpUrls(mcpRemoteUrls(token.mcpServers));
@@ -757,6 +803,7 @@ export class WsClient {
           this.bus.log(INSECURE_URL_BLOCKED, "error");
           this.bus.setStatus("stopped");
           logger.error("ws.insecure-transport-blocked", { url: wsBase });
+          this.shutdown("insecureTransport");
           throw new Error(INSECURE_URL_BLOCKED);
         }
         // Stopped while the token was being fetched (a restart into an updated cli — ADR-0473) ⇒ don't connect.
@@ -794,6 +841,7 @@ export class WsClient {
         socket.on("close", (code) => {
           this.clearHeartbeat();
           this.sessionKey = null;
+          lifecycle.setConnected(false); // session-scoped services stop until the next hello_ack
           setToolHealthSink(null); // stop tool-health reporting until the next session (ADR-0223)
           logger.debug("ws.close", { code });
           if (code === CLOSE_DRAINING) {
@@ -842,6 +890,12 @@ export class WsClient {
         // Same for the metrics lease (ADR-0214) — re-armed by the next `metrics.watch`.
         this.stopMetricsSync();
         this.bus.setStatus("connected");
+        lifecycle.setConnected(true);
+        // The session timers are one session-scoped lifecycle service (ADR-0505).
+        lifecycle.register("ws.session-timers", "session", () => {
+          this.clearHeartbeat();
+          this.stopConsoleSync();
+        });
         this.finishReconnect();
         this.sendMachineStatus();
         this.flushOfflineBuffer();
@@ -851,17 +905,12 @@ export class WsClient {
         this.startKbRefresh();
         // A worker that was offline re-verifies its held autonomous claim; lost ⇒ its run stops (ADR-0371).
         onReconnectVerifyClaim(this.hctx);
-        // Autonomous ticks come from this daemon's own scheduler (ADR-0392). Migrate the served root off
-        // a legacy crontab line first (once per profile), so an upgrade never ticks twice or starts an
-        // engine that was not armed; then arm the scheduler (idempotent across reconnects).
-        const autoRoot = this.physicRoot;
-        void (autoRoot ? migrateLegacyCron(autoRoot, this.context.profileDir) : Promise.resolve()).finally(() =>
-          startAutonomousScheduler({
-            profileDir: this.context.profileDir,
-            servedRoot: () => this.physicRoot,
-            submit: () => this.context.bus.submitAutonomous(),
-          }),
-        );
+        // Autonomous ticks come from this daemon's own scheduler (ADR-0392) — armed once (idempotent).
+        startAutonomousScheduler({
+          profileDir: this.context.profileDir,
+          servedRoot: () => this.physicRoot,
+          submit: () => this.context.bus.submitAutonomous(),
+        });
         // Per-repo git state for the web Git › Repositories home (ADR-0369): now + periodically.
         const servedRoot = (): string | null => this.physicRoot; // read live on every report
         startGitSnapshots({
@@ -887,20 +936,18 @@ export class WsClient {
         if (message.errorCode === "CLI_VERSION_UNSUPPORTED") {
           // Server rejected the version — stop entirely; the user updates then reruns
           this.stopped = true;
-          this.updateScheduler.stop();
-          this.bus.setStatus("stopped");
           this.bus.log(t("error.versionRejected", { version: message.message ?? "" }), "error");
           this.socket?.close();
+          this.shutdown("versionRejected");
           return;
         }
         if (message.errorCode === "SESSION_REPLACED") {
           // A newer session for this profile took over (ADR-0047). Stop — reconnecting
           // would evict that session and thrash. Keep `.cre` (the link is still valid).
           this.stopped = true;
-          this.updateScheduler.stop();
-          this.bus.setStatus("stopped");
           this.bus.log(t("error.sessionReplaced"), "error");
           this.socket?.close();
+          this.shutdown("replaced");
           return;
         }
         if (message.errorCode === "USER_PAUSED") {
@@ -1099,8 +1146,6 @@ export class WsClient {
       version: CLI_VERSION,
       physicPath,
       physicPathExists: physicPath ? existsSync(physicPath) : undefined,
-      // Real coarse state (ADR-0152): !paused and a recent tick (was hard-coded false).
-      autonomousRunning: physicPath ? isAutonomousRunning(physicPath, this.context.profileDir) : false,
       // The machine-user AI-run limit (0 = unlimited) + profile count so a dispatch can resolve the
       // effective timeout and derive the SSE reply windows server-side (ADR-0256).
       aiRunTimeoutSec: config.aiRunTimeoutSec ?? 0,
@@ -1119,6 +1164,14 @@ export class WsClient {
       })(),
       // Optional features this cli implements — the server gates features an older cli lacks (ADR-0449).
       features: CLI_FEATURES,
+      // Process identity + lifecycle (ADR-0505): tells a restarted process from a lingering one and
+      // lets the web show "Restarting" while a drain waits for running work.
+      pid: process.pid,
+      startedAt: new Date(this.startedAtMs).toISOString(),
+      lifecycle: lifecycle.state === "draining" ? "draining" : "connected",
+      ...(lifecycle.state === "draining" ? { drainingFor: lifecycle.drainingFor } : {}),
+      // The autonomous snapshot (ADR-0507).
+      ...(this.physicRoot ? { autonomous: buildAutonomousSnapshot(this.physicRoot, this.context.profileDir) } : {}),
     });
   }
 
@@ -1411,13 +1464,12 @@ export class WsClient {
    */
   private logout(reason: string): void {
     this.stopped = true;
-    this.updateScheduler.stop();
     this.clearHeartbeat();
     this.socket?.close();
-    this.bus.setStatus("stopped");
     logger.warn("ws.logout", { reason });
     deleteCredential(this.context.profileDir);
     this.bus.log(t("error.linkInvalid", { reason }), "error");
+    this.shutdown("logout");
   }
 }
 
@@ -1427,4 +1479,13 @@ const CLI_FEATURES: string[] = [CliFeature.CLIENT_VIEWER, CliFeature.BOOK_TEAMS,
 /** The URLs of the approved http/sse MCP servers (system egress hosts — ADR-0439). */
 function mcpRemoteUrls(list: { definition: unknown }[] | undefined): string[] {
   return (list ?? []).map((m) => (m.definition as { url?: unknown } | null)?.url).filter((u): u is string => typeof u === "string");
+}
+
+/** Skip notes of a cycle that did not run (the rest of a failed `autonomousDone` is an error). @adr 0507 */
+const SKIP_NOTES = ["cli offline", "paused", "quiet hours", "max ticks reached", "no work", "usage limit", "working tree busy", "cli restarting", "a cycle is already running", "no served project", "stopped"];
+
+/** Map a failed `autonomousDone` note to the snapshot's `lastCheck.outcome`. */
+function checkOutcome(note: string | undefined): "skip" | "error" {
+  const n = note ?? "";
+  return SKIP_NOTES.includes(n) || n.startsWith("policy:") || n.endsWith("task kept") ? "skip" : "error";
 }
