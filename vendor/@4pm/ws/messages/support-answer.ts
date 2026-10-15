@@ -50,14 +50,16 @@ export interface SupportAnswerRequest {
  * a legal document body, or drafting/translating an AI prompt template (ADR-0381 —
  * `prompt_generate` writes a template from a description, `prompt_translate` localizes one). For the
  * prompt tasks the server builds the full instruction as the context; the cli runs it focused.
- * @adr 0345 @adr 0360
+ * `hub_review` (ADR-0521) returns a JSON moderation verdict on a public hub item (the context is the item).
+ * @adr 0345 @adr 0360 @adr 0521
  */
 export type SupportAnswerTask =
   | "reply_draft"
   | "outreach_draft"
   | "legal_draft"
   | "prompt_generate"
-  | "prompt_translate";
+  | "prompt_translate"
+  | "hub_review";
 
 /** The claude run's token split for a support answer. @adr 0224 */
 export interface SupportAnswerUsage {

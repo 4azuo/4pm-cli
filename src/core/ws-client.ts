@@ -66,6 +66,8 @@ import { sweepOldAttachments } from "./exec/command-images";
 import { pruneCommandOutputByAge } from "./exec/command-output-store";
 import { refreshSupportKb } from "./knowledge/support-answer";
 import { setToolHealthSink } from "./worker/tool-health";
+import { setAiRunSink } from "./ai/ai-run-tracker";
+import { aiAccountKeys } from "./ai/ai-account-lease";
 import { buildAutonomousSnapshot } from "./autonomous/autonomous";
 import { probeNetwork } from "./worker/network-probe";
 import { configureGitAuth } from "./git/git-auth";
@@ -127,6 +129,9 @@ const RECONNECT_BACKOFF_MAX_ATTEMPT = 6;
  * is retried with backoff rather than deleting `.cre` on the first occurrence.
  */
 const MAX_HASHCODE_INVALID_RETRIES = 5;
+
+/** Fixed retry interval while the worker's IP is outside the platform's CLI_IP_ALLOWLIST. @adr 0519 */
+const PLATFORM_IP_BLOCKED_RETRY_MS = 5 * 60_000;
 
 /** Close code server draining (graceful shutdown). */
 const CLOSE_DRAINING = 4001;
@@ -215,6 +220,10 @@ export class WsClient {
    * attempt. Null while connected / between outages.
    */
   private reconnectEntryId: string | null = null;
+  /** Set when the last attempt was refused by the platform IP allowlist — the next wait is 5 min. @adr 0519 */
+  private platformIpBlocked = false;
+  /** The worker IP the server reported on the last platform IP block ("" when unknown). */
+  private platformBlockedIp = "";
   /** Org-configured reconnect cap (seconds) from the last ws_token — overrides env. */
   private orgReconnectMaxSec: number | null = null;
   /** Org timezone (IANA) from the last ws_token — a rented worker follows its renter's
@@ -570,6 +579,13 @@ export class WsClient {
     });
   }
 
+  /** Record a platform IP block so run() waits the long interval; keeps the last known IP. @adr 0519 */
+  private notePlatformIpBlocked(ip: string): void {
+    this.platformIpBlocked = true;
+    if (ip) this.platformBlockedIp = ip;
+    logger.warn("ws.platformIpBlocked", { ip: ip || null });
+  }
+
   /**
    * Resolve the reconnect-backoff cap (ms): the org value (from ws_token) over the
    * env override over the default. Each is already clamped to the 1-min ceiling.
@@ -648,6 +664,11 @@ export class WsClient {
             // The account is paused (ADR-0093) — reversible. Keep `.cre` and back off
             // until an ADMIN/PM resumes it; never logout.
             reconnectDetail = "This account is paused — retrying until it is resumed";
+          } else if (err.errorCode === "PLATFORM_IP_NOT_ALLOWED") {
+            // Outside the platform's CLI_IP_ALLOWLIST (ADR-0519) — reversible: keep `.cre`, say which
+            // IP to allow, and retry slowly so the worker reconnects once an operator adds it.
+            this.notePlatformIpBlocked(typeof err.meta?.ip === "string" ? err.meta.ip : "");
+            reconnectDetail = t("error.platformIpBlocked", { ip: this.platformBlockedIp || "?" });
           } else {
             reconnectDetail = `Connection error: ${err}`;
           }
@@ -656,11 +677,16 @@ export class WsClient {
         }
       }
       if (this.stopped) return;
-      const wait = backoffJitterMs(
-        Math.min(attempt, RECONNECT_BACKOFF_MAX_ATTEMPT),
-        RECONNECT_BACKOFF_BASE_MS,
-        this.reconnectMaxMs(),
-      );
+      // A platform IP block waits a fixed, long interval instead of the normal backoff (ADR-0519).
+      const ipBlocked = this.platformIpBlocked;
+      this.platformIpBlocked = false;
+      const wait = ipBlocked
+        ? PLATFORM_IP_BLOCKED_RETRY_MS
+        : backoffJitterMs(
+            Math.min(attempt, RECONNECT_BACKOFF_MAX_ATTEMPT),
+            RECONNECT_BACKOFF_BASE_MS,
+            this.reconnectMaxMs(),
+          );
       logger.info("ws.reconnect", { attempt, waitMs: wait });
       this.bus.setStatus("reconnecting");
       // One updating line per outage (approach B) — not an error + a wait line per attempt.
@@ -843,6 +869,7 @@ export class WsClient {
           this.sessionKey = null;
           lifecycle.setConnected(false); // session-scoped services stop until the next hello_ack
           setToolHealthSink(null); // stop tool-health reporting until the next session (ADR-0223)
+          setAiRunSink(null); // live AI state resumes with the next session (ADR-0522)
           logger.debug("ws.close", { code });
           if (code === CLOSE_DRAINING) {
             // Server draining (rolling deploy) — reconnect to another instance
@@ -923,6 +950,8 @@ export class WsClient {
         // Route per-tool health reports to the server over the live session (ADR-0223); `send`
         // is a no-op until the session key is set, so this is safe to (re)wire here each connect.
         setToolHealthSink((report) => this.send(WsChannels.TOOL_HEALTH, report));
+        // The live AI attempts (ADR-0522): the current list now, then on every start / end.
+        setAiRunSink((state) => this.send(WsChannels.AI_RUN_STATE, state));
         // Wake anything awaiting readiness (a prompt queued during reconnect).
         this.connectWaiters.splice(0).forEach((fn) => fn());
         return;
@@ -953,6 +982,13 @@ export class WsClient {
         if (message.errorCode === "USER_PAUSED") {
           // Paused account (ADR-0093) — reversible; keep `.cre`, reconnect with backoff.
           this.bus.log(t("error.accountPaused"), "warn");
+          this.socket?.close();
+          return;
+        }
+        if (message.errorCode === "PLATFORM_IP_NOT_ALLOWED") {
+          // Outside the platform's CLI_IP_ALLOWLIST (ADR-0519) — keep `.cre`; run() retries in 5 min.
+          this.notePlatformIpBlocked(message.meta?.ip ?? "");
+          this.bus.log(t("error.platformIpBlocked", { ip: this.platformBlockedIp || "?" }), "error");
           this.socket?.close();
           return;
         }
@@ -1153,6 +1189,8 @@ export class WsClient {
       // The configured AI accounts (emails when readable) — admin-only visibility of which AI
       // account a (rented) machine runs on + the shared-account check (ADR-0354).
       aiAccounts: aiAccountLabels(config),
+      // Their global account keys — the server's idle pick prefers a cli with an idle account (ADR-0518).
+      aiAccountKeys: aiAccountKeys(config),
       // Host logins mounted under ~/ai-creds — the Worker configs Profile-directory suggestions (ADR-0479).
       aiMounts: mountedAiLogins(),
       // Update-locked image (ADR-0432/0434) — the web Locked badge + the server's update gate.

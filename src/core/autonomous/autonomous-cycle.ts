@@ -866,7 +866,7 @@ async function releaseTask(ctx: WsHandlerCtx, root: string, rootBase: RepoBase, 
 
 /** The cycle's own run budget: `runTimeoutMinutes`, and no profile failover on a timeout. @adr 0452 */
 function runOverrides(cfg: AutonomousConfig): AiRunOverrides {
-  return { timeoutMs: cfg.runTimeoutMinutes * 60_000, failoverOnTimeout: false };
+  return { timeoutMs: cfg.runTimeoutMinutes * 60_000, failoverOnTimeout: false, source: "autonomous" };
 }
 
 /** Auto-pause after N consecutive failures. @adr 0321 */

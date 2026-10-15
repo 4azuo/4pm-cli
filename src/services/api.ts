@@ -19,6 +19,8 @@ export class CliApiError extends Error {
     readonly errorCode: string,
     message: string,
     readonly status: number,
+    /** The error's `meta` facts — e.g. `{ ip }` on PLATFORM_IP_NOT_ALLOWED. @adr 0519 */
+    readonly meta?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "CliApiError";
@@ -35,6 +37,7 @@ async function unwrap<T>(res: Response): Promise<T> {
       envelope?.errorCode ?? "INTERNAL_ERROR",
       envelope?.message ?? `HTTP ${res.status}`,
       res.status,
+      envelope?.meta ?? undefined,
     );
   }
   return envelope.data as T;

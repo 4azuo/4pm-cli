@@ -10,6 +10,9 @@ export const ErrorCode = {
   UNAUTHORIZED: "UNAUTHORIZED",
   FORBIDDEN: "FORBIDDEN",
   IP_NOT_ALLOWED: "IP_NOT_ALLOWED",
+  // The caller's IP is outside the deployment's platform allowlist (APP_/ADMIN_/CLI_IP_ALLOWLIST —
+  // ADR-0519); `meta.ip` carries the IP. Distinct from IP_NOT_ALLOWED (org / user / project tiers).
+  PLATFORM_IP_NOT_ALLOWED: "PLATFORM_IP_NOT_ALLOWED",
   // A user's IP allowlist entry falls outside the org allowlist (ADR-0044).
   IP_OUTSIDE_ORG_ALLOWLIST: "IP_OUTSIDE_ORG_ALLOWLIST",
   NOT_FOUND: "NOT_FOUND",

@@ -163,6 +163,15 @@ const PROMPT_META: PromptMeta[] = [
     untrustedVars: {},
   },
   {
+    key: "cli.support.hub_review",
+    ownerApp: "cli",
+    phase: 1,
+    title: "Admin — hub item moderation advice",
+    description: "Reviews a public hub item (package / knowledge / 4rum post) and outputs a JSON verdict (allow/block/unsure) with a summary, reasons and categories. Advice only — keep the JSON output contract intact.",
+    requiredVars: ["context"],
+    untrustedVars: { context: "data" },
+  },
+  {
     key: "cli.faq.compose",
     ownerApp: "cli",
     phase: 1,

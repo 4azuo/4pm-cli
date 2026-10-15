@@ -12,7 +12,6 @@
  * in an empty throwaway directory with an allow-listed environment and no Bash / edit / web tools.
  * @adr 0170 @adr 0346
  */
-import { spawn } from "node:child_process";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -30,32 +29,15 @@ import type {
 import { commandImageExt } from "@4pm/dto";
 import { logger } from "../../common/logger/logger";
 import { resolveCliPrompt } from "../ai/prompt-overrides";
-import { createAiStreamParser, estimateTokens, type AiUsage } from "../ai/ai-stream";
-import type { ResolvedClaudeProfile } from "../../utils/ai-cli";
-import { agentEnv, gitAuthArgs } from "../agent/agent-sandbox";
-import { denySettingsArgs } from "../../utils/agent-deny";
-import { strictMcpArgs } from "../../utils/agent-mcp";
-import { agentSpawnArgs } from "../agent/agent-spawn";
+import { estimateTokens, type AiUsage } from "../ai/ai-stream";
+import type { AiTextRunner } from "../ai/ai-text-run";
+import type { AiRunPolicy } from "../../utils/ai-cli";
+import { gitAuthArgs } from "../agent/agent-sandbox";
 import { makeAgentTempDir, unregisterAgentRoot } from "../../utils/agent-user";
 import { writeFileInRootSync } from "../../utils/safe-path";
 
 /** Zero usage — the fallback when a run captured no token counts. */
 const NO_USAGE: AiUsage = { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
-
-/**
- * How to run claude for a support answer — resolved by the caller from the profile config so the
- * agent authenticates with the operator's configured account(s), not claude's
- * default config.
- * @adr 0057
- */
-export interface SupportAnswerAi {
-  /** The AI CLI command (config.aiCli — defaults to "claude"). */
-  cmd: string;
-  /** Configured claude profiles to try in order (working-first); empty ⇒ the CLI's default env. */
-  profiles: ResolvedClaudeProfile[];
-  /** Extra env for the AI CLI (config.aiEnv). */
-  env?: Record<string, string>;
-}
 
 const execFileAsync = promisify(execFile);
 
@@ -206,6 +188,8 @@ function buildPrompt(docs: string, question: string, askerRole: "admin" | "user"
 function buildDraftPrompt(docs: string, context: string, task: SupportAnswerTask): string {
   if (task === "prompt_generate") return buildPromptGeneratePrompt(context);
   if (task === "prompt_translate") return buildPromptTranslatePrompt(context);
+  // Hub moderation advice (ADR-0521): the context is the public item (untrusted data); output = one JSON verdict.
+  if (task === "hub_review") return resolveCliPrompt("cli.support.hub_review", { context });
   if (task === "legal_draft") return resolveCliPrompt("cli.support.legal_draft", { docs, context });
   // reply_draft / outreach_draft — admin overrides (ADR-0381) or the shared registry defaults.
   const key = task === "reply_draft" ? "cli.support.reply_draft" : "cli.support.outreach_draft";
@@ -311,138 +295,68 @@ function parseModeratedAnswer(text: string): ParsedAnswer {
 }
 
 /**
- * One `claude -p` attempt against a specific profile — the prompt goes on stdin (it can be large,
- * so it must not be an argv arg). Resolves the exit code + captured output; rejects only on a
- * spawn error or timeout.
+ * The support / checklist run policy: no shell / edits / web / sub-agents for an untrusted question —
+ * reads need no grant inside the (empty) working dir and the pasted-images folder, anywhere else they
+ * would need an approval a headless run never gets. codex runs in a read-only sandbox.
+ * @adr 0520 @adr 0273
  */
-function runClaudeOnce(
-  cmd: string,
-  profile: ResolvedClaudeProfile | null,
-  prompt: string,
-  extraEnv: Record<string, string> | undefined,
-  imageDir?: string,
-  denyDirs: string[] = [],
-  timeoutMs: number = ANSWER_TIMEOUT_MS,
-): Promise<{ code: number; out: string; err: string; usage: AiUsage }> {
-  return new Promise((resolve, reject) => {
-    // Ask claude for `--output-format stream-json --verbose` so the run's real token usage is
-    // captured (ADR-0072/0224) — the same lane the normal AI dispatch uses; the parser turns the
-    // JSON events back into the readable answer text. codex/other CLIs pass through unchanged.
-    const isClaude = cmd.includes("claude");
-    const args = [
-      "-p",
-      ...(profile?.model ? ["--model", profile.model] : []),
-      ...(isClaude ? ["--output-format", "stream-json", "--verbose"] : []),
-      // No shell / edits / web for an untrusted question. Reads need no grant inside the
-      // (empty) working dir and any added dir; anywhere else they would need an approval a headless
-      // run never gets.
-      // Secret-path deny rules (ADR-0347) — reads are not confined to the working dir.
-      // No MCP server on this run (ADR-0427): repo/user MCP config is ignored.
-      ...strictMcpArgs(cmd),
-      ...denySettingsArgs(cmd, [...denyDirs, profile?.dir]),
-      ...(isClaude ? ["--disallowedTools", ...DENIED_TOOLS] : []),
-      // When the question references pasted images (ADR-0273), add the materialized folder so the
-      // agent can Read them (the question already carries their absolute paths) — scoped to it only.
-      ...(isClaude && imageDir ? ["--add-dir", imageDir] : []),
-    ];
-    // Select the signed-in account (the fix): without CLAUDE_CONFIG_DIR claude falls
-    // back to its default config, whose token is unrelated to the operator's configured profiles.
-    // Allow-listed env only — the cli's own secrets never reach the agent.
-    const env = agentEnv(extraEnv, profile ? { CLAUDE_CONFIG_DIR: profile.dir } : undefined, { kind: "projectless" });
-    // Run in an empty throwaway dir (the docs are in the prompt) so there is nothing to read nearby.
-    const cwd = makeAgentTempDir("4pm-support-");
-    const cleanup = (): void => {
-      unregisterAgentRoot(cwd);
-      try {
-        rmSync(cwd, { recursive: true, force: true });
-      } catch {
-        // best-effort — an empty leftover temp dir is harmless
-      }
-    };
-    // The AI CLI always runs as the agent user when uid separation is on (ADR-0430).
-    const run = agentSpawnArgs(cmd, args, env);
-    const child = spawn(run.cmd, run.args, { stdio: ["pipe", "pipe", "pipe"], env: run.env, cwd });
-    // Parse claude stream-json → readable text + usage; a non-json cmd passes text through verbatim.
-    const parser = createAiStreamParser(cmd);
-    let out = "";
-    let err = "";
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error("claude answer timed out"));
-    }, timeoutMs);
-    timer.unref();
-    child.stdout.on("data", (d: Buffer) => (out += parser.push(d.toString())));
-    child.stderr.on("data", (d: Buffer) => (err += d.toString()));
-    child.on("error", (e) => {
-      clearTimeout(timer);
-      cleanup();
-      reject(e);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      cleanup();
-      out += parser.flush();
-      resolve({ code: code ?? -1, out, err, usage: parser.usage() });
-    });
-    child.stdin.write(prompt);
-    child.stdin.end();
-  });
+function supportPolicy(imageDir?: string): AiRunPolicy {
+  return {
+    args: (cmd) =>
+      cmd.includes("claude")
+        ? ["--disallowedTools", ...DENIED_TOOLS, ...(imageDir ? ["--add-dir", imageDir] : [])]
+        : cmd.includes("codex")
+          ? ["--sandbox", "read-only"]
+          : null,
+  };
 }
 
 /**
- * Run the answer prompt across the operator's configured claude profiles (working-first), moving
- * to the next on **any** failed attempt — the same failover the normal AI dispatch uses.
- * Resolves the answer text; throws a diagnosable tail once all profiles fail.
- * @adr 0057 @adr 0240
+ * Run the answer prompt through the shared AI path (every configured account, working-first, failover,
+ * account lease) in an empty throwaway dir — the docs are in the prompt, so there is nothing to read
+ * nearby. Resolves the answer text; throws a diagnosable reason once every account failed.
+ * @adr 0240 @adr 0520
  */
-async function runClaudeWithFailover(
+async function runAnswer(
+  run: AiTextRunner,
   prompt: string,
-  ai: SupportAnswerAi,
   imageDir?: string,
   timeoutMs: number = ANSWER_TIMEOUT_MS,
-): Promise<{ text: string; usage: AiUsage }> {
-  // No profile configured ⇒ a single default-env attempt (matches the pre-profile behavior).
-  const attempts: (ResolvedClaudeProfile | null)[] = ai.profiles.length > 0 ? ai.profiles : [null];
-  let lastReason = "no attempt";
-  for (let i = 0; i < attempts.length; i++) {
-    const { code, out, err, usage } = await runClaudeOnce(
-      ai.cmd,
-      attempts[i]!,
-      prompt,
-      ai.env,
-      imageDir,
-      ai.profiles.map((p) => p.dir),
-      timeoutMs,
-    );
-    if (code === 0 && out.trim()) return { text: out.trim(), usage };
-    // claude may report the failure on stdout rather than stderr (empty stderr + exit 1).
-    const combined = err || out;
-    lastReason = `exited ${code}: ${combined.slice(0, 500)}`;
-    // Any failed attempt fails over to the next profile; stop once all are exhausted.
-    if (i === attempts.length - 1) break;
+): Promise<{ text: string; usage: AiUsage; workedCmd: string | null }> {
+  const cwd = makeAgentTempDir("4pm-support-");
+  try {
+    const result = await run(prompt, { label: "support-answer", source: "support", policy: supportPolicy(imageDir), cwd, timeoutMs, envKind: "projectless" });
+    if (!result.ok) throw new Error(`AI ${result.error ?? "failed"}`);
+    return { text: result.text, usage: result.usage, workedCmd: result.workedCmd };
+  } finally {
+    unregisterAgentRoot(cwd);
+    try {
+      rmSync(cwd, { recursive: true, force: true });
+    } catch {
+      // best-effort — an empty leftover temp dir is harmless
+    }
   }
-  throw new Error(`claude ${lastReason}`);
 }
 
 /**
  * Run a one-shot "author checklist items" prompt and return the model's raw output. The
  * prompt is built by the web (instruction + current items) and carries its own context, so there is no
  * KB repo and no moderation — this just runs claude text-in → text-out (empty dir, no tools, via the
- * operator's configured profiles with failover) and hands the output back for the web to parse. Any
+ * shared AI path with failover) and hands the output back for the web to parse. Any
  * failure is returned as `{ error }` so the server surfaces it instead of hanging.
  * @adr 0376
  */
 export async function runChecklistAuthor(
   req: ChecklistAuthorRequest,
-  ai: SupportAnswerAi,
-): Promise<{ reply: ChecklistAuthorReply; usage: AiUsage }> {
+  run: AiTextRunner,
+): Promise<{ reply: ChecklistAuthorReply; usage: AiUsage; workedCmd: string | null }> {
   try {
-    const { text, usage } = await runClaudeWithFailover(req.prompt, ai);
-    if (!text) return { reply: { error: "empty output" }, usage };
-    return { reply: { output: text }, usage };
+    const { text, usage, workedCmd } = await runAnswer(run, req.prompt);
+    if (!text) return { reply: { error: "empty output" }, usage, workedCmd };
+    return { reply: { output: text }, usage, workedCmd };
   } catch (err) {
     logger.warn("checklist.author.failed", { error: String(err) });
-    return { reply: { error: String(err) }, usage: { ...NO_USAGE } };
+    return { reply: { error: String(err) }, usage: { ...NO_USAGE }, workedCmd: null };
   }
 }
 
@@ -452,7 +366,7 @@ export async function runChecklistAuthor(
  */
 export async function runSupportAnswer(
   req: SupportAnswerRequest,
-  ai: SupportAnswerAi,
+  run: AiTextRunner,
   profileDir: string,
 ): Promise<SupportAnswerReply> {
   // Materialize any pasted images (ADR-0273) into a throwaway folder + rewrite the question's
@@ -471,7 +385,7 @@ export async function runSupportAnswer(
     // A drafting task (ADR-0345) uses its own prompt and returns the text as-is (no moderation).
     const prompt = req.task ? buildDraftPrompt(docs, question, req.task) : buildPrompt(docs, question, req.askerRole);
     const timeoutMs = req.task === "legal_draft" ? LEGAL_DRAFT_TIMEOUT_MS : ANSWER_TIMEOUT_MS;
-    const { text, usage } = await runClaudeWithFailover(prompt, ai, imageDir, timeoutMs);
+    const { text, usage } = await runAnswer(run, prompt, imageDir, timeoutMs);
     if (!text) return { body: "", error: "empty answer" };
     // Split the structured output into the answer body + inline moderation verdict (ADR-0237);
     // a non-JSON run degrades to the whole text as the body with no verdict.

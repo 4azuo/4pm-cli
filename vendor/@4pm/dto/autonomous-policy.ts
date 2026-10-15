@@ -8,7 +8,7 @@
  * @adr 0507 @adr 0511
  */
 import { z } from "zod";
-import { EVIDENCE_ROOT, MOCKUP_ROOT, isSafeRepoDir } from "./machine";
+import { EVIDENCE_ROOT, MOCKUP_ROOT, isSafeRepoDir, type MachineAiRun } from "./machine";
 import { ER_ROOT, SEQUENCE_ROOT } from "./er-model";
 
 /** S/M task size hints for intake (indicative, not caps). */
@@ -183,6 +183,8 @@ export interface ProjectAutonomousWorker {
   lastCheck: AutonomousLastCheck | null;
   claim: { id: string; since: string } | null;
   consecutiveFails: number;
+  /** The AI attempts the worker runs right now (live; `[]` = idle). @adr 0522 */
+  aiRuns?: MachineAiRun[];
 }
 
 /** Data GET /projects/:id/autonomous/workers. @api project-0124 */

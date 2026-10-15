@@ -4,6 +4,7 @@
   "error.versionRejected": "Server rejected the cli version ({version}) — please update.",
   "error.sessionReplaced": "Another session for this profile took over — this instance is stopping. (Are you running `4pm start` twice for the same profile?)",
   "error.accountPaused": "This account is paused — retrying until it is resumed.",
+  "error.platformIpBlocked": "This worker's IP ({ip}) is not in the platform's CLI_IP_ALLOWLIST — ask an administrator to add it. Retrying every 5 minutes.",
   "error.serverError": "Server reported an error: {code}",
   "error.linkInvalid": "Link is no longer valid ({reason}) — deleted .cre. Run `4pm link` to pair again.",
   "start.notLinked": "Profile \"{profile}\" is not linked — run `4pm link --server <URL>` first.",

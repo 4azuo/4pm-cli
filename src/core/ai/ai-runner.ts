@@ -7,11 +7,13 @@
  * caller reports it to the server + transcript.
  * @adr 0057 @adr 0240 @adr 0072
  */
-import { COMMAND_CANCELLED_EXIT_CODE } from "@4pm/ws";
+import { COMMAND_CANCELLED_EXIT_CODE, type AiRunSource } from "@4pm/ws";
 import { runCommand } from "../exec/executor";
 import { projectAgentEnv } from "../agent/agent-sandbox";
 import { reportToolResult } from "../worker/tool-health";
 import { resolveApiKey } from "./resolve-api-key";
+import type { AccountLeaser } from "./ai-account-lease";
+import { endAiRun, startAiRun } from "./ai-run-tracker";
 import type { AiPlan } from "../../utils/ai-cli";
 import { createAiStreamParser, estimateTokens, type AiUsage } from "./ai-stream";
 
@@ -92,7 +94,8 @@ function runAttempt(
   env: Record<string, string>,
   onChunk: (text: string) => void,
   timeoutMs: number,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  baseEnv: NodeJS.ProcessEnv,
 ): Promise<number> {
   return new Promise((resolve) => {
     // The prompt rides stdin, not argv (ADR-0251), so a large review/compose can't exceed
@@ -107,40 +110,79 @@ function runAttempt(
       },
       // Allow-listed base env (ADR-0421): the cli's own secrets (FOURPM_PAIR_TOKEN, …) never reach the
       // agent; the plan's `env` (aiEnv + account selector + API key) is layered on top by the executor.
-      { stdin, baseEnv: projectAgentEnv(), ...(timeoutMs > 0 ? { timeoutMs } : {}), ...(signal ? { signal } : {}) },
+      { stdin, baseEnv, ...(timeoutMs > 0 ? { timeoutMs } : {}), ...(signal ? { signal } : {}) },
     ).catch(() => resolve(-1));
   });
 }
 
+/** Per-run controls of {@link runAiFailover}. */
+export interface AiFailoverOptions {
+  /** Wall-clock cap of EACH attempt (ms); 0 ⇒ none. @adr 0243 */
+  timeoutMs?: number;
+  /** Stop: the current AI process is killed and no further profile is tried (exit 130). @adr 0362 */
+  signal?: AbortSignal;
+  /** false ⇒ a timed-out attempt (exit 124) ends the run instead of re-running on the next profile. @adr 0452 */
+  failoverOnTimeout?: boolean;
+  /** Leases each attempt's AI account across workers (may move a remaining attempt first). @adr 0518 */
+  leaser?: AccountLeaser;
+  /** What started the run — shown with the worker's live AI state (default `command`). @adr 0522 */
+  source?: AiRunSource;
+  /**
+   * The child's allow-listed base env — default `projectAgentEnv()` (project runs); a project-less
+   * runner passes its own `agentEnv(…, {kind})` so its egress tag and allow-list stay its own. @adr 0520
+   */
+  baseEnv?: NodeJS.ProcessEnv;
+}
+
 /**
- * Execute the plan with failover. Returns the final exit code + the working profile
- * dir (if any) so the caller can remember it for next time. `timeoutMs` caps EACH
- * attempt's wall-clock — a hung/looping AI CLI is terminated and reported as a failed attempt so
- * failover still moves on; 0 ⇒ no cap. `signal` stops the run: the current AI process is
- * killed and NO further profile is tried — the result carries `cancelled` + exit 130.
- * `failoverOnTimeout = false` ends the run on a timed-out attempt (exit 124) instead of re-running the
- * whole prompt on the next profile — a timeout is about the work's size, not the account.
- * @adr 0243 @adr 0362 @adr 0452
+ * Execute the plan with failover. Returns the final exit code + the working profile dir (if any) so
+ * the caller can remember it for next time. A hung/looping AI CLI past `timeoutMs` is terminated and
+ * reported as a failed attempt so failover still moves on; `failoverOnTimeout = false` ends the run on
+ * it instead — a timeout is about the work's size, not the account. `signal` stops the run (exit 130,
+ * no failover). `leaser` leases each attempt's AI account first: the server may move another remaining
+ * attempt to the front (an idle account), and a usage-limit failure marks the account exhausted.
+ * @adr 0243 @adr 0362 @adr 0452 @adr 0518 @adr 0520
  */
 export async function runAiFailover(
   plan: AiPlan,
   commandId: string,
   cwd: string,
   handlers: AiRunHandlers,
-  timeoutMs = 0,
-  signal?: AbortSignal,
-  failoverOnTimeout = true,
+  opts: AiFailoverOptions = {},
 ): Promise<AiRunResult> {
-  const total = plan.attempts.length;
+  try {
+    return await runAttempts(plan, commandId, cwd, handlers, opts);
+  } finally {
+    opts.leaser?.done();
+  }
+}
+
+/** The failover loop of {@link runAiFailover} (the caller releases the account lease). */
+async function runAttempts(
+  plan: AiPlan,
+  commandId: string,
+  cwd: string,
+  handlers: AiRunHandlers,
+  opts: AiFailoverOptions,
+): Promise<AiRunResult> {
+  const { timeoutMs = 0, signal, failoverOnTimeout = true, leaser } = opts;
+  const baseEnv = opts.baseEnv ?? projectAgentEnv();
+  // A mutable copy: the account lease may move a remaining attempt to the front (ADR-0518).
+  const attempts = [...plan.attempts];
+  const total = attempts.length;
   let finalExit = -1;
   // Track the last attempt's provider + captured output so a total failure can report the AI
   // CLI's health to the admin pool (ADR-0223).
-  let lastCmd = plan.attempts[0]?.cmd ?? "claude";
+  let lastCmd = attempts[0]?.cmd ?? "claude";
   let lastCaptured = "";
   for (let i = 0; i < total; i++) {
     // Stopped — before this attempt started, or while the previous one ran: no failover.
     if (signal?.aborted) return cancelledResult();
-    const attempt = plan.attempts[i]!;
+    if (leaser) {
+      const pick = await leaser.next(attempts.slice(i));
+      if (pick > 0) attempts.splice(i, 0, ...attempts.splice(i + pick, 1));
+    }
+    const attempt = attempts[i]!;
     lastCmd = attempt.cmd;
     if (total > 1) handlers.onAttemptStart(attempt.label, i, total, attempt.cmd);
     // Parse claude stream-json / codex `exec --json` → readable text for the transcript +
@@ -162,7 +204,13 @@ export async function runAiFailover(
     // and, if that also fails, failover moves on.
     const resolvedKey = attempt.apiKey ? await resolveApiKey(attempt.apiKey) : null;
     const attemptEnv = resolvedKey ? { ...attempt.env, ANTHROPIC_API_KEY: resolvedKey } : attempt.env;
-    finalExit = await runAttempt(commandId, attempt.cmd, attempt.args, attempt.stdin, cwd, attemptEnv, emit, timeoutMs, signal);
+    // Report the live attempt (its account) while it runs (ADR-0522).
+    const liveRun = startAiRun(attempt, opts.source ?? "command");
+    try {
+      finalExit = await runAttempt(commandId, attempt.cmd, attempt.args, attempt.stdin, cwd, attemptEnv, emit, timeoutMs, signal, baseEnv);
+    } finally {
+      endAiRun(liveRun);
+    }
     const tail = parser.flush();
     if (tail) {
       captured += tail;
@@ -211,6 +259,9 @@ export async function runAiFailover(
               : "other";
     // No failover on a timeout when the caller asked for it: the AI CLI is healthy (no tool-health
     // report), the run was just too long — return the timeout as the final result.
+    // A usage limit / out of credits is the account's, not this cli's: tell every cli (ADR-0518).
+    if (leaser && (reason === "credits" || reason === "limit")) leaser.exhausted(attempt);
+    leaser?.done();
     if (reason === "timeout" && !failoverOnTimeout) {
       return { exitCode: finalExit, workedDir: null, workedKey: null, workedCmd: null, usage: { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0 }, sessionId: "" };
     }

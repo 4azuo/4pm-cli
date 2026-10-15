@@ -61,6 +61,8 @@ export interface WsError {
   type: "error";
   errorCode: string;
   message: string;
+  /** Extra facts for the cli to show — `{ ip }` on PLATFORM_IP_NOT_ALLOWED. @adr 0519 */
+  meta?: Record<string, string>;
 }
 
 /** Union of control messages (not channel envelopes). */
@@ -95,6 +97,9 @@ export interface MachineStatusPayload {
    * @adr 0354
    */
   aiAccounts?: string[];
+  /** The global `accountKey` (sha256) of every usable credential — kept on the link's presence so the idle
+   *  pick prefers a cli that still has an idle account. @adr 0518 @adr 0522 */
+  aiAccountKeys?: string[];
   /** Host logins mounted under `~/ai-creds/<provider>[-*]` that hold a login — persisted on
    * `MachineLink.aiMounts`; the Worker configs Form suggests them as profile dirs.
    * @adr 0479

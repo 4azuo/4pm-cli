@@ -176,6 +176,9 @@ export const WsChannels = {
   QUOTA_CHECK: "quota.check",
   // cli → server (reply): per-org concurrent AI-run slot — acquire / renew / release (ADR-0359)
   RUN_SLOT: "run.slot",
+  // cli → server (reply): cross-worker AI account lease — acquire (pick + lease) / renew / release /
+  // exhausted (ADR-0518)
+  AI_ACCOUNT: "ai.account",
   // cli → server (reply): read / add the org's monthly autonomous-book counters — USER_TODO / USER_QA /
   // AI_TODO rows vs `autonomousRequestsPerMonth` (ADR-0365)
   AUTONOMOUS_BOOK_USAGE: "autonomous.bookUsage",
@@ -201,6 +204,9 @@ export const WsChannels = {
   // One-way, sent immediately after each direct tool invocation (last-wins per tool); the
   // server merges it into `MachineLink.usageSnapshot.toolHealth` for the admin pool lists.
   TOOL_HEALTH: "tool.health",
+  // cli → server (one-way): the AI attempts running on the cli right now — full list on every start /
+  // end; kept on the link's presence (ADR-0522)
+  AI_RUN_STATE: "ai.run.state",
   // cli → server: durable per-command history record on finish (ADR-0072)
   COMMAND_HISTORY: "command.history",
   // cli → server: periodic upload of the cli's own JSONL log file (ADR-0122) — stored
@@ -226,9 +232,6 @@ export const WsChannels = {
   // sends the question + asker role + the shared docs/FAQ repo config; the worker clones/pulls
   // the repo, runs `claude` grounded in its docs+FAQ, and replies with the composed answer.
   SUPPORT_ANSWER: "support.answer",
-  // AI knowledge distill (ADR-0190): server → project cli request–reply. The worker runs the AI CLI
-  // in the project's working dir with a distillation prompt and replies with the composed markdown.
-  KNOWLEDGE_COMPOSE: "knowledge.compose",
   // Ticket → FAQ synthesis (ADR-0333): server (platform-pool dispatcher) → platform-pool cli
   // request–reply. The dispatcher sends the selected support tickets + the 4pm-faq repo with a
   // short-lived WRITE token; the worker runs an agent-write that distils the tickets into FAQ

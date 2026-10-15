@@ -9,6 +9,7 @@
 import { randomUUID } from "node:crypto";
 import { UsageMetric } from "@4pm/constants";
 import type { UsageReportPayload } from "@4pm/ws";
+import { createAccountLeaser } from "./ai-account-lease";
 import { runAiFailover, type AiRunHandlers } from "./ai-runner";
 import { aiProviderOf } from "./ai-stream";
 import { getPinnedCredential, getWorkingCredential, getWorkingProfile } from "./ai-profile-state";
@@ -41,11 +42,11 @@ async function generate(ctx: WsHandlerCtx, prompt: string, cwd: string, label: s
   // Working-first hint, as for a dispatched run (ADR-0057/0182/0250): the operator's pin, else the
   // remembered working credential / profile dir.
   const unified = isUnifiedConfig(config);
+  const pinned = unified ? getPinnedCredential(ctx.profileDir) : null;
   const hint = unified
     ? {
         credential:
-          getPinnedCredential(ctx.profileDir) ??
-          ((config.aiFailoverMode ?? "remember") === "remember" ? getWorkingCredential(ctx.profileDir) : null),
+          pinned ?? ((config.aiFailoverMode ?? "remember") === "remember" ? getWorkingCredential(ctx.profileDir) : null),
       }
     : { dir: getWorkingProfile(ctx.profileDir, cmd) };
   const plan = planAiRun(prompt, config, hint, new Map(), true);
@@ -69,7 +70,9 @@ async function generate(ctx: WsHandlerCtx, prompt: string, cwd: string, label: s
   ctx.bus.startBusy(plan.cmd);
   let result;
   try {
-    result = await runAiFailover(plan, `ai-task-${randomUUID()}`, cwd, handlers, timeoutSec * 1000);
+    // Lease each attempt's AI account across workers — prefer an idle one (ADR-0518).
+    const leaser = createAccountLeaser(ctx, { pinnedCredential: pinned, usage: () => ctx.usageSnapshot });
+    result = await runAiFailover(plan, `ai-task-${randomUUID()}`, cwd, handlers, { timeoutMs: timeoutSec * 1000, leaser, source: "task" });
   } finally {
     ctx.bus.endBusy(plan.cmd);
   }

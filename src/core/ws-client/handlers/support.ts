@@ -1,29 +1,26 @@
 /**
- * AI-compose channel handlers that spawn `claude` with the operator's configured profiles (working-
- * first + failover): SUPPORT_ANSWER — a support agent answers a "how to use 4PM" question
- * from the shared docs/FAQ repo, isolated from any customer project; KNOWLEDGE_COMPOSE —
- * distil the served project into a knowledge article, run in its working dir. Both echo
- * the Q/A into the transcript like a normal AI dispatch so the operator sees it.
- * @adr 0170 @adr 0190 @adr 0057
+ * AI-compose channel handlers run through the shared AI path (every configured account, working-first,
+ * failover, account lease — ADR-0520): SUPPORT_ANSWER — a support agent answers a "how to use 4PM"
+ * question from the shared docs/FAQ repo, isolated from any customer project; FAQ_COMPOSE — the platform
+ * pool distils support tickets into FAQ markdown and opens a PR; CHECKLIST_AUTHOR — the org AI pool drafts
+ * checklist items. Each echoes the Q/A into the transcript like a normal AI dispatch so the operator sees it.
+ * @adr 0170 @adr 0057 @adr 0520
  */
 import {
   WsChannels,
   type ChecklistAuthorReply,
   type ChecklistAuthorRequest,
   type FaqComposeRequest,
-  type KnowledgeComposeRequest,
   type SupportAnswerRequest,
   type UsageReportPayload,
   type WsEnvelope,
 } from "@4pm/ws";
 import { UsageMetric } from "@4pm/constants";
 import { runChecklistAuthor, runSupportAnswer } from "../../knowledge/support-answer";
-import { runKnowledgeCompose } from "../../knowledge/knowledge-compose";
 import { runFaqCompose } from "../../knowledge/faq-compose";
-import { reportToolResult } from "../../worker/tool-health";
-import { getWorkingProfile } from "../../ai/ai-profile-state";
 import { aiProviderOf } from "../../ai/ai-stream";
-import { resolveClaudeAuthMode, resolveClaudeProfiles } from "../../../utils/ai-cli";
+import { createAiTextRunner } from "../../ai/ai-text-run";
+import { resolveClaudeAuthMode } from "../../../utils/ai-cli";
 import { readProfileConfig } from "../../../config/profile";
 import { acquireRunSlot } from "../run-slot";
 import type { WsHandlerCtx } from "../context";
@@ -38,23 +35,14 @@ export function handleSupportChannels(
     case WsChannels.SUPPORT_ANSWER: {
       // Request/reply: a support agent answers a "how to use 4PM" question by
       // reading the shared docs/FAQ repo. Isolated from any customer project (own cache dir).
-      // Resolve the operator's configured claude profiles (working-first) so claude runs with a
-      // signed-in account (CLAUDE_CONFIG_DIR) + its model and fails over on auth/limit — the same
-      // profile handling as the normal AI dispatch, which a bare `claude` lacked.
       const req = payload as unknown as SupportAnswerRequest;
-      const supportConfig = readProfileConfig(ctx.profileDir);
-      const supportCmd = supportConfig.aiCli || "claude";
-      const supportAi = {
-        cmd: supportCmd,
-        profiles: resolveClaudeProfiles(supportConfig, getWorkingProfile(ctx.profileDir, supportCmd)),
-        env: supportConfig.aiEnv,
-      };
+      const supportCmd = readProfileConfig(ctx.profileDir).aiCli || "claude";
       // Echo the Q&A into the transcript like a normal AI dispatch (ADR-0057/0108) so the
       // operator at the support machine sees the question and the composed answer, not just
       // the "processing" spinner. Server-dispatched ⇒ source "server".
       ctx.bus.push({ source: "server", kind: "aireq", text: `${supportCmd} ‹ ${req.question}` });
       ctx.bus.startBusy("support-answer");
-      void runSupportAnswer(req, supportAi, ctx.profileDir)
+      void runSupportAnswer(req, createAiTextRunner(ctx), ctx.profileDir)
         .then((reply) => {
           if (reply.error) {
             ctx.bus.push({
@@ -67,44 +55,9 @@ export function handleSupportChannels(
             ctx.bus.push({ source: "server", kind: "aires", text: `${supportCmd} ›` });
             ctx.bus.push({ source: "server", kind: "out", text: reply.body });
           }
-          // Surface the AI CLI's health to the admin pool (ADR-0223) — the support agent's most
-          // common failure ("Not logged in") is exactly what an operator needs to see.
-          reportToolResult(supportCmd, !reply.error, reply.error);
           ctx.send(WsChannels.SUPPORT_ANSWER, reply, message.id);
         })
         .finally(() => ctx.bus.endBusy("support-answer"));
-      return true;
-    }
-    case WsChannels.KNOWLEDGE_COMPOSE: {
-      // DEPRECATED (ADR-0362): the server now runs knowledge distill as a command-dispatch AI run and no
-      // longer sends this; kept for one release so a newer cli still answers an older server.
-      // Request/reply: AI-distil this project into a knowledge article, run in the
-      // project's working dir so the model can read the code/docs. Same profile handling as the
-      // normal AI dispatch. No physic root (idle cli) ⇒ error ⇒ server templates it.
-      const kreq = payload as unknown as KnowledgeComposeRequest;
-      if (!ctx.physicRoot) {
-        ctx.send(WsChannels.KNOWLEDGE_COMPOSE, { bodyMarkdown: "", error: "no project" }, message.id);
-        return true;
-      }
-      const kcfg = readProfileConfig(ctx.profileDir);
-      const kcmd = kcfg.aiCli || "claude";
-      const kai = {
-        cmd: kcmd,
-        profiles: resolveClaudeProfiles(kcfg, getWorkingProfile(ctx.profileDir, kcmd)),
-        env: kcfg.aiEnv,
-      };
-      ctx.bus.push({ source: "server", kind: "aireq", text: `${kcmd} ‹ distil knowledge` });
-      ctx.bus.startBusy("knowledge-compose");
-      void runKnowledgeCompose(kreq, kai, ctx.physicRoot)
-        .then((reply) => {
-          if (reply.error) {
-            ctx.bus.push({ source: "server", kind: "log", text: `knowledge-compose failed: ${reply.error}`, level: "warn" });
-          } else {
-            ctx.bus.push({ source: "server", kind: "aires", text: `${kcmd} ›` });
-          }
-          ctx.send(WsChannels.KNOWLEDGE_COMPOSE, reply, message.id);
-        })
-        .finally(() => ctx.bus.endBusy("knowledge-compose"));
       return true;
     }
     case WsChannels.FAQ_COMPOSE: {
@@ -112,23 +65,16 @@ export function handleSupportChannels(
       // markdown in the 4pm-faq repo and opens a PR, using the short-lived WRITE token in the request
       // (never persisted). Write-capable agent — same profile handling as the normal AI dispatch.
       const freq = payload as unknown as FaqComposeRequest;
-      const fcfg = readProfileConfig(ctx.profileDir);
-      const fcmd = fcfg.aiCli || "claude";
-      const fai = {
-        cmd: fcmd,
-        profiles: resolveClaudeProfiles(fcfg, getWorkingProfile(ctx.profileDir, fcmd)),
-        env: fcfg.aiEnv,
-      };
+      const fcmd = readProfileConfig(ctx.profileDir).aiCli || "claude";
       ctx.bus.push({ source: "server", kind: "aireq", text: `${fcmd} ‹ synthesize FAQ (${freq.tickets.length} tickets)` });
       ctx.bus.startBusy("faq-compose");
-      void runFaqCompose(freq, fai)
+      void runFaqCompose(freq, createAiTextRunner(ctx))
         .then((reply) => {
           if (reply.error) {
             ctx.bus.push({ source: "server", kind: "log", text: `faq-compose failed: ${reply.error}`, level: "warn" });
           } else {
             ctx.bus.push({ source: "server", kind: "aires", text: `${fcmd} › ${reply.prUrl || "no changes"}` });
           }
-          reportToolResult(fcmd, !reply.error, reply.error);
           ctx.send(WsChannels.FAQ_COMPOSE, reply, message.id);
         })
         .finally(() => ctx.bus.endBusy("faq-compose"));
@@ -141,11 +87,6 @@ export function handleSupportChannels(
       const creq = payload as unknown as ChecklistAuthorRequest;
       const ccfg = readProfileConfig(ctx.profileDir);
       const ccmd = ccfg.aiCli || "claude";
-      const cai = {
-        cmd: ccmd,
-        profiles: resolveClaudeProfiles(ccfg, getWorkingProfile(ctx.profileDir, ccmd)),
-        env: ccfg.aiEnv,
-      };
       ctx.bus.push({ source: "server", kind: "aireq", text: `${ccmd} ‹ author checklist items` });
       ctx.bus.startBusy("checklist-author");
       void (async () => {
@@ -161,7 +102,7 @@ export function handleSupportChannels(
           return;
         }
         try {
-          const { reply, usage } = await runChecklistAuthor(creq, cai);
+          const { reply, usage, workedCmd } = await runChecklistAuthor(creq, createAiTextRunner(ctx));
           const occurredAt = new Date().toISOString();
           const events: UsageReportPayload["events"] = [{ metric: UsageMetric.COMMANDS, amount: 1, occurredAt }];
           if (usage.tokens > 0) {
@@ -173,7 +114,7 @@ export function handleSupportChannels(
               outputTokens: usage.output,
               cacheReadTokens: usage.cacheRead,
               cacheCreationTokens: usage.cacheCreation,
-              provider: aiProviderOf(ccmd),
+              provider: aiProviderOf(workedCmd ?? ccmd),
               authMode: resolveClaudeAuthMode(ccfg),
             });
           }
@@ -183,7 +124,6 @@ export function handleSupportChannels(
           } else {
             ctx.bus.push({ source: "server", kind: "aires", text: `${ccmd} ›` });
           }
-          reportToolResult(ccmd, !reply.error, reply.error);
           ctx.send(WsChannels.CHECKLIST_AUTHOR, reply, message.id);
         } finally {
           slot.handle.release();

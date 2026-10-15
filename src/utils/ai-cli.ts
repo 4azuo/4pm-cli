@@ -621,7 +621,7 @@ const accountEmailCache = new Map<string, { mtimeMs: number; email: string | nul
  * Under uid separation the file is the agent's (`0600`) and is read through the agent (ADR-0430
  * phase 3); the result is cached until the file changes.
  */
-function profileAccountEmail(dir: string): string | null {
+export function profileAccountEmail(dir: string): string | null {
   const file = join(dir, ".claude.json");
   try {
     const { mtimeMs } = statSync(file);
@@ -688,34 +688,6 @@ export function profileLabels(config: AiCliConfig): string[] {
   }
   const cmd = config.aiCli ?? DEFAULT_AI_CLI;
   return profileDirs(profilesFor(config, cmd)).map((dir) => profileDisplayLabel(dir));
-}
-
-/** A claude profile resolved for a direct run: its config dir + optional `--model`. */
-export interface ResolvedClaudeProfile {
-  /** CLAUDE_CONFIG_DIR selecting the signed-in account. */
-  dir: string;
-  /** The profile's `--model` (omitted/empty ⇒ the CLI's default model). */
-  model?: string;
-}
-
-/**
- * Resolve the configured claude profiles to try (working-first, disabled/blank dropped — the
- * SAME selection as {@link planAiRun}), but WITHOUT baking a prompt into argv so the caller can
- * feed a large prompt over stdin (the support agent's grounded answer). Empty list ⇒
- * no profile configured (the caller should fall back to the CLI's default env).
- * @adr 0170
- */
-export function resolveClaudeProfiles(
-  config: AiCliConfig,
-  workingDir: string | null,
-): ResolvedClaudeProfile[] {
-  const profiles = claudeProfilesOf(config)
-    .filter(isUsableProfile)
-    .map((p) => ({ dir: resolveHomePath(p.profile), model: p.model?.trim() || undefined }));
-  // Working-first: move the last-known-good dir to the front when it is one of the candidates.
-  const idx = workingDir ? profiles.findIndex((p) => p.dir === workingDir) : -1;
-  if (idx > 0) profiles.unshift(profiles.splice(idx, 1)[0]!);
-  return profiles;
 }
 
 /** Working-first hint fed to {@link planAiRun}: a legacy profile dir OR a unified credential key. */
@@ -860,4 +832,91 @@ function planLegacyRun(
     };
   });
   return { cmd, attempts };
+}
+
+/**
+ * The provider args of a restricted (non-dispatch) runner — support answer, research, FAQ compose,
+ * memory compaction. `args(cmd)` returns what follows the common prefix (required metering args ·
+ * `--model` · strict MCP · secret-path deny settings) for that provider, or `null` when the runner
+ * cannot run on it (the attempt is dropped).
+ * @adr 0520
+ */
+export interface AiRunPolicy {
+  args(cmd: string): string[] | null;
+}
+
+/**
+ * Plan a restricted runner's prompt over the SAME credentials and order as {@link planAiRun} (unified or
+ * legacy list, disabled / duplicate dirs dropped, the active-provider scope, working-first hint) with the
+ * runner's policy args instead of the dispatch modes. The profile's free-form `args` are not applied.
+ * No attempt left ⇒ one default-env claude attempt (the CLI's own config), as before.
+ * @adr 0520
+ */
+export function planPolicyRun(
+  prompt: string,
+  config: AiCliConfig,
+  hint: AiWorkingHint,
+  policy: AiRunPolicy,
+): AiPlan {
+  const baseEnv = config.aiEnv ?? {};
+  const allDirs = allAiProfileDirs(config);
+  /** One attempt on `cmd` / `dir` (null = the CLI's default env), or null when the policy refuses it. */
+  const build = (
+    cmd: string,
+    dir: string | null,
+    label: string,
+    model: string | undefined,
+    apiKey: ApiKeyDescriptor | undefined,
+  ): AiAttempt | null => {
+    const extra = policy.args(cmd);
+    if (extra === null) return null;
+    const envVar = profileEnvVar(cmd);
+    return {
+      cmd,
+      label,
+      dir,
+      key: dir ? credentialKey(cmd, dir) : null,
+      args: [
+        ...requiredArgs(cmd),
+        ...(model?.trim() ? ["--model", model.trim()] : []),
+        ...strictMcpArgs(cmd),
+        ...denySettingsArgs(cmd, dir ? [...allDirs, dir] : allDirs),
+        ...extra,
+      ],
+      stdin: prompt,
+      env: dir && envVar ? { ...baseEnv, [envVar]: dir } : { ...baseEnv },
+      ...(apiKey ? { apiKey } : {}),
+    };
+  };
+  let candidates: { cmd: string; dir: string; label: string; model?: string; apiKey?: ApiKeyDescriptor }[];
+  if (isUnifiedConfig(config)) {
+    const active = activeProvider(config);
+    candidates = dropDuplicateDirs(config.aiProfiles!.filter(isUsableCredential))
+      .filter((c) => !active || c.provider === active)
+      .map((c) => {
+        const dir = resolveHomePath(c.profile);
+        return { cmd: c.provider, dir, label: credentialDisplayLabel(c.label, dir), model: c.model, apiKey: c.apiKey };
+      });
+  } else {
+    const cmd = config.aiCli || DEFAULT_AI_CLI;
+    candidates = profileEnvVar(cmd)
+      ? dropDuplicateDirs(profilesFor(config, cmd).filter(isUsableProfile)).map((p) => {
+          const dir = resolveHomePath(p.profile);
+          return { cmd, dir, label: profileDisplayLabel(dir), model: p.model, apiKey: p.apiKey };
+        })
+      : [];
+  }
+  // Working-first: the hinted credential (unified) or dir (legacy) moves to the front.
+  const head = candidates.findIndex((c) =>
+    hint.credential ? credentialKey(c.cmd, c.dir) === hint.credential : hint.dir ? c.dir === hint.dir : false,
+  );
+  if (head > 0) candidates.unshift(candidates.splice(head, 1)[0]!);
+  const attempts = candidates
+    .map((c) => build(c.cmd, c.dir, c.label, c.model, c.apiKey))
+    .filter((a): a is AiAttempt => a !== null);
+  if (attempts.length === 0) {
+    const fallback = build(DEFAULT_AI_CLI, null, "default", undefined, undefined);
+    if (fallback) attempts.push(fallback);
+  }
+  return { cmd: attempts[0]?.cmd ?? DEFAULT_AI_CLI, attempts };
 }

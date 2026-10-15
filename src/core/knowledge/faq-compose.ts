@@ -11,18 +11,16 @@
  * stays token-free) nor visible to the agent. The clone is deleted afterwards.
  * @adr 0333 @adr 0346
  */
-import { spawn } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { FaqComposeReply, FaqComposeRequest, FaqTicket, FaqTicketResult } from "@4pm/ws";
 import { logger } from "../../common/logger/logger";
-import { createAiStreamParser, estimateTokens, type AiUsage } from "../ai/ai-stream";
-import type { ResolvedClaudeProfile } from "../../utils/ai-cli";
-import { agentEnv, gitAuthArgs } from "../agent/agent-sandbox";
-import { denySettingsArgs } from "../../utils/agent-deny";
-import { strictMcpArgs } from "../../utils/agent-mcp";
+import { estimateTokens, type AiUsage } from "../ai/ai-stream";
+import type { AiTextRunner } from "../ai/ai-text-run";
+import type { AiRunPolicy } from "../../utils/ai-cli";
+import { gitAuthArgs } from "../agent/agent-sandbox";
 import { resolveCliPrompt } from "../ai/prompt-overrides";
-import { agentSpawnArgs, execInProject } from "../agent/agent-spawn";
+import { execInProject } from "../agent/agent-spawn";
 import { makeAgentTempDir, unregisterAgentRoot } from "../../utils/agent-user";
 
 
@@ -31,13 +29,6 @@ const NO_USAGE: AiUsage = { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheC
 
 /** Max time the write-capable claude agent may run (ms) — an agent-write may take many turns. */
 const COMPOSE_TIMEOUT_MS = 10 * 60 * 1000;
-
-/** How to run claude for the synthesis — the operator's configured profiles (working-first). @adr 0057 */
-export interface FaqComposeAi {
-  cmd: string;
-  profiles: ResolvedClaudeProfile[];
-  env?: Record<string, string>;
-}
 
 /**
  * Tools denied to the synthesis agent. Nothing is blanket-allowed: under `acceptEdits` the
@@ -95,78 +86,20 @@ function parsePerTicket(text: string): FaqTicketResult[] {
   return [];
 }
 
-/** One edit-only `claude` attempt (acceptEdits + file tools) in the repo dir; captures usage. */
-function runClaudeOnce(
-  cmd: string,
-  profile: ResolvedClaudeProfile | null,
-  prompt: string,
-  cwd: string,
-  extraEnv: Record<string, string> | undefined,
-  denyDirs: string[] = [],
-): Promise<{ code: number; out: string; err: string; usage: AiUsage }> {
-  return new Promise((resolve, reject) => {
-    const isClaude = cmd.includes("claude");
-    const args = [
-      "-p",
-      ...(profile?.model ? ["--model", profile.model] : []),
-      ...(isClaude ? ["--output-format", "stream-json", "--verbose"] : []),
-      // Secret-path deny rules (ADR-0347): reads are not confined to the clone, so the credential
-      // dirs / cli profile / ssh / gh / git credentials are explicitly denied.
-      // No MCP server on this run (ADR-0427): repo/user MCP config is ignored.
-      ...strictMcpArgs(cmd),
-      ...denySettingsArgs(cmd, [...denyDirs, profile?.dir]),
-      // Edit-only headless agent: file edits are auto-accepted, everything else (Bash, web)
-      // is denied, since the prompt carries untrusted ticket text. git/PR are done by this module.
-      ...(isClaude
-        ? ["--permission-mode", "acceptEdits", "--disallowedTools", ...AGENT_DENIED_TOOLS]
-        : []),
-      ...(cmd.includes("codex") ? ["--sandbox", "workspace-write"] : []),
-    ];
-    // Allow-listed env only — the cli's own secrets never reach the agent.
-    const env = agentEnv(extraEnv, profile ? { CLAUDE_CONFIG_DIR: profile.dir } : undefined, { kind: "projectless" });
-    // The AI CLI always runs as the agent user when uid separation is on (ADR-0430).
-    const run = agentSpawnArgs(cmd, args, env);
-    const child = spawn(run.cmd, run.args, { stdio: ["pipe", "pipe", "pipe"], cwd, env: run.env });
-    const parser = createAiStreamParser(cmd);
-    let out = "";
-    let err = "";
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error("faq-compose agent timed out"));
-    }, COMPOSE_TIMEOUT_MS);
-    timer.unref();
-    child.stdout.on("data", (d: Buffer) => (out += parser.push(d.toString())));
-    child.stderr.on("data", (d: Buffer) => (err += d.toString()));
-    child.on("error", (e) => {
-      clearTimeout(timer);
-      reject(e);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      out += parser.flush();
-      resolve({ code: code ?? -1, out, err, usage: parser.usage() });
-    });
-    child.stdin.write(prompt);
-    child.stdin.end();
-  });
-}
-
-/** Run the agent across the configured profiles (working-first), failing over on any failed attempt. */
-async function runClaudeWithFailover(
-  prompt: string,
-  cwd: string,
-  ai: FaqComposeAi,
-): Promise<{ usage: AiUsage; text: string }> {
-  const attempts: (ResolvedClaudeProfile | null)[] = ai.profiles.length > 0 ? ai.profiles : [null];
-  let lastReason = "no attempt";
-  for (let i = 0; i < attempts.length; i++) {
-    const { code, out, err, usage } = await runClaudeOnce(ai.cmd, attempts[i]!, prompt, cwd, ai.env, ai.profiles.map((p) => p.dir));
-    if (code === 0) return { usage, text: out.trim() };
-    lastReason = `exited ${code}: ${(err || out).slice(0, 500)}`;
-    if (i === attempts.length - 1) break;
-  }
-  throw new Error(`claude ${lastReason}`);
-}
+/**
+ * The FAQ-compose run policy — an edit-only headless agent: file edits are auto-accepted, shell / web /
+ * sub-agents are denied (the prompt carries untrusted ticket text; git / PR are done by this module).
+ * codex runs in a workspace-write sandbox.
+ * @adr 0520
+ */
+const FAQ_POLICY: AiRunPolicy = {
+  args: (cmd) =>
+    cmd.includes("claude")
+      ? ["--permission-mode", "acceptEdits", "--disallowedTools", ...AGENT_DENIED_TOOLS]
+      : cmd.includes("codex")
+        ? ["--sandbox", "workspace-write"]
+        : null,
+};
 
 /** Cap on the agent output text returned to the server (kept small for the run record + modal). */
 const MAX_OUTPUT_CHARS = 8_000;
@@ -176,7 +109,7 @@ const MAX_OUTPUT_CHARS = 8_000;
  * a PR — all with the short-lived write token, which (and the whole clone) is wiped afterwards. Any
  * failure is returned as `{ prUrl: "", error }` so the server marks the run failed rather than hanging.
  */
-export async function runFaqCompose(req: FaqComposeRequest, ai: FaqComposeAi): Promise<FaqComposeReply> {
+export async function runFaqCompose(req: FaqComposeRequest, run: AiTextRunner): Promise<FaqComposeReply> {
   if (!req.repo.token) return { prUrl: "", error: "no write token" };
   // A throwaway folder shared with the agent user (ADR-0430): the clone, the agent's edits and every git /
   // gh step in it run as the agent, so a hook planted in the clone never executes as the cli.
@@ -193,7 +126,16 @@ export async function runFaqCompose(req: FaqComposeRequest, ai: FaqComposeAi): P
     await execInProject("git", ["-C", workDir, "config", "user.email", "faq-bot@4pm.app"], { env: gitEnv });
     await execInProject("git", ["-C", workDir, "checkout", "-b", req.headBranch], { env: gitEnv });
 
-    const { usage, text } = await runClaudeWithFailover(buildPrompt(req.tickets, req.customPrompt), workDir, ai);
+    const result = await run(buildPrompt(req.tickets, req.customPrompt), {
+      label: "faq-compose", source: "faq",
+      policy: FAQ_POLICY,
+      cwd: workDir,
+      timeoutMs: COMPOSE_TIMEOUT_MS,
+      envKind: "projectless",
+      allowEmpty: true,
+    });
+    if (!result.ok) throw new Error(`AI ${result.error ?? "failed"}`);
+    const { usage, text } = result;
     const output = text.slice(0, MAX_OUTPUT_CHARS);
     const perTicket = parsePerTicket(text);
 

@@ -380,7 +380,26 @@ export interface MachineLinkResponse {
    * @adr 0479
    */
   aiMounts?: AiMount[];
+  /** The AI attempts the worker is running right now (live, from presence); `[]` = idle. @adr 0522 */
+  aiRuns?: MachineAiRun[];
   createdAt: string;
+}
+
+/**
+ * One AI attempt a worker is running right now (live — from the link's presence, never stored).
+ * @adr 0522
+ */
+export interface MachineAiRun {
+  /** Display label of the AI account — masked `AI account #N` on a platform-pool worker. */
+  label: string;
+  /** The account as `aiAccounts` names it — only where `aiAccounts` is visible (an org's own link). */
+  account?: string;
+  /** The AI CLI (claude | codex | …). */
+  provider: string;
+  /** What started it: command · local · autonomous · task · support · research · faq · memory. */
+  source: string;
+  /** ISO start time. */
+  startedAt: string;
 }
 
 /** One host-mounted AI login a worker reported (`MachineLink.aiMounts`). @adr 0479 */
@@ -689,6 +708,8 @@ export interface MachineUsageStatus {
   scope: string;
   /** Currently processing a prompt. */
   busy: boolean;
+  /** The AI attempts running right now (live, from presence); `[]` = idle. @adr 0522 */
+  aiRuns?: MachineAiRun[];
   /** The physic project it serves (label "current"), or null when idle. */
   serving: { projectId: string; name: string } | null;
   /** Running cli version the worker last reported (machine.status); null if unknown. @adr 0015 */

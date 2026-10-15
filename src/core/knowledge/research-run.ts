@@ -7,17 +7,13 @@
  * but never touch the worker or other systems. Usage is captured so the handler meters it to the org.
  * @adr 0380
  */
-import { spawn } from "node:child_process";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { ResearchAttachmentPayload } from "@4pm/ws";
-import { createAiStreamParser, estimateTokens, type AiUsage } from "../ai/ai-stream";
-import { agentEnv } from "../agent/agent-sandbox";
-import { denySettingsArgs } from "../../utils/agent-deny";
-import { strictMcpArgs } from "../../utils/agent-mcp";
+import { estimateTokens, type AiUsage } from "../ai/ai-stream";
+import type { AiTextRunner } from "../ai/ai-text-run";
 import { resolveCliPrompt } from "../ai/prompt-overrides";
-import type { ResolvedClaudeProfile } from "../../utils/ai-cli";
-import { agentSpawnArgs } from "../agent/agent-spawn";
+import type { AiRunPolicy } from "../../utils/ai-cli";
 import { makeAgentTempDir, unregisterAgentRoot } from "../../utils/agent-user";
 import { writeFileInRootSync } from "../../utils/safe-path";
 
@@ -57,13 +53,6 @@ function safeAttachmentName(name: string, index: number): string {
   return base || `file-${index + 1}`;
 }
 
-/** How to run claude for research — the operator's configured profiles (working-first). @adr 0057 */
-export interface ResearchAi {
-  cmd: string;
-  profiles: ResolvedClaudeProfile[];
-  env?: Record<string, string>;
-}
-
 /**
  * The research system policy prepended to the user's question. It defines the task and the
  * STRICT content policy, and instructs the model to return a single `REFUSED:` line (parsed by the
@@ -75,52 +64,17 @@ export function buildResearchPrompt(question: string): string {
   return resolveCliPrompt("cli.research.policy", { question });
 }
 
-/** One research `claude` attempt: web tools only, streaming each readable delta to `onChunk`. */
-function runClaudeOnce(
-  cmd: string,
-  profile: ResolvedClaudeProfile | null,
-  prompt: string,
-  extraEnv: Record<string, string> | undefined,
-  onChunk: (delta: string) => void,
-  denyDirs: string[],
-  attachments: ResearchAttachmentPayload[],
-): Promise<{ code: number; out: string; err: string; usage: AiUsage }> {
-  return new Promise((resolve, reject) => {
-    const isClaude = cmd.includes("claude");
-    // Empty throwaway dir (the per-run scratch — ADR-0385): attachments are written here and the agent's
-    // Read is confined to it, so a project-less run never touches a project folder or the wider machine.
-    // Shared with the agent user when uid separation is on (ADR-0430) — it reads the attachments here.
-    const cwd = makeAgentTempDir("4pm-research-");
-    const hasAttachments = attachments.length > 0;
-    let finalPrompt = prompt;
-    if (hasAttachments) {
-      const lines: string[] = [];
-      attachments.forEach((a, i) => {
-        const file = join(cwd, safeAttachmentName(a.name, i));
-        try {
-          // Shared with the agent, which reads it (ADR-0487).
-          writeFileInRootSync(cwd, file, Buffer.from(a.dataBase64, "base64"));
-          lines.push(`- \`${file}\``);
-        } catch {
-          // best-effort — skip an attachment that fails to write
-        }
-      });
-      if (lines.length > 0) {
-        finalPrompt = `${prompt}\n\nThe user attached these files — use the Read tool to read them before answering:\n${lines.join("\n")}`;
-      }
-    }
-    const args = [
-      "-p",
-      ...(profile?.model ? ["--model", profile.model] : []),
-      ...(isClaude ? ["--output-format", "stream-json", "--verbose"] : []),
-      // Secret-path deny rules (ADR-0347) — reads are not confined to the working dir.
-      // No MCP server on this run (ADR-0427): repo/user MCP config is ignored.
-      ...strictMcpArgs(cmd),
-      ...denySettingsArgs(cmd, [...denyDirs, profile?.dir]),
-      // Web-only agent (+ Read/Glob of the scratch dir when attachments are present): allow the tool set,
-      // deny everything else, bound the loop. `--permission-mode default` is the non-variadic terminator
-      // (so the variadic tool flags consume only their own comma-token — same trick as the other runners).
-      ...(isClaude
+/**
+ * The research run policy: web tools only (+ `Read`/`Glob` of the scratch dir when attachments are
+ * present), every other tool denied, the loop bounded. `--permission-mode default` is the non-variadic
+ * terminator so the variadic tool flags consume only their own comma-token. claude only — the content
+ * policy and tool fence are claude's.
+ * @adr 0380 @adr 0385 @adr 0520
+ */
+function researchPolicy(hasAttachments: boolean): AiRunPolicy {
+  return {
+    args: (cmd) =>
+      cmd.includes("claude")
         ? [
             `--max-turns=${RESEARCH_MAX_TURNS}`,
             "--allowedTools",
@@ -130,89 +84,70 @@ function runClaudeOnce(
             "--permission-mode",
             "default",
           ]
-        : []),
-    ];
-    const env = agentEnv(extraEnv, profile ? { CLAUDE_CONFIG_DIR: profile.dir } : undefined, { kind: "research" });
-    const cleanup = (): void => {
-      try {
-        unregisterAgentRoot(cwd);
-        rmSync(cwd, { recursive: true, force: true });
-      } catch {
-        // best-effort — an empty leftover temp dir is harmless
-      }
-    };
-    // The AI CLI always runs as the agent user when uid separation is on (ADR-0430).
-    const run = agentSpawnArgs(cmd, args, env);
-    const child = spawn(run.cmd, run.args, { stdio: ["pipe", "pipe", "pipe"], env: run.env, cwd });
-    const parser = createAiStreamParser(cmd);
-    let out = "";
-    let err = "";
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error("research run timed out"));
-    }, RESEARCH_TIMEOUT_MS);
-    timer.unref();
-    child.stdout.on("data", (d: Buffer) => {
-      const delta = parser.push(d.toString());
-      if (delta) {
-        out += delta;
-        onChunk(delta);
-      }
-    });
-    child.stderr.on("data", (d: Buffer) => (err += d.toString()));
-    child.on("error", (e) => {
-      clearTimeout(timer);
-      cleanup();
-      reject(e);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      cleanup();
-      const tail = parser.flush();
-      if (tail) {
-        out += tail;
-        onChunk(tail);
-      }
-      resolve({ code: code ?? -1, out, err, usage: parser.usage() });
-    });
-    child.stdin.write(finalPrompt);
-    child.stdin.end();
+        : null,
+  };
+}
+
+/** Write the attachments into the scratch dir and point the prompt at them (best-effort per file). */
+function attachFiles(cwd: string, prompt: string, attachments: ResearchAttachmentPayload[]): string {
+  const lines: string[] = [];
+  attachments.forEach((a, i) => {
+    const file = join(cwd, safeAttachmentName(a.name, i));
+    try {
+      // Shared with the agent, which reads it (ADR-0487).
+      writeFileInRootSync(cwd, file, Buffer.from(a.dataBase64, "base64"));
+      lines.push(`- \`${file}\``);
+    } catch {
+      // best-effort — skip an attachment that fails to write
+    }
   });
+  return lines.length > 0
+    ? `${prompt}\n\nThe user attached these files — use the Read tool to read them before answering:\n${lines.join("\n")}`
+    : prompt;
 }
 
 /** The outcome of a research run: the answer text + its token usage (or a failure reason). */
 export interface ResearchRunResult {
   text: string;
   usage: AiUsage;
+  /** The provider that answered (metered per provider — ADR-0340), or null on failure. */
+  workedCmd: string | null;
   error?: string;
 }
 
 /**
- * Run research across the configured profiles (working-first), failing over on any failed attempt.
- * Streams readable deltas to `onChunk` as they arrive. A run that captured no token counts falls back to
- * a length estimate so metering is never zero on a real answer.
+ * Run research through the shared AI path (every configured account, working-first, failover, account
+ * lease) in an empty throwaway dir — the per-run scratch where attachments are written and the agent's
+ * Read is confined. Streams readable deltas to `onChunk` as they arrive.
+ * @adr 0520 @adr 0385
  */
 export async function runResearch(
   question: string,
-  ai: ResearchAi,
+  run: AiTextRunner,
   onChunk: (delta: string) => void,
   attachments: ResearchAttachmentPayload[] = [],
 ): Promise<ResearchRunResult> {
-  const prompt = buildResearchPrompt(question);
-  const denyDirs = ai.profiles.map((p) => p.dir);
-  const attempts: (ResolvedClaudeProfile | null)[] = ai.profiles.length > 0 ? ai.profiles : [null];
-  let lastReason = "no attempt";
-  for (let i = 0; i < attempts.length; i++) {
+  // Shared with the agent user when uid separation is on (ADR-0430) — it reads the attachments here.
+  const cwd = makeAgentTempDir("4pm-research-");
+  try {
+    const prompt = attachFiles(cwd, buildResearchPrompt(question), attachments);
+    const result = await run(prompt, {
+      label: "research", source: "research",
+      policy: researchPolicy(attachments.length > 0),
+      cwd,
+      timeoutMs: RESEARCH_TIMEOUT_MS,
+      envKind: "research",
+      onChunk,
+    });
+    if (!result.ok) return { text: "", usage: { ...NO_USAGE }, workedCmd: null, error: result.error ?? "failed" };
+    const usage = result.usage.tokens > 0 ? result.usage : { ...NO_USAGE, tokens: estimateTokens(result.text) };
+    return { text: result.text, usage, workedCmd: result.workedCmd };
+  } finally {
     try {
-      const { code, out, err, usage } = await runClaudeOnce(ai.cmd, attempts[i]!, prompt, ai.env, onChunk, denyDirs, attachments);
-      if (code === 0 && out.trim()) {
-        const u = usage.tokens > 0 ? usage : { ...NO_USAGE, tokens: estimateTokens(out) };
-        return { text: out.trim(), usage: u };
-      }
-      lastReason = `exited ${code}: ${(err || out).slice(0, 300)}`;
-    } catch (e) {
-      lastReason = e instanceof Error ? e.message : String(e);
+      unregisterAgentRoot(cwd);
+      rmSync(cwd, { recursive: true, force: true });
+    } catch {
+      // best-effort — an empty leftover temp dir is harmless
     }
   }
-  return { text: "", usage: { ...NO_USAGE }, error: lastReason };
 }

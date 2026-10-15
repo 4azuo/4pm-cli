@@ -4,6 +4,7 @@
   "error.versionRejected": "服务器拒绝了 cli 版本（{version}）— 请更新。",
   "error.sessionReplaced": "该配置文件的另一个会话已接管 — 此实例正在停止。（您是否对同一配置文件运行了两次 `4pm start`？）",
   "error.accountPaused": "此账户已暂停 — 将在恢复前持续重试。",
+  "error.platformIpBlocked": "此 worker 的 IP（{ip}）不在平台的 CLI_IP_ALLOWLIST 中 — 请联系管理员添加。将每 5 分钟重试一次。",
   "error.serverError": "服务器报告错误：{code}",
   "error.linkInvalid": "链接已失效（{reason}）— 已删除 .cre。运行 `4pm link` 以重新配对。",
   "start.notLinked": "配置文件 “{profile}” 尚未链接 — 请先运行 `4pm link --server <URL>`。",

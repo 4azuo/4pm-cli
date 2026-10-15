@@ -4,6 +4,8 @@
 export * from "./batcher";
 export * from "./channels/index";
 export * from "./crypto";
+export * from "./messages/ai-account";
+export * from "./messages/ai-run-state";
 export * from "./messages/autonomous-book-groups";
 export * from "./messages/autonomous-book-usage";
 export * from "./messages/checklist-author";
@@ -11,7 +13,6 @@ export * from "./messages/envelope";
 export * from "./messages/er";
 export * from "./messages/faq-compose";
 export * from "./messages/git-token";
-export * from "./messages/knowledge-compose";
 export * from "./messages/memory";
 export * from "./messages/research-ask";
 export * from "./messages/run-slot";

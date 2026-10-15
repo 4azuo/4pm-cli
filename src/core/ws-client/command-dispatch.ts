@@ -28,9 +28,12 @@ import {
   type ReviewResultPayload,
   type UsageReportPayload,
   type WsEnvelope,
+  type AiRunSource,
 } from "@4pm/ws";
 import { runCommand } from "../exec/executor";
 import { runAiFailover, TIMEOUT_EXIT, type AiRunHandlers, type AiRunResult } from "../ai/ai-runner";
+import { createAccountLeaser } from "../ai/ai-account-lease";
+import { createAiTextRunner } from "../ai/ai-text-run";
 import { aiProviderOf, estimateTokens } from "../ai/ai-stream";
 import {
   getPinnedCredential,
@@ -48,7 +51,6 @@ import {
   planAiRun,
   profileDisplayLabel,
   resolveClaudeAuthMode,
-  resolveClaudeProfiles,
 } from "../../utils/ai-cli";
 import { formatTimestampInZone } from "../../utils/time";
 import { finishCommand, recordCommand } from "../exec/command-history";
@@ -421,6 +423,8 @@ export interface AiPromptOutcome {
 export interface AiRunOverrides {
   timeoutMs?: number;
   failoverOnTimeout?: boolean;
+  /** What started the run, for the worker's live AI state (default: by origin). @adr 0522 */
+  source?: AiRunSource;
 }
 
 /** The outcome of a prompt refused before it ran (token cap / outbound review). */
@@ -617,6 +621,16 @@ async function runAiPromptInner(
     effectivePrompt = `${MEMORY_SEED_HEADER}\n${memoryBlock}\n\n${guardedPrompt}`;
   }
   const plan = planAiRun(effectivePrompt, config, hint, resume, oneShot, aiConfig, readOnly, bypass);
+  // The account lease (ADR-0518) or a failover may run an attempt whose account holds no session of
+  // its own: seed that attempt with the memory, as a fresh session.
+  if (resumeId && ctx.aiMemory) {
+    const memoryBlock = wrapUntrusted(ctx.aiMemory, { kind: "data", source: "ai-memory" });
+    for (const attempt of plan.attempts) {
+      if (!(attempt.key && attempt.cmd === "claude" && ctx.sessionIdByKey.has(attempt.key))) {
+        attempt.stdin = `${MEMORY_SEED_HEADER}\n${memoryBlock}\n\n${attempt.stdin}`;
+      }
+    }
+  }
   // On-use self-install (ADR-0396): a missing AI CLI is installed before the first attempt spawns.
   await ensureAiClisFor(ctx.profileDir, plan.attempts.map((a) => a.cmd), (line) => ctx.bus.log(line));
   // Representative argv for the announce/history markers (args are now per-profile —
@@ -791,7 +805,20 @@ async function runAiPromptInner(
       if (slot.queued) ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: "", log: true, queue: null });
       run.state = "running";
       try {
-        result = await runAiFailover(plan, commandId, cwd, handlers, aiRunTimeoutMs, run.controller.signal, overrides?.failoverOnTimeout ?? true);
+        // Lease each attempt's AI account across workers — prefer an idle one (ADR-0518).
+        const leaser = createAccountLeaser(ctx, {
+          pinnedCredential: pinnedCred,
+          usage: () => ctx.usageSnapshot,
+          onShared: (label) =>
+            ctx.bus.push({ source: origin, kind: "log", text: `every AI account is busy — sharing "${label}" with another run` }),
+        });
+        result = await runAiFailover(plan, commandId, cwd, handlers, {
+          timeoutMs: aiRunTimeoutMs,
+          signal: run.controller.signal,
+          failoverOnTimeout: overrides?.failoverOnTimeout ?? true,
+          leaser,
+          source: overrides?.source ?? (origin === "server" ? "command" : "local"),
+        });
       } finally {
         slot.handle.release();
       }
@@ -1059,10 +1086,11 @@ export async function runWebSlashCommand(ctx: WsHandlerCtx, line: string, comman
 }
 
 /**
- * Fold the latest exchange into the shared AI memory: a background claude compaction to a
- * budget-bounded summary, cached locally + written back to the server (`memory.update`). Best-effort —
- * a failed/empty compaction keeps the previous memory (no write). Claude-only (mirrors the design's
- * native-session focus); a non-claude worker simply never compacts.
+ * Fold the latest exchange into the shared AI memory: a background compaction to a budget-bounded
+ * summary, cached locally + written back to the server (`memory.update`). Best-effort — a failed/empty
+ * compaction keeps the previous memory (no write). Runs on the shared AI path, so it uses the worker's
+ * configured accounts (any provider the compaction policy allows).
+ * @adr 0520
  */
 async function updateSharedMemory(
   ctx: WsHandlerCtx,
@@ -1072,10 +1100,10 @@ async function updateSharedMemory(
   budgetChars: number,
 ): Promise<void> {
   if (!answer.trim()) return;
-  const profiles = resolveClaudeProfiles(config, ctx.physicRoot);
   const cwd = ctx.physicRoot ?? process.cwd();
-  const { memory: newMemory, usage, dir } = await runMemoryCompaction(
-    { cmd: "claude", profiles, env: config.aiEnv },
+  // The shared AI path (ADR-0520): the working account first, failover, account lease.
+  const { memory: newMemory, usage, dir, cmd } = await runMemoryCompaction(
+    createAiTextRunner(ctx),
     cwd,
     { oldMemory: ctx.aiMemory, prompt: userPrompt, answer, budgetChars },
   );
@@ -1091,7 +1119,7 @@ async function updateSharedMemory(
           outputTokens: usage.output,
           cacheReadTokens: usage.cacheRead,
           cacheCreationTokens: usage.cacheCreation,
-          provider: "claude",
+          provider: aiProviderOf(cmd ?? "claude"),
           authMode: resolveClaudeAuthMode(config),
         },
       ],

@@ -16,9 +16,9 @@ import {
 } from "@4pm/ws";
 import { UsageMetric } from "@4pm/constants";
 import { readProfileConfig } from "../../../config/profile";
-import { getWorkingProfile } from "../../ai/ai-profile-state";
 import { aiProviderOf } from "../../ai/ai-stream";
-import { resolveClaudeAuthMode, resolveClaudeProfiles } from "../../../utils/ai-cli";
+import { createAiTextRunner } from "../../ai/ai-text-run";
+import { resolveClaudeAuthMode } from "../../../utils/ai-cli";
 import { acquireRunSlot } from "../run-slot";
 import { runResearch } from "../../knowledge/research-run";
 import { screenAnswer, screenQuestion } from "../../knowledge/research-guard";
@@ -67,12 +67,8 @@ async function run(
   }
 
   try {
-    const ai = {
-      cmd,
-      profiles: resolveClaudeProfiles(config, getWorkingProfile(ctx.profileDir, cmd)),
-      env: config.aiEnv,
-    };
-    const result = await runResearch(req.question, ai, (delta) => emit({ chunk: delta }), req.attachments ?? []);
+    // The shared AI path (ADR-0520): every configured account, failover, account lease.
+    const result = await runResearch(req.question, createAiTextRunner(ctx), (delta) => emit({ chunk: delta }), req.attachments ?? []);
 
     // Meter the run (ADR-0020/0380): one command + the real tokens; reported with projectId=null (the
     // org-AI-pool cli serves no project), so it counts against the org's AI usage/quota.
@@ -87,7 +83,7 @@ async function run(
         outputTokens: result.usage.output,
         cacheReadTokens: result.usage.cacheRead,
         cacheCreationTokens: result.usage.cacheCreation,
-        provider: aiProviderOf(cmd),
+        provider: aiProviderOf(result.workedCmd ?? cmd),
         authMode: resolveClaudeAuthMode(config),
       });
     }
