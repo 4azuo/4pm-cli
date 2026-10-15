@@ -13,6 +13,11 @@ export const ErrorCode = {
   // The caller's IP is outside the deployment's platform allowlist (APP_/ADMIN_/CLI_IP_ALLOWLIST —
   // ADR-0519); `meta.ip` carries the IP. Distinct from IP_NOT_ALLOWED (org / user / project tiers).
   PLATFORM_IP_NOT_ALLOWED: "PLATFORM_IP_NOT_ALLOWED",
+  // The deploy's site password gate (SITE_PASSWORD / ADMIN_SITE_PASSWORD — ADR-0523) is on and the
+  // browser has no valid gate cookie; the web / admin-web move to `/site-gate`.
+  SITE_GATE_REQUIRED: "SITE_GATE_REQUIRED",
+  // Wrong password on the site password gate (ADR-0523).
+  SITE_GATE_PASSWORD_INVALID: "SITE_GATE_PASSWORD_INVALID",
   // A user's IP allowlist entry falls outside the org allowlist (ADR-0044).
   IP_OUTSIDE_ORG_ALLOWLIST: "IP_OUTSIDE_ORG_ALLOWLIST",
   NOT_FOUND: "NOT_FOUND",
