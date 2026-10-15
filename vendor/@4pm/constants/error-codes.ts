@@ -118,6 +118,8 @@ export const ErrorCode = {
   PACKAGE_GUIDE_TARGET_EXISTS: "PACKAGE_GUIDE_TARGET_EXISTS",
   // org total hosted storage cap (ADR-0122/0365) — blocks text writes, uploads, memo/book writes and new AI runs
   STORAGE_QUOTA_EXCEEDED: "STORAGE_QUOTA_EXCEEDED",
+  // market-server could not read the org storage quota from the server — write refused (fail-closed, ADR-0512)
+  STORAGE_QUOTA_UNAVAILABLE: "STORAGE_QUOTA_UNAVAILABLE",
   // Self-managed storage clear (ADR-0365): typed org-name confirmation mismatch; a kind the service
   // cannot clear; a clear already running for the org.
   STORAGE_CLEAR_CONFIRM_MISMATCH: "STORAGE_CLEAR_CONFIRM_MISMATCH",

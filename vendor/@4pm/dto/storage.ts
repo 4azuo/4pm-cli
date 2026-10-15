@@ -2,7 +2,7 @@
  * Hosted-storage kinds + self-managed storage DTOs: the storage-kind catalogue shared by the
  * meter, manual clear, storage alerts and auto clear; the org settings shapes for alerts / auto clear;
  * the clear request/response bodies; and the plan-caps counters.
- * @api org-0010 @adr 0365
+ * @api org-0010 @adr 0365 @adr 0512
  */
 import { z } from "zod";
 
@@ -24,6 +24,9 @@ export const STORAGE_KINDS = [
   "aiDocImages",
   "artifacts",
   "commandHistory",
+  "knowledgeText",
+  "marketPackages",
+  "marketMedia",
 ] as const;
 export type StorageKind = (typeof STORAGE_KINDS)[number];
 
@@ -48,6 +51,9 @@ export const STORAGE_KIND_COLOUR: Record<StorageKind, StorageColour> = {
   aiDocImages: "files",
   artifacts: "files",
   commandHistory: "commandHistory",
+  knowledgeText: "messages",
+  marketPackages: "files",
+  marketMedia: "files",
 };
 
 /** Kinds owned (stored + cleared) by `@4pm/community`. */
@@ -63,6 +69,14 @@ export const COMMUNITY_STORAGE_KINDS = [
   "commentFiles",
 ] as const satisfies readonly StorageKind[];
 export type CommunityStorageKind = (typeof COMMUNITY_STORAGE_KINDS)[number];
+
+/** Kinds owned (computed + reported) by `@4pm/market-server` — metered, never clearable. @adr 0512 */
+export const MARKET_STORAGE_KINDS = [
+  "knowledgeText",
+  "marketPackages",
+  "marketMedia",
+] as const satisfies readonly StorageKind[];
+export type MarketStorageKind = (typeof MARKET_STORAGE_KINDS)[number];
 
 /** Kinds a user may clear on the server side (aiDocImages / artifacts are metered but not clearable). */
 export const SERVER_CLEARABLE_STORAGE_KINDS = [
