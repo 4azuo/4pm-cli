@@ -875,6 +875,10 @@ export interface FsListResponse {
   entries: FsEntry[];
   /** The target actually used. @adr 0511 */
   target?: FsTarget;
+  /** `base`: the remote-tracking ref listed (`origin/<base>`). @adr 0511 */
+  ref?: string;
+  /** `base`: the commit sha of `ref` that was listed. @adr 0511 */
+  commit?: string;
 }
 
 /** Data GET /machines/:id/file — a text file's content on the worker (project dashboard). */

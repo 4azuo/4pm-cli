@@ -595,6 +595,10 @@ export interface FsListReply {
   entries: { name: string; type: "dir" | "file" }[];
   /** The target actually used. */
   target?: FsTarget;
+  /** `base`: the remote-tracking ref listed (`origin/<base>`, a submodule's own for a path inside it). */
+  ref?: string;
+  /** `base`: the commit sha of `ref` that was listed. */
+  commit?: string;
 }
 
 /**

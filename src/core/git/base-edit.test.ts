@@ -91,9 +91,12 @@ describe("base edits", () => {
     const loc = (await locateBase(root, "docs"))!;
     await commitToBase(root, loc, [{ op: "mkdir", path: "docs" }], { message: "m" });
     await commitToBase(root, loc, [{ op: "move", from: "notes.md", to: "docs/notes.md" }], { message: "m" });
-    expect((await listBaseDir(root, "docs"))!.map((e) => e.name).sort()).toEqual([".gitkeep", "notes.md"]);
+    expect((await listBaseDir(root, "docs"))!.entries.map((e) => e.name).sort()).toEqual([".gitkeep", "notes.md"]);
     await commitToBase(root, loc, [{ op: "delete", path: "docs" }], { message: "m" });
-    expect((await listBaseDir(root, ""))!.map((e) => e.name)).toEqual(["README.md"]);
+    const top = (await listBaseDir(root, ""))!;
+    expect(top.entries.map((e) => e.name)).toEqual(["README.md"]);
+    expect(top.ref).toBe(`origin/${loc.base}`);
+    expect(top.commit).toMatch(/^[0-9a-f]{40}$/);
   });
 
   it("returns undefined when nothing changes", async () => {

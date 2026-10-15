@@ -159,8 +159,14 @@ export async function baseKind(root: string, path: string): Promise<"file" | "di
   return type === "blob" ? "file" : type === "tree" || type === "commit" ? "dir" : "none";
 }
 
-/** List a folder of `origin/<base>` (a submodule entry is a folder); null ⇒ no base (fall back). */
-export async function listBaseDir(root: string, path: string): Promise<{ name: string; type: "dir" | "file" }[] | null> {
+/**
+ * List a folder of `origin/<base>` (a submodule entry is a folder) + the ref / commit listed; null ⇒ no base
+ * (fall back).
+ */
+export async function listBaseDir(
+  root: string,
+  path: string,
+): Promise<{ entries: { name: string; type: "dir" | "file" }[]; ref: string; commit: string } | null> {
   const loc = await locateBase(root, path);
   if (!loc) return null;
   const ref = await baseRef(loc, false);
@@ -176,7 +182,7 @@ export async function listBaseDir(root: string, path: string): Promise<{ name: s
     })
     .filter((e) => e.name);
   entries.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === "dir" ? -1 : 1));
-  return entries;
+  return { entries, ref: `origin/${loc.base}`, commit: ref };
 }
 
 /** Index entries (`mode sha path`) at or under `rel` in the temporary index. */

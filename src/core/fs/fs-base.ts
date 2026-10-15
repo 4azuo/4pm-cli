@@ -41,12 +41,12 @@ function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** List a folder of `origin/<base>`. */
+/** List a folder of `origin/<base>` (+ the ref / commit read, shown by the web). */
 export async function baseList(root: string, path: string): Promise<FsListReply | null> {
   const rel = rootRel(root, path && path.trim() ? path : ".") ?? "";
-  const entries = await listBaseDir(root, rel);
-  if (!entries) return null;
-  return { path: abs(root, rel), entries, target: "base" };
+  const listed = await listBaseDir(root, rel);
+  if (!listed) return null;
+  return { path: abs(root, rel), entries: listed.entries, target: "base", ref: listed.ref, commit: listed.commit };
 }
 
 /** Read a text file of `origin/<base>` (+ its blob id for the next write). */
