@@ -108,6 +108,8 @@ export const ErrorCode = {
   // 4rum post / Messenger message missing or not visible — also a cursor anchor (ADR-0341/0361)
   POST_NOT_FOUND: "POST_NOT_FOUND",
   MESSAGE_NOT_FOUND: "MESSAGE_NOT_FOUND",
+  // 4rum comment missing / not a live comment of that post — a comment-list parentId or cursor (ADR-0516)
+  COMMENT_NOT_FOUND: "COMMENT_NOT_FOUND",
   PACKAGE_ALREADY_INSTALLED: "PACKAGE_ALREADY_INSTALLED",
   // Multi-target installer (ADR-0460/0461/0462)
   PACKAGE_PROVIDER_UNSUPPORTED: "PACKAGE_PROVIDER_UNSUPPORTED",

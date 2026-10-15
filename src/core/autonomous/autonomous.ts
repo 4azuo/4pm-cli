@@ -15,6 +15,8 @@ import type {
   AutonomousBooks,
   AutonomousEvidenceReply,
   AutonomousEvidenceRequest,
+  AutonomousEvidenceHistoryReply,
+  AutonomousEvidenceHistoryRequest,
   AutonomousLogsReply,
   AutonomousReadReply,
   AutonomousStatus,
@@ -35,9 +37,18 @@ import { ATTEMPTS_REL, findTables, replaceRows } from "./autonomous-books";
 import { approvalStates, buildApprovalEntries, mergeApprovalWrite, unapproveIds, type ApprovalBooks } from "./autonomous-approvals";
 import { applyDiscussionBatch } from "./autonomous-discussions";
 import { applyBookPatch, bookContentHash, bookRowsById, isBookRowId, type BookConflict } from "@4pm/dto";
-import { freshBooksRef, mutateBooks, readBooksFile, resolveBases } from "./autonomous-git";
+import { freshBooksRef, lastCommitTimes, mutateBooks, readBooksFile, resolveBases } from "./autonomous-git";
 import { listDesignEvidence } from "./autonomous-er";
-import { applyStagedEvidence, listMockups, pruneEvidence, readEvidenceFile, stageEvidence } from "./autonomous-evidence";
+import {
+  applyStagedEvidence,
+  evidenceHistory,
+  isVersionedEvidencePath,
+  listMockups,
+  pruneEvidence,
+  readEvidenceFile,
+  restoreEvidenceVersion,
+  stageEvidence,
+} from "./autonomous-evidence";
 import { isValidCronSchedule, reloadAutonomousSchedule, runAutonomousNow } from "./autonomous-scheduler";
 import { t } from "../../i18n";
 
@@ -215,8 +226,9 @@ export async function readAutonomous(root: string, profileDir: string): Promise<
     return remote === null ? readText(root, join(root, rel), fallback) : remote || fallback;
   };
   const cfg = await readAutonomousConfig(profileDir);
+  const booksRef = base ? await freshBooksRef(root, base) : null;
   // Sequences, ER change requests and book attachments for the Evidences rail (ADR-0453).
-  const design = await listDesignEvidence(root, base ? await freshBooksRef(root, base) : null, cfg).catch(() => ({}));
+  const design: Partial<AutonomousReadReply> = await listDesignEvidence(root, booksRef, cfg).catch(() => ({}));
   const [settings, approvals, authors, attempts, mockups, status, ...books] = await Promise.all([
     readAutonomousConfigText(profileDir),
     read(APPROVALS_REL, "{}"),
@@ -236,7 +248,10 @@ export async function readAutonomous(root: string, profileDir: string): Promise<
     userQa: bookMap.userQa,
     aiTodo: bookMap.aiTodo,
   });
-  return { settings, status, books: bookMap, approvals, authors, attempts, mockups, approvalStates: approvalStatesById, ...design };
+  // Last commit time of every listed artifact for the Evidences "Last modified" column (ADR-0514).
+  const listed = [...mockups, ...(design.sequences ?? []), ...(design.ercs ?? []).map((e) => e.path), ...(design.evidence ?? [])];
+  const modifiedAt = await lastCommitTimes(root, booksRef ?? "HEAD", listed);
+  return { settings, status, books: bookMap, approvals, authors, attempts, mockups, approvalStates: approvalStatesById, ...design, modifiedAt };
 }
 
 /** autonomous.logs — tail one day's tick log (default today). */
@@ -513,6 +528,13 @@ export async function writeAutonomous(
       // Book evidence upload (machine-0072, ADR-0404): kept in the profile dir until a bookSave commits it.
       const staged = await stageEvidence(profileDir, req.contentBase64);
       return staged.ok ? { ok: true, stageId: staged.stageId } : { ok: false, error: staged.error };
+    } else if (req.kind === "evidenceRestore") {
+      // Restore a mockup / sequence to a past version as a new books-branch commit (machine-0086, ADR-0515).
+      const base = (await resolveBases(root).catch(() => null))?.root.base ?? "";
+      if (!base) return { ok: false, error: "no remote base branch to restore on" };
+      await freshBooksRef(root, base);
+      const res = await restoreEvidenceVersion(root, base, await readAutonomousConfig(profileDir), req.path, req.rev, req.byLabel ?? by);
+      return res.ok ? { ok: true, result: res.result } : { ok: false, error: res.error };
     } else if (req.kind === "discussionBatch") {
       // Discussion files (ADR-0454): one books commit with the batch trailers; its own publish path.
       return await applyDiscussionBatch(root, req);
@@ -564,7 +586,26 @@ export async function readAutonomousEvidence(root: string, profileDir: string, r
   try {
     const base = (await resolveBases(root).catch(() => null))?.root.base ?? null;
     const { mockupDir, erDir, sequenceDir } = await readAutonomousConfig(profileDir);
-    return await readEvidenceFile(root, base, req.path, req.ref, mockupDir, [erDir, sequenceDir]);
+    // A past version is read from the fetched books history (ADR-0515).
+    if (req.rev && base) await freshBooksRef(root, base);
+    return await readEvidenceFile(root, base, req.path, req.ref, mockupDir, [erDir, sequenceDir], req.rev);
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** The versions (commits) of one mockup / sequence file on the books read ref (else `HEAD`). @api machine-0085 @adr 0515 */
+export async function readAutonomousEvidenceHistory(
+  root: string,
+  profileDir: string,
+  req: AutonomousEvidenceHistoryRequest,
+): Promise<AutonomousEvidenceHistoryReply> {
+  try {
+    const { mockupDir, sequenceDir } = await readAutonomousConfig(profileDir);
+    if (!isVersionedEvidencePath(req.path, mockupDir, sequenceDir)) return { error: "invalid evidence path" };
+    const base = (await resolveBases(root).catch(() => null))?.root.base ?? "";
+    const ref = (base ? await freshBooksRef(root, base) : null) ?? "HEAD";
+    return { commits: await evidenceHistory(root, ref, req.path) };
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };
   }

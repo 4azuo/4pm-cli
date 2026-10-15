@@ -1474,7 +1474,7 @@ export class WsClient {
 }
 
 /** Features reported in machine.status (`CliFeature`, ADR-0449). */
-const CLI_FEATURES: string[] = [CliFeature.CLIENT_VIEWER, CliFeature.BOOK_TEAMS, CliFeature.APPROVAL_PARTIES, CliFeature.DISCUSSIONS, CliFeature.ER, CliFeature.BOOK_PATCH, CliFeature.PACKAGES_MULTI_TARGET, CliFeature.AUTONOMOUS_RUN_NOW, CliFeature.RESTART];
+const CLI_FEATURES: string[] = [CliFeature.CLIENT_VIEWER, CliFeature.BOOK_TEAMS, CliFeature.APPROVAL_PARTIES, CliFeature.DISCUSSIONS, CliFeature.ER, CliFeature.BOOK_PATCH, CliFeature.PACKAGES_MULTI_TARGET, CliFeature.AUTONOMOUS_RUN_NOW, CliFeature.RESTART, CliFeature.EVIDENCE_HISTORY];
 
 /** The URLs of the approved http/sse MCP servers (system egress hosts — ADR-0439). */
 function mcpRemoteUrls(list: { definition: unknown }[] | undefined): string[] {

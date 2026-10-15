@@ -154,6 +154,26 @@ export async function gitQuiet(cwd: string, args: string[], timeout = 60_000): P
   }
 }
 
+/**
+ * ISO time of the last commit on `ref` that touched each of `paths` — one `git log --name-only` over their
+ * top-level folders. An uncommitted path (or a failed log) has no entry.
+ * @adr 0514
+ */
+export async function lastCommitTimes(cwd: string, ref: string, paths: readonly string[]): Promise<Record<string, string>> {
+  const want = new Set(paths);
+  const out: Record<string, string> = {};
+  if (want.size === 0 || !/^[A-Za-z0-9._/-]{1,200}$/.test(ref)) return out;
+  // Two leading segments (e.g. `.4pm/evidence`) keep the pathspec list short however many files there are.
+  const roots = [...new Set(paths.map((p) => p.split("/").slice(0, 2).join("/")))];
+  const log = await gitQuiet(cwd, ["-c", "core.quotepath=off", "log", "--no-renames", "--format=%x00%cI", "--name-only", ref, "--", ...roots]);
+  let at = "";
+  for (const line of log.split("\n")) {
+    if (line.startsWith("\0")) at = line.slice(1).trim();
+    else if (line && at && want.has(line) && !(line in out)) out[line] = at;
+  }
+  return out;
+}
+
 /** One repo the cycle works in: the root ("" subdir) or a submodule. */
 export interface RepoBase {
   /** "" = the project root; else the submodule folder. */

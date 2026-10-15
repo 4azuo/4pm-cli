@@ -65,6 +65,8 @@ export const WsChannels = {
   AUTONOMOUS_LOGS: "autonomous.logs",
   // read one committed book evidence file (ADR-0404): origin/<base> → task branch → working tree
   AUTONOMOUS_EVIDENCE: "autonomous.evidence",
+  // the versions (commits) of one mockup / sequence file (ADR-0515)
+  AUTONOMOUS_EVIDENCE_HISTORY: "autonomous.evidenceHistory",
   // Project ER on the books branch (ADR-0453): read modules / change requests / history (optionally at a
   // version); save / withdraw / approve-and-apply / reject a change request.
   ER_READ: "er.read",

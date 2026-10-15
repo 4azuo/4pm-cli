@@ -1386,13 +1386,36 @@ export function nextEvidenceNumber(text: string, folder: string): number {
 }
 
 /** Query GET /machines/:id/autonomous/evidence — read one committed evidence file. @api machine-0073 */
+/** A commit id of an evidence version (7–40 hex). @adr 0515 */
+export const EVIDENCE_REV_RE = /^[0-9a-f]{7,40}$/;
+
 export const autonomousEvidenceQuerySchema = z.object({
   // Any safe repo path — the cli decides what may be read (an evidence path or a mockup — ADR-0418).
   path: z.string().max(400).regex(SAFE_REPO_PATH_RE),
   // A task branch to fall back to (an AI Done row whose PR is not merged yet).
   ref: z.string().regex(/^[A-Za-z0-9._/-]{1,200}$/).optional(),
+  // A past version: read the file at this commit only (ADR-0515).
+  rev: z.string().regex(EVIDENCE_REV_RE).optional(),
 });
 export type AutonomousEvidenceQuery = z.infer<typeof autonomousEvidenceQuerySchema>;
+
+/** Query of machine-0085 — the file whose versions to list (a mockup / sequence; the cli decides). @adr 0515 */
+export const evidenceHistoryQuerySchema = z.object({
+  path: z.string().max(400).regex(SAFE_REPO_PATH_RE),
+});
+export type EvidenceHistoryQuery = z.infer<typeof evidenceHistoryQuerySchema>;
+
+/** Body of machine-0086 — restore `path` to its content at commit `rev`. @adr 0515 */
+export const evidenceRestoreSchema = z.object({
+  path: z.string().max(400).regex(SAFE_REPO_PATH_RE),
+  rev: z.string().regex(EVIDENCE_REV_RE),
+});
+export type EvidenceRestoreInput = z.infer<typeof evidenceRestoreSchema>;
+
+/** Response of machine-0086. @adr 0515 */
+export interface EvidenceRestoreResponse {
+  result: "published" | "unchanged";
+}
 
 /** Response of machine-0072 — the staged file's handle for the next `bookSave.evidence`. */
 export interface AutonomousEvidenceStageResponse {

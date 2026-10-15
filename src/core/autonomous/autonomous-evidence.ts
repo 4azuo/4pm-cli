@@ -16,6 +16,7 @@ import { dirname, extname, join, posix } from "node:path";
 import {
   EVIDENCE_BOOK_DIR,
   EVIDENCE_MAX_BYTES,
+  EVIDENCE_REV_RE,
   EVIDENCE_PATH_RE,
   evidenceLinks,
   isEvidencePath,
@@ -23,10 +24,11 @@ import {
   evidenceMarkdown,
   type EvidenceBookKey,
 } from "@4pm/dto";
-import type { AutonomousEvidenceReply } from "@4pm/ws";
+import type { AutonomousEvidenceReply, EvidenceCommit } from "@4pm/ws";
 import { mkdirInRoot, readFileInRoot, resolveEntry, resolveForRead, writeFileInRoot } from "../../utils/safe-path";
 import { execInProject } from "../agent/agent-spawn";
 import { booksBranch } from "./autonomous-tasks";
+import { mutateBooks } from "./autonomous-git";
 
 // Project git runs as the agent user when uid separation is on (ADR-0430); unchanged otherwise.
 const run = execInProject;
@@ -272,19 +274,83 @@ export async function readEvidenceFile(
   ref: string | undefined,
   mockupDir: string,
   designDirs: readonly string[] = [],
+  rev?: string,
 ): Promise<AutonomousEvidenceReply> {
   const mockup = isSafeRepoDir(path) && path.startsWith(`${mockupDir}/`) && path.toLowerCase().endsWith(".html");
   // A sequence diagram / ER file (`.md` under `sequenceDir` / `erDir` — ADR-0453).
   const design = isSafeRepoDir(path) && path.toLowerCase().endsWith(".md") && designDirs.some((d) => path.startsWith(`${d}/`));
   if (!isEvidencePath(path) && !mockup && !design) return { error: "invalid evidence path" };
   if (ref && !/^[A-Za-z0-9._/-]{1,200}$/.test(ref)) return { error: "invalid ref" };
+  if (rev !== undefined && !EVIDENCE_REV_RE.test(rev)) return { error: "invalid version" };
   let bytes: Buffer | null = null;
-  if (base) bytes = await showBytes(root, `origin/${booksBranch(base)}`, path);
-  if (!bytes && base) bytes = await showBytes(root, `origin/${base}`, path);
-  if (!bytes && ref) bytes = await showBytes(root, `origin/${ref}`, path);
-  if (!bytes) bytes = await readFileInRoot(root, join(root, path)).catch(() => null);
+  // A past version (ADR-0515): that commit only, no fallbacks.
+  if (rev) bytes = await showBytes(root, rev, path);
+  else if (base) bytes = await showBytes(root, `origin/${booksBranch(base)}`, path);
+  if (!bytes && base && !rev) bytes = await showBytes(root, `origin/${base}`, path);
+  if (!bytes && ref && !rev) bytes = await showBytes(root, `origin/${ref}`, path);
+  if (!bytes && !rev) bytes = await readFileInRoot(root, join(root, path)).catch(() => null);
   if (!bytes) return { error: "evidence not found" };
   // The reply rides one WS frame (8 MB): base64 of the 5 MB evidence cap fits, a bigger file is refused.
   if (bytes.length > EVIDENCE_MAX_BYTES) return { error: "evidence file too large" };
   return { contentBase64: bytes.toString("base64"), contentType: mimeOf(path), name: posix.basename(path), size: bytes.length };
+}
+
+/** Is `path` a file with a version history in the app — an intake mockup or a sequence diagram? @adr 0515 */
+export function isVersionedEvidencePath(path: string, mockupDir: string, sequenceDir: string): boolean {
+  if (!isSafeRepoDir(path)) return false;
+  const p = path.toLowerCase();
+  return (path.startsWith(`${mockupDir}/`) && p.endsWith(".html")) || (path.startsWith(`${sequenceDir}/`) && p.endsWith(".md"));
+}
+
+/**
+ * The versions of one mockup / sequence file: the commits on `ref` that touched it, newest first, at most 50.
+ * @api machine-0085 @adr 0515
+ */
+export async function evidenceHistory(root: string, ref: string, path: string): Promise<EvidenceCommit[]> {
+  const { stdout } = await run("git", ["-c", "core.quotepath=off", "log", "-n", "50", "--format=%H%x1f%cI%x1f%an%x1f%s", ref, "--", path], {
+    cwd: root,
+  });
+  return String(stdout)
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => {
+      const [sha = "", at = "", author = "", subject = ""] = l.split("\x1f");
+      return { sha, at, author, subject };
+    })
+    .filter((c) => /^[0-9a-f]{40}$/.test(c.sha));
+}
+
+/**
+ * Restore a mockup / sequence file to its content at `rev`: write it back onto the books branch as a new commit
+ * (only its folder is committed). `unchanged` when the file already has that content.
+ * @api machine-0086 @adr 0515
+ */
+export async function restoreEvidenceVersion(
+  root: string,
+  base: string,
+  dirs: { mockupDir: string; sequenceDir: string },
+  path: string,
+  rev: string,
+  who: string,
+): Promise<{ ok: true; result: "published" | "unchanged" } | { ok: false; error: string }> {
+  if (!isVersionedEvidencePath(path, dirs.mockupDir, dirs.sequenceDir) || !EVIDENCE_REV_RE.test(rev)) {
+    return { ok: false, error: "invalid evidence path or version" };
+  }
+  const bytes = await showBytes(root, rev, path);
+  if (!bytes) return { ok: false, error: "this version does not contain the file" };
+  const folder = path.startsWith(`${dirs.mockupDir}/`) ? dirs.mockupDir : dirs.sequenceDir;
+  const pub = await mutateBooks(
+    root,
+    base,
+    `evidence: restore ${path} to ${rev.slice(0, 7)} (${who})`,
+    async (dir) => {
+      if (!resolveEntry(dir, join(dir, path))) return false;
+      await writeFileInRoot(dir, join(dir, path), bytes);
+      return true;
+    },
+    [folder],
+  );
+  if (pub === "pushed") return { ok: true, result: "published" };
+  if (pub === "unchanged") return { ok: true, result: "unchanged" };
+  return { ok: false, error: "could not push the restore to the books branch (retry)" };
 }

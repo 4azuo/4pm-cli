@@ -20,6 +20,7 @@ import {
   type AgentToolsWriteRequest,
   type AgentWriteRequest,
   type AutonomousEvidenceRequest,
+  type AutonomousEvidenceHistoryRequest,
   type AutonomousLogsRequest,
   type AutonomousWriteRequest,
   type ConfigReadReply,
@@ -39,7 +40,7 @@ import {
   type SecretsWriteRequest,
   type WsEnvelope,
 } from "@4pm/ws";
-import { readAutonomous, readAutonomousEvidence, readAutonomousLogs, writeAutonomous } from "../../autonomous/autonomous";
+import { readAutonomous, readAutonomousEvidence, readAutonomousEvidenceHistory, readAutonomousLogs, writeAutonomous } from "../../autonomous/autonomous";
 import { readDiscussions } from "../../autonomous/autonomous-discussions";
 import { readEr, writeEr } from "../../autonomous/autonomous-er";
 import { listAgents, readAgent, writeAgent } from "../../agent/agents";
@@ -92,6 +93,16 @@ export function handleWorkerChannels(
       if (ctx.physicRoot) {
         void readAutonomousEvidence(ctx.physicRoot, ctx.profileDir, req).then((reply) =>
           ctx.send(WsChannels.AUTONOMOUS_EVIDENCE, reply, message.id),
+        );
+      }
+      return true;
+    }
+    case WsChannels.AUTONOMOUS_EVIDENCE_HISTORY: {
+      // Request/reply (machine-0085, ADR-0515): the commits that touched one mockup / sequence file.
+      const req = payload as unknown as AutonomousEvidenceHistoryRequest;
+      if (ctx.physicRoot) {
+        void readAutonomousEvidenceHistory(ctx.physicRoot, ctx.profileDir, req).then((reply) =>
+          ctx.send(WsChannels.AUTONOMOUS_EVIDENCE_HISTORY, reply, message.id),
         );
       }
       return true;

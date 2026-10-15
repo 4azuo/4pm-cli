@@ -183,6 +183,8 @@ export const CliFeature = {
   AUTONOMOUS_RUN_NOW: "autonomousRunNow",
   // `cli.restart` — restart at the first idle moment (ADR-0497).
   RESTART: "restart",
+  // Evidence file history: `autonomous.evidenceHistory`, `autonomous.evidence.rev`, `evidenceRestore` (ADR-0515).
+  EVIDENCE_HISTORY: "evidenceHistory",
 } as const;
 export type CliFeature = (typeof CliFeature)[keyof typeof CliFeature];
 
@@ -881,6 +883,12 @@ export interface AutonomousReadReply {
   erDir?: string;
   sequenceDir?: string;
   /**
+   * ISO time of the last commit that touched each listed path (mockups, sequences, ERCs, evidence), on the ref
+   * the listing came from. An uncommitted path has no entry; absent from an older cli.
+   * @adr 0514
+   */
+  modifiedAt?: Record<string, string>;
+  /**
    * Verification state per approved row id (signature + content binding). Absent from an older cli;
    * an id without an entry in the approvals file is absent here too.
    * @adr 0438
@@ -987,7 +995,9 @@ export type AutonomousWriteRequest =
     }
   // Run ONE cycle now through the daemon's own path (the `4pm auto-run` trigger, from the public API —
   // ADR-0482). Every gate of the cycle still applies; the reply only says whether it was submitted.
-  | { kind: "runNow"; by: string; byLabel?: string };
+  | { kind: "runNow"; by: string; byLabel?: string }
+  // Restore a mockup / sequence file to its content at `rev` as a new books-branch commit (ADR-0515, machine-0086).
+  | { kind: "evidenceRestore"; path: string; rev: string; by: string; byLabel?: string };
 // (The `cron` install/uninstall kind was retired by ADR-0392 — the daemon schedules ticks itself.)
 export interface AutonomousWriteReply {
   ok: boolean;
@@ -1012,6 +1022,8 @@ export interface AutonomousWriteReply {
   stageId?: string;
   /** `bookSave` with `code: "BOOK_CONFLICT"`: the rows (or the text around the table) that could not merge. @adr 0455 */
   conflicts?: BookConflictPayload[];
+  /** `evidenceRestore`: whether a commit was published or the file already had that content. @adr 0515 */
+  result?: "published" | "unchanged";
 }
 
 /** autonomous.evidence — read one committed book evidence file. @api machine-0073 @adr 0404 */
@@ -1020,9 +1032,31 @@ export interface AutonomousEvidenceRequest {
   path: string;
   /** A task branch to fall back to when the file is not on `<base>` yet. */
   ref?: string;
+  /** Read the file at this commit only (7–40 hex), no fallbacks. @adr 0515 */
+  rev?: string;
 }
 /** Same shape as `FsDownloadReply`: base64 bytes, or `error`. */
 export type AutonomousEvidenceReply = FsDownloadReply;
+
+/** One version of an evidence file: a commit that touched it. @adr 0515 */
+export interface EvidenceCommit {
+  /** Full commit sha. */
+  sha: string;
+  /** ISO commit time. */
+  at: string;
+  author: string;
+  subject: string;
+}
+
+/** autonomous.evidenceHistory — the versions of one mockup / sequence file. @api machine-0085 @adr 0515 */
+export interface AutonomousEvidenceHistoryRequest {
+  path: string;
+}
+export interface AutonomousEvidenceHistoryReply {
+  /** Newest first, at most 50. */
+  commits?: EvidenceCommit[];
+  error?: string;
+}
 
 /**
  * Subagents & skills management — the dashboard manages subagent files under
