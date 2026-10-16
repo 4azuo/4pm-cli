@@ -247,6 +247,9 @@ export class WsClient {
   /** Tail of the serialized clone-on-connect runs — two concurrent runs on one root race (a half-done
    *  clone's `.git` makes the other skip the clone and commit an empty index), so they queue here. */
   private cloneQueue: Promise<void> = Promise.resolve();
+  /** Outcome of the last settled clone-on-connect, for the root it ran on — `machine.status.reposReady`
+   *  is reported only while that root is still the served one. @adr 0528 */
+  private reposCheck: { root: string; ready: boolean } | null = null;
   /** This machine-user's username — the git commit author for this project.
    *  Push uses the account already logged in with gh/glab on the worker.
    * @adr 0097
@@ -461,22 +464,33 @@ export class WsClient {
    * repo that already has `.git`). Best-effort: a clone failure never disrupts the session (the web
    * still surfaces "not provisioned"). No-op when idle (no physic root) or no repos declared.
    * Runs are serialized (connect + PHYSIC_SYNC both trigger it): each waits for the previous one.
-   * @adr 0289
+   * Each settled run records whether the root holds every declared repo and reports it at once
+   * (`machine.status.reposReady`), so the server can promote a not-active physic.
+   * @adr 0289 @adr 0528
    */
   private ensureServingReposCloned(): Promise<void> {
     const next = this.cloneQueue.then(async () => {
       const root = this.physicRoot;
-      if (!root || this.servingRepos.length === 0 || lifecycle.stopping) return;
-      try {
-        // A clone writes the working tree ⇒ under the repo lock, as a `clone` lease (ADR-0505/0506).
-        await withRepoLock(root, { holder: "project", label: "clone-on-connect" }, () =>
-          work.track("clone", "clone-on-connect", () =>
-            ensureReposCloned(root, this.servingRepos, (_step, message) => this.bus.log(message)),
-          ),
-        );
-      } catch (err) {
-        logger.warn("repos.clone.failed", { error: err instanceof Error ? err.message : String(err) });
+      if (!root || lifecycle.stopping) return;
+      const repos = this.servingRepos;
+      let failed = false;
+      if (repos.length > 0) {
+        try {
+          // A clone writes the working tree ⇒ under the repo lock, as a `clone` lease (ADR-0505/0506).
+          await withRepoLock(root, { holder: "project", label: "clone-on-connect" }, () =>
+            work.track("clone", "clone-on-connect", () =>
+              ensureReposCloned(root, repos, (_step, message) => this.bus.log(message)),
+            ),
+          );
+        } catch (err) {
+          failed = true;
+          logger.warn("repos.clone.failed", { error: err instanceof Error ? err.message : String(err) });
+        }
       }
+      // ADR-0314: the single repo sits at the root ⇒ its `.git` there; no repo declared ⇒ the folder suffices.
+      const ready = !failed && existsSync(root) && (repos.length === 0 || existsSync(join(root, ".git")));
+      this.reposCheck = { root, ready };
+      if (this.sessionKey) this.sendMachineStatus();
     });
     this.cloneQueue = next;
     return next;
@@ -791,11 +805,10 @@ export class WsClient {
         // The machine username is the git commit author for this project (ADR-0097); push
         // uses the account already logged in with gh/glab on the worker.
         this.machineUsername = token.machineUsername ?? "";
-        // Declared repos of the served project (ADR-0289): remember them, then clone any missing into
-        // the physic root now (the folder already exists on a reconnect); a fresh attach re-runs this
-        // from the PHYSIC_SYNC handler once the folder is created.
+        // Declared repos of the served project (ADR-0289): remember them; the clone of any missing one
+        // runs once the handshake set the physic root (hello_ack) — here, before it, the root is still
+        // unknown on the first connect of a process. A fresh attach re-runs it from PHYSIC_SYNC.
         this.servingRepos = token.repos ?? [];
-        void this.ensureServingReposCloned();
 
         // Heal the link scope from the server (older `.cre` stored "unknown" — ADR-0057):
         // persist it + update the header so orchestrator hides "serving", etc.
@@ -904,6 +917,8 @@ export class WsClient {
           // as the fs.list browse root.
           this.ensurePhysicFolder(message.projectName);
           this.physicRoot = this.physicFolderPath(message.projectName);
+          // Clone any missing declared repo + report `reposReady` (ADR-0289/0528).
+          void this.ensureServingReposCloned();
         } else {
           // No project ⇒ idle cli. Clear the header too, else a cli that reconnects
           // after its project was deleted keeps showing "serving <project>" (ADR-0068).
@@ -1208,6 +1223,8 @@ export class WsClient {
       startedAt: new Date(this.startedAtMs).toISOString(),
       lifecycle: lifecycle.state === "draining" ? "draining" : "connected",
       ...(lifecycle.state === "draining" ? { drainingFor: lifecycle.drainingFor } : {}),
+      // Repos in place for the served root (ADR-0528) — only once a clone-on-connect settled for it.
+      ...(this.physicRoot && this.reposCheck?.root === this.physicRoot ? { reposReady: this.reposCheck.ready } : {}),
       // The autonomous snapshot (ADR-0507).
       ...(this.physicRoot ? { autonomous: buildAutonomousSnapshot(this.physicRoot, this.context.profileDir) } : {}),
     });

@@ -11,6 +11,7 @@ import {
   usernameSchema,
 } from "@4pm/validation";
 import { baseRequestSchema, deletedFilterSchema } from "./base";
+import { timeZoneSchema } from "./time-zone";
 import type { WorkerFailingTool } from "./machine";
 
 /** User profile returned by the API (never includes password_hash). */
@@ -49,6 +50,17 @@ export interface UserResponse {
    * @adr 0202
    */
   idleLockMinutes?: number;
+  /**
+   * The user's own display time zone (IANA), `null` = follow the org default. Only on the self
+   * `me()` response.
+   * @adr 0525
+   */
+  timezone?: string | null;
+  /** The org's default time zone (`general.timezone`) — every member gets it here without
+   * `org.read`. Only on the self `me()` response.
+   * @adr 0525
+   */
+  orgTimezone?: string;
   /**
    * Whether **this session** is currently idle-locked server-side. Fresh (not cached) on
    * the `me()` response so a reload while locked re-shows the lock overlay. Only on `me()`.
@@ -295,6 +307,8 @@ export const updateUserRequestSchema = z.object({
   alerts: userAlertsSchema.optional(),
   // cli data retention days (ADR-0115) — manager-only; capped at the plan's retentionDays.
   cliRetentionDays: z.number().int().min(0).max(3650).optional(),
+  // Own display time zone (ADR-0525) — self only; null ⇒ follow the org default.
+  timezone: timeZoneSchema.nullable().optional(),
 });
 export type UpdateUserRequest = z.infer<typeof updateUserRequestSchema>;
 

@@ -6,6 +6,7 @@
 import { z } from "zod";
 import { AI_JOBS, type AiJob } from "@4pm/constants";
 import { baseRequestSchema } from "./base";
+import { timeZoneSchema } from "./time-zone";
 import { ATTACHMENT_FILE_MIME_TYPES, ATTACHMENT_ID_EXT_PATTERN, ATTACHMENT_IMAGE_MIME_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENT_MAX_COUNT, attachmentExt } from "./attachment";
 
 /**
@@ -425,10 +426,12 @@ export type ConsoleSyncEvent =
 export const listCommandsQuerySchema = baseRequestSchema.extend({
   projectId: z.string().guid(),
   // Optional search filters: `search` (from BaseRequest) matches the command
-  // text/status; `from`/`to` are an inclusive `YYYY-MM-DD` date range over `startedAt`;
-  // `machineLinkId` (ADR-0249) filters to one machine-user's commands (absent ⇒ all).
+  // text/status; `from`/`to` are an inclusive `YYYY-MM-DD` date range over `startedAt`, as days in
+  // `tz` (the viewer's zone, default UTC — ADR-0526); `machineLinkId` (ADR-0249) filters to one
+  // machine-user's commands (absent ⇒ all).
   from: z.string().optional(),
   to: z.string().optional(),
+  tz: timeZoneSchema.optional(),
   machineLinkId: z.string().guid().optional(),
 });
 export type ListCommandsQuery = z.infer<typeof listCommandsQuerySchema>;

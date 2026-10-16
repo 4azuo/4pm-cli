@@ -22,4 +22,5 @@ export * from "./project-failure";
 export * from "./project";
 export * from "./storage";
 export * from "./template";
+export * from "./time-zone";
 export * from "./user";

@@ -78,8 +78,15 @@ export interface MachineStatusPayload {
   version: string;
   /** The physic project folder the cli is serving (null = not attached). */
   physicPath?: string | null;
-  /** Does the physic project folder still exist on the machine? */
+  /** Does the physic project folder still exist on the machine? (Legacy manual `config.physicPath` only.) */
   physicPathExists?: boolean;
+  /**
+   * The served root holds every declared repo (`.git` in place; no repo declared ⇒ the folder exists) and
+   * the last clone-on-connect raised no error. Sent once a clone-on-connect for the current root settled;
+   * absent before that and when idle. `true` lets the server promote the physic to active (never demotes).
+   * @adr 0528
+   */
+  reposReady?: boolean;
   /** The machine-user's own AI-run wall-clock limit in seconds (`ProfileConfig.aiRunTimeoutSec`;
    *  `0` = unlimited) — persisted on `MachineLink` so a dispatch can resolve the **effective**
    * timeout (project override else this) and derive the SSE reply windows.
