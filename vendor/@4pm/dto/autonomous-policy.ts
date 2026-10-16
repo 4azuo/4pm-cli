@@ -10,6 +10,7 @@
 import { z } from "zod";
 import { EVIDENCE_ROOT, MOCKUP_ROOT, isSafeRepoDir, type MachineAiRun } from "./machine";
 import { ER_ROOT, SEQUENCE_ROOT } from "./er-model";
+import { DIAGRAM_ROOT } from "./diagram-model";
 
 /** S/M task size hints for intake (indicative, not caps). */
 export interface AutonomousTaskSizeHints {
@@ -35,6 +36,12 @@ export interface ProjectAutonomousSettings {
   mockupDir: string;
   erDir: string;
   sequenceDir: string;
+  /** The draw.io system-diagram folder. @adr 0530 */
+  diagramDir: string;
+  /** Apply a new / revised system-diagram change request without a person (default on). @adr 0530 */
+  diagramAutoApprove: boolean;
+  /** Apply a new / revised ER change request without a person (default off). @adr 0530 */
+  erAutoApprove: boolean;
 }
 
 /** The project-scoped keys (a worker settings write carrying one is refused). */
@@ -48,6 +55,9 @@ export const PROJECT_AUTONOMOUS_KEYS = [
   "mockupDir",
   "erDir",
   "sequenceDir",
+  "diagramDir",
+  "diagramAutoApprove",
+  "erAutoApprove",
 ] as const satisfies readonly (keyof ProjectAutonomousSettings)[];
 
 /** Lower bound of `runTimeoutMinutes`. */
@@ -64,6 +74,9 @@ export const DEFAULT_PROJECT_AUTONOMOUS_SETTINGS: ProjectAutonomousSettings = {
   mockupDir: MOCKUP_ROOT,
   erDir: ER_ROOT,
   sequenceDir: SEQUENCE_ROOT,
+  diagramDir: DIAGRAM_ROOT,
+  diagramAutoApprove: true,
+  erAutoApprove: false,
 };
 
 /** Coerce an unknown object into full project-scoped settings (missing / invalid ⇒ default). */
@@ -92,6 +105,9 @@ export function readProjectAutonomousSettings(raw: unknown): ProjectAutonomousSe
     mockupDir: dir(o.mockupDir, d.mockupDir),
     erDir: dir(o.erDir, d.erDir),
     sequenceDir: dir(o.sequenceDir, d.sequenceDir),
+    diagramDir: dir(o.diagramDir, d.diagramDir),
+    diagramAutoApprove: typeof o.diagramAutoApprove === "boolean" ? o.diagramAutoApprove : d.diagramAutoApprove,
+    erAutoApprove: typeof o.erAutoApprove === "boolean" ? o.erAutoApprove : d.erAutoApprove,
   };
 }
 
@@ -143,11 +159,33 @@ export interface AutonomousPolicy {
 /** Who / what paused a worker. */
 export type AutonomousPausedBy = "user" | "auto" | "projectDeleted" | "migration";
 
+/** What a cycle did / waits for, attached to its `lastCheck`. @adr 0529 */
+export interface AutonomousCheckDetail {
+  /** What an intake of this cycle produced. */
+  intake?: { tasks: number; questions: number; changeRequests: number };
+  /** Rows waiting on people (served teams only): to approve, blocking ER change requests, unanswered questions, unfinished dependencies. */
+  waiting?: { approval: number; changeRequests: number; answers: number; dependencies: number };
+  /** The task this cycle worked on. */
+  taskId?: string;
+  /** The worker holding the intake ids (`intake taken`). */
+  by?: string;
+}
+
 /** The last tick of a worker (skips included). */
 export interface AutonomousLastCheck {
   at: string;
   outcome: "run" | "skip" | "error";
   reason: string;
+  /** @adr 0529 */
+  detail?: AutonomousCheckDetail;
+}
+
+/** What a worker's running cycle does right now: git / gate phases, the intake agent, or the implement agent. @adr 0529 */
+export interface AutonomousStep {
+  kind: "cycle" | "intake" | "implement";
+  /** The `REQ-…` / `QA-…` being taken in, or the `TSK-…` being implemented. */
+  ids: string[];
+  since: string;
 }
 
 /** The autonomous summary a cli reports in `machine.status.autonomous`. */
@@ -161,6 +199,8 @@ export interface AutonomousWorkerSnapshot {
   pausedAt?: string;
   lastCheck?: AutonomousLastCheck | null;
   claim?: { id: string; since: string } | null;
+  /** @adr 0529 */
+  step?: AutonomousStep | null;
   consecutiveFails: number;
 }
 
@@ -182,6 +222,8 @@ export interface ProjectAutonomousWorker {
   pausedAt: string | null;
   lastCheck: AutonomousLastCheck | null;
   claim: { id: string; since: string } | null;
+  /** The running cycle's step (null = no cycle running / an older cli). @adr 0529 */
+  step: AutonomousStep | null;
   consecutiveFails: number;
   /** The AI attempts the worker runs right now (live; `[]` = idle). @adr 0522 */
   aiRuns?: MachineAiRun[];
@@ -222,6 +264,9 @@ export const projectAutonomousPolicyWriteSchema = z
         mockupDir: z.string().max(200).refine(isSafeRepoDir).optional(),
         erDir: z.string().max(200).refine(isSafeRepoDir).optional(),
         sequenceDir: z.string().max(200).refine(isSafeRepoDir).optional(),
+        diagramDir: z.string().max(200).refine(isSafeRepoDir).optional(),
+        diagramAutoApprove: z.boolean().optional(),
+        erAutoApprove: z.boolean().optional(),
       })
       .strict()
       .optional(),

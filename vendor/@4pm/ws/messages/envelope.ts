@@ -151,11 +151,25 @@ export interface AutonomousSnapshotPayload {
   pausedBy?: "user" | "auto" | "projectDeleted" | "migration";
   pausedReason?: string;
   pausedAt?: string;
-  /** The last tick, skips included. */
-  lastCheck?: { at: string; outcome: "run" | "skip" | "error"; reason: string } | null;
+  /** The last tick, skips included; `detail` names what the cycle did / waits for. @adr 0529 */
+  lastCheck?: { at: string; outcome: "run" | "skip" | "error"; reason: string; detail?: AutonomousCheckDetailPayload } | null;
   /** The task this worker holds. */
   claim?: { id: string; since: string } | null;
+  /** What the running cycle does right now (absent / null = no cycle running). @adr 0529 */
+  step?: { kind: "cycle" | "intake" | "implement"; ids: string[]; since: string } | null;
   consecutiveFails: number;
+}
+
+/** `lastCheck.detail` — structurally mirrors `@4pm/dto` `AutonomousCheckDetail`. @adr 0529 */
+export interface AutonomousCheckDetailPayload {
+  /** What an intake of this cycle produced. */
+  intake?: { tasks: number; questions: number; changeRequests: number };
+  /** Rows waiting on people (served teams only). */
+  waiting?: { approval: number; changeRequests: number; answers: number; dependencies: number };
+  /** The task this cycle worked on. */
+  taskId?: string;
+  /** The worker holding the intake ids (`intake taken`). */
+  by?: string;
 }
 
 /**
@@ -197,6 +211,8 @@ export const CliFeature = {
   RESTART: "restart",
   // Evidence file history: `autonomous.evidenceHistory`, `autonomous.evidence.rev`, `evidenceRestore` (ADR-0515).
   EVIDENCE_HISTORY: "evidenceHistory",
+  // The system-diagram channels `diagram.read` / `diagram.write`, auto-approve of ER / diagram changes (ADR-0530).
+  DIAGRAM: "diagram",
 } as const;
 export type CliFeature = (typeof CliFeature)[keyof typeof CliFeature];
 
@@ -889,6 +905,10 @@ export interface AutonomousReadReply {
   sequences?: string[];
   /** ER change-request paths (`<erDir>/changes/ERC-<n>.md`) with their state. @adr 0453 */
   ercs?: { id: string; path: string; state: string; title: string; group: string; req: string[]; task?: string; team?: string; source: string }[];
+  /** System-diagram change-request paths (`<diagramDir>/changes/SDC-<n>.md`) with their state. @adr 0530 */
+  sdcs?: { id: string; path: string; state: string; title: string; group: string; req: string[]; task?: string; team?: string; source: string }[];
+  /** The configured system-diagram folder. @adr 0530 */
+  diagramDir?: string;
   /** Book attachment paths (`<root>/<BOOK>/<ROW-ID>/<file>`, any evidence root) — the Evidences rail. @adr 0453 */
   evidence?: string[];
   /** The configured ER / sequence folders. @adr 0453 */

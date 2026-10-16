@@ -208,14 +208,25 @@ const PROMPT_META: PromptMeta[] = [
     untrustedVars: { specJson: "data" },
   },
   {
+    key: "cli.scaffold.evidenceGuide",
+    ownerApp: "cli",
+    phase: 1,
+    title: "Scaffold — evidence guide author",
+    description:
+      "Writes the project's EVIDENCE_GUIDE.md (how the analysis evidences — mockups, sequence diagrams, ER, system diagram, task evidence — should look) from its spec JSON on project create (ADR-0532). Keep the six fixed section headings.",
+    requiredVars: ["specJson"],
+    untrustedVars: { specJson: "data", instructionsBlock: "request" },
+  },
+  {
     key: "cli.autonomous.intake",
     ownerApp: "cli",
     phase: 1,
     title: "Autonomous — intake",
     description:
-      "Analyses approved user requests + answered intake questions into sized AI tasks, and writes UI mockups to the mockup folder (ADR-0418), sequence diagrams and ER change requests (ADR-0453) — books + mockups + sequences + change requests only; no git/code.",
+      "Analyses approved user requests + answered intake questions into sized AI tasks, and writes UI mockups to the mockup folder (ADR-0418), sequence diagrams and ER change requests (ADR-0453) and system-diagram change requests (ADR-0530), following the project evidence guide (ADR-0532) — books + mockups + sequences + change requests only; no git/code.",
     requiredVars: ["booksIntro", "groupIds", "sMaxFiles", "sMaxLines", "mMaxFiles", "mMaxLines"],
-    untrustedVars: {},
+    // The project's evidence guide is repo text (ADR-0532).
+    untrustedVars: { evidenceGuide: "data" },
   },
   {
     key: "cli.autonomous.implement",
@@ -225,7 +236,7 @@ const PROMPT_META: PromptMeta[] = [
     description:
       "Implements exactly one task on the prepared branches (commit only); may add an ER change request (ADR-0453). Keep the final JSON status block intact.",
     requiredVars: ["taskId", "desc", "branch", "subLines"],
-    untrustedVars: { desc: "request", notes: "request" },
+    untrustedVars: { desc: "request", notes: "request", evidenceGuide: "data" },
   },
   {
     key: "cli.autonomous.split",
@@ -271,6 +282,25 @@ const PROMPT_META: PromptMeta[] = [
     description: "Writes/refines the project's agent-guide file from the spec. Keep the mandatory AI_SECURITY.md section.",
     requiredVars: ["file", "specContext"],
     untrustedVars: { baseBlock: "request", extraBlock: "request", specContext: "data" },
+  },
+  {
+    key: "web.evidenceGuide",
+    ownerApp: "web",
+    phase: 2,
+    title: "Evidence guide (EVIDENCE_GUIDE.md)",
+    description:
+      "Writes/refines the project's evidence guide from the spec and the user's description (ADR-0532). Keep the six fixed section headings; output the whole Markdown document only.",
+    requiredVars: ["specContext"],
+    untrustedVars: { baseBlock: "request", extraBlock: "request", specContext: "data" },
+  },
+  {
+    key: "web.evidenceGuideSection",
+    ownerApp: "web",
+    phase: 2,
+    title: "Evidence guide — one section",
+    description: "Rewrites ONE section of EVIDENCE_GUIDE.md from the user's description (ADR-0532); returns the section body only, without its heading.",
+    requiredVars: ["section", "specContext"],
+    untrustedVars: { current: "request", guide: "data", extraBlock: "request", specContext: "data" },
   },
   {
     key: "web.guideAdapt",
@@ -535,6 +565,16 @@ const PROMPT_META: PromptMeta[] = [
     title: "ER — AI draft",
     description:
       "Read-only agent: drafts the project data model (module erDiagrams) from the schema in the code (ADR-0491). Keep the fenced JSON {title, rationale, modules[{name, description, diagram}]} output.",
+    requiredVars: ["existing"],
+    untrustedVars: { existing: "data" },
+  },
+  {
+    key: "web.diagram.draft",
+    ownerApp: "web",
+    phase: 2,
+    title: "System diagram — AI draft",
+    description:
+      "Read-only agent: drafts the project system diagram (module draw.io files: components + links) from the code (ADR-0530). Keep the fenced JSON {title, rationale, modules[{name, description, xml}]} output.",
     requiredVars: ["existing"],
     untrustedVars: { existing: "data" },
   },

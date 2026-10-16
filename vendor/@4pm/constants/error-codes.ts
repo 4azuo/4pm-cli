@@ -242,6 +242,15 @@ export const ErrorCode = {
   ER_CHANGE_INVALID: "ER_CHANGE_INVALID",
   // The ER change request is not in a state that allows this (e.g. revising an applied one, deciding a non-pending one).
   ER_CHANGE_STALE: "ER_CHANGE_STALE",
+  // Project system diagram (ADR-0530): an SDC touches a cell field another applied one changed (meta
+  // `conflictsWith`, `cells`) — the SDC is now `conflict`, nothing applied.
+  DIAGRAM_CHANGE_CONFLICT: "DIAGRAM_CHANGE_CONFLICT",
+  // A draw.io edit does not parse / is compressed (meta `module`), repeats a cell id, or changes nothing.
+  DIAGRAM_INVALID: "DIAGRAM_INVALID",
+  // The SDC is not in a state that allows this (revising an applied one, deciding a non-pending one, unknown base).
+  DIAGRAM_CHANGE_STALE: "DIAGRAM_CHANGE_STALE",
+  // No such system-diagram change request.
+  DIAGRAM_CHANGE_NOT_FOUND: "DIAGRAM_CHANGE_NOT_FOUND",
   // Networks (ADR-0439): a deny rule / block request names a system host (always allowed).
   NETWORK_RULE_SYSTEM_HOST: "NETWORK_RULE_SYSTEM_HOST",
   // An allow request / approval matches the org denylist, which a project cannot override.
@@ -535,6 +544,9 @@ export const CLI_ERROR_CODE_MAP: Record<string, { code: ErrorCode; status: numbe
   ER_CHANGE_CONFLICT: { code: ErrorCode.ER_CHANGE_CONFLICT, status: 409 },
   ER_CHANGE_INVALID: { code: ErrorCode.ER_CHANGE_INVALID, status: 422 },
   ER_CHANGE_STALE: { code: ErrorCode.ER_CHANGE_STALE, status: 409 },
+  DIAGRAM_CHANGE_CONFLICT: { code: ErrorCode.DIAGRAM_CHANGE_CONFLICT, status: 409 },
+  DIAGRAM_INVALID: { code: ErrorCode.DIAGRAM_INVALID, status: 422 },
+  DIAGRAM_CHANGE_STALE: { code: ErrorCode.DIAGRAM_CHANGE_STALE, status: 409 },
 };
 
 /** Resolve a cli reply's `error` string to its ErrorCode + status, or `null` when unmapped. */

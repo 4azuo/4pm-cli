@@ -840,11 +840,12 @@ function readSpecField(spec: Record<string, unknown>, key: string): string {
 /**
  * AI init — write `.claude/agents/<name>.md` for each declared subagent, then ask the
  * AI CLI to author `README.md`, the project's single guide file (`CLAUDE.md` **or** `AGENT.md`,
- * from `spec.ai_guide_file`) and `AI_SECURITY.md` from the spec. The guide's
- * `ai_guide_instructions` field is folded into the guide prompt as extra guidance. Best-effort: a
+ * from `spec.ai_guide_file`), `AI_SECURITY.md` and `EVIDENCE_GUIDE.md` (the project's rules for the AI's
+ * evidences — ADR-0532) from the spec. The guide's `ai_guide_instructions` field is folded into the guide
+ * prompt as extra guidance, `evidence_guide_instructions` into the evidence guide's. Best-effort: a
  * missing/failed AI CLI must not fail the scaffold (the copied `project-sample` files stay as the
  * baseline — the guide fallback is the user's typed instructions, the security fallback is the sample).
- * @adr 0391 @adr 0309
+ * @adr 0391 @adr 0309 @adr 0532
  */
 async function aiInit(
   target: string,
@@ -855,7 +856,8 @@ async function aiInit(
   // The single agent-guide file the project uses; default CLAUDE.md when unset/unknown.
   const guideFile: AiGuideFile = readSpecField(spec, "ai_guide_file") === "AGENT.md" ? "AGENT.md" : "CLAUDE.md";
   const guideInstructions = readSpecField(spec, "ai_guide_instructions").trim();
-  emit("ai-init", `AI init: subagents, README, ${guideFile}, AI_SECURITY.md…`);
+  const evidenceInstructions = readSpecField(spec, "evidence_guide_instructions").trim();
+  emit("ai-init", `AI init: subagents, README, ${guideFile}, AI_SECURITY.md, EVIDENCE_GUIDE.md…`);
   // Subagents come straight from the spec (name + description + model) — no AI call needed.
   const subagents = Array.isArray(spec.subagents) ? (spec.subagents as SubagentDecl[]) : [];
   if (subagents.length > 0) {
@@ -878,7 +880,7 @@ async function aiInit(
     if (slot.kind === "granted") {
       releaseSlot = () => slot.handle.release();
       generate = (prompt, label) => ai.generate(prompt, target, label);
-      if (slot.queued) emit("ai-init", `AI init: subagents, README, ${guideFile}, AI_SECURITY.md…`);
+      if (slot.queued) emit("ai-init", `AI init: subagents, README, ${guideFile}, AI_SECURITY.md, EVIDENCE_GUIDE.md…`);
     } else {
       emit("ai-skipped", "No AI run slot freed up in time — AI init skipped; fallback content written.");
     }
@@ -920,9 +922,32 @@ async function aiInit(
       // Admin override (ADR-0381) for `cli.scaffold.security`, else the shared registry default.
       resolveCliPrompt("cli.scaffold.security", { specJson }),
     );
+    // EVIDENCE_GUIDE.md (ADR-0532): the project's rules for mockups / diagrams / task evidence. Fallback: the
+    // copied baseline, with the user's typed instructions put under `## General` so they are never lost.
+    await generateFile(
+      generate,
+      join(target, EVIDENCE_GUIDE_FILE),
+      EVIDENCE_GUIDE_FILE,
+      // Admin override (ADR-0381) for `cli.scaffold.evidenceGuide`, else the shared registry default.
+      resolveCliPrompt("cli.scaffold.evidenceGuide", {
+        specJson,
+        instructionsBlock: evidenceInstructions ? `\nAlso follow what the user asked for:\n${evidenceInstructions}\n` : "",
+      }),
+      evidenceInstructions ? withGeneralNote(await readFileInRoot(target, join(target, EVIDENCE_GUIDE_FILE), "utf8").catch(() => ""), evidenceInstructions) : undefined,
+    );
   } finally {
     releaseSlot();
   }
+}
+
+/** The evidence guide file at the project root. @adr 0532 */
+const EVIDENCE_GUIDE_FILE = "EVIDENCE_GUIDE.md";
+
+/** The baseline evidence guide with the user's instructions added at the top of `## General`. @adr 0532 */
+function withGeneralNote(baseline: string, note: string): string {
+  const head = "## General\n";
+  if (!baseline.includes(head)) return `${baseline.trim()}\n\n## General\n${note}\n`;
+  return baseline.replace(head, `${head}${note}\n\n`);
 }
 
 /**

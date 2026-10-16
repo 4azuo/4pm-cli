@@ -28,6 +28,8 @@ export const AiJob = {
   DOC_FIND: "doc-find",
   /** ER AI draft — module erDiagrams drafted from the schema in the code (read-only agent; `aiDocInsights`). @adr 0491 */
   ER_DRAFT: "er-draft",
+  /** System-diagram AI draft — module draw.io files drafted from the code (read-only agent; `aiDocInsights`). @adr 0530 */
+  DIAGRAM_DRAFT: "diagram-draft",
   /** Subagent/skill content generate (one-shot). */
   AGENTS_GENERATE: "agents-generate",
   /** Template "Analyze impact" report — read-only agent. */

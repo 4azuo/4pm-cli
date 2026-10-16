@@ -8,6 +8,7 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import type { MachineUsagePayload } from "@4pm/ws";
+import type { AutonomousCheckDetail } from "@4pm/dto";
 import { work, type WorkLease } from "./work-tracker";
 
 /** Connection status shown in the banner + used to gate the input box. */
@@ -444,13 +445,13 @@ export class SessionBus {
     return () => this.emitter.off("autonomous-run", fn);
   }
 
-  /** Session → trigger: the autonomous cycle settled (ok + an optional note). */
-  autonomousDone(ok: boolean, note?: string): void {
-    this.emitter.emit("autonomous-done", ok, note);
+  /** Session → trigger: the autonomous cycle settled (ok + an optional note + what it did — ADR-0529). */
+  autonomousDone(ok: boolean, note?: string, detail?: AutonomousCheckDetail): void {
+    this.emitter.emit("autonomous-done", ok, note, detail);
   }
 
   /** Subscribe to autonomous-cycle completion. */
-  onAutonomousDone(fn: (ok: boolean, note?: string) => void): () => void {
+  onAutonomousDone(fn: (ok: boolean, note?: string, detail?: AutonomousCheckDetail) => void): () => void {
     this.emitter.on("autonomous-done", fn);
     return () => this.emitter.off("autonomous-done", fn);
   }

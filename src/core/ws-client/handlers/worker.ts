@@ -5,7 +5,8 @@
  * RAG, the paired profile's config.json, and the AI CLI's model
  * list. Each project
  * op is a no-op on an idle cli (no `physicRoot`); config.json ops target the profile dir directly.
- * The project ER (`er.read` / `er.write` — ADR-0453) rides here too.
+ * The project ER (`er.read` / `er.write` — ADR-0453) and the system diagram (`diagram.read` / `diagram.write` —
+ * ADR-0530) ride here too.
  * Book / ER writes are WorkTracker leases and are refused while the daemon drains.
  * @adr 0152 @adr 0153 @adr 0154 @adr 0183 @adr 0185 @adr 0155 @adr 0156 @adr 0157 @adr 0141 @adr 0394 @adr 0453 @adr 0505
  */
@@ -27,6 +28,8 @@ import {
   type ConfigWriteReply,
   type ConfigWriteRequest,
   type DiscussionsReadRequest,
+  type DiagramReadRequest,
+  type DiagramWriteRequest,
   type ErReadRequest,
   type ErWriteRequest,
   type GraphBuildRequest,
@@ -43,6 +46,7 @@ import {
 import { readAutonomous, readAutonomousEvidence, readAutonomousEvidenceHistory, readAutonomousLogs, writeAutonomous } from "../../autonomous/autonomous";
 import { readDiscussions } from "../../autonomous/autonomous-discussions";
 import { readEr, writeEr } from "../../autonomous/autonomous-er";
+import { readDiagram, writeDiagram } from "../../autonomous/autonomous-diagram";
 import { listAgents, readAgent, writeAgent } from "../../agent/agents";
 import { readSecrets, writeSecrets } from "../../worker/secrets";
 import { readAgentTools, writeAgentTools } from "../../agent/agent-tools";
@@ -123,6 +127,25 @@ export function handleWorkerChannels(
       if (ctx.physicRoot) {
         const root = ctx.physicRoot;
         void work.track("bookWrite", "er.write", () => writeEr(root, ctx.profileDir, req)).then((reply) => ctx.send(WsChannels.ER_WRITE, reply, message.id));
+      }
+      return true;
+    }
+    case WsChannels.DIAGRAM_READ: {
+      // Request/reply (machine-0087): the system diagram on the books branch, optionally at a past version.
+      const req = payload as unknown as DiagramReadRequest;
+      if (ctx.physicRoot) {
+        void readDiagram(ctx.physicRoot, ctx.profileDir, req)
+          .catch((err: unknown) => ({ error: err instanceof Error ? err.message : String(err) }))
+          .then((reply) => ctx.send(WsChannels.DIAGRAM_READ, reply, message.id));
+      }
+      return true;
+    }
+    case WsChannels.DIAGRAM_WRITE: {
+      // Request/reply (machine-0088/0089): save / withdraw / decide a system-diagram change; `by` is server-filled.
+      const req = payload as unknown as DiagramWriteRequest;
+      if (ctx.physicRoot) {
+        const root = ctx.physicRoot;
+        void work.track("bookWrite", "diagram.write", () => writeDiagram(root, ctx.profileDir, req)).then((reply) => ctx.send(WsChannels.DIAGRAM_WRITE, reply, message.id));
       }
       return true;
     }

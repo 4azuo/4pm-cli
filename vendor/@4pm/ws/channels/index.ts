@@ -71,6 +71,10 @@ export const WsChannels = {
   // version); save / withdraw / approve-and-apply / reject a change request.
   ER_READ: "er.read",
   ER_WRITE: "er.write",
+  // Project system diagram (draw.io) on the books branch (ADR-0530): read modules / change requests / history;
+  // save / withdraw / approve-and-apply / reject a change request.
+  DIAGRAM_READ: "diagram.read",
+  DIAGRAM_WRITE: "diagram.write",
   // subagents & skills management (ADR-0153): list/read/write .claude/agents + .claude/skills
   AGENTS_LIST: "agents.list",
   AGENTS_READ: "agents.read",

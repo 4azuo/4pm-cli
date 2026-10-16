@@ -32,13 +32,14 @@ import {
   writeAutonomousConfig,
 } from "./autonomous-config";
 import { readHistories } from "./autonomous-history";
-import { autonomousPolicy, lastAutonomousCheck } from "./autonomous-policy";
+import { autonomousPolicy, autonomousStep, lastAutonomousCheck } from "./autonomous-policy";
 import { ATTEMPTS_REL, findTables, replaceRows } from "./autonomous-books";
 import { approvalStates, buildApprovalEntries, mergeApprovalWrite, unapproveIds, type ApprovalBooks } from "./autonomous-approvals";
 import { applyDiscussionBatch } from "./autonomous-discussions";
 import { applyBookPatch, bookContentHash, bookRowsById, isBookRowId, type BookConflict } from "@4pm/dto";
 import { freshBooksRef, lastCommitTimes, mutateBooks, readBooksFile, resolveBases } from "./autonomous-git";
 import { listDesignEvidence } from "./autonomous-er";
+import { listDiagramEvidence } from "./autonomous-diagram";
 import {
   applyStagedEvidence,
   evidenceHistory,
@@ -211,6 +212,7 @@ export function buildAutonomousSnapshot(root: string | null, profileDir: string)
     ...(cfg.pausedAt ? { pausedAt: cfg.pausedAt } : {}),
     lastCheck: lastAutonomousCheck(),
     claim,
+    step: autonomousStep(),
     consecutiveFails,
   };
 }
@@ -228,7 +230,11 @@ export async function readAutonomous(root: string, profileDir: string): Promise<
   const cfg = await readAutonomousConfig(profileDir);
   const booksRef = base ? await freshBooksRef(root, base) : null;
   // Sequences, ER change requests and book attachments for the Evidences rail (ADR-0453).
-  const design: Partial<AutonomousReadReply> = await listDesignEvidence(root, booksRef, cfg).catch(() => ({}));
+  const design: Partial<AutonomousReadReply> = {
+    ...(await listDesignEvidence(root, booksRef, cfg).catch(() => ({}))),
+    // System-diagram change requests (ADR-0530).
+    ...(await listDiagramEvidence(root, booksRef, cfg.diagramDir).catch(() => ({}))),
+  };
   const [settings, approvals, authors, attempts, mockups, status, ...books] = await Promise.all([
     readAutonomousConfigText(profileDir),
     read(APPROVALS_REL, "{}"),
@@ -515,7 +521,7 @@ export async function writeAutonomous(
         return { ok: false, error: t("autonomous.settingsInvalidCron") };
       }
       // Evidence / mockup folders must be safe repo-relative paths (ADR-0418); empty ⇒ the default.
-      for (const k of ["evidenceDir", "mockupDir", "erDir", "sequenceDir"] as const) {
+      for (const k of ["evidenceDir", "mockupDir", "erDir", "sequenceDir", "diagramDir"] as const) {
         const v = typeof parsed[k] === "string" ? (parsed[k] as string).trim().replace(/\/+$/, "") : "";
         if (v && !isSafeRepoDir(v)) return { ok: false, error: t("autonomous.settingsInvalidDir") };
       }

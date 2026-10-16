@@ -365,6 +365,61 @@ export async function intakeIds(root: string, profileDir?: string): Promise<stri
   return [...reqs, ...qas].sort();
 }
 
+/** What a worker waits for: rows people must act on before a cycle can take them. @adr 0529 */
+export interface WaitingCounts {
+  /** Requests, tasks and answered questions not approved yet. */
+  approval: number;
+  /** ER change requests that still block their group (counted by the caller). */
+  changeRequests: number;
+  /** Tasks waiting on an unanswered question. */
+  answers: number;
+  /** Approved tasks waiting on unfinished tasks. */
+  dependencies: number;
+}
+
+/**
+ * Count the served rows waiting on people — the same rules as `intakeIds` / `pickTask`: unapproved
+ * `REQ-…` / `TSK-…` / answered `QA-…`, tasks whose `QA-…` dependency is unanswered (or unapproved), and
+ * approved tasks whose `TSK-…` dependency is not done. `changeRequests` is the blocking ER change requests,
+ * counted by the caller.
+ * @adr 0529 @adr 0453
+ */
+export async function waitingCounts(root: string, profileDir: string | undefined, changeRequests: number): Promise<WaitingCounts> {
+  const [userTodo, todo, qa, done, approved] = await Promise.all([
+    B.readBook(root, "USER_TODO.md"),
+    B.readBook(root, "AI_TODO.md"),
+    B.readBook(root, "USER_QA.md"),
+    B.readBook(root, "AI_DONE.md"),
+    approvedIds(root),
+  ]);
+  const served = (team: string | undefined): boolean => (profileDir ? servesTeam(profileDir, team) : true);
+  const reqIds = B.rowIds(userTodo, "REQ-").filter((id) => served(bookRowTeam(userTodo, id)));
+  const tasks = B.parseTasks(todo).tasks.filter((t) => served(t.team));
+  const qaRows = B.parseQa(qa).rows.filter((q) => served(q.team));
+  const qaById = new Map(qaRows.map((q) => [q.id, q]));
+  const doneMap = B.doneRows(done);
+  let approval = reqIds.filter((id) => !approved.has(id)).length;
+  approval += tasks.filter((t) => !approved.has(t.id)).length;
+  approval += qaRows.filter((q) => q.answer.trim() && !approved.has(q.id)).length;
+  let answers = 0;
+  let dependencies = 0;
+  for (const t of tasks) {
+    if (!approved.has(t.id)) continue;
+    const qaWait = t.depends.some((d) => {
+      const q = d.startsWith("QA-") ? qaById.get(d) : undefined;
+      return !!q && !(q.answer.trim() && approved.has(d));
+    });
+    if (qaWait) answers++;
+    else if (t.depends.some((d) => d.startsWith("TSK-") && !doneMap.has(d))) dependencies++;
+  }
+  return { approval, changeRequests, answers, dependencies };
+}
+
+/** Is anything waiting on people? */
+export function anyWaiting(w: WaitingCounts): boolean {
+  return w.approval + w.changeRequests + w.answers + w.dependencies > 0;
+}
+
 /** Is there intake work for this worker (an approved request / answered question of its teams)? */
 export async function hasIntakeWork(root: string, profileDir?: string): Promise<boolean> {
   return (await intakeIds(root, profileDir)).length > 0;

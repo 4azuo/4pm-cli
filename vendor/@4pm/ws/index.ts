@@ -9,6 +9,7 @@ export * from "./messages/ai-run-state";
 export * from "./messages/autonomous-book-groups";
 export * from "./messages/autonomous-book-usage";
 export * from "./messages/checklist-author";
+export * from "./messages/diagram";
 export * from "./messages/envelope";
 export * from "./messages/er";
 export * from "./messages/faq-compose";

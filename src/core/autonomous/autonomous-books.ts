@@ -178,27 +178,40 @@ export interface ClaimRow {
   desc: string;
 }
 
-/** Parse `AI_PROGRESS` (a legacy 3-column table yields claims with no worker/claim id). */
-export function parseClaims(md: string): { table: MdTable | null; claims: ClaimRow[] } {
-  const table = findTables(md).find((t) => col(t.header, "ID") >= 0 && col(t.header, "Started") >= 0) ?? null;
-  if (!table) return { table: null, claims: [] };
-  const claims = table.rows
-    .map((r) => ({
-      started: get(table, r, "Started"),
-      id: get(table, r, "ID"),
-      team: get(table, r, "Team"),
-      worker: get(table, r, "Worker"),
-      claim: get(table, r, "Claim"),
-      attempt: Number(get(table, r, "Attempt")) || 1,
-      desc: get(table, r, "Task description"),
-    }))
-    .filter((c) => /^TSK-/.test(c.id));
-  return { table, claims };
+/** An intake claim id: an approved request or an answered intake question. @adr 0529 */
+export function isIntakeClaimId(id: string): boolean {
+  return /^(REQ|QA)-/.test(id);
 }
 
-/** Rewrite `AI_PROGRESS` with `claims`, upgrading a legacy table to the multi-row header. */
-export function writeClaims(md: string, claims: ClaimRow[]): string {
-  const found = parseClaims(md).table;
+/**
+ * Parse `AI_PROGRESS` (a legacy 3-column table yields claims with no worker/claim id): `claims` = the task
+ * claims (`TSK-…`), `intake` = the intake claims (`REQ-…` / `QA-…` being taken in).
+ * @adr 0529
+ */
+export function parseClaims(md: string): { table: MdTable | null; claims: ClaimRow[]; intake: ClaimRow[] } {
+  const table = findTables(md).find((t) => col(t.header, "ID") >= 0 && col(t.header, "Started") >= 0) ?? null;
+  if (!table) return { table: null, claims: [], intake: [] };
+  const rows = table.rows.map((r) => ({
+    started: get(table, r, "Started"),
+    id: get(table, r, "ID"),
+    team: get(table, r, "Team"),
+    worker: get(table, r, "Worker"),
+    claim: get(table, r, "Claim"),
+    attempt: Number(get(table, r, "Attempt")) || 1,
+    desc: get(table, r, "Task description"),
+  }));
+  return { table, claims: rows.filter((c) => /^TSK-/.test(c.id)), intake: rows.filter((c) => isIntakeClaimId(c.id)) };
+}
+
+/**
+ * Rewrite `AI_PROGRESS` with `claims` (task claims) and `intake` (intake claims — omitted ⇒ the current
+ * ones are kept, so a task-claim write never drops an intake row), upgrading a legacy table to the
+ * multi-row header.
+ * @adr 0529
+ */
+export function writeClaims(md: string, claims: ClaimRow[], intake?: ClaimRow[]): string {
+  const parsed = parseClaims(md);
+  const found = parsed.table;
   const table: MdTable = found
     ? { ...found, header: PROGRESS_HEADER }
     : { start: md.split("\n").length, end: md.split("\n").length, header: PROGRESS_HEADER, rows: [] };
@@ -206,8 +219,31 @@ export function writeClaims(md: string, claims: ClaimRow[]): string {
   return replaceRows(
     src,
     table,
-    claims.map((c) => [c.started, c.id, c.team ?? "", c.worker, c.claim, String(c.attempt), c.desc]),
+    [...(intake ?? parsed.intake), ...claims].map((c) => [c.started, c.id, c.team ?? "", c.worker, c.claim, String(c.attempt), c.desc]),
   );
+}
+
+/** The ids (`ID` column) of every table row starting with `prefix`, in order. @adr 0529 */
+export function rowIds(md: string, prefix: string): string[] {
+  const out: string[] = [];
+  for (const t of findTables(md)) {
+    if (col(t.header, "ID") < 0) continue;
+    for (const r of t.rows) {
+      const id = get(t, r, "ID");
+      if (id.startsWith(prefix)) out.push(id);
+    }
+  }
+  return out;
+}
+
+/** The `Request` text of a `USER_TODO` row ("" when absent). @adr 0529 */
+export function requestText(md: string, id: string): string {
+  for (const t of findTables(md)) {
+    if (col(t.header, "ID") < 0 || col(t.header, "Request") < 0) continue;
+    const row = t.rows.find((r) => get(t, r, "ID") === id);
+    if (row) return get(t, row, "Request");
+  }
+  return "";
 }
 
 // ── AI_DONE (Done + Incidents) ───────────────────────────────────────────────────────────────────

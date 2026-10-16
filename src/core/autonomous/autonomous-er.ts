@@ -10,6 +10,7 @@
  */
 import { join } from "node:path";
 import {
+  AUTO_APPROVER,
   ERC_ID_RE,
   ERC_NEW_FILE_RE,
   EVIDENCE_ROOT,
@@ -156,8 +157,29 @@ function overlapsOf(snap: ErSnapshot, id: string, touched: readonly string[]): s
   return out;
 }
 
-/** Apply one `er.write` to the books checkout `dir`. */
-async function applyErWrite(dir: string, erDir: string, req: ErWriteRequest): Promise<ErWriteOutcome> {
+/** The approver recorded for an auto-approved apply. @adr 0530 */
+const AUTO_ERC_APPROVER: ErcApprover = { by: AUTO_APPROVER, byLabel: "auto-approve" };
+
+/**
+ * Auto-approve: apply the given pending ERCs one after the other in the books checkout `dir` (each on the model
+ * the previous one left). Returns the applied ids and the ones left in conflict.
+ * @adr 0530
+ */
+export async function autoApplyErcs(dir: string, erDir: string, ids: readonly string[]): Promise<{ applied: string[]; conflict: string[] }> {
+  const applied: string[] = [];
+  const conflict: string[] = [];
+  for (const id of ids) {
+    const snap = await loadEr(dirSource(dir), erDir);
+    if ((snap.sidecar.changes[id]?.state ?? "pending") !== "pending") continue;
+    const out = await applyErc(dir, erDir, snap, id, AUTO_ERC_APPROVER, await readJsonMap(dir, APPROVALS_REL));
+    if (out.reply.state === "applied") applied.push(id);
+    else if (out.reply.state === "conflict") conflict.push(id);
+  }
+  return { applied, conflict };
+}
+
+/** Apply one `er.write` to the books checkout `dir`; `autoApprove` applies a saved ERC at once. @adr 0530 */
+async function applyErWrite(dir: string, erDir: string, req: ErWriteRequest, autoApprove = false): Promise<ErWriteOutcome> {
   const snap = await loadEr(dirSource(dir), erDir);
   const at = new Date().toISOString();
   const byLabel = req.byLabel ?? req.by;
@@ -210,7 +232,12 @@ async function applyErWrite(dir: string, erDir: string, req: ErWriteRequest): Pr
     await writeJson(dir, APPROVALS_REL, approvals);
     await writeJson(dir, AUTHORS_REL, authors);
     const overlaps = overlapsOf({ ...snap, changes: [...snap.changes.filter((c) => c.id !== id), { id, path: "", content }] }, id, touched);
-    return { reply: { ok: true, id, state: "pending", overlaps }, publish: true, message: `er: ${req.id ? "revise" : "propose"} ${id} by ${byLabel}` };
+    const message = `er: ${req.id ? "revise" : "propose"} ${id} by ${byLabel}`;
+    if (autoApprove) {
+      const out = await applyErc(dir, erDir, await loadEr(dirSource(dir), erDir), id, AUTO_ERC_APPROVER, approvals);
+      return { ...out, reply: { ...out.reply, overlaps }, message: out.reply.state === "applied" ? `${message}; ${out.message} (auto)` : message, publish: true };
+    }
+    return { reply: { ok: true, id, state: "pending", overlaps }, publish: true, message };
   }
   const file = fileOf(req.id);
   if (!ERC_ID_RE.test(req.id) || !file) return refuse("NOT_FOUND", "change request not found");
@@ -242,6 +269,26 @@ async function applyErWrite(dir: string, erDir: string, req: ErWriteRequest): Pr
     if (ercApprovalStateOf(req.id, req.entry, file.content) !== "approved") return refuse("APPROVAL_STALE", "approval stale", { id: req.id });
     entry = req.entry;
   } else if (approvalTrustActive()) return refuse("APPROVAL_STALE", "approval stale", { id: req.id });
+  return applyErc(dir, erDir, snap, req.id, { by: req.by, byLabel, entry }, approvals);
+}
+
+/** Who applies an ERC: a person (with the signed entry) or the project's auto-approve (`by = "auto"`, no entry). */
+interface ErcApprover {
+  by: string;
+  byLabel: string;
+  entry?: ApprovalEntry;
+}
+
+/**
+ * Apply one pending ERC to the books checkout `dir`: per-entity version check against the model at its
+ * `baseVersion` → field-level merge or `conflict`; on success the modules, the sidecar (version, entity versions,
+ * history, state) and the approvals are written. Shared by a person's approve and auto-approve.
+ * @adr 0453 @adr 0530
+ */
+async function applyErc(dir: string, erDir: string, snap: ErSnapshot, id: string, who: ErcApprover, approvals: Record<string, unknown>): Promise<ErWriteOutcome> {
+  const file = snap.changes.find((c) => c.id === id);
+  if (!file) return refuse("NOT_FOUND", "change request not found");
+  const at = new Date().toISOString();
   const { doc, errors } = parseErcFile(file.content);
   if (!doc) return refuse("ER_CHANGE_INVALID", errors[0]?.message ?? "invalid change request", { line: errors[0]?.line ?? 1 });
   const current = modelsOf(snap);
@@ -255,14 +302,14 @@ async function applyErWrite(dir: string, erDir: string, req: ErWriteRequest): Pr
     const entities = [...new Set(conflicts.map((c) => c.entity))];
     const conflictsWith = [...new Set(snap.sidecar.history.filter((x) => x.version > baseVersion && x.entities.some((e) => entities.includes(e))).map((x) => x.erc))];
     const reason = conflicts.map((c) => (c.attribute ? `${c.entity}.${c.attribute}` : c.relation ? `${c.entity} (${c.relation})` : c.entity)).join(", ");
-    snap.sidecar.changes[req.id] = { state: "conflict", reason, conflictsWith, at, by: req.by, byLabel };
-    delete approvals[req.id];
+    snap.sidecar.changes[id] = { state: "conflict", reason, conflictsWith, at, by: who.by, byLabel: who.byLabel };
+    delete approvals[id];
     await writeErSidecar(dir, snap.sidecar);
     await writeJson(dir, APPROVALS_REL, approvals);
     return {
-      reply: { ok: false, id: req.id, state: "conflict", code: "ER_CHANGE_CONFLICT", error: "ER change conflict", meta: { conflictsWith, entities } },
+      reply: { ok: false, id, state: "conflict", code: "ER_CHANGE_CONFLICT", error: "ER change conflict", meta: { conflictsWith, entities } },
       publish: true,
-      message: `er: conflict ${req.id}`,
+      message: `er: conflict ${id}`,
     };
   }
   const applied = applyErPatch(current, patch, doc.meta.module);
@@ -276,12 +323,13 @@ async function applyErWrite(dir: string, erDir: string, req: ErWriteRequest): Pr
     else if (after.owner[n]) snap.sidecar.entities[n] = { v: (snap.sidecar.entities[n]?.v ?? 0) + 1, module: after.owner[n]! };
   }
   snap.sidecar.version = version;
-  snap.sidecar.history.push({ version, erc: req.id, appliedAt: at, approvedBy: req.by, approvedByLabel: byLabel, entities: touched });
-  snap.sidecar.changes[req.id] = { state: "applied", appliedVersion: version, at, by: req.by, byLabel };
-  approvals[req.id] = entry;
+  snap.sidecar.history.push({ version, erc: id, appliedAt: at, approvedBy: who.by, approvedByLabel: who.byLabel, entities: touched });
+  snap.sidecar.changes[id] = { state: "applied", appliedVersion: version, at, by: who.by, byLabel: who.byLabel };
+  if (who.entry) approvals[id] = who.entry;
+  else delete approvals[id];
   await writeErSidecar(dir, snap.sidecar);
   await writeJson(dir, APPROVALS_REL, approvals);
-  return { reply: { ok: true, id: req.id, state: "applied", version }, publish: true, message: `er: v${version} (${req.id})` };
+  return { reply: { ok: true, id, state: "applied", version }, publish: true, message: `er: v${version} (${id})` };
 }
 
 /**
@@ -300,13 +348,13 @@ export async function writeEr(root: string, profileDir: string, req: ErWriteRequ
           base,
           () => out?.message || "er: update",
           async (dir) => {
-            out = await applyErWrite(dir, cfg.erDir, req);
+            out = await applyErWrite(dir, cfg.erDir, req, cfg.erAutoApprove);
             return out.publish;
           },
           repoDirsOf(cfg),
         )
       : "unchanged";
-    if (out === undefined) out = await applyErWrite(root, cfg.erDir, req);
+    if (out === undefined) out = await applyErWrite(root, cfg.erDir, req, cfg.erAutoApprove);
     else if (pub === "failed") return { ok: false, error: "could not push the change to the base branch (retry)" };
     return out.reply;
   } catch (err) {
@@ -338,11 +386,13 @@ export async function prepareIntakeEr(
   ref: string,
   erDir: string,
   team?: string,
+  autoApprove = false,
 ): Promise<{ created: string[]; skipped: { name: string; reason: string }[]; tampered: boolean }> {
   const fresh = await newErcFiles(root, erDir);
   for (const f of fresh) await removeInRoot(root, `${erDir}/changes/${f.name}`);
   const tampered = (await restoreDirToRef(root, ref, erDir)).length > 0;
   const { created, skipped } = fresh.length ? await numberNewErcs(root, erDir, fresh, { source: "intake", ...(team ? { team } : {}) }) : { created: [], skipped: [] };
+  if (autoApprove && created.length) await autoApplyErcs(root, erDir, created);
   return { created, skipped, tampered };
 }
 
@@ -359,9 +409,11 @@ export async function captureAgentErcs(cwd: string, erDir: string): Promise<NewE
 }
 
 /** Publish an implement agent's change requests into the books checkout `root` (inside `publishBooks`). */
-export async function publishTaskErcs(root: string, erDir: string, files: readonly NewErcFile[], task: string, team?: string): Promise<string[]> {
+export async function publishTaskErcs(root: string, erDir: string, files: readonly NewErcFile[], task: string, team?: string, autoApprove = false): Promise<string[]> {
   if (files.length === 0) return [];
-  return (await numberNewErcs(root, erDir, files, { source: "implement", task, ...(team ? { team } : {}) })).created;
+  const { created } = await numberNewErcs(root, erDir, files, { source: "implement", task, ...(team ? { team } : {}) });
+  if (autoApprove && created.length) await autoApplyErcs(root, erDir, created);
+  return created;
 }
 
 /** The task-id group key of a task / question id (`TSK-000007-002` → `TSK-000007`). */
@@ -383,6 +435,12 @@ export async function blockedErGroups(root: string, erDir: string): Promise<Set<
     if (group) out.add(group);
   }
   return out;
+}
+
+/** How many change requests still block their group (pending / conflict / …). @adr 0529 */
+export async function blockingErcCount(root: string, erDir: string): Promise<number> {
+  const snap = await loadEr(dirSource(root), erDir);
+  return snap.changes.filter((c) => ercBlocks(snap.sidecar.changes[c.id]?.state ?? "pending")).length;
 }
 
 /** The open change requests, one line each — the intake agent's `erOpenNote`. */

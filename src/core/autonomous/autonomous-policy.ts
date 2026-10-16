@@ -3,14 +3,15 @@
  * `autonomous.policy` push): the project switch, the server's `allowed` verdict and the project-scoped
  * knobs every worker of the project shares. Persisted in the profile dir (`autonomous.policy.json`,
  * `0600`) so a cli restarted while offline never resumes a project that was paused meanwhile. Also keeps
- * the worker's last tick (`lastCheck`, skips included) for the `machine.status.autonomous` snapshot.
+ * the worker's last tick (`lastCheck`, skips included) and the running cycle's `step` for the
+ * `machine.status.autonomous` snapshot.
  * A leaf module (no autonomous imports) — the config reader merges the policy on top of the worker file.
  * Without a policy the worker runs no cycle (it serves no ready project).
- * @adr 0507 @adr 0511
+ * @adr 0507 @adr 0511 @adr 0529
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AutonomousLastCheck, AutonomousPolicy } from "@4pm/dto";
+import type { AutonomousCheckDetail, AutonomousLastCheck, AutonomousPolicy, AutonomousStep } from "@4pm/dto";
 import { readProjectAutonomousSettings } from "@4pm/dto";
 import { logger } from "../../common/logger/logger";
 
@@ -22,7 +23,9 @@ const LAST_CHECK_FILE = "autonomous.lastcheck.json";
 let profileDir: string | null = null;
 let policy: AutonomousPolicy | null = null;
 let lastCheck: AutonomousLastCheck | null = null;
+let step: AutonomousStep | null = null;
 const listeners = new Set<(p: AutonomousPolicy | null) => void>();
+const stepListeners = new Set<() => void>();
 
 /** Load the persisted policy + last check for this profile (once, at start). */
 export function loadAutonomousPolicy(dir: string): void {
@@ -85,14 +88,42 @@ export function onAutonomousPolicy(fn: (p: AutonomousPolicy | null) => void): ()
 }
 
 /** Record the outcome of one tick (run / skip / error) for the snapshot; persisted. */
-export function recordLastCheck(outcome: AutonomousLastCheck["outcome"], reason: string): void {
-  lastCheck = { at: new Date().toISOString(), outcome, reason: reason.slice(0, 300) };
+export function recordLastCheck(outcome: AutonomousLastCheck["outcome"], reason: string, detail?: AutonomousCheckDetail): void {
+  lastCheck = { at: new Date().toISOString(), outcome, reason: reason.slice(0, 300), ...(detail ? { detail } : {}) };
   if (!profileDir) return;
   try {
     writeFileSync(join(profileDir, LAST_CHECK_FILE), JSON.stringify(lastCheck) + "\n", { mode: 0o600 });
   } catch {
     /* best-effort */
   }
+}
+
+/**
+ * Set what the running cycle does right now (null = no cycle); listeners re-send `machine.status` at once.
+ * @adr 0529
+ */
+export function setAutonomousStep(kind: AutonomousStep["kind"] | null, ids: string[] = []): void {
+  const next = kind ? { kind, ids, since: new Date().toISOString() } : null;
+  if (step?.kind === next?.kind && (step?.ids ?? []).join(",") === (next?.ids ?? []).join(",")) return;
+  step = next;
+  for (const fn of [...stepListeners]) {
+    try {
+      fn();
+    } catch {
+      /* a listener must not break the cycle */
+    }
+  }
+}
+
+/** The running cycle's step, or null. @adr 0529 */
+export function autonomousStep(): AutonomousStep | null {
+  return step;
+}
+
+/** Subscribe to step changes (the ws client re-sends its status). @adr 0529 */
+export function onAutonomousStep(fn: () => void): () => void {
+  stepListeners.add(fn);
+  return () => stepListeners.delete(fn);
 }
 
 /** The last tick, or null. */
@@ -117,5 +148,7 @@ export function resetAutonomousPolicyForTest(): void {
   profileDir = null;
   policy = null;
   lastCheck = null;
+  step = null;
   listeners.clear();
+  stepListeners.clear();
 }

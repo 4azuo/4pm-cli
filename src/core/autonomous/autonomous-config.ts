@@ -14,7 +14,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ER_ROOT, EVIDENCE_ROOT, MOCKUP_ROOT, PROJECT_AUTONOMOUS_KEYS, SEQUENCE_ROOT, isSafeRepoDir, type AutonomousPausedBy } from "@4pm/dto";
+import { DIAGRAM_ROOT, ER_ROOT, EVIDENCE_ROOT, MOCKUP_ROOT, PROJECT_AUTONOMOUS_KEYS, SEQUENCE_ROOT, isSafeRepoDir, type AutonomousPausedBy } from "@4pm/dto";
 import { autonomousPolicy } from "./autonomous-policy";
 
 /** The autonomous knobs (parameters only — no logic). */
@@ -60,6 +60,14 @@ export interface AutonomousConfig {
   erDir: string;
   /** Repo-relative folder of the task / question sequence diagrams (default `.4pm/sequences`). @adr 0453 */
   sequenceDir: string;
+  /** Repo-relative folder of the draw.io system diagram + change requests (default `.4pm/diagrams`). @adr 0530 */
+  diagramDir: string;
+  /**
+   * Apply new system-diagram / ER change requests without a person. Taken from the server policy only — a value in
+   * the worker file is ignored, so nothing on the worker can turn it on. @adr 0530
+   */
+  diagramAutoApprove: boolean;
+  erAutoApprove: boolean;
 }
 
 /** Lower bound of `runTimeoutMinutes`. @adr 0452 */
@@ -84,6 +92,9 @@ export const DEFAULT_AUTONOMOUS_CONFIG: AutonomousConfig = {
   mockupDir: MOCKUP_ROOT,
   erDir: ER_ROOT,
   sequenceDir: SEQUENCE_ROOT,
+  diagramDir: DIAGRAM_ROOT,
+  diagramAutoApprove: true,
+  erAutoApprove: false,
 };
 
 /** The config file path under a profile dir. */
@@ -136,6 +147,10 @@ function coerce(raw: unknown): AutonomousConfig {
     mockupDir: dir(o.mockupDir, d.mockupDir),
     erDir: dir(o.erDir, d.erDir),
     sequenceDir: dir(o.sequenceDir, d.sequenceDir),
+    diagramDir: dir(o.diagramDir, d.diagramDir),
+    // Policy-only (ADR-0530): the file's value never counts.
+    diagramAutoApprove: d.diagramAutoApprove,
+    erAutoApprove: d.erAutoApprove,
   };
 }
 
@@ -255,16 +270,25 @@ export async function pauseAutonomous(profileDir: string, by: AutonomousPausedBy
 
 /**
  * The repo folders the cli commits with the books: every evidence root in use + the mockup folder, and the ER +
- * sequence folders.
- * @adr 0418 @adr 0453
+ * sequence folders, and the system-diagram folder.
+ * @adr 0418 @adr 0453 @adr 0530
  */
-export function repoDirsOf(cfg: Pick<AutonomousConfig, "evidenceDir" | "mockupDir"> & Partial<Pick<AutonomousConfig, "erDir" | "sequenceDir">>): string[] {
-  return [...new Set([EVIDENCE_ROOT, cfg.evidenceDir, cfg.mockupDir, ...(cfg.erDir ? [cfg.erDir] : []), ...(cfg.sequenceDir ? [cfg.sequenceDir] : [])])];
+export function repoDirsOf(cfg: Pick<AutonomousConfig, "evidenceDir" | "mockupDir"> & Partial<Pick<AutonomousConfig, "erDir" | "sequenceDir" | "diagramDir">>): string[] {
+  return [
+    ...new Set([
+      EVIDENCE_ROOT,
+      cfg.evidenceDir,
+      cfg.mockupDir,
+      ...(cfg.erDir ? [cfg.erDir] : []),
+      ...(cfg.sequenceDir ? [cfg.sequenceDir] : []),
+      ...(cfg.diagramDir ? [cfg.diagramDir] : []),
+    ]),
+  ];
 }
 
-/** The books-branch-only folders stripped from task branches (ER + sequences). @adr 0453 */
-export function booksOnlyDirsOf(cfg: Pick<AutonomousConfig, "erDir" | "sequenceDir">): string[] {
-  return [cfg.erDir, cfg.sequenceDir];
+/** The books-branch-only folders stripped from task branches (ER + sequences + system diagram). @adr 0453 @adr 0530 */
+export function booksOnlyDirsOf(cfg: Pick<AutonomousConfig, "erDir" | "sequenceDir"> & Partial<Pick<AutonomousConfig, "diagramDir">>): string[] {
+  return [cfg.erDir, cfg.sequenceDir, ...(cfg.diagramDir ? [cfg.diagramDir] : [])];
 }
 
 /** True when `now` (local) falls inside the `HH:MM-HH:MM` quiet-hours window (supports crossing midnight). */

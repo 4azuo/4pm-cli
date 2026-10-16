@@ -90,7 +90,7 @@ import type { WsHandlerCtx } from "./ws-client/context";
 import { cancelAllActiveRuns, handleCommandChannels, resetMemorySession, runLocalCommand } from "./ws-client/command-dispatch";
 import { lifecycle, type ShutdownReason } from "./session/lifecycle";
 import { configureRepoLock, failAllRepoWaiters, withRepoLock } from "./git/repo-lock";
-import { loadAutonomousPolicy, recordLastCheck, setAutonomousPolicy } from "./autonomous/autonomous-policy";
+import { loadAutonomousPolicy, onAutonomousStep, recordLastCheck, setAutonomousPolicy } from "./autonomous/autonomous-policy";
 import { work } from "./session/work-tracker";
 import { onReconnectVerifyClaim, runAutonomousCycle } from "./autonomous/autonomous-cycle";
 import { startAutonomousScheduler } from "./autonomous/autonomous-scheduler";
@@ -364,7 +364,11 @@ export class WsClient {
     // Multi-worker autonomous (ADR-0507): the last policy received (an offline restart keeps honouring it)
     // and every tick's outcome for the worker snapshot.
     loadAutonomousPolicy(context.profileDir);
-    context.bus.onAutonomousDone((ok, note) => recordLastCheck(ok ? "run" : checkOutcome(note), ok ? "cycle ran" : (note ?? "")));
+    context.bus.onAutonomousDone((ok, note, detail) => recordLastCheck(ok ? "run" : checkOutcome(note), note ?? (ok ? "cycle ran" : ""), detail));
+    // The running cycle's step reaches the web at once, not on the next heartbeat (ADR-0529).
+    onAutonomousStep(() => {
+      if (this.sessionKey) this.sendMachineStatus();
+    });
     this.hctx = this.buildHandlerCtx();
     // The operator's local commands (TUI input box) run through the same executor.
     context.bus.onLocalSubmit((input) => void runLocalCommand(this.hctx, input));
@@ -1529,7 +1533,7 @@ export class WsClient {
 }
 
 /** Features reported in machine.status (`CliFeature`, ADR-0449). */
-const CLI_FEATURES: string[] = [CliFeature.CLIENT_VIEWER, CliFeature.BOOK_TEAMS, CliFeature.APPROVAL_PARTIES, CliFeature.DISCUSSIONS, CliFeature.ER, CliFeature.BOOK_PATCH, CliFeature.PACKAGES_MULTI_TARGET, CliFeature.AUTONOMOUS_RUN_NOW, CliFeature.RESTART, CliFeature.EVIDENCE_HISTORY];
+const CLI_FEATURES: string[] = [CliFeature.CLIENT_VIEWER, CliFeature.BOOK_TEAMS, CliFeature.APPROVAL_PARTIES, CliFeature.DISCUSSIONS, CliFeature.ER, CliFeature.BOOK_PATCH, CliFeature.PACKAGES_MULTI_TARGET, CliFeature.AUTONOMOUS_RUN_NOW, CliFeature.RESTART, CliFeature.EVIDENCE_HISTORY, CliFeature.DIAGRAM];
 
 /** The URLs of the approved http/sse MCP servers (system egress hosts — ADR-0439). */
 function mcpRemoteUrls(list: { definition: unknown }[] | undefined): string[] {
@@ -1537,7 +1541,7 @@ function mcpRemoteUrls(list: { definition: unknown }[] | undefined): string[] {
 }
 
 /** Skip notes of a cycle that did not run (the rest of a failed `autonomousDone` is an error). @adr 0507 */
-const SKIP_NOTES = ["cli offline", "paused", "quiet hours", "max ticks reached", "no work", "usage limit", "working tree busy", "cli restarting", "a cycle is already running", "no served project", "stopped"];
+const SKIP_NOTES = ["cli offline", "paused", "quiet hours", "max ticks reached", "no work", "waiting", "intake taken", "usage limit", "working tree busy", "cli restarting", "a cycle is already running", "no served project", "stopped"];
 
 /** Map a failed `autonomousDone` note to the snapshot's `lastCheck.outcome`. */
 function checkOutcome(note: string | undefined): "skip" | "error" {
