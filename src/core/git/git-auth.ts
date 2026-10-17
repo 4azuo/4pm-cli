@@ -52,7 +52,18 @@ const state: {
   self: SelfLogin[] | null;
   /** Hosts already warned about (login without a readable token) — once per start. */
   warned: Set<string>;
-} = { host: null, transport: null, baseEnv: null, scopes: new Map(), defaultTimer: null, self: null, warned: new Set() };
+  /** Ended scopes whose `revoked` report did not reach the server — re-sent on reconnect. @adr 0535 */
+  pendingRevoked: Set<string>;
+} = {
+  host: null,
+  transport: null,
+  baseEnv: null,
+  scopes: new Map(),
+  defaultTimer: null,
+  self: null,
+  warned: new Set(),
+  pendingRevoked: new Set(),
+};
 
 /**
  * The command git runs as the credential helper (`!` = run through the shell). A `self` helper names its
@@ -403,10 +414,37 @@ export async function endGitScope(scope: string): Promise<void> {
     state.defaultTimer = null;
   }
   await Promise.all(tokens.filter((t) => t.apiBase).map((t) => revokeAtGithub(t)));
+  await reportRevoked(scope);
+}
+
+/**
+ * Tell the server a scope's tokens are revoked so it drops its cached copies. A report that cannot be
+ * delivered is kept for `flushPendingRevoked` — a cached-but-revoked token would be re-served dead.
+ * @adr 0535
+ */
+async function reportRevoked(scope: string): Promise<void> {
+  if (!state.transport) return;
   try {
-    await state.transport?.({ op: "revoked", scope });
-  } catch {
-    // The server's link backstop (disconnect/detach) revokes whatever it still holds.
+    await state.transport({ op: "revoked", scope });
+    state.pendingRevoked.delete(scope);
+  } catch (err) {
+    state.pendingRevoked.add(scope);
+    logger.warn("git.token.revoked.report.failed", { scope, error: String(err) });
+  }
+}
+
+/**
+ * Re-send the `revoked` reports lost while the server was unreachable (call on `ws.connected`). A scope that
+ * holds tokens again is skipped — its own end reports it. Best-effort; failures stay pending.
+ * @adr 0535
+ */
+export async function flushPendingRevoked(): Promise<void> {
+  for (const scope of [...state.pendingRevoked]) {
+    if (state.scopes.has(scope)) {
+      state.pendingRevoked.delete(scope);
+      continue;
+    }
+    await reportRevoked(scope);
   }
 }
 

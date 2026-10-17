@@ -538,6 +538,8 @@ export interface PhysicProjectResponse {
   path: string | null;
   name: string;
   isAutonomous: boolean;
+  /** The worker's own autonomous switch is off (snapshot `enabled === false`). @adr 0533 */
+  autonomousPaused: boolean;
   status: PhysicProjectStatus;
   lastSeenAt: string | null;
 }

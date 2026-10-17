@@ -70,7 +70,7 @@ import { setAiRunSink } from "./ai/ai-run-tracker";
 import { aiAccountKeys } from "./ai/ai-account-lease";
 import { buildAutonomousSnapshot } from "./autonomous/autonomous";
 import { probeNetwork } from "./worker/network-probe";
-import { configureGitAuth } from "./git/git-auth";
+import { configureGitAuth, flushPendingRevoked } from "./git/git-auth";
 import { setPromptOverrides } from "./ai/prompt-overrides";
 import { setMcpServers } from "../utils/agent-mcp";
 import { loadApprovalTrust, setApprovalTrust } from "./autonomous/autonomous-approvals";
@@ -945,6 +945,8 @@ export class WsClient {
         this.finishReconnect();
         this.sendMachineStatus();
         this.flushOfflineBuffer();
+        // git.token `revoked` reports lost while offline — re-sent so the server drops dead tokens (ADR-0535).
+        void flushPendingRevoked();
         this.startHeartbeat();
         this.startUsagePolling();
         this.startLogUpload();
