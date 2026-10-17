@@ -215,6 +215,8 @@ export const CliFeature = {
   DIAGRAM: "diagram",
   // Task branches merged with `<base>` on resume / before delivery, direct merge, `git.prResolve`, `taskRetry` (ADR-0539).
   BRANCH_SYNC: "branchSync",
+  // `git.branchCleanup` (list / delete / log / restore) and the daily cleanup of 4PM branches (ADR-0540).
+  BRANCH_CLEANUP: "branchCleanup",
 } as const;
 export type CliFeature = (typeof CliFeature)[keyof typeof CliFeature];
 
@@ -1988,6 +1990,59 @@ export interface GitPrResolveRequest {
   head: string;
   base: string;
   title: string;
+}
+
+/** A cleanup candidate as the cli reports it (same shape as `@4pm/dto` `BranchCandidate`). @adr 0540 */
+export interface BranchCandidatePayload {
+  name: string;
+  sha: string;
+  kind: "4pm" | "other";
+  reasons: ("merged" | "pr-closed" | "task-gone" | "stale")[];
+  lastCommitAt: string;
+  author: string;
+  pr: { number: number; state: "open" | "merged" | "closed" } | null;
+}
+
+/** One deletion-log entry (same shape as `@4pm/dto` `BranchDeletion`). @adr 0540 */
+export interface BranchDeletionPayload {
+  id: string;
+  repo: string;
+  name: string;
+  sha: string;
+  reasons: BranchCandidatePayload["reasons"];
+  mode: "manual" | "auto";
+  by?: string;
+  byLabel?: string;
+  at: string;
+  restoredAt?: string;
+}
+
+/** One branch's result in a delete (same shape as `@4pm/dto` `BranchDeleteResult`). @adr 0540 */
+export interface BranchDeleteResultPayload {
+  name: string;
+  outcome: "deleted" | "skipped" | "failed";
+  detail?: string;
+  keptLocal?: boolean;
+}
+
+/**
+ * git.branchCleanup (server → cli): one operation on the branches of repo `repo` ("" = the project root).
+ * @api machine-0092 @api machine-0093 @api machine-0094 @api machine-0095 @adr 0540
+ */
+export type GitBranchCleanupRequest =
+  | { op: "list"; repo: string }
+  | { op: "delete"; repo: string; names: string[]; by: string; byLabel?: string }
+  | { op: "log"; repo: string }
+  | { op: "restore"; repo: string; id: string; by: string; byLabel?: string };
+
+/** git.branchCleanup reply; `code` = `BRANCH_EXISTS` / `BRANCH_RESTORE_UNAVAILABLE` on a refused restore. @adr 0540 */
+export interface GitBranchCleanupReply {
+  ok: boolean;
+  error?: string;
+  code?: "BRANCH_EXISTS" | "BRANCH_RESTORE_UNAVAILABLE";
+  candidates?: BranchCandidatePayload[];
+  results?: BranchDeleteResultPayload[];
+  log?: BranchDeletionPayload[];
 }
 
 /** git.prResolve reply: started in the background, or why not (busy tree, bad input, no git host). @adr 0539 */

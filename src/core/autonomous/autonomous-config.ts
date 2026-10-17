@@ -72,6 +72,8 @@ export interface AutonomousConfig {
   skipPullRequest: boolean;
   /** Resolve one conflicting 4PM PR per cycle — policy-only. @adr 0539 */
   autoResolvePrConflicts: boolean;
+  /** Daily cleanup of dead 4PM task branches — policy-only. @adr 0540 */
+  branchCleanup: { enabled: boolean; afterDays: number };
 }
 
 /** Lower bound of `runTimeoutMinutes`. @adr 0452 */
@@ -101,6 +103,7 @@ export const DEFAULT_AUTONOMOUS_CONFIG: AutonomousConfig = {
   erAutoApprove: false,
   skipPullRequest: false,
   autoResolvePrConflicts: false,
+  branchCleanup: { enabled: false, afterDays: 14 },
 };
 
 /** The config file path under a profile dir. */
@@ -159,6 +162,7 @@ function coerce(raw: unknown): AutonomousConfig {
     erAutoApprove: d.erAutoApprove,
     skipPullRequest: d.skipPullRequest,
     autoResolvePrConflicts: d.autoResolvePrConflicts,
+    branchCleanup: d.branchCleanup,
   };
 }
 

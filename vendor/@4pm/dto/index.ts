@@ -8,6 +8,7 @@ export * from "./base";
 export * from "./book-guards";
 export * from "./book-ids";
 export * from "./book-patch";
+export * from "./branch-cleanup";
 export * from "./command";
 export * from "./diagram-change";
 export * from "./diagram-model";

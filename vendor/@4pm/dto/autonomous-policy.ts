@@ -11,6 +11,7 @@ import { z } from "zod";
 import { EVIDENCE_ROOT, MOCKUP_ROOT, isSafeRepoDir, type MachineAiRun } from "./machine";
 import { ER_ROOT, SEQUENCE_ROOT } from "./er-model";
 import { DIAGRAM_ROOT } from "./diagram-model";
+import { DEFAULT_BRANCH_CLEANUP, type BranchCleanupSettings } from "./branch-cleanup";
 
 /** S/M task size hints for intake (indicative, not caps). */
 export interface AutonomousTaskSizeHints {
@@ -49,6 +50,8 @@ export interface ProjectAutonomousSettings {
   skipPullRequest: boolean;
   /** Each cycle first lets the AI resolve one conflicting PR of a 4PM task branch (default off). @adr 0539 */
   autoResolvePrConflicts: boolean;
+  /** Daily cleanup of dead 4PM task branches (default off; only ADMIN / PM may change it). @adr 0540 */
+  branchCleanup: BranchCleanupSettings;
 }
 
 /** The project-scoped keys (a worker settings write carrying one is refused). */
@@ -67,6 +70,7 @@ export const PROJECT_AUTONOMOUS_KEYS = [
   "erAutoApprove",
   "skipPullRequest",
   "autoResolvePrConflicts",
+  "branchCleanup",
 ] as const satisfies readonly (keyof ProjectAutonomousSettings)[];
 
 /** Lower bound of `runTimeoutMinutes`. */
@@ -88,6 +92,7 @@ export const DEFAULT_PROJECT_AUTONOMOUS_SETTINGS: ProjectAutonomousSettings = {
   erAutoApprove: false,
   skipPullRequest: false,
   autoResolvePrConflicts: false,
+  branchCleanup: DEFAULT_BRANCH_CLEANUP,
 };
 
 /** Coerce an unknown object into full project-scoped settings (missing / invalid ⇒ default). */
@@ -121,6 +126,13 @@ export function readProjectAutonomousSettings(raw: unknown): ProjectAutonomousSe
     erAutoApprove: typeof o.erAutoApprove === "boolean" ? o.erAutoApprove : d.erAutoApprove,
     skipPullRequest: typeof o.skipPullRequest === "boolean" ? o.skipPullRequest : d.skipPullRequest,
     autoResolvePrConflicts: typeof o.autoResolvePrConflicts === "boolean" ? o.autoResolvePrConflicts : d.autoResolvePrConflicts,
+    branchCleanup: (() => {
+      const b = (o.branchCleanup && typeof o.branchCleanup === "object" ? o.branchCleanup : {}) as Record<string, unknown>;
+      return {
+        enabled: typeof b.enabled === "boolean" ? b.enabled : d.branchCleanup.enabled,
+        afterDays: Math.min(365, Math.max(1, num(b.afterDays, d.branchCleanup.afterDays))),
+      };
+    })(),
   };
 }
 
@@ -286,6 +298,7 @@ export const projectAutonomousPolicyWriteSchema = z
         erAutoApprove: z.boolean().optional(),
         skipPullRequest: z.boolean().optional(),
         autoResolvePrConflicts: z.boolean().optional(),
+        branchCleanup: z.object({ enabled: z.boolean(), afterDays: z.number().int().min(1).max(365) }).optional(),
       })
       .strict()
       .optional(),

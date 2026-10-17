@@ -132,6 +132,9 @@ export const WsChannels = {
   // server → cli (request / reply): let the AI resolve a pull request's conflicts — merge the target into the
   // head branch on the worker, resolve, push (never forced). The reply only says whether it started (ADR-0539).
   GIT_PR_RESOLVE: "git.prResolve",
+  // server → cli (request / reply): branch cleanup of one repo — list the dead branches, delete some (remote +
+  // local, logged on the books branch), read the deletion log, restore a logged branch (ADR-0540).
+  GIT_BRANCH_CLEANUP: "git.branchCleanup",
   // server → cli (reply): list the models the worker's AI CLI supports (ADR-0394; template-0013,
   // machine-0071, project-0082) — claude via its stream-json `initialize` handshake (no tokens).
   AI_MODELS: "ai.models",

@@ -78,6 +78,7 @@ import {
   type WaitingCounts,
 } from "./autonomous-tasks";
 import { autoResolveOnePr } from "./autonomous-pr-resolve";
+import { autoCleanupBranches, pruneDeletedLocals } from "./autonomous-branches";
 import { concludeMerge, conflictResolved, directMerge, mergeRefs, mergesCleanly, resetToHead } from "./autonomous-merge";
 import { applyIntakeClaim, intakeClaimTtlMinutes, intakeHeldByOthers, releaseIntakeClaim, type IntakeClaim } from "./autonomous-intake-claims";
 import { branchProtection } from "../git/git-host";
@@ -536,6 +537,11 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
         return;
       }
     }
+
+    // --- Daily cleanup of dead 4PM task branches (ADR-0540) — once per UTC day across the workers ---
+    await autoCleanupBranches(root, rootBase, bases.subs, cfg.branchCleanup, log).catch((e) => log(`[warn] branch cleanup: ${String(e)}`));
+    // Local copies of branches deleted from another worker go too (when safe).
+    await pruneDeletedLocals(root, rootBase, bases.subs).catch(() => undefined);
 
     // --- Auto-resolve one conflicting 4PM PR before any new work (ADR-0539 §5) ---------------------
     if (!mine && cfg.autoResolvePrConflicts && !(await allAiProfilesExhausted(ctx, cfg))) {

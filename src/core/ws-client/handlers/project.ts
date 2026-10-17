@@ -22,6 +22,7 @@ import {
   type ProjectPublishRequest,
   type RepoProbeRequest,
   type GitPrResolveRequest,
+  type GitBranchCleanupRequest,
 } from "@4pm/ws";
 import type { GitAuthMethod } from "@4pm/dto";
 import { configureGitAuth } from "../../git/git-auth";
@@ -31,6 +32,7 @@ import { pauseAutonomous } from "../../autonomous/autonomous-config";
 import { setAutonomousPolicy } from "../../autonomous/autonomous-policy";
 import { onReconnectVerifyClaim } from "../../autonomous/autonomous-cycle";
 import { handlePrResolve } from "../../autonomous/autonomous-pr-resolve";
+import { handleBranchCleanup } from "../../autonomous/autonomous-branches";
 import { readAutonomousConfigSync } from "../../autonomous/autonomous-config";
 import { manageSshKey } from "../../git/git-ssh-key";
 import { createAiTaskRunner } from "../../ai/ai-task";
@@ -104,6 +106,11 @@ export function handleProjectChannels(
       // The project's autonomous policy changed (ADR-0507): persisted; a running cycle stops at its next
       // phase boundary when it turns blocking (the cycle listens).
       setAutonomousPolicy(payload);
+      return true;
+    }
+    case WsChannels.GIT_BRANCH_CLEANUP: {
+      // Branch cleanup of one repo (ADR-0540): list / delete / log / restore.
+      void handleBranchCleanup(ctx.physicRoot, payload as unknown as GitBranchCleanupRequest).then((reply) => ctx.send(WsChannels.GIT_BRANCH_CLEANUP, reply, message.id));
       return true;
     }
     case WsChannels.GIT_PR_RESOLVE: {
