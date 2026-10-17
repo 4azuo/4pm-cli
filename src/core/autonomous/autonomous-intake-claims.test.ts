@@ -86,6 +86,6 @@ describe("waitingCounts", () => {
     );
     const w = await waitingCounts(root, undefined, 3);
     // No approvals sidecar: two requests + two tasks wait for approval.
-    expect(w).toEqual({ approval: 4, changeRequests: 3, answers: 0, dependencies: 0 });
+    expect(w).toEqual({ approval: 4, changeRequests: 3, answers: 0, dependencies: 0, blocked: 0 });
   });
 });

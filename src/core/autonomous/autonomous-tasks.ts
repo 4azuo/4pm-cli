@@ -465,6 +465,8 @@ export interface WaitingCounts {
   answers: number;
   /** Approved tasks waiting on unfinished tasks. */
   dependencies: number;
+  /** Approved tasks blocked by a merge conflict with their base. @adr 0539 */
+  blocked: number;
 }
 
 /**
@@ -475,12 +477,13 @@ export interface WaitingCounts {
  * @adr 0529 @adr 0453
  */
 export async function waitingCounts(root: string, profileDir: string | undefined, changeRequests: number): Promise<WaitingCounts> {
-  const [userTodo, todo, qa, done, approved] = await Promise.all([
+  const [userTodo, todo, qa, done, approved, attempts] = await Promise.all([
     B.readBook(root, "USER_TODO.md"),
     B.readBook(root, "AI_TODO.md"),
     B.readBook(root, "USER_QA.md"),
     B.readBook(root, "AI_DONE.md"),
     approvedIds(root),
+    B.readAttempts(root),
   ]);
   const served = (team: string | undefined): boolean => (profileDir ? servesTeam(profileDir, team) : true);
   const reqIds = B.rowIds(userTodo, "REQ-").filter((id) => served(bookRowTeam(userTodo, id)));
@@ -493,8 +496,13 @@ export async function waitingCounts(root: string, profileDir: string | undefined
   approval += qaRows.filter((q) => q.answer.trim() && !approved.has(q.id)).length;
   let answers = 0;
   let dependencies = 0;
+  let blocked = 0;
   for (const t of tasks) {
     if (!approved.has(t.id)) continue;
+    if (attempts[t.id]?.blocked) {
+      blocked++;
+      continue;
+    }
     const qaWait = t.depends.some((d) => {
       const q = d.startsWith("QA-") ? qaById.get(d) : undefined;
       return !!q && !(q.answer.trim() && approved.has(d));
@@ -502,12 +510,12 @@ export async function waitingCounts(root: string, profileDir: string | undefined
     if (qaWait) answers++;
     else if (t.depends.some((d) => d.startsWith("TSK-") && !doneMap.has(d))) dependencies++;
   }
-  return { approval, changeRequests, answers, dependencies };
+  return { approval, changeRequests, answers, dependencies, blocked };
 }
 
 /** Is anything waiting on people? */
 export function anyWaiting(w: WaitingCounts): boolean {
-  return w.approval + w.changeRequests + w.answers + w.dependencies > 0;
+  return w.approval + w.changeRequests + w.answers + w.dependencies + w.blocked > 0;
 }
 
 /** Is there intake work for this worker (an approved request / answered question of its teams)? */

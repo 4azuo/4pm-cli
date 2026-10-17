@@ -165,7 +165,8 @@ export interface AutonomousCheckDetailPayload {
   /** What an intake of this cycle produced. */
   intake?: { tasks: number; questions: number; changeRequests: number };
   /** Rows waiting on people (served teams only). */
-  waiting?: { approval: number; changeRequests: number; answers: number; dependencies: number };
+  /** `blocked` = approved tasks blocked by a merge conflict with their base. @adr 0539 */
+  waiting?: { approval: number; changeRequests: number; answers: number; dependencies: number; blocked?: number };
   /** The task this cycle worked on. */
   taskId?: string;
   /** The worker holding the intake ids (`intake taken`). */

@@ -502,10 +502,16 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
       }
       await writeFileInRoot(dir, join(dir, file), content);
       await writeFileInRoot(dir, join(dir, AUTHORS_REL), JSON.stringify(authors, null, 2) + "\n");
-      if (touchesApprovals) {
+      // A deleted row loses its approval (ADR-0538): a later restore under the same id is Pending, never
+      // silently approved again by a matching hash.
+      const removed = [...prev.keys()].filter((id) => !next.has(id));
+      if (touchesApprovals || removed.length) {
         const map = parseJson(await readText(dir, join(dir, APPROVALS_REL), "{}")) ?? {};
-        mergeApprovalWrite(map, approvalEntries, req.parties, approvalBooksSaved ?? (await approvalBooksIn(dir)));
-        unapproveIds(map, req.unapprove ?? [], by, req.clearAll !== false);
+        if (touchesApprovals) {
+          mergeApprovalWrite(map, approvalEntries, req.parties, approvalBooksSaved ?? (await approvalBooksIn(dir)));
+          unapproveIds(map, req.unapprove ?? [], by, req.clearAll !== false);
+        }
+        unapproveIds(map, removed, by, true);
         await writeFileInRoot(dir, join(dir, APPROVALS_REL), JSON.stringify(map, null, 2) + "\n");
       }
       // Files whose link this save removed (and no book still references) go in the same commit (ADR-0404).

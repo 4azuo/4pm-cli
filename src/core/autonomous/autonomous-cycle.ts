@@ -1424,7 +1424,7 @@ async function recordRun(
  */
 async function waitingNow(root: string, profileDir: string, cfg: Pick<AutonomousConfig, "erDir" | "diagramDir">): Promise<WaitingCounts> {
   const ercs = (await blockingErcCount(root, cfg.erDir).catch(() => 0)) + (await blockingSdcCount(root, cfg.diagramDir).catch(() => 0));
-  return waitingCounts(root, profileDir, ercs).catch(() => ({ approval: 0, changeRequests: ercs, answers: 0, dependencies: 0 }));
+  return waitingCounts(root, profileDir, ercs).catch(() => ({ approval: 0, changeRequests: ercs, answers: 0, dependencies: 0, blocked: 0 }));
 }
 
 /** One tick-log line for the waiting counts (non-zero ones only). */
@@ -1434,6 +1434,7 @@ function waitingText(w: WaitingCounts): string {
     w.changeRequests ? `${w.changeRequests} change request(s)` : "",
     w.answers ? `${w.answers} waiting for answers` : "",
     w.dependencies ? `${w.dependencies} waiting for dependencies` : "",
+    w.blocked ? `${w.blocked} blocked by a conflict with the base` : "",
   ].filter(Boolean);
   return parts.join(", ") || "nothing";
 }
