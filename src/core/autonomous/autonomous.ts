@@ -23,7 +23,7 @@ import type {
   AutonomousWriteReply,
   AutonomousWriteRequest,
 } from "@4pm/ws";
-import { isSafeRepoDir } from "@4pm/dto";
+import { DOCS_SIDECAR_REL, LINEAGE_SIDECAR_REL, isSafeRepoDir } from "@4pm/dto";
 import {
   readAutonomousConfig,
   readAutonomousConfigSync,
@@ -38,6 +38,7 @@ import { approvalStates, buildApprovalEntries, mergeApprovalWrite, unapproveIds,
 import { applyDiscussionBatch } from "./autonomous-discussions";
 import { checkRowGuards } from "./autonomous-row-guards";
 import { applyUnblock } from "./autonomous-tasks";
+import { applyDocReview, copyLineage, isDocFilePath, readDocFile } from "./autonomous-docs";
 import { applyBookPatch, bookContentHash, bookRowsById, isBookRowId, type BookConflict } from "@4pm/dto";
 import { freshBooksRef, lastCommitTimes, mutateBooks, readBooksFile, resolveBases } from "./autonomous-git";
 import { listDesignEvidence } from "./autonomous-er";
@@ -237,11 +238,14 @@ export async function readAutonomous(root: string, profileDir: string): Promise<
     // System-diagram change requests (ADR-0530).
     ...(await listDiagramEvidence(root, booksRef, cfg.diagramDir).catch(() => ({}))),
   };
-  const [settings, approvals, authors, attempts, mockups, status, ...books] = await Promise.all([
+  const [settings, approvals, authors, attempts, docs, lineage, mockups, status, ...books] = await Promise.all([
     readAutonomousConfigText(profileDir),
     read(APPROVALS_REL, "{}"),
     read(AUTHORS_REL, "{}"),
     read(ATTEMPTS_REL, "{}"),
+    // The DOC rounds + the request lineage (ADR-0536/0537).
+    read(DOCS_SIDECAR_REL, "{}"),
+    read(LINEAGE_SIDECAR_REL, "{}"),
     // Intake UI mockups (ADR-0418) — the AI Todo rows offer a viewer for their group's files.
     listMockups(root, base || null, cfg.mockupDir).catch(() => [] as string[]),
     getAutonomousStatus(root, profileDir),
@@ -259,7 +263,7 @@ export async function readAutonomous(root: string, profileDir: string): Promise<
   // Last commit time of every listed artifact for the Evidences "Last modified" column (ADR-0514).
   const listed = [...mockups, ...(design.sequences ?? []), ...(design.ercs ?? []).map((e) => e.path), ...(design.evidence ?? [])];
   const modifiedAt = await lastCommitTimes(root, booksRef ?? "HEAD", listed);
-  return { settings, status, books: bookMap, approvals, authors, attempts, mockups, approvalStates: approvalStatesById, ...design, modifiedAt };
+  return { settings, status, books: bookMap, approvals, authors, attempts, docs, lineage, mockups, approvalStates: approvalStatesById, ...design, modifiedAt };
 }
 
 /** autonomous.logs — tail one day's tick log (default today). */
@@ -282,7 +286,8 @@ type WebWrite = {
     | "BOOK_CONFLICT"
     | "BOOK_STALE"
     | "BOOK_ROW_HAS_DEPENDENTS"
-    | "BOOK_ROW_CLAIMED";
+    | "BOOK_ROW_CLAIMED"
+    | "DOC_REVIEW_STALE";
   failedId?: string;
   /** The dependent rows / the claiming worker of a row-guard refusal. @adr 0538 */
   blockers?: string[];
@@ -516,7 +521,15 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
       }
       // Files whose link this save removed (and no book still references) go in the same commit (ADR-0404).
       await pruneEvidence(dir, req.book, prevText, content);
+      // Rows restored under a new id keep their request's lane (ADR-0537).
+      if (req.lineageFrom && Object.keys(req.lineageFrom).length) await copyLineage(dir, req.lineageFrom);
       return { ok: true, added, addedIds };
+    }
+    case "docReview": {
+      // A person's review of a DOC round (ADR-0536): only the round waiting for it, else stale.
+      const res = await applyDocReview(dir, req.review, true, by, req.byLabel ?? by);
+      if (!res.ok) return { ok: false, code: "DOC_REVIEW_STALE", failedId: req.review.id, error: res.error };
+      return { ok: true };
     }
     case "taskRetry": {
       // A person resolved the task's conflict with its base (ADR-0539): it may be picked again.
@@ -624,6 +637,8 @@ export async function writeAutonomous(
 export async function readAutonomousEvidence(root: string, profileDir: string, req: AutonomousEvidenceRequest): Promise<AutonomousEvidenceReply> {
   try {
     const base = (await resolveBases(root).catch(() => null))?.root.base ?? null;
+    // A doc file of a DOC round (ADR-0536): from the DOC branch, else as on `<base>` (the review's "before").
+    if (isDocFilePath(req.path)) return await readDocFile(root, base, req.path, req.ref);
     const { mockupDir, erDir, sequenceDir } = await readAutonomousConfig(profileDir);
     // A past version is read from the fetched books history (ADR-0515).
     if (req.rev && base) await freshBooksRef(root, base);

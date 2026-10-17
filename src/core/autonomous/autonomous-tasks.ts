@@ -16,6 +16,7 @@ import { readFileInRoot } from "../../utils/safe-path";
 import { approvalEntrySchema, bookRowTeam } from "@4pm/dto";
 import { verifiedApprovedIds } from "./autonomous-approvals";
 import { servesTeam } from "./autonomous-teams";
+import { docRunnable, readDocs } from "./autonomous-docs";
 
 /** The approvals sidecar. */
 const APPROVALS_REL = ".claude/.autonomous.approvals.json";
@@ -56,9 +57,13 @@ export async function writeLocalClaim(profileDir: string, c: LocalClaim | null):
   else await rm(claimPath(profileDir), { force: true });
 }
 
-/** Group id of a task: `TSK-GGGGGG-NNN` ⇒ `GRP-GGGGGG` (deterministic — dependency branches derive from it). */
+/**
+ * Group id of a task or docs row: `TSK-GGGGGG-NNN` / `DOC-GGGGGG-NNN` ⇒ `GRP-GGGGGG` (deterministic — dependency
+ * branches derive from it).
+ * @adr 0536
+ */
 export function groupOf(taskId: string): string {
-  const m = /^TSK-(\d+)-\d+/.exec(taskId);
+  const m = /^(?:TSK|DOC)-(\d+)-\d+/.exec(taskId);
   return m ? `GRP-${m[1]}` : "GRP-000000";
 }
 
@@ -130,7 +135,11 @@ export interface Candidate {
  * (smallest group, High → Medium → Low, line order). A task needs approval, attempts below the limit (and
  * not split-pending), its `QA-…` deps answered + approved (or folded), and its `TSK-…` deps satisfied:
  * one ⇒ done (its PR opened), two or more ⇒ all merged into `<base>`. A task of a group in `blockedGroups`
- * (`TSK-<GGGGGG>` — its ER change request is not applied yet, ADR-0453) waits.
+ * (`TSK-<GGGGGG>` — its ER change request is not applied yet, ADR-0453) waits. A `DOC-…` row runs
+ * while its docs entry is pending (never in `review`) and is not held back by its group's change requests; a
+ * `DOC-…` dependency is satisfied once accepted (in AI Done) and never counts toward the merged rule — a task whose
+ * only dependency is its DOC branches from the DOC branch.
+ * @adr 0536
  */
 export async function pickTask(
   root: string,
@@ -139,13 +148,14 @@ export async function pickTask(
 ): Promise<Candidate | null> {
   // A team-restricted worker only takes its teams' tasks (ADR-0450).
   const served = (team: string | undefined): boolean => (opts.profileDir ? servesTeam(opts.profileDir, team) : true);
-  const [todo, prog, done, qa, attempts, approved] = await Promise.all([
+  const [todo, prog, done, qa, attempts, approved, docs] = await Promise.all([
     B.readBook(root, "AI_TODO.md"),
     B.readBook(root, "AI_PROGRESS.md"),
     B.readBook(root, "AI_DONE.md"),
     B.readBook(root, "USER_QA.md"),
     B.readAttempts(root),
     approvedIds(root),
+    readDocs(root),
   ]);
   const claims = B.parseClaims(prog).claims;
   const skip = opts.skip ?? new Set<string>();
@@ -162,13 +172,15 @@ export async function pickTask(
   const qaRows = new Map(B.parseQa(qa).rows.map((q) => [q.id, q]));
   const claimed = new Set(claims.map((c) => c.id));
   const rank = (p: string): number => ({ high: 0, medium: 1, low: 2 })[p.trim().toLowerCase()] ?? 1;
-  const groupNum = (id: string): number => Number(/^TSK-(\d+)/.exec(id)?.[1] ?? 9999);
+  const groupNum = (id: string): number => Number(/^(?:TSK|DOC)-(\d+)/.exec(id)?.[1] ?? 9999);
   const tasks = B.parseTasks(todo)
     .tasks.map((t, i) => ({ t, i }))
     .sort((a, b) => groupNum(a.t.id) - groupNum(b.t.id) || rank(a.t.priority) - rank(b.t.priority) || a.i - b.i);
   for (const { t } of tasks) {
     if (skip.has(t.id) || claimed.has(t.id) || !approved.has(t.id) || !served(t.team)) continue;
-    if (opts.blockedGroups?.has(/^(TSK-\d{6})-/.exec(t.id)?.[1] ?? "")) continue;
+    const isDoc = t.id.startsWith("DOC-");
+    if (isDoc && !docRunnable(docs, t.id)) continue;
+    if (!isDoc && opts.blockedGroups?.has(/^(TSK-\d{6})-/.exec(t.id)?.[1] ?? "")) continue;
     const a = attempts[t.id];
     if (a && (a.splitPending || a.blocked || a.count >= opts.maxAttempts)) continue;
     // QA deps: answered + approved, or already folded (absent — QA ids are never reused).
@@ -179,10 +191,17 @@ export async function pickTask(
         return !q || (q.answer.trim().length > 0 && approved.has(d));
       });
     if (!qaOk) continue;
+    const docDeps = t.depends.filter((d) => d.startsWith("DOC-"));
+    if (docDeps.some((d) => !doneMap.has(d))) continue;
     const deps = t.depends.filter((d) => d.startsWith("TSK-"));
     if (deps.some((d) => !doneMap.has(d))) continue;
     let from: string | null = null;
-    if (deps.length === 1) {
+    if (deps.length === 0 && docDeps.length === 1) {
+      // The accepted docs of the request: continue from the DOC branch until a task PR carries them into <base>.
+      const dep = docDeps[0]!;
+      const branch = doneBranch(doneMap.get(dep) ?? "") ?? taskBranch(rootBase.base, dep);
+      if (!(await isMerged(root, rootBase.url, branch, rootBase.base))) from = branch;
+    } else if (deps.length === 1) {
       const dep = deps[0]!;
       const branch = doneBranch(doneMap.get(dep) ?? "") ?? taskBranch(rootBase.base, dep);
       // Continue from the dependency's branch while its PR is not merged yet.
@@ -235,7 +254,7 @@ export async function applyClaim(root: string, cand: Candidate, mine: Omit<Local
 }
 
 /** Remove this worker's claim row; false when it is no longer ours (lost). */
-async function dropClaim(root: string, mine: LocalClaim): Promise<boolean> {
+export async function dropClaim(root: string, mine: LocalClaim): Promise<boolean> {
   const prog = await B.readBook(root, "AI_PROGRESS.md");
   const claims = B.parseClaims(prog).claims;
   const row = claims.find((c) => c.id === mine.id);
@@ -402,7 +421,7 @@ export async function applyQuestion(root: string, mine: LocalClaim, question: st
     B.readBook(root, "AI_DONE.md"),
     B.readBook(root, B.ATTEMPTS_REL),
   ]);
-  const g = /^TSK-(\d+)/.exec(mine.id)?.[1] ?? "000000";
+  const g = /^(?:TSK|DOC)-(\d+)/.exec(mine.id)?.[1] ?? "000000";
   const qaId = nextId("QA", g, [qa, todo, done, attemptsText]);
   const { rows } = B.parseQa(qa);
   const qaDeps = mine.task.depends.filter((d) => d.startsWith("QA-")).join(", ");
@@ -471,19 +490,20 @@ export interface WaitingCounts {
 
 /**
  * Count the served rows waiting on people — the same rules as `intakeIds` / `pickTask`: unapproved
- * `REQ-…` / `TSK-…` / answered `QA-…`, tasks whose `QA-…` dependency is unanswered (or unapproved), and
- * approved tasks whose `TSK-…` dependency is not done. `changeRequests` is the blocking ER change requests,
- * counted by the caller.
- * @adr 0529 @adr 0453
+ * `REQ-…` / `TSK-…` / `DOC-…` / answered `QA-…` and DOC rounds waiting for their review, tasks whose `QA-…`
+ * dependency is unanswered (or unapproved), and approved tasks whose `TSK-…` / `DOC-…` dependency is not done.
+ * `changeRequests` is the blocking ER change requests, counted by the caller.
+ * @adr 0529 @adr 0453 @adr 0536
  */
 export async function waitingCounts(root: string, profileDir: string | undefined, changeRequests: number): Promise<WaitingCounts> {
-  const [userTodo, todo, qa, done, approved, attempts] = await Promise.all([
+  const [userTodo, todo, qa, done, approved, attempts, docs] = await Promise.all([
     B.readBook(root, "USER_TODO.md"),
     B.readBook(root, "AI_TODO.md"),
     B.readBook(root, "USER_QA.md"),
     B.readBook(root, "AI_DONE.md"),
     approvedIds(root),
     B.readAttempts(root),
+    readDocs(root),
   ]);
   const served = (team: string | undefined): boolean => (profileDir ? servesTeam(profileDir, team) : true);
   const reqIds = B.rowIds(userTodo, "REQ-").filter((id) => served(bookRowTeam(userTodo, id)));
@@ -492,13 +512,14 @@ export async function waitingCounts(root: string, profileDir: string | undefined
   const qaById = new Map(qaRows.map((q) => [q.id, q]));
   const doneMap = B.doneRows(done);
   let approval = reqIds.filter((id) => !approved.has(id)).length;
-  approval += tasks.filter((t) => !approved.has(t.id)).length;
+  // A DOC round waiting for its review is waiting on a person's approval too (ADR-0536).
+  approval += tasks.filter((t) => !approved.has(t.id) || docs[t.id]?.state === "review").length;
   approval += qaRows.filter((q) => q.answer.trim() && !approved.has(q.id)).length;
   let answers = 0;
   let dependencies = 0;
   let blocked = 0;
   for (const t of tasks) {
-    if (!approved.has(t.id)) continue;
+    if (!approved.has(t.id) || docs[t.id]?.state === "review") continue;
     if (attempts[t.id]?.blocked) {
       blocked++;
       continue;
@@ -508,7 +529,7 @@ export async function waitingCounts(root: string, profileDir: string | undefined
       return !!q && !(q.answer.trim() && approved.has(d));
     });
     if (qaWait) answers++;
-    else if (t.depends.some((d) => d.startsWith("TSK-") && !doneMap.has(d))) dependencies++;
+    else if (t.depends.some((d) => /^(?:TSK|DOC)-/.test(d) && !doneMap.has(d))) dependencies++;
   }
   return { approval, changeRequests, answers, dependencies, blocked };
 }
@@ -536,7 +557,7 @@ export async function applySplit(
 ): Promise<string[] | null> {
   if (!(await dropClaim(root, mine))) return null;
   const [todo, done, prog] = await Promise.all([B.readBook(root, "AI_TODO.md"), B.readBook(root, "AI_DONE.md"), B.readBook(root, "AI_PROGRESS.md")]);
-  const g = /^TSK-(\d+)/.exec(mine.id)?.[1] ?? "000000";
+  const g = /^(?:TSK|DOC)-(\d+)/.exec(mine.id)?.[1] ?? "000000";
   const texts = [todo, done, prog, mine.id];
   const ids: string[] = [];
   const rows: B.TaskRow[] = children.map((c, i) => {

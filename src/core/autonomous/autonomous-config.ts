@@ -74,6 +74,8 @@ export interface AutonomousConfig {
   autoResolvePrConflicts: boolean;
   /** Daily cleanup of dead 4PM task branches — policy-only. @adr 0540 */
   branchCleanup: { enabled: boolean; afterDays: number };
+  /** Intake adds a `DOC-…` row per request, reviewed in rounds before its tasks run — policy-only. @adr 0536 */
+  docsPhase: boolean;
 }
 
 /** Lower bound of `runTimeoutMinutes`. @adr 0452 */
@@ -104,6 +106,7 @@ export const DEFAULT_AUTONOMOUS_CONFIG: AutonomousConfig = {
   skipPullRequest: false,
   autoResolvePrConflicts: false,
   branchCleanup: { enabled: false, afterDays: 14 },
+  docsPhase: true,
 };
 
 /** The config file path under a profile dir. */
@@ -163,6 +166,7 @@ function coerce(raw: unknown): AutonomousConfig {
     skipPullRequest: d.skipPullRequest,
     autoResolvePrConflicts: d.autoResolvePrConflicts,
     branchCleanup: d.branchCleanup,
+    docsPhase: d.docsPhase,
   };
 }
 

@@ -156,7 +156,7 @@ export interface AutonomousSnapshotPayload {
   /** The task this worker holds. */
   claim?: { id: string; since: string } | null;
   /** What the running cycle does right now (absent / null = no cycle running). @adr 0529 */
-  step?: { kind: "cycle" | "intake" | "implement" | "deliver"; ids: string[]; since: string } | null;
+  step?: { kind: "cycle" | "intake" | "implement" | "docs" | "deliver"; ids: string[]; since: string } | null;
   consecutiveFails: number;
 }
 
@@ -171,6 +171,8 @@ export interface AutonomousCheckDetailPayload {
   taskId?: string;
   /** The worker holding the intake ids (`intake taken`). */
   by?: string;
+  /** The books whose monthly new-row limit is reached (intake skipped). @adr 0541 */
+  capReached?: ("USER_TODO" | "USER_QA" | "AI_TODO")[];
 }
 
 /**
@@ -218,6 +220,9 @@ export const CliFeature = {
   BRANCH_SYNC: "branchSync",
   // `git.branchCleanup` (list / delete / log / restore) and the daily cleanup of 4PM branches (ADR-0540).
   BRANCH_CLEANUP: "branchCleanup",
+  // `DOC-…` rows: docs rounds, `autonomous.write {kind:"docReview"}`, the docs / lineage sidecars in `autonomous.read`, docs files in
+  // `autonomous.evidence` (ADR-0536/0537).
+  DOCS_PHASE: "docsPhase",
 } as const;
 export type CliFeature = (typeof CliFeature)[keyof typeof CliFeature];
 
@@ -931,6 +936,10 @@ export interface AutonomousReadReply {
    * @adr 0438
    */
   approvalStates?: Record<string, ApprovalState>;
+  /** `.autonomous.docs.json` text — the DOC rows' rounds, state, files and reviews (absent from an older cli). @adr 0536 */
+  docs?: string;
+  /** `.autonomous.lineage.json` text — which request each book group came from. @adr 0537 */
+  lineage?: string;
 }
 
 /** autonomous.logs — tail one day's tick log. */
@@ -1014,6 +1023,16 @@ export type AutonomousWriteRequest =
       editableTeams?: string[] | null;
       ownRowsOnly?: boolean;
       answerOnly?: boolean;
+      // Rows restored from the trash under a new id keep their request's lane: new group → old group (ADR-0537).
+      lineageFrom?: Record<string, string>;
+    }
+  // A person's review of a `DOC-…` round (ADR-0536), recorded in the docs sidecar: `revise` runs another round,
+  // `proceed` moves the DOC to AI Done. Server-built from machine-0063 (`project.task_approve`).
+  | {
+      kind: "docReview";
+      review: { id: string; round: number; decision: "proceed" | "revise"; opinion: string };
+      by: string;
+      byLabel?: string;
     }
   // Stage one evidence file in the profile dir until a `bookSave` commits it (ADR-0404). Server-built
   // from the multipart upload (machine-0072).
@@ -1072,9 +1091,13 @@ export interface AutonomousWriteReply {
 
 /** autonomous.evidence — read one committed book evidence file. @api machine-0073 @adr 0404 */
 export interface AutonomousEvidenceRequest {
-  /** `.4pm/evidence/<BOOK>/<ROW-ID>/<file>` — anything else is refused. */
+  /**
+   * `.4pm/evidence/<BOOK>/<ROW-ID>/<file>`, a mockup / sequence / ER file, or — with a DOC branch as `ref` — a doc file
+   * of the spec's docs folders; anything else is refused.
+   * @adr 0536
+   */
   path: string;
-  /** A task branch to fall back to when the file is not on `<base>` yet. */
+  /** A task branch to fall back to when the file is not on `<base>` yet (a DOC branch is read first). */
   ref?: string;
   /** Read the file at this commit only (7–40 hex), no fallbacks. @adr 0515 */
   rev?: string;
@@ -2387,6 +2410,10 @@ export type AutonomousAlertKind =
   | "direct-merge-failed"
   // The AI could not resolve a PR's conflicts (ADR-0539).
   | "pr-resolve-failed"
+  // A DOC round finished — its docs wait for a person's review (ADR-0536).
+  | "docs-review"
+  // Intake skipped: a book reached the subscription's monthly new-row limit (ADR-0541).
+  | "book-cap"
   // An informational cycle event for automation rules (ADR-0458): no notification, `event` carries it.
   | "event";
 

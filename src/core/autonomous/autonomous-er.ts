@@ -11,6 +11,7 @@
 import { join } from "node:path";
 import {
   AUTO_APPROVER,
+  designGroupKey,
   ERC_ID_RE,
   ERC_NEW_FILE_RE,
   EVIDENCE_ROOT,
@@ -416,10 +417,9 @@ export async function publishTaskErcs(root: string, erDir: string, files: readon
   return created;
 }
 
-/** The task-id group key of a task / question id (`TSK-000007-002` → `TSK-000007`). */
+/** The task-id group key of a task / docs / question id (`TSK-000007-002` → `TSK-000007`; ADR-0536 adds `DOC-`). */
 export function erGroupOf(id: string): string {
-  const m = /^(?:TSK|QA)-(\d{6})-/.exec(id);
-  return m ? `TSK-${m[1]}` : "";
+  return designGroupKey(id);
 }
 
 /**

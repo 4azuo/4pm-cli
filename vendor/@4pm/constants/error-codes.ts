@@ -299,6 +299,8 @@ export const ErrorCode = {
   BOOK_ROW_HAS_DEPENDENTS: "BOOK_ROW_HAS_DEPENDENTS",
   // A book save edits / deletes a row the AI is working on (live AI_PROGRESS claim — ADR-0538). meta.id, meta.worker.
   BOOK_ROW_CLAIMED: "BOOK_ROW_CLAIMED",
+  // A review of a DOC round that no longer waits for it (another round started, or it was reviewed — ADR-0536). meta.id.
+  DOC_REVIEW_STALE: "DOC_REVIEW_STALE",
   // Only ADMIN / the project's PM may change this autonomous setting (`skipPullRequest` — ADR-0539). meta.key.
   AUTONOMOUS_SETTING_FORBIDDEN: "AUTONOMOUS_SETTING_FORBIDDEN",
   // A restore of a deleted branch whose name exists again on the remote (ADR-0540).
@@ -553,6 +555,7 @@ export const CLI_ERROR_CODE_MAP: Record<string, { code: ErrorCode; status: numbe
   BOOK_STALE: { code: ErrorCode.BOOK_STALE, status: 409 },
   BOOK_ROW_HAS_DEPENDENTS: { code: ErrorCode.BOOK_ROW_HAS_DEPENDENTS, status: 422 },
   BOOK_ROW_CLAIMED: { code: ErrorCode.BOOK_ROW_CLAIMED, status: 409 },
+  DOC_REVIEW_STALE: { code: ErrorCode.DOC_REVIEW_STALE, status: 409 },
   AUTONOMOUS_SETTING_FORBIDDEN: { code: ErrorCode.AUTONOMOUS_SETTING_FORBIDDEN, status: 403 },
   BRANCH_EXISTS: { code: ErrorCode.BRANCH_EXISTS, status: 409 },
   BRANCH_RESTORE_UNAVAILABLE: { code: ErrorCode.BRANCH_RESTORE_UNAVAILABLE, status: 410 },

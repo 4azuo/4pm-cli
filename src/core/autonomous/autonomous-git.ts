@@ -12,7 +12,7 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { BRANCH_DELETIONS_REL, DIAGRAM_SIDECAR_REL, DISCUSSIONS_DIR, ER_SIDECAR_REL, EVIDENCE_ROOT } from "@4pm/dto";
+import { BRANCH_DELETIONS_REL, DIAGRAM_SIDECAR_REL, DISCUSSIONS_DIR, DOCS_SIDECAR_REL, ER_SIDECAR_REL, EVIDENCE_ROOT, LINEAGE_SIDECAR_REL } from "@4pm/dto";
 import { ATTEMPTS_REL } from "./autonomous-books";
 import { booksBranch } from "./autonomous-tasks";
 import { openPullRequest, prStateOf } from "../git/git-host";
@@ -40,6 +40,9 @@ export const BOOK_PATHS = [
   ER_SIDECAR_REL,
   DIAGRAM_SIDECAR_REL,
   BRANCH_DELETIONS_REL,
+  // The DOC rounds + the request lineage (ADR-0536/0537).
+  DOCS_SIDECAR_REL,
+  LINEAGE_SIDECAR_REL,
 ];
 
 /**
@@ -47,7 +50,16 @@ export const BOOK_PATHS = [
  * never by an agent run: an agent's edits are reverted on intake and stripped from task branches.
  * @adr 0438
  */
-export const SIDECAR_PATHS = [".claude/.autonomous.approvals.json", ".claude/.autonomous.authors.json", ATTEMPTS_REL, ER_SIDECAR_REL, DIAGRAM_SIDECAR_REL, BRANCH_DELETIONS_REL];
+export const SIDECAR_PATHS = [
+  ".claude/.autonomous.approvals.json",
+  ".claude/.autonomous.authors.json",
+  ATTEMPTS_REL,
+  ER_SIDECAR_REL,
+  DIAGRAM_SIDECAR_REL,
+  BRANCH_DELETIONS_REL,
+  DOCS_SIDECAR_REL,
+  LINEAGE_SIDECAR_REL,
+];
 
 /**
  * Put the sidecars back to their version at `ref` in the working tree + index — tracked ones restored,

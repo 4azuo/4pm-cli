@@ -15,6 +15,7 @@ import type {
 import { hexTokenSchema } from "@4pm/validation";
 import { baseRequestSchema } from "./base";
 import { bookPatchSchema } from "./book-patch";
+import { docReviewSchema } from "./autonomous-docs";
 import type { CommandOrigin } from "./command";
 import type {
   GitAuthMethod,
@@ -1342,6 +1343,14 @@ export const taskApproveBatchRequestSchema = z.object({
     })
     .refine(bookSaveShapeOk, { message: "send `patch`, or `content` with `baseHash`" })
     .optional(),
+  /**
+   * A person's review of a `DOC-…` round (recorded in the docs sidecar after the approvals): `revise` runs another
+   * round, `proceed` moves the DOC to AI Done and releases the group's tasks.
+   * @adr 0536
+   */
+  docReview: docReviewSchema.optional(),
+  /** Rows restored from the trash under a new id: new group → old group (lineage). @adr 0537 */
+  lineageFrom: z.record(z.string().regex(/^\d{6}$/), z.string().regex(/^\d{6}$/)).optional(),
 });
 export type TaskApproveBatchRequestBody = z.infer<typeof taskApproveBatchRequestSchema>;
 /** A markdown link / image whose target is an evidence path under any root (groups: `!`, label, path). */
@@ -1499,6 +1508,9 @@ export const autonomousWriteRequestSchema = z.discriminatedUnion("kind", [
     // cli applies them only after stamping this save's authorship (the editor is the author for SoD).
     approve: z.array(z.string().min(1).max(64)).max(500).optional(),
     unapprove: z.array(z.string().min(1).max(64)).max(500).optional(),
+    // Rows restored from the trash under a new id (ADR-0538 §6): new group → old group, so the lineage sidecar
+    // keeps them in their request's lane (ADR-0537).
+    lineageFrom: z.record(z.string().regex(/^\d{6}$/), z.string().regex(/^\d{6}$/)).optional(),
   }),
   // (The `cron` install/uninstall kind was retired by ADR-0392 — the cli daemon schedules ticks itself.)
 ]).refine((b) => b.kind !== "bookSave" || bookSaveShapeOk(b), { message: "send `patch`, or `content` with `baseHash`" });

@@ -234,9 +234,20 @@ const PROMPT_META: PromptMeta[] = [
     phase: 1,
     title: "Autonomous — implement",
     description:
-      "Implements exactly one task on the prepared branches (commit only); may add an ER change request (ADR-0453). Keep the final JSON status block intact.",
+      "Implements exactly one task on the prepared branches (commit only); may add an ER change request (ADR-0453); `docsNote` lists the accepted docs of its group (ADR-0536). Keep the final JSON status block intact.",
     requiredVars: ["taskId", "desc", "branch", "subLines"],
     untrustedVars: { desc: "request", notes: "request", evidenceGuide: "data", previousTask: "request", conflictPaths: "data" },
+  },
+  {
+    key: "cli.autonomous.docs",
+    ownerApp: "cli",
+    phase: 1,
+    title: "Autonomous — docs round",
+    description:
+      "Writes / updates the project documentation of ONE request on its DOC branch, following the spec's doc types and docs organization (ADR-0536): new numbered files named `NEW-<n>-<slug>.md` (the cli numbers them), the review opinions of earlier rounds applied, evidences updated only when a review asks. Docs only — no application code. Keep the final JSON status block intact.",
+    requiredVars: ["docId", "group", "round", "request", "docTypes", "branch"],
+    // The request / notes / review opinions are people's text; the docs organization and evidence guide are repo text.
+    untrustedVars: { request: "request", desc: "request", notes: "request", reviewNote: "request", docsOrg: "data", evidenceGuide: "data" },
   },
   {
     key: "cli.autonomous.split",

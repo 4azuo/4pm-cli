@@ -98,7 +98,7 @@ function build(header: string[], values: Record<string, string>): string[] {
 
 // ── AI_TODO ──────────────────────────────────────────────────────────────────────────────────────
 
-/** One `AI_TODO` task. `depends` holds `TSK-…` and/or `QA-…` ids. */
+/** One `AI_TODO` row — a task or a docs row (`DOC-…`, ADR-0536). `depends` holds `TSK-…` / `DOC-…` / `QA-…` ids. */
 export interface TaskRow {
   id: string;
   priority: string;
@@ -116,10 +116,10 @@ export function splitIds(v: string): string[] {
   return v
     .split(/[,\s]+/)
     .map((x) => x.trim())
-    .filter((x) => /^(TSK|QA)-/.test(x));
+    .filter((x) => /^(TSK|DOC|QA)-/.test(x));
 }
 
-/** Parse the `AI_TODO` task table. */
+/** Parse the `AI_TODO` task table (task + docs rows). */
 export function parseTasks(md: string): { table: MdTable | null; tasks: TaskRow[] } {
   const table = findTables(md).find((t) => col(t.header, "ID") >= 0 && col(t.header, "Depends") >= 0 && col(t.header, "Priority") >= 0) ?? null;
   if (!table) return { table: null, tasks: [] };
@@ -134,7 +134,7 @@ export function parseTasks(md: string): { table: MdTable | null; tasks: TaskRow[
       notes: get(table, r, "Notes"),
       team: get(table, r, "Team"),
     }))
-    .filter((t) => /^TSK-/.test(t.id));
+    .filter((t) => /^(?:TSK|DOC)-/.test(t.id));
   return { table, tasks };
 }
 
@@ -185,7 +185,7 @@ export function isIntakeClaimId(id: string): boolean {
 
 /**
  * Parse `AI_PROGRESS` (a legacy 3-column table yields claims with no worker/claim id): `claims` = the task
- * claims (`TSK-…`), `intake` = the intake claims (`REQ-…` / `QA-…` being taken in).
+ * claims (`TSK-…`, and `DOC-…` docs rounds — ADR-0536), `intake` = the intake claims (`REQ-…` / `QA-…` being taken in).
  * @adr 0529
  */
 export function parseClaims(md: string): { table: MdTable | null; claims: ClaimRow[]; intake: ClaimRow[] } {
@@ -200,7 +200,7 @@ export function parseClaims(md: string): { table: MdTable | null; claims: ClaimR
     attempt: Number(get(table, r, "Attempt")) || 1,
     desc: get(table, r, "Task description"),
   }));
-  return { table, claims: rows.filter((c) => /^TSK-/.test(c.id)), intake: rows.filter((c) => isIntakeClaimId(c.id)) };
+  return { table, claims: rows.filter((c) => /^(?:TSK|DOC)-/.test(c.id)), intake: rows.filter((c) => isIntakeClaimId(c.id)) };
 }
 
 /**

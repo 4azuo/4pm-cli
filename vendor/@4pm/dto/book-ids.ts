@@ -1,9 +1,10 @@
 /**
- * Book row ids `PREFIX-GGGGGG-NNN` (`REQ` · `TSK` · `QA`): a 6-digit group allocated by the server from the
+ * Book row ids `PREFIX-GGGGGG-NNN` (`REQ` · `TSK` · `QA` · `DOC`): a 6-digit group allocated by the server from the
  * project's group counter + a 3-digit row number given by whoever owns the group. The group key
  * `PREFIX-GGGGGG` names a group's mockups, sequences and task branches. Fixed width, so string order = numeric
- * order. Shared by web / server / cli — every id pattern comes from here.
- * @adr 0455
+ * order. Shared by web / server / cli — every id pattern comes from here. A `DOC-…` row (the docs of one request,
+ * ADR-0536) sits in `AI_TODO` beside the `TSK-…` rows of its group and is claimed like a task.
+ * @adr 0455 @adr 0536
  */
 import { z } from "zod";
 
@@ -16,7 +17,12 @@ export const BOOK_GROUP_MAX = 10 ** BOOK_GROUP_DIGITS - 1;
 export const BOOK_ROW_MAX = 10 ** BOOK_ROW_DIGITS - 1;
 
 /** The id prefixes of the books. */
-export type BookIdPrefix = "REQ" | "TSK" | "QA";
+export type BookIdPrefix = "REQ" | "TSK" | "QA" | "DOC";
+
+/** The `AI_TODO` row prefixes the cycle claims and runs: tasks and docs rows. @adr 0536 */
+export const TASK_ROW_PREFIXES = ["TSK", "DOC"] as const;
+/** A `TSK-…` or `DOC-…` row id (no anchors / groups) — for embedding in larger patterns. @adr 0536 */
+export const TASK_ROW_ID_SOURCE = `(?:TSK|DOC)-\\d{6}-\\d{3}`;
 
 /** Regex source of any row id (no anchors / groups) — for embedding in larger patterns. */
 export const BOOK_ID_SOURCE = `[A-Z]+-\\d{${BOOK_GROUP_DIGITS}}-\\d{${BOOK_ROW_DIGITS}}`;
@@ -53,6 +59,26 @@ export function bookGroupOf(id: string): string | null {
 export function bookGroupKey(id: string): string | null {
   const m = BOOK_ID_RE.exec(id);
   return m ? `${m[1]}-${m[2]}` : null;
+}
+
+/** True for a `TSK-…` or `DOC-…` id — an `AI_TODO` row the cycle claims. @adr 0536 */
+export function isTaskRowId(id: string): boolean {
+  return /^(?:TSK|DOC)-\d{6}-\d{3}$/.test(id);
+}
+
+/** True for a `DOC-…` id. @adr 0536 */
+export function isDocRowId(id: string): boolean {
+  return /^DOC-\d{6}-\d{3}$/.test(id);
+}
+
+/**
+ * The design-group key `TSK-GGGGGG` of a task / docs / question id — the name the group's mockups, sequences and
+ * change requests use, whatever the row's own prefix (`DOC-000123-001` → `TSK-000123`); "" when none.
+ * @adr 0453 @adr 0536
+ */
+export function designGroupKey(id: string): string {
+  const m = /^(?:TSK|DOC|QA)-(\d{6})-/.exec(id);
+  return m ? `TSK-${m[1]}` : "";
 }
 
 /** The QA ids mentioned in a text (e.g. a task's `Depends`), de-duplicated. */

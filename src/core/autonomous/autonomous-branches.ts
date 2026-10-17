@@ -104,7 +104,10 @@ async function prStates(url: string): Promise<Map<string, { number: number; stat
   return out;
 }
 
-/** The task ids still alive in the books: in AI_TODO, under a claim, or in the AI_TODO trash within retention. */
+/**
+ * The task ids still alive in the books: in AI_TODO, under a claim, or in the AI_TODO trash within retention. A
+ * group's DOC branch stays alive while any task of the group is (its tasks branch from it — ADR-0536).
+ */
 async function liveTaskIds(root: string, base: string): Promise<Set<string>> {
   const [todo, progress] = await Promise.all([readBooksFile(root, base, "AI_TODO.md"), readBooksFile(root, base, "AI_PROGRESS.md")]);
   const ids = new Set<string>(B.parseTasks(todo ?? "").tasks.map((t) => t.id));
@@ -118,6 +121,10 @@ async function liveTaskIds(root: string, base: string): Promise<Set<string>> {
     } catch {
       /* a malformed trash keeps nothing alive */
     }
+  }
+  for (const id of [...ids]) {
+    const g = /^TSK-(\d{6})-/.exec(id)?.[1];
+    if (g) ids.add(`DOC-${g}-001`);
   }
   return ids;
 }
@@ -151,7 +158,7 @@ async function listCandidates(root: string, rootBase: RepoBase, ref: RepoRef): P
     );
     if (merged) reasons.push("merged");
     if (pr) reasons.push("pr-closed"); // an open PR was excluded above
-    if (is4pm && /^TSK-/.test(task) && !(await bookMentions(root, rootBase.base, task))) reasons.push("task-gone");
+    if (is4pm && /^(?:TSK|DOC)-/.test(task) && !(await bookMentions(root, rootBase.base, task))) reasons.push("task-gone");
     if (Date.parse(date) < staleBefore) reasons.push("stale");
     if (reasons.length) out.push({ name, sha, kind: is4pm ? "4pm" : "other", reasons, lastCommitAt: date, author, pr });
   }

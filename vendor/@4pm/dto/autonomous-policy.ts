@@ -52,6 +52,11 @@ export interface ProjectAutonomousSettings {
   autoResolvePrConflicts: boolean;
   /** Daily cleanup of dead 4PM task branches (default off; only ADMIN / PM may change it). @adr 0540 */
   branchCleanup: BranchCleanupSettings;
+  /**
+   * The DOC phase: intake adds one `DOC-…` row per request that its tasks wait for, reviewed in rounds before
+   * implement (default on; it runs only when the spec declares `docs_types`). @adr 0536
+   */
+  docsPhase: boolean;
 }
 
 /** The project-scoped keys (a worker settings write carrying one is refused). */
@@ -71,6 +76,7 @@ export const PROJECT_AUTONOMOUS_KEYS = [
   "skipPullRequest",
   "autoResolvePrConflicts",
   "branchCleanup",
+  "docsPhase",
 ] as const satisfies readonly (keyof ProjectAutonomousSettings)[];
 
 /** Lower bound of `runTimeoutMinutes`. */
@@ -93,6 +99,7 @@ export const DEFAULT_PROJECT_AUTONOMOUS_SETTINGS: ProjectAutonomousSettings = {
   skipPullRequest: false,
   autoResolvePrConflicts: false,
   branchCleanup: DEFAULT_BRANCH_CLEANUP,
+  docsPhase: true,
 };
 
 /** Coerce an unknown object into full project-scoped settings (missing / invalid ⇒ default). */
@@ -133,6 +140,7 @@ export function readProjectAutonomousSettings(raw: unknown): ProjectAutonomousSe
         afterDays: Math.min(365, Math.max(1, num(b.afterDays, d.branchCleanup.afterDays))),
       };
     })(),
+    docsPhase: typeof o.docsPhase === "boolean" ? o.docsPhase : d.docsPhase,
   };
 }
 
@@ -195,6 +203,11 @@ export interface AutonomousCheckDetail {
   taskId?: string;
   /** The worker holding the intake ids (`intake taken`). */
   by?: string;
+  /**
+   * The books whose monthly new-row limit of the subscription is reached — intake is skipped until the reset or an
+   * upgrade. @adr 0541
+   */
+  capReached?: ("USER_TODO" | "USER_QA" | "AI_TODO")[];
 }
 
 /** The last tick of a worker (skips included). */
@@ -207,13 +220,14 @@ export interface AutonomousLastCheck {
 }
 
 /**
- * What a worker's running cycle does right now: git / gate phases, the intake agent, the implement agent, or
- * delivering the finished task (push / PR — it can no longer be stopped by an unapprove).
- * @adr 0529 @adr 0538
+ * What a worker's running cycle does right now: git / gate phases, the intake agent, the implement agent, the
+ * docs agent of a `DOC-…` round, or delivering the finished task (push / PR — it can no longer be stopped by an
+ * unapprove).
+ * @adr 0529 @adr 0538 @adr 0536
  */
 export interface AutonomousStep {
-  kind: "cycle" | "intake" | "implement" | "deliver";
-  /** The `REQ-…` / `QA-…` being taken in, or the `TSK-…` being implemented. */
+  kind: "cycle" | "intake" | "implement" | "docs" | "deliver";
+  /** The `REQ-…` / `QA-…` being taken in, or the `TSK-…` / `DOC-…` being worked on. */
   ids: string[];
   since: string;
 }
@@ -300,6 +314,7 @@ export const projectAutonomousPolicyWriteSchema = z
         skipPullRequest: z.boolean().optional(),
         autoResolvePrConflicts: z.boolean().optional(),
         branchCleanup: z.object({ enabled: z.boolean(), afterDays: z.number().int().min(1).max(365) }).optional(),
+        docsPhase: z.boolean().optional(),
       })
       .strict()
       .optional(),

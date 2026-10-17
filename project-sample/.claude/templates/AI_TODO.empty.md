@@ -7,7 +7,9 @@
 > the project when the task is approved (approval is committed on Save — ADR-0311).
 > **Approval** is NOT a table column — it lives in `.claude/.autonomous.approvals.json` (ADR-0152), set
 > from the web AI Todo grid; the autonomous cli reads that file, never the table.
-> **Depends** = comma-separated `TSK-…` and/or `QA-…` ids (ADR-0371). One `TSK` dependency must be in
+> **DOC rows** (`DOC-{groupid}-001`, ADR-0536) are added by the 4PM cli after intake when the spec declares doc
+> types: the request's docs, written and reviewed in rounds; the group's tasks depend on it and run once it is accepted.
+> **Depends** = comma-separated `TSK-…`, `DOC-…` and/or `QA-…` ids (ADR-0371). One `TSK` dependency must be in
 > `AI_DONE.md` (the task's branch starts from that task's branch); **two or more** must all have their PRs
 > **merged** into the base branch. A `QA-…` dependency parks the task until that `USER_QA` row is answered
 > and approved (the cli then folds the answer into Notes and drops the id).
