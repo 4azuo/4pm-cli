@@ -55,6 +55,7 @@ import {
   applyQuestion,
   applyRelease,
   applySplit,
+  applyUnapprovedRelease,
   anyWaiting,
   approvedIds,
   claimState,
@@ -62,7 +63,9 @@ import {
   intakeIds,
   isSplitChild,
   pickTask,
+  previousTaskText,
   readLocalClaim,
+  stillApproved,
   booksBranch,
   taskBranch,
   writeLocalClaim,
@@ -186,6 +189,11 @@ function buildImplementPrompt(
   const resumedNote = resumed
     ? "\nThis is a CONTINUATION: earlier work for this task is already committed on the branches below — review it (git log / git diff against the base) and continue from it; do not start over.\n"
     : "";
+  // Re-approved after an edit (ADR-0538 §5): the earlier work followed the previous text — align it first.
+  const previous = resumed ? previousTaskText(mine) : "";
+  const changedNote = previous
+    ? "THE TASK TEXT CHANGED after that earlier work was written. Its previous version is below; first bring the existing work in line with the CURRENT task text above (drop or adapt what no longer fits), then continue.\n"
+    : "";
   // Admin override (ADR-0381) for `cli.autonomous.implement`, else the shared registry default.
   return resolveCliPrompt("cli.autonomous.implement", {
     taskId: mine.id,
@@ -194,7 +202,8 @@ function buildImplementPrompt(
     // `desc`/`notes` are wrapped as the request by the registry (ADR-0421).
     desc: mine.task.desc,
     notes: mine.task.notes || "(none)",
-    resumedNote,
+    resumedNote: resumedNote + changedNote,
+    previousTask: previous ? `${previous}\n` : "",
     branch: mine.branch,
     subLines,
     evidenceDir: cfg.evidenceDir,
@@ -242,17 +251,30 @@ function parseJsonReply<T>(text: string): T | null {
 // ── Claim watch (during the run + on reconnect) ───────────────────────────────────────────────────
 
 /** The run currently implementing a claimed task (one per daemon). */
-const watch: { commandId: string | null; claim: LocalClaim | null; root: string | null; lost: boolean } = {
+const watch: { commandId: string | null; claim: LocalClaim | null; root: string | null; lost: boolean; unapproved: boolean } = {
   commandId: null,
   claim: null,
   root: null,
   lost: false,
+  unapproved: false,
 };
 
-/** Is the held claim still ours on the remote books? Lost ⇒ stop the running agent. @adr 0371 §2 */
+/** Approvals sidecar on the books branch. @adr 0438 */
+const APPROVALS_REL = ".claude/.autonomous.approvals.json";
+
+/** Was the claimed task's approval withdrawn on the remote books? False when unreadable (keep working). @adr 0538 */
+async function remoteApprovalLost(root: string, claim: LocalClaim): Promise<boolean> {
+  return stillApproved(await remoteBook(root, claim.base, APPROVALS_REL), claim.id) === false;
+}
+
+/**
+ * Is the held claim still ours on the remote books, and is the task still approved? Lost ⇒ stop the
+ * running agent (nothing pushed); unapproved ⇒ stop it too, the work is saved as WIP after the run.
+ * @adr 0371 §2 @adr 0538
+ */
 async function verifyHeldClaim(ctx: WsHandlerCtx): Promise<void> {
   const { claim, root, commandId } = watch;
-  if (!claim || !root || !commandId || watch.lost) return;
+  if (!claim || !root || !commandId || watch.lost || watch.unapproved) return;
   const prog = await remoteBook(root, claim.base, "AI_PROGRESS.md");
   if (!prog) return; // unreadable (offline) — keep working, the next check / deliver re-verifies
   const row = B.parseClaims(prog).claims.find((c) => c.id === claim.id);
@@ -260,10 +282,20 @@ async function verifyHeldClaim(ctx: WsHandlerCtx): Promise<void> {
     watch.lost = true;
     ctx.bus.log(`autonomous: claim of ${claim.id} was taken over — stopping this run`, "warn");
     cancelActiveRun(commandId);
+    return;
+  }
+  if (await remoteApprovalLost(root, claim)) {
+    watch.unapproved = true;
+    ctx.bus.log(`autonomous: ${claim.id} was unapproved — stopping this run`, "warn");
+    cancelActiveRun(commandId);
   }
 }
 
-/** Reconnect hook: a worker that was offline re-verifies its claim before working on. @adr 0371 */
+/**
+ * Re-verify the held claim now: on reconnect (a worker that was offline) and on the server's
+ * `autonomous.verify` nudge after an unapprove.
+ * @adr 0371 @adr 0538
+ */
 export function onReconnectVerifyClaim(ctx: WsHandlerCtx): void {
   void verifyHeldClaim(ctx).catch(() => undefined);
 }
@@ -597,6 +629,8 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
           branch: taskBranch(rootBase.base, cand.task.id),
           base: rootBase.base,
           task: cand.task,
+          // The text the branch's earlier work followed (ADR-0538); a take-over continues the same claim's text.
+          ...(!cand.takeover && attempts[cand.task.id]?.task ? { prevTask: attempts[cand.task.id]!.task } : {}),
         };
         const res = await publishBooks(root, rootBase.base, `chore(auto): claim ${cand.task.id} by ${worker}`, () =>
           applyClaim(root, cand, claim, cfg.claimTtlHours),
@@ -632,10 +666,16 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     const subs = subBranches(bases.subs, mine.id, from);
     for (const s of subs) await checkoutTaskBranch(join(root, s.sub.dir), s.branch, s.sub.base, s.from).catch((e) => log(`[warn] submodule ${s.sub.dir}: ${String(e)}`));
 
+    // A resumed claim may have been unapproved while this worker was away (ADR-0538): stop before running.
+    if (await remoteApprovalLost(root, mine)) {
+      await stopUnapproved(ctx, root, rootBase, subs, mine, cfg, log);
+      return;
+    }
+
     // --- Phase 6: implement (agent), claim watched ---------------------------------------------
     const commandId = cycleRunId();
     setAutonomousStep("implement", [mine.id]);
-    Object.assign(watch, { commandId, claim: mine, root, lost: false });
+    Object.assign(watch, { commandId, claim: mine, root, lost: false, unapproved: false });
     // Work state before the run: a timeout is judged by whether it changed (ADR-0452).
     const workDirs = [root, ...subs.map((s) => join(root, s.sub.dir))];
     const workBefore = await workFingerprint(workDirs);
@@ -666,7 +706,8 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       setAutonomousStep("cycle", [mine.id]);
     }
     const lost = watch.lost;
-    Object.assign(watch, { commandId: null, claim: null, root: null, lost: false });
+    const unapproved = watch.unapproved;
+    Object.assign(watch, { commandId: null, claim: null, root: null, lost: false, unapproved: false });
     // The agent must stay on the prepared branches — put them back if it wandered.
     if ((await currentBranch(root)) !== mine.branch) await gitQuiet(root, ["checkout", "-q", mine.branch]);
 
@@ -677,6 +718,10 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       await writeLocalClaim(profileDir, null);
       await syncBooks(root, rootBase.base);
       ctx.bus.autonomousDone(false, "claim lost");
+      return;
+    }
+    if (unapproved) {
+      await stopUnapproved(ctx, root, rootBase, subs, mine, cfg, log);
       return;
     }
     if (stoppedFromOutside(out)) {
@@ -755,6 +800,12 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       ctx.bus.autonomousDone(false, "claim lost");
       return;
     }
+    // The run may end before the next approval check: re-check once before anything is delivered (ADR-0538).
+    if (await remoteApprovalLost(root, mine)) {
+      await stopUnapproved(ctx, root, rootBase, subs, mine, cfg, log);
+      return;
+    }
+    setAutonomousStep("deliver", [mine.id]);
     let delivered: { files: string; notes: string; evidence: string[]; ercs: NewErcFile[]; sdcs: NewSdcFile[]; prUrl?: string };
     try {
       delivered = await deliver(ctx, root, rootBase, subs, mine, reply?.summary ?? "", cfg);
@@ -879,6 +930,28 @@ async function deliver(
     sdcs,
     ...(pr.url ? { prUrl: pr.url } : {}),
   };
+}
+
+/**
+ * Stop for a withdrawn approval: push the work as WIP on the task branch, drop the claim and return the row
+ * unchanged to `AI_TODO`. Not a failure — no attempt, no `consecutiveFails`.
+ * @adr 0538 §5
+ */
+async function stopUnapproved(
+  ctx: WsHandlerCtx,
+  root: string,
+  rootBase: RepoBase,
+  subs: { sub: RepoBase; branch: string }[],
+  mine: LocalClaim,
+  cfg: AutonomousConfig,
+  log: (l: string) => Promise<void>,
+): Promise<void> {
+  await pushWip(ctx, root, mine, subs, "unapproved", booksOnlyDirsOf(cfg));
+  await syncBooks(root, rootBase.base);
+  await publishBooks(root, rootBase.base, `chore(auto): ${mine.id} unapproved — stopped`, async () => applyUnapprovedRelease(root, mine));
+  await writeLocalClaim(ctx.profileDir, null);
+  await log(`[unapproved] ${mine.id} was unapproved — stopped, WIP pushed on ${mine.branch}`);
+  ctx.bus.autonomousDone(false, "unapproved");
 }
 
 /**

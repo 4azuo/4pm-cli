@@ -180,9 +180,13 @@ export interface AutonomousLastCheck {
   detail?: AutonomousCheckDetail;
 }
 
-/** What a worker's running cycle does right now: git / gate phases, the intake agent, or the implement agent. @adr 0529 */
+/**
+ * What a worker's running cycle does right now: git / gate phases, the intake agent, the implement agent, or
+ * delivering the finished task (push / PR — it can no longer be stopped by an unapprove).
+ * @adr 0529 @adr 0538
+ */
 export interface AutonomousStep {
-  kind: "cycle" | "intake" | "implement";
+  kind: "cycle" | "intake" | "implement" | "deliver";
   /** The `REQ-…` / `QA-…` being taken in, or the `TSK-…` being implemented. */
   ids: string[];
   since: string;

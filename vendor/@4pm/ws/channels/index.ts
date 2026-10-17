@@ -195,6 +195,9 @@ export const WsChannels = {
   // server → cli (one-way): the project's autonomous policy — the project switch, the server's `allowed`
   // verdict for this worker and the project-scoped settings; persisted by the cli (ADR-0507).
   AUTONOMOUS_POLICY: "autonomous.policy",
+  // server → cli (one-way): re-verify the held claim now — sent after a task is unapproved, so the worker
+  // running it stops at once instead of at its next claim check (ADR-0538). Payload `{ taskIds }`.
+  AUTONOMOUS_VERIFY: "autonomous.verify",
   // cli → server (one-way): a batch of aggregated network egress decisions of the cli's egress proxy
   // (ADR-0439) — stored as NetworkEgressEvent rows (the Networks log).
   NETWORK_EVENTS: "network.events",

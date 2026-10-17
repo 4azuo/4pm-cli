@@ -28,6 +28,7 @@ import { requestGitSnapshot } from "../../git/git-snapshot";
 import { probeRepo } from "../../git/repo-probe";
 import { pauseAutonomous } from "../../autonomous/autonomous-config";
 import { setAutonomousPolicy } from "../../autonomous/autonomous-policy";
+import { onReconnectVerifyClaim } from "../../autonomous/autonomous-cycle";
 import { manageSshKey } from "../../git/git-ssh-key";
 import { createAiTaskRunner } from "../../ai/ai-task";
 import { addProject, publishScaffold, scaffoldProject } from "../../project/scaffold";
@@ -100,6 +101,11 @@ export function handleProjectChannels(
       // The project's autonomous policy changed (ADR-0507): persisted; a running cycle stops at its next
       // phase boundary when it turns blocking (the cycle listens).
       setAutonomousPolicy(payload);
+      return true;
+    }
+    case WsChannels.AUTONOMOUS_VERIFY: {
+      // A task was unapproved (ADR-0538): re-check the held claim now; the run stops if it was this one.
+      onReconnectVerifyClaim(ctx);
       return true;
     }
     case WsChannels.PROJECT_TOKENS: {

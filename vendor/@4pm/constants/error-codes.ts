@@ -295,6 +295,10 @@ export const ErrorCode = {
   BOOK_CONFLICT: "BOOK_CONFLICT",
   // A whole-file book save was edited from an older version of the book (ADR-0455).
   BOOK_STALE: "BOOK_STALE",
+  // A book save deletes a row other rows still list in `Depends` (ADR-0538). meta.id, meta.dependents.
+  BOOK_ROW_HAS_DEPENDENTS: "BOOK_ROW_HAS_DEPENDENTS",
+  // A book save edits / deletes a row the AI is working on (live AI_PROGRESS claim — ADR-0538). meta.id, meta.worker.
+  BOOK_ROW_CLAIMED: "BOOK_ROW_CLAIMED",
   // Another live team of the org already uses this code (ADR-0450).
   TEAM_CODE_TAKEN: "TEAM_CODE_TAKEN",
   // A routing entry serves a team not attached to the project (ADR-0450). meta.teamId.
@@ -541,6 +545,8 @@ export const CLI_ERROR_CODE_MAP: Record<string, { code: ErrorCode; status: numbe
   USER_QA_ANSWER_ONLY: { code: ErrorCode.USER_QA_ANSWER_ONLY, status: 422 },
   BOOK_CONFLICT: { code: ErrorCode.BOOK_CONFLICT, status: 409 },
   BOOK_STALE: { code: ErrorCode.BOOK_STALE, status: 409 },
+  BOOK_ROW_HAS_DEPENDENTS: { code: ErrorCode.BOOK_ROW_HAS_DEPENDENTS, status: 422 },
+  BOOK_ROW_CLAIMED: { code: ErrorCode.BOOK_ROW_CLAIMED, status: 409 },
   ER_CHANGE_CONFLICT: { code: ErrorCode.ER_CHANGE_CONFLICT, status: 409 },
   ER_CHANGE_INVALID: { code: ErrorCode.ER_CHANGE_INVALID, status: 422 },
   ER_CHANGE_STALE: { code: ErrorCode.ER_CHANGE_STALE, status: 409 },

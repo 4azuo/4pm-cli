@@ -36,6 +36,7 @@ import { autonomousPolicy, autonomousStep, lastAutonomousCheck } from "./autonom
 import { ATTEMPTS_REL, findTables, replaceRows } from "./autonomous-books";
 import { approvalStates, buildApprovalEntries, mergeApprovalWrite, unapproveIds, type ApprovalBooks } from "./autonomous-approvals";
 import { applyDiscussionBatch } from "./autonomous-discussions";
+import { checkRowGuards } from "./autonomous-row-guards";
 import { applyBookPatch, bookContentHash, bookRowsById, isBookRowId, type BookConflict } from "@4pm/dto";
 import { freshBooksRef, lastCommitTimes, mutateBooks, readBooksFile, resolveBases } from "./autonomous-git";
 import { listDesignEvidence } from "./autonomous-er";
@@ -271,8 +272,19 @@ export async function readAutonomousLogs(root: string, date?: string): Promise<A
 /** Result of a web book write before it is published. */
 type WebWrite = {
   ok: boolean;
-  code?: "APPROVAL_SELF" | "APPROVAL_STALE" | "BOOK_TEAM_FORBIDDEN" | "BOOK_ROW_NOT_OWNED" | "USER_QA_ANSWER_ONLY" | "BOOK_CONFLICT" | "BOOK_STALE";
+  code?:
+    | "APPROVAL_SELF"
+    | "APPROVAL_STALE"
+    | "BOOK_TEAM_FORBIDDEN"
+    | "BOOK_ROW_NOT_OWNED"
+    | "USER_QA_ANSWER_ONLY"
+    | "BOOK_CONFLICT"
+    | "BOOK_STALE"
+    | "BOOK_ROW_HAS_DEPENDENTS"
+    | "BOOK_ROW_CLAIMED";
   failedId?: string;
+  /** The dependent rows / the claiming worker of a row-guard refusal. @adr 0538 */
+  blockers?: string[];
   /** `BOOK_CONFLICT`: the rows (or the text around the table) the patch could not merge. @adr 0455 */
   conflicts?: BookConflict[];
   error?: string;
@@ -427,6 +439,14 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
         );
         if (refused) return refused;
       }
+      // Row guards (ADR-0538): no delete while another row depends on it; no change to a row the AI holds.
+      if (req.book !== "aiDone") {
+        const books = await approvalBooksIn(dir);
+        books[req.book] = content;
+        const cfg = await readAutonomousConfig(profileDir);
+        const guard = checkRowGuards(current, content, [books.userTodo, books.userQa, books.aiTodo], await readText(dir, join(dir, BOOK_FILES.aiProgress)), cfg);
+        if (guard) return { ok: false, code: guard.code, failedId: guard.failedId, blockers: guard.blockers, error: guard.code };
+      }
       // Approvals riding on this save (ADR-0438) are checked BEFORE anything is written: SoD counts this
       // save's edits (the editor becomes the row's author), and each signed entry must match the saved row.
       const approving = req.book !== "aiDone" ? (req.approve ?? []) : [];
@@ -566,6 +586,7 @@ export async function writeAutonomous(
           ok: false,
           ...(res.code ? { code: res.code } : {}),
           ...(res.failedId ? { failedId: res.failedId } : {}),
+          ...(res.blockers ? { blockers: res.blockers } : {}),
           ...(res.conflicts ? { conflicts: res.conflicts } : {}),
           error: res.error,
         };

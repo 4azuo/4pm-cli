@@ -229,7 +229,7 @@ export const createDiscussionSchema = z.object({
   title: z.string().trim().min(1).max(200),
   body: z.string().trim().min(1).max(20_000),
   team: z.string().max(16).default(""),
-  links: z.array(z.string().regex(/^(REQ|TSK)-[\w-]+$/)).max(20).default([]),
+  links: z.array(z.string().regex(/^(REQ|TSK|QA)-[\w-]+$/)).max(20).default([]),
   addresseeUserIds: z.array(z.string().guid()).max(50).default([]),
   addresseeTeamIds: z.array(z.string().guid()).max(20).default([]),
 });
@@ -253,7 +253,7 @@ export type EditDiscussionMessageRequest = z.infer<typeof editDiscussionMessageS
 export const updateDiscussionSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   team: z.string().max(16).optional(),
-  links: z.array(z.string().regex(/^(REQ|TSK)-[\w-]+$/)).max(20).optional(),
+  links: z.array(z.string().regex(/^(REQ|TSK|QA)-[\w-]+$/)).max(20).optional(),
   status: z.enum(["open", "resolved"]).optional(),
 });
 export type UpdateDiscussionRequest = z.infer<typeof updateDiscussionSchema>;

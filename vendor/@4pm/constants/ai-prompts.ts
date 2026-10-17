@@ -236,7 +236,7 @@ const PROMPT_META: PromptMeta[] = [
     description:
       "Implements exactly one task on the prepared branches (commit only); may add an ER change request (ADR-0453). Keep the final JSON status block intact.",
     requiredVars: ["taskId", "desc", "branch", "subLines"],
-    untrustedVars: { desc: "request", notes: "request", evidenceGuide: "data" },
+    untrustedVars: { desc: "request", notes: "request", evidenceGuide: "data", previousTask: "request" },
   },
   {
     key: "cli.autonomous.split",

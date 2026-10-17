@@ -13,7 +13,7 @@ import * as B from "./autonomous-books";
 import { isMerged, type RepoBase } from "./autonomous-git";
 import { evidenceCell, moveTaskEvidence, rehomeTaskLinks } from "./autonomous-evidence";
 import { readFileInRoot } from "../../utils/safe-path";
-import { bookRowTeam } from "@4pm/dto";
+import { approvalEntrySchema, bookRowTeam } from "@4pm/dto";
 import { verifiedApprovedIds } from "./autonomous-approvals";
 import { servesTeam } from "./autonomous-teams";
 
@@ -32,6 +32,8 @@ export interface LocalClaim {
   task: B.TaskRow;
   /** Where the task branch starts when it has no WIP yet (the single unmerged dependency / split parent). */
   from?: string | null;
+  /** The task row as it was at the previous claim — the text the branch's earlier work was written for. @adr 0538 */
+  prevTask?: B.TaskRow;
 }
 
 /** Local claim file path. */
@@ -240,6 +242,54 @@ async function dropClaim(root: string, mine: LocalClaim): Promise<boolean> {
   if (!row || row.claim !== mine.claim) return false;
   await B.writeBook(root, "AI_PROGRESS.md", B.writeClaims(prog, claims.filter((c) => c.id !== mine.id)));
   return true;
+}
+
+/**
+ * Release a task whose approval was withdrawn while it ran: drop the claim and put the row back in `AI_TODO`
+ * unchanged (the person edits / re-approves it). No attempt is counted — the stop was a person's choice.
+ * @adr 0538
+ */
+export async function applyUnapprovedRelease(root: string, mine: LocalClaim): Promise<boolean> {
+  if (!(await dropClaim(root, mine))) return false;
+  const todo = await B.readBook(root, "AI_TODO.md");
+  const { tasks } = B.parseTasks(todo);
+  await B.writeBook(root, "AI_TODO.md", B.writeTasks(todo, [...tasks.filter((t) => t.id !== mine.id), mine.task]));
+  await B.writeBook(
+    root,
+    "AI_DONE.md",
+    B.appendIncident(await B.readBook(root, "AI_DONE.md"), `${mine.id} was unapproved while ${mine.worker} ran it — stopped, returned to AI_TODO (WIP pushed on ${mine.branch}).`),
+  );
+  return true;
+}
+
+/** Is `id` still finally approved in an approvals sidecar text? Null when the text is unreadable. @adr 0538 */
+export function stillApproved(approvalsText: string, id: string): boolean | null {
+  if (!approvalsText.trim()) return null;
+  try {
+    const map = JSON.parse(approvalsText) as Record<string, unknown>;
+    return approvalEntrySchema.safeParse(map[id]).success;
+  } catch {
+    return null;
+  }
+}
+
+/** A Notes cell without the cli's own `attempt N ended: …; WIP on …` remarks. */
+function userNotes(notes: string): string {
+  return notes
+    .replace(/(?:^|;\s*)attempt \d+ ended: .*?; WIP on \S+/g, "")
+    .replace(/^;\s*/, "")
+    .trim();
+}
+
+/**
+ * The previous task text when it differs from the claimed one (description or person-written notes), for the
+ * implement prompt of a resumed task; "" when unchanged or unknown. @adr 0538
+ */
+export function previousTaskText(mine: LocalClaim): string {
+  const prev = mine.prevTask;
+  if (!prev) return "";
+  const same = prev.desc.trim() === mine.task.desc.trim() && userNotes(prev.notes) === userNotes(mine.task.notes);
+  return same ? "" : `Task description: ${prev.desc}\nNotes: ${userNotes(prev.notes) || "(none)"}`;
 }
 
 /**

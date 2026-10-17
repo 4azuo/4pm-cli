@@ -156,7 +156,7 @@ export interface AutonomousSnapshotPayload {
   /** The task this worker holds. */
   claim?: { id: string; since: string } | null;
   /** What the running cycle does right now (absent / null = no cycle running). @adr 0529 */
-  step?: { kind: "cycle" | "intake" | "implement"; ids: string[]; since: string } | null;
+  step?: { kind: "cycle" | "intake" | "implement" | "deliver"; ids: string[]; since: string } | null;
   consecutiveFails: number;
 }
 
@@ -1038,6 +1038,11 @@ export interface AutonomousWriteReply {
   code?: string;
   /** The row id that failed (e.g. the self-approved id), for the UI to point at. @adr 0320 */
   failedId?: string;
+  /**
+   * `BOOK_ROW_HAS_DEPENDENTS`: the rows whose `Depends` still name `failedId`; `BOOK_ROW_CLAIMED`: the worker
+   * holding the claim. @adr 0538
+   */
+  blockers?: string[];
   /** The refreshed status after the write (so the web updates the badge without a re-read). */
   status?: AutonomousStatus;
   /** Rows a `userTodo` / `bookSave` added (by id diff) — counted toward the monthly book cap. @adr 0365 */
