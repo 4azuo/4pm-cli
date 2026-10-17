@@ -41,6 +41,9 @@ export function isBookRowId(id: string): boolean {
   return BOOK_ID_RE.test(id);
 }
 
+/** A book row id path parameter (`PREFIX-GGGGGG-NNN`). @adr 0539 */
+export const bookRowIdParamSchema = z.string().refine(isBookRowId, { message: "invalid row id" });
+
 /** The group code (`GGGGGG`) of a row id, or null. */
 export function bookGroupOf(id: string): string | null {
   return BOOK_ID_RE.exec(id)?.[2] ?? null;

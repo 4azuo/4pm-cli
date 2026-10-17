@@ -374,6 +374,11 @@ export interface AttemptEntry {
   splitPending?: boolean;
   /** The task row as claimed — restored on release / take-over (the row leaves `AI_TODO` while claimed). */
   task?: TaskRow;
+  /**
+   * The task's branch conflicts with `<base>` and the agent could not resolve it: never picked until a person
+   * presses Retry or the branch merges cleanly again (`base` / `head` = the shas it was blocked at). @adr 0539
+   */
+  blocked?: { reason: "merge-conflict"; at: string; base: string; head: string };
 }
 
 /** Read the attempts map (`{}` on any error). */

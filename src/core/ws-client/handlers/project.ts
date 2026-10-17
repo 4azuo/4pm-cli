@@ -21,6 +21,7 @@ import {
   type ProjectPublishReply,
   type ProjectPublishRequest,
   type RepoProbeRequest,
+  type GitPrResolveRequest,
 } from "@4pm/ws";
 import type { GitAuthMethod } from "@4pm/dto";
 import { configureGitAuth } from "../../git/git-auth";
@@ -29,6 +30,8 @@ import { probeRepo } from "../../git/repo-probe";
 import { pauseAutonomous } from "../../autonomous/autonomous-config";
 import { setAutonomousPolicy } from "../../autonomous/autonomous-policy";
 import { onReconnectVerifyClaim } from "../../autonomous/autonomous-cycle";
+import { handlePrResolve } from "../../autonomous/autonomous-pr-resolve";
+import { readAutonomousConfigSync } from "../../autonomous/autonomous-config";
 import { manageSshKey } from "../../git/git-ssh-key";
 import { createAiTaskRunner } from "../../ai/ai-task";
 import { addProject, publishScaffold, scaffoldProject } from "../../project/scaffold";
@@ -101,6 +104,12 @@ export function handleProjectChannels(
       // The project's autonomous policy changed (ADR-0507): persisted; a running cycle stops at its next
       // phase boundary when it turns blocking (the cycle listens).
       setAutonomousPolicy(payload);
+      return true;
+    }
+    case WsChannels.GIT_PR_RESOLVE: {
+      // Resolve a pull request's conflicts with the AI (ADR-0539): starts in the background, the reply says so.
+      const timeoutMs = readAutonomousConfigSync(ctx.profileDir).runTimeoutMinutes * 60_000;
+      ctx.send(WsChannels.GIT_PR_RESOLVE, handlePrResolve(ctx, payload as unknown as GitPrResolveRequest, timeoutMs), message.id);
       return true;
     }
     case WsChannels.AUTONOMOUS_VERIFY: {

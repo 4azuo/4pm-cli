@@ -1435,6 +1435,20 @@ export const evidenceRestoreSchema = z.object({
 });
 export type EvidenceRestoreInput = z.infer<typeof evidenceRestoreSchema>;
 
+/** A branch name from a body (no option, no `..`). @adr 0539 */
+const GIT_REF_RE = /^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}$/;
+
+/** Body of machine-0091 — let the AI resolve one pull request's conflicts on this worker. @adr 0539 */
+export const gitPrResolveSchema = z.object({
+  /** The repo's subdir ("" = the project root). */
+  repo: z.string().max(200).regex(/^$|^(?!\/)(?!.*\.\.)[A-Za-z0-9._/-]+$/).default(""),
+  number: z.number().int().positive(),
+  head: z.string().regex(GIT_REF_RE),
+  base: z.string().regex(GIT_REF_RE),
+  title: z.string().max(300).default(""),
+});
+export type GitPrResolveInput = z.infer<typeof gitPrResolveSchema>;
+
 /** Response of machine-0086. @adr 0515 */
 export interface EvidenceRestoreResponse {
   result: "published" | "unchanged";

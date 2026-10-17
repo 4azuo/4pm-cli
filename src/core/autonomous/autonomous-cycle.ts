@@ -37,6 +37,7 @@ import {
   currentBranch,
   deliverPr,
   gitQuiet,
+  hasRemoteBranch,
   publishBooks,
   publishIntake,
   pushBranch,
@@ -56,6 +57,8 @@ import {
   applyRelease,
   applySplit,
   applyUnapprovedRelease,
+  applyBlockedRelease,
+  applyUnblock,
   anyWaiting,
   approvedIds,
   claimState,
@@ -74,6 +77,8 @@ import {
   type LocalClaim,
   type WaitingCounts,
 } from "./autonomous-tasks";
+import { autoResolveOnePr } from "./autonomous-pr-resolve";
+import { concludeMerge, conflictResolved, directMerge, mergeRefs, mergesCleanly, resetToHead } from "./autonomous-merge";
 import { applyIntakeClaim, intakeClaimTtlMinutes, intakeHeldByOthers, releaseIntakeClaim, type IntakeClaim } from "./autonomous-intake-claims";
 import { branchProtection } from "../git/git-host";
 import { readProfileConfig } from "../../config/profile";
@@ -182,12 +187,20 @@ function buildImplementPrompt(
   cfg: AutonomousConfig,
   mockups: string[],
   design: { sequenceNote: string; erNote: string; diagramNote?: string; evidenceGuide?: string } = { sequenceNote: "", erNote: "" },
+  conflicts: readonly { dir: string; paths: string[] }[] = [],
 ): string {
   const subLines = subs.length
     ? subs.map((s) => `- submodule \`${s.dir}\` is on branch \`${s.branch}\` — commit changes to it INSIDE \`${s.dir}\``).join("\n")
     : "- (no submodules)";
   const resumedNote = resumed
     ? "\nThis is a CONTINUATION: earlier work for this task is already committed on the branches below — review it (git log / git diff against the base) and continue from it; do not start over.\n"
+    : "";
+  // The newest base was merged into the branch and stopped on conflicts (ADR-0539 §2): resolve them first.
+  const conflictNote = conflicts.length
+    ? "\nMERGE CONFLICTS FIRST: the cli merged the latest base branch into this task branch and the merge stopped on conflicts in the files listed below (the merge is still in progress). Resolve every conflict first — keep both sides' intent, remove every conflict marker, run the tests — then commit the merge and continue the task.\n"
+    : "";
+  const conflictPaths = conflicts.length
+    ? `${conflicts.map((c) => c.paths.map((p) => `- ${c.dir === "." ? p : `${c.dir}/${p}`}`).join("\n")).join("\n")}\n`
     : "";
   // Re-approved after an edit (ADR-0538 §5): the earlier work followed the previous text — align it first.
   const previous = resumed ? previousTaskText(mine) : "";
@@ -204,6 +217,8 @@ function buildImplementPrompt(
     notes: mine.task.notes || "(none)",
     resumedNote: resumedNote + changedNote,
     previousTask: previous ? `${previous}\n` : "",
+    conflictNote,
+    conflictPaths,
     branch: mine.branch,
     subLines,
     evidenceDir: cfg.evidenceDir,
@@ -522,6 +537,14 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       }
     }
 
+    // --- Auto-resolve one conflicting 4PM PR before any new work (ADR-0539 §5) ---------------------
+    if (!mine && cfg.autoResolvePrConflicts && !(await allAiProfilesExhausted(ctx, cfg))) {
+      if (await autoResolveOnePr(ctx, root, rootBase, worker, cfg.runTimeoutMinutes * 60_000, log)) {
+        ctx.bus.autonomousDone(true, "pr resolve");
+        return;
+      }
+    }
+
     // --- Has work? + quota gate ----------------------------------------------------------------
     if (!mine && !(await hasWork(root, profileDir))) {
       // Nothing runnable — but rows may be waiting on people (approval, ER, answers, dependencies — ADR-0529).
@@ -609,6 +632,8 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       }
 
       // --- Phase 4: claim (race-safe) -----------------------------------------------------------
+      // A conflict-blocked task whose branch merges cleanly again is released for picking (ADR-0539 §2).
+      await unblockCleanMerges(root, rootBase.base).catch((e) => log(`[warn] unblock check: ${String(e)}`));
       const skip = new Set<string>();
       for (let i = 0; i < 5 && !mine; i++) {
         // A group whose ER change request is not applied yet waits (ADR-0453).
@@ -672,6 +697,9 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       return;
     }
 
+    // --- Phase 5b: a resumed branch takes the newest <base> first (ADR-0539 §1) -----------------
+    const conflicts = await syncResumedBranches(root, rootBase, subs, mine, hadWork, log);
+
     // --- Phase 6: implement (agent), claim watched ---------------------------------------------
     const commandId = cycleRunId();
     setAutonomousStep("implement", [mine.id]);
@@ -697,7 +725,15 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
         er: Boolean(design.erNote),
         diagram: Boolean(diagramNote),
       }).catch(() => "");
-      const prompt = buildImplementPrompt(mine, subs.map((s) => ({ dir: s.sub.dir, branch: s.branch })), resumed || hadWork, cfg, mockups, { ...design, diagramNote, evidenceGuide });
+      const prompt = buildImplementPrompt(
+        mine,
+        subs.map((s) => ({ dir: s.sub.dir, branch: s.branch })),
+        resumed || hadWork,
+        cfg,
+        mockups,
+        { ...design, diagramNote, evidenceGuide },
+        conflicts.map((c) => ({ dir: c.dir, paths: c.paths })),
+      );
       // No model override: each AI profile's own model applies (ADR-0418).
       // Egress (ADR-0439): the run's connections are logged under this task.
       out = await withEgressRun({ taskId: mine.id }, () => runAiPrompt(ctx, prompt, commandId, "local", false, undefined, undefined, false, true, runOverrides(cfg)));
@@ -710,6 +746,15 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     Object.assign(watch, { commandId: null, claim: null, root: null, lost: false, unapproved: false });
     // The agent must stay on the prepared branches — put them back if it wandered.
     if ((await currentBranch(root)) !== mine.branch) await gitQuiet(root, ["checkout", "-q", mine.branch]);
+    // The resume merge (ADR-0539 §2): kept when the agent resolved it, else back to the pre-merge WIP.
+    let unresolved = false;
+    for (const c of conflicts) {
+      if (await conflictResolved(c.cwd, c.paths)) await concludeMerge(c.cwd).catch((e) => log(`[warn] ${c.dir}: merge commit failed: ${String(e)}`));
+      else {
+        await resetToHead(c.cwd, c.head).catch((e) => log(`[warn] ${c.dir}: reset failed: ${String(e)}`));
+        unresolved = true;
+      }
+    }
 
     if (lost) {
       // --- Phase 9: lost the claim mid-run — push nothing -------------------------------------
@@ -722,6 +767,10 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     }
     if (unapproved) {
       await stopUnapproved(ctx, root, rootBase, subs, mine, cfg, log);
+      return;
+    }
+    if (unresolved && !out.exhausted && !stoppedFromOutside(out)) {
+      await blockForConflict(ctx, root, rootBase, subs, mine, cfg, log);
       return;
     }
     if (stoppedFromOutside(out)) {
@@ -871,10 +920,30 @@ async function remoteClaimLost(root: string, mine: LocalClaim): Promise<boolean>
 }
 
 /**
- * Deliver: push each submodule's task branch that has commits + open its PR into the
- * submodule's base; in the root commit the pointer bumps, push, and open the PR into `<base>` linking the
- * submodule PRs. Returns the AI_DONE Files + Notes.
- * @adr 0371 phase 7
+ * Merge the newest `<base>` into a finished branch just before it is delivered (the base may have moved during
+ * the run). Clean ⇒ committed, true; conflict ⇒ the merge is aborted and false (the work is delivered as a PR
+ * that shows the conflict).
+ * @adr 0539 §3
+ */
+async function syncBeforeDelivery(cwd: string, base: string, taskId: string): Promise<boolean> {
+  await gitQuiet(cwd, ["fetch", "-q", "origin", base]);
+  try {
+    const res = await mergeRefs(cwd, [`origin/${base}`], `Merge ${base} into ${taskId} (4PM autonomous)`);
+    if (res.kind === "clean") return true;
+  } catch {
+    /* not a conflict — deliver as it is */
+    return true;
+  }
+  await gitQuiet(cwd, ["merge", "--abort"]);
+  return false;
+}
+
+/**
+ * Deliver: in each submodule then the root, commit leftovers, merge the newest base, push the task
+ * branch and either open its PR into the base, or — with `skipPullRequest` — merge it `--no-ff` straight into the
+ * base (the root's submodule links move to the submodules' merge commits). A conflict before delivery, or a direct
+ * merge that fails, falls back to a PR. Returns the AI_DONE Files + Notes.
+ * @adr 0371 phase 7 @adr 0539
  */
 async function deliver(
   ctx: WsHandlerCtx,
@@ -887,18 +956,37 @@ async function deliver(
 ): Promise<{ files: string; notes: string; evidence: string[]; ercs: NewErcFile[]; sdcs: NewSdcFile[]; prUrl?: string }> {
   const evRoot = cfg.evidenceDir;
   const title = `${mine.id}: ${mine.task.desc}`.replace(/\s+/g, " ").slice(0, 100);
+  const mergeMessage = `Merge ${mine.id} (4PM autonomous): ${mine.task.desc}`.replace(/\s+/g, " ").slice(0, 200);
   const subPrs: string[] = [];
+  const pointers: { dir: string; sha: string }[] = [];
+  // Conflicts with the base found just before delivery (ADR-0539 §3) — those repos go out as PRs.
+  const conflicted: string[] = [];
+  // A direct merge that fell back to a PR (ADR-0539 §4).
+  const fallbacks: string[] = [];
+  let direct = cfg.skipPullRequest;
   for (const s of subs) {
     const abs = join(root, s.sub.dir);
     if ((await currentBranch(abs)) !== s.branch) continue;
     await wipCommit(abs, `feat(${mine.id}): ${summary || mine.task.desc}`.slice(0, 200));
     if ((await aheadOf(abs, s.branch, s.sub.base)) === 0) continue;
+    if (!(await syncBeforeDelivery(abs, s.sub.base, mine.id))) conflicted.push(s.sub.dir);
     await pushBranch(abs, s.branch);
+    if (direct && !conflicted.includes(s.sub.dir)) {
+      const merged = await directMerge(abs, s.branch, s.sub.base, mergeMessage);
+      if (merged.ok) {
+        pointers.push({ dir: s.sub.dir, sha: merged.sha });
+        subPrs.push(`${s.sub.dir}: merged ${merged.sha.slice(0, 10)}`);
+        continue;
+      }
+      fallbacks.push(`${s.sub.dir} (${merged.reason})`);
+    }
+    // A submodule on a PR ⇒ the root goes out as a PR too (its pointer would not be on the submodule's base).
+    direct = false;
     const pr = await deliverPr(abs, s.sub.url, s.branch, s.sub.base, title, `${summary}\n\nTask ${mine.id} (4PM autonomous).`);
     if (pr.error) throw new Error(`submodule ${s.sub.dir} PR: ${pr.error}`);
     subPrs.push(`${s.sub.dir}: ${pr.url ?? s.branch}`);
   }
-  // Root: pointer bumps + any uncommitted leftovers, then push + PR.
+  // Root: pointer bumps + any uncommitted leftovers, then push + PR / merge.
   await wipCommit(root, `feat(${mine.id}): ${summary || mine.task.desc}`.slice(0, 200));
   // The agent's change requests travel to the books, never to `<base>` (ADR-0453) — read them before the strip.
   const ercs = await captureAgentErcs(root, cfg.erDir);
@@ -912,24 +1000,142 @@ async function deliver(
     stripped.filter((p) => !(ercs.length && p === cfg.erDir) && !(sdcs.length && p === cfg.diagramDir)),
     mine.id,
   );
-  const files = (await gitQuiet(root, ["diff", "--name-only", `origin/${rootBase.base}...${mine.branch}`])).split("\n").filter(Boolean);
   // The agent's own evidence on the task branch (ADR-0404) — listed in AI Done's Evidence column.
   const evidence = await agentEvidence(root, mine.id, evRoot);
   if ((await aheadOf(root, mine.branch, rootBase.base)) === 0) {
-    return { files: "", notes: `no changes needed; branch: ${mine.branch}${subPrs.length ? `; sub PRs: ${subPrs.join(", ")}` : ""}`, evidence: [], ercs, sdcs };
+    return { files: "", notes: `no changes needed; branch: ${mine.branch}${subPrs.length ? `; submodules: ${subPrs.join(", ")}` : ""}`, evidence: [], ercs, sdcs };
   }
+  if (!(await syncBeforeDelivery(root, rootBase.base, mine.id))) conflicted.push(".");
+  const files = (await gitQuiet(root, ["diff", "--name-only", `origin/${rootBase.base}...${mine.branch}`])).split("\n").filter(Boolean);
+  const filesCell = files.slice(0, 20).join(", ") + (files.length > 20 ? ` (+${files.length - 20})` : "");
   await pushBranch(root, mine.branch);
-  const body = `${summary}\n\nTask ${mine.id} (4PM autonomous).${subPrs.length ? `\n\nSubmodule PRs:\n${subPrs.map((p) => `- ${p}`).join("\n")}` : ""}`;
+  if (conflicted.length) {
+    alert(ctx, { kind: "pr-conflict", task: mine.id, message: `${mine.id} conflicts with the base in ${conflicted.join(", ")} — delivered as a PR.` });
+  }
+  if (direct && !conflicted.length) {
+    const merged = await directMerge(root, mine.branch, rootBase.base, mergeMessage, pointers);
+    if (merged.ok) {
+      return {
+        files: filesCell,
+        notes: `merged into ${rootBase.base}: ${merged.sha.slice(0, 10)}; branch: ${mine.branch}${subPrs.length ? `; submodules: ${subPrs.join(", ")}` : ""}`,
+        evidence,
+        ercs,
+        sdcs,
+      };
+    }
+    fallbacks.push(`root (${merged.reason})`);
+  }
+  if (fallbacks.length) {
+    alert(ctx, { kind: "direct-merge-failed", task: mine.id, message: `${mine.id} could not be merged directly (${fallbacks.join(", ")}) — a PR was opened instead.` });
+  }
+  const body = `${summary}\n\nTask ${mine.id} (4PM autonomous).${subPrs.length ? `\n\nSubmodules:\n${subPrs.map((p) => `- ${p}`).join("\n")}` : ""}`;
   const pr = await deliverPr(root, rootBase.url, mine.branch, rootBase.base, title, body);
   if (pr.error) throw new Error(`PR: ${pr.error}`);
-  return {
-    files: files.slice(0, 20).join(", ") + (files.length > 20 ? ` (+${files.length - 20})` : ""),
-    notes: `branch: ${mine.branch}; PR: ${pr.url ?? "opened"}${subPrs.length ? `; sub PRs: ${subPrs.join(", ")}` : ""}`,
-    evidence,
-    ercs,
-    sdcs,
-    ...(pr.url ? { prUrl: pr.url } : {}),
-  };
+  const notes = [
+    `branch: ${mine.branch}; PR: ${pr.url ?? "opened"}`,
+    ...(subPrs.length ? [`submodules: ${subPrs.join(", ")}`] : []),
+    ...(conflicted.length ? [`PR conflicts with ${rootBase.base} (${conflicted.join(", ")})`] : []),
+    ...(fallbacks.length ? [`direct merge failed: ${fallbacks.join(", ")}`] : []),
+  ].join("; ");
+  return { files: filesCell, notes, evidence, ercs, sdcs, ...(pr.url ? { prUrl: pr.url } : {}) };
+}
+
+/** One repo whose resume merge stopped on conflicts: where, its pre-merge head, the conflicted paths. */
+interface ResumeConflict {
+  cwd: string;
+  /** "." for the root, else the submodule folder. */
+  dir: string;
+  head: string;
+  paths: string[];
+}
+
+/**
+ * Merge the newest `<base>` (and an unmerged dependency branch) into every task branch that already holds work —
+ * the root and each submodule — before the agent runs. Merge, never rebase: the WIP is shared on the remote. A
+ * clean merge is committed; a conflict is left in progress for the agent and returned.
+ * @adr 0539 §1
+ */
+async function syncResumedBranches(
+  root: string,
+  rootBase: RepoBase,
+  subs: { sub: RepoBase; branch: string; from: string | null }[],
+  mine: LocalClaim,
+  rootHasWork: boolean,
+  log: (l: string) => Promise<void>,
+): Promise<ResumeConflict[]> {
+  const repos: { cwd: string; dir: string; base: string; branch: string; from: string | null; hasWork: boolean }[] = [
+    { cwd: root, dir: ".", base: rootBase.base, branch: mine.branch, from: mine.from ?? null, hasWork: rootHasWork },
+    ...subs.map((s) => ({ cwd: join(root, s.sub.dir), dir: s.sub.dir, base: s.sub.base, branch: s.branch, from: s.from, hasWork: false })),
+  ];
+  const out: ResumeConflict[] = [];
+  for (const r of repos) {
+    // Only a branch that is checked out and already holds work (a fresh branch starts from the newest base).
+    if ((await currentBranch(r.cwd)) !== r.branch) continue;
+    if (!r.hasWork && (await aheadOf(r.cwd, r.branch, r.base)) === 0) continue;
+    await gitQuiet(r.cwd, ["fetch", "-q", "origin", r.base]);
+    const head = (await gitQuiet(r.cwd, ["rev-parse", "HEAD"])).trim();
+    const refs = [`origin/${r.base}`, ...(r.from && (await hasRemoteBranch(r.cwd, r.from)) ? [`origin/${r.from}`] : [])];
+    try {
+      const res = await mergeRefs(r.cwd, refs, `Merge ${r.base} into ${mine.id} (4PM autonomous)`);
+      if (res.kind === "conflict") {
+        out.push({ cwd: r.cwd, dir: r.dir, head, paths: res.paths });
+        await log(`[sync] ${mine.id}: merging ${r.base} into ${r.dir} conflicts in ${res.paths.length} file(s) — the agent resolves them first`);
+      }
+    } catch (err) {
+      await log(`[warn] ${mine.id}: could not merge ${r.base} into ${r.dir}: ${String(err)}`);
+    }
+  }
+  return out;
+}
+
+/**
+ * The resume merge could not be resolved: push the pre-merge WIP, return the task to `AI_TODO` blocked
+ * (`merge-conflict`, no attempt counted) and alert the managers; a person resolves and presses Retry.
+ * @adr 0539 §2
+ */
+async function blockForConflict(
+  ctx: WsHandlerCtx,
+  root: string,
+  rootBase: RepoBase,
+  subs: { sub: RepoBase; branch: string }[],
+  mine: LocalClaim,
+  cfg: AutonomousConfig,
+  log: (l: string) => Promise<void>,
+): Promise<void> {
+  await pushWip(ctx, root, mine, subs, "merge conflict with base", booksOnlyDirsOf(cfg));
+  const head = (await gitQuiet(root, ["rev-parse", mine.branch])).trim();
+  await syncBooks(root, rootBase.base);
+  const base = (await gitQuiet(root, ["rev-parse", `origin/${rootBase.base}`])).trim();
+  await publishBooks(root, rootBase.base, `chore(auto): ${mine.id} blocked — conflicts with ${rootBase.base}`, async () =>
+    applyBlockedRelease(root, mine, { base, head }),
+  );
+  alert(ctx, { kind: "merge-conflict", task: mine.id, message: `${mine.id} conflicts with ${rootBase.base} and the AI could not resolve it.` });
+  await writeLocalClaim(ctx.profileDir, null);
+  await log(`[blocked] ${mine.id}: conflicts with ${rootBase.base} — resolve on ${mine.branch}, then Retry`);
+  ctx.bus.autonomousDone(false, "merge-conflict");
+}
+
+/**
+ * Release the conflict-blocked tasks whose branch now merges cleanly into `<base>` (the base or the branch moved
+ * since the block — e.g. a person resolved it). A dry merge, nothing is written to a branch.
+ * @adr 0539 §2
+ */
+async function unblockCleanMerges(root: string, base: string): Promise<void> {
+  const attempts = await B.readAttempts(root);
+  const blocked = Object.entries(attempts).filter(([, a]) => a.blocked);
+  if (!blocked.length) return;
+  await gitQuiet(root, ["fetch", "-q", "origin", base]);
+  const baseSha = (await gitQuiet(root, ["rev-parse", `origin/${base}`])).trim();
+  const clean: string[] = [];
+  for (const [id, a] of blocked) {
+    const branch = taskBranch(base, id);
+    if (!(await hasRemoteBranch(root, branch))) continue;
+    await gitQuiet(root, ["fetch", "-q", "origin", branch]);
+    const head = (await gitQuiet(root, ["rev-parse", `origin/${branch}`])).trim();
+    if (head === a.blocked!.head && baseSha === a.blocked!.base) continue;
+    if ((await mergesCleanly(root, base, `origin/${branch}`)) === true) clean.push(id);
+  }
+  if (clean.length) await publishBooks(root, base, `chore(auto): unblock ${clean.join(", ")} (merges cleanly)`, async () => applyUnblock(root, clean));
 }
 
 /**

@@ -42,6 +42,13 @@ export interface ProjectAutonomousSettings {
   diagramAutoApprove: boolean;
   /** Apply a new / revised ER change request without a person (default off). @adr 0530 */
   erAutoApprove: boolean;
+  /**
+   * Deliver a finished task by merging it (`--no-ff`) straight into `<base>` instead of opening a PR (default off;
+   * only ADMIN / PM may change it). A failed merge falls back to a PR. @adr 0539
+   */
+  skipPullRequest: boolean;
+  /** Each cycle first lets the AI resolve one conflicting PR of a 4PM task branch (default off). @adr 0539 */
+  autoResolvePrConflicts: boolean;
 }
 
 /** The project-scoped keys (a worker settings write carrying one is refused). */
@@ -58,6 +65,8 @@ export const PROJECT_AUTONOMOUS_KEYS = [
   "diagramDir",
   "diagramAutoApprove",
   "erAutoApprove",
+  "skipPullRequest",
+  "autoResolvePrConflicts",
 ] as const satisfies readonly (keyof ProjectAutonomousSettings)[];
 
 /** Lower bound of `runTimeoutMinutes`. */
@@ -77,6 +86,8 @@ export const DEFAULT_PROJECT_AUTONOMOUS_SETTINGS: ProjectAutonomousSettings = {
   diagramDir: DIAGRAM_ROOT,
   diagramAutoApprove: true,
   erAutoApprove: false,
+  skipPullRequest: false,
+  autoResolvePrConflicts: false,
 };
 
 /** Coerce an unknown object into full project-scoped settings (missing / invalid ⇒ default). */
@@ -108,6 +119,8 @@ export function readProjectAutonomousSettings(raw: unknown): ProjectAutonomousSe
     diagramDir: dir(o.diagramDir, d.diagramDir),
     diagramAutoApprove: typeof o.diagramAutoApprove === "boolean" ? o.diagramAutoApprove : d.diagramAutoApprove,
     erAutoApprove: typeof o.erAutoApprove === "boolean" ? o.erAutoApprove : d.erAutoApprove,
+    skipPullRequest: typeof o.skipPullRequest === "boolean" ? o.skipPullRequest : d.skipPullRequest,
+    autoResolvePrConflicts: typeof o.autoResolvePrConflicts === "boolean" ? o.autoResolvePrConflicts : d.autoResolvePrConflicts,
   };
 }
 
@@ -271,6 +284,8 @@ export const projectAutonomousPolicyWriteSchema = z
         diagramDir: z.string().max(200).refine(isSafeRepoDir).optional(),
         diagramAutoApprove: z.boolean().optional(),
         erAutoApprove: z.boolean().optional(),
+        skipPullRequest: z.boolean().optional(),
+        autoResolvePrConflicts: z.boolean().optional(),
       })
       .strict()
       .optional(),

@@ -213,6 +213,8 @@ export const CliFeature = {
   EVIDENCE_HISTORY: "evidenceHistory",
   // The system-diagram channels `diagram.read` / `diagram.write`, auto-approve of ER / diagram changes (ADR-0530).
   DIAGRAM: "diagram",
+  // Task branches merged with `<base>` on resume / before delivery, direct merge, `git.prResolve`, `taskRetry` (ADR-0539).
+  BRANCH_SYNC: "branchSync",
 } as const;
 export type CliFeature = (typeof CliFeature)[keyof typeof CliFeature];
 
@@ -1029,7 +1031,9 @@ export type AutonomousWriteRequest =
   // ADR-0482). Every gate of the cycle still applies; the reply only says whether it was submitted.
   | { kind: "runNow"; by: string; byLabel?: string }
   // Restore a mockup / sequence file to its content at `rev` as a new books-branch commit (ADR-0515, machine-0086).
-  | { kind: "evidenceRestore"; path: string; rev: string; by: string; byLabel?: string };
+  | { kind: "evidenceRestore"; path: string; rev: string; by: string; byLabel?: string }
+  // Release a task blocked by a merge conflict with its base — clears `blocked` in the attempts sidecar (ADR-0539).
+  | { kind: "taskRetry"; taskId: string; by: string; byLabel?: string };
 // (The `cron` install/uninstall kind was retired by ADR-0392 — the daemon schedules ticks itself.)
 export interface AutonomousWriteReply {
   ok: boolean;
@@ -1973,6 +1977,25 @@ export interface RepoProbeRequest {
 }
 
 /** repo.probe reply — branch existence, remote branches and what the source ref already holds. */
+/**
+ * git.prResolve (server → cli): resolve the conflicts of one pull request with the AI — merge `base` into `head`
+ * in the repo `repo` ("" = the project root), let the agent resolve, check no marker is left, push `head`.
+ * @api machine-0091 @adr 0539
+ */
+export interface GitPrResolveRequest {
+  repo: string;
+  number: number;
+  head: string;
+  base: string;
+  title: string;
+}
+
+/** git.prResolve reply: started in the background, or why not (busy tree, bad input, no git host). @adr 0539 */
+export interface GitPrResolveReply {
+  started: boolean;
+  error?: string;
+}
+
 export interface RepoProbeReply {
   branchExists: boolean;
   defaultBranch: string | null;
@@ -2300,6 +2323,14 @@ export type AutonomousAlertKind =
   | "auto-paused"
   // A project lifecycle pause / close stopped running workers — sent once per project (ADR-0507).
   | "suspended"
+  // A resumed task's branch conflicts with `<base>` and the agent could not resolve it — task blocked (ADR-0539).
+  | "merge-conflict"
+  // A delivered task's PR conflicts with `<base>` (the pre-delivery merge failed — ADR-0539).
+  | "pr-conflict"
+  // `skipPullRequest`: the direct merge into `<base>` failed (conflict / protected / rejected) — a PR was opened (ADR-0539).
+  | "direct-merge-failed"
+  // The AI could not resolve a PR's conflicts (ADR-0539).
+  | "pr-resolve-failed"
   // An informational cycle event for automation rules (ADR-0458): no notification, `event` carries it.
   | "event";
 

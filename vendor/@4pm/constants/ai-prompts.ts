@@ -236,7 +236,7 @@ const PROMPT_META: PromptMeta[] = [
     description:
       "Implements exactly one task on the prepared branches (commit only); may add an ER change request (ADR-0453). Keep the final JSON status block intact.",
     requiredVars: ["taskId", "desc", "branch", "subLines"],
-    untrustedVars: { desc: "request", notes: "request", evidenceGuide: "data", previousTask: "request" },
+    untrustedVars: { desc: "request", notes: "request", evidenceGuide: "data", previousTask: "request", conflictPaths: "data" },
   },
   {
     key: "cli.autonomous.split",
@@ -246,6 +246,16 @@ const PROMPT_META: PromptMeta[] = [
     description: "Read-only: proposes smaller child tasks when a task repeatedly fails. Keep the final JSON children block intact.",
     requiredVars: ["taskId", "desc", "reasons", "branch", "diff"],
     untrustedVars: { desc: "request", notes: "request", reasons: "data", diff: "data" },
+  },
+  {
+    key: "cli.git.prResolve",
+    ownerApp: "cli",
+    phase: 1,
+    title: "Git — resolve a pull request's conflicts",
+    description:
+      "Resolves the conflicts left by merging the target branch into a pull request's head branch, then commits the merge (the cli pushes it). Keep the final JSON status block intact.",
+    requiredVars: ["number", "head", "base", "conflictPaths"],
+    untrustedVars: { title: "data", conflictPaths: "data" },
   },
   {
     key: "server.automation.custom",

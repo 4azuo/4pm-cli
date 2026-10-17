@@ -68,6 +68,10 @@ export interface AutonomousConfig {
    */
   diagramAutoApprove: boolean;
   erAutoApprove: boolean;
+  /** Merge a finished task into `<base>` instead of a PR — policy-only, like the auto-approves. @adr 0539 */
+  skipPullRequest: boolean;
+  /** Resolve one conflicting 4PM PR per cycle — policy-only. @adr 0539 */
+  autoResolvePrConflicts: boolean;
 }
 
 /** Lower bound of `runTimeoutMinutes`. @adr 0452 */
@@ -95,6 +99,8 @@ export const DEFAULT_AUTONOMOUS_CONFIG: AutonomousConfig = {
   diagramDir: DIAGRAM_ROOT,
   diagramAutoApprove: true,
   erAutoApprove: false,
+  skipPullRequest: false,
+  autoResolvePrConflicts: false,
 };
 
 /** The config file path under a profile dir. */
@@ -151,6 +157,8 @@ function coerce(raw: unknown): AutonomousConfig {
     // Policy-only (ADR-0530): the file's value never counts.
     diagramAutoApprove: d.diagramAutoApprove,
     erAutoApprove: d.erAutoApprove,
+    skipPullRequest: d.skipPullRequest,
+    autoResolvePrConflicts: d.autoResolvePrConflicts,
   };
 }
 

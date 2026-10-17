@@ -170,7 +170,7 @@ export async function pickTask(
     if (skip.has(t.id) || claimed.has(t.id) || !approved.has(t.id) || !served(t.team)) continue;
     if (opts.blockedGroups?.has(/^(TSK-\d{6})-/.exec(t.id)?.[1] ?? "")) continue;
     const a = attempts[t.id];
-    if (a && (a.splitPending || a.count >= opts.maxAttempts)) continue;
+    if (a && (a.splitPending || a.blocked || a.count >= opts.maxAttempts)) continue;
     // QA deps: answered + approved, or already folded (absent — QA ids are never reused).
     const qaOk = t.depends
       .filter((d) => d.startsWith("QA-"))
@@ -262,6 +262,46 @@ export async function applyUnapprovedRelease(root: string, mine: LocalClaim): Pr
   return true;
 }
 
+/**
+ * Release a task whose branch conflicts with `<base>` (the agent could not resolve it): drop the claim, put the
+ * row back in `AI_TODO` with a note, and mark it blocked in the attempts sidecar — no attempt is counted (a split
+ * cannot fix a conflict). A person resolves on the branch and presses Retry.
+ * @adr 0539 §2
+ */
+export async function applyBlockedRelease(root: string, mine: LocalClaim, at: { base: string; head: string }): Promise<boolean> {
+  if (!(await dropClaim(root, mine))) return false;
+  const attempts = await B.readAttempts(root);
+  attempts[mine.id] = {
+    ...(attempts[mine.id] ?? { count: 0, last: "", at: "" }),
+    blocked: { reason: "merge-conflict", at: new Date().toISOString(), base: at.base, head: at.head },
+  };
+  await B.writeAttempts(root, attempts);
+  const todo = await B.readBook(root, "AI_TODO.md");
+  const { tasks } = B.parseTasks(todo);
+  const back: B.TaskRow = { ...mine.task, notes: appendNote(mine.task.notes, `blocked: conflicts with ${mine.base}; WIP on ${mine.branch}`) };
+  await B.writeBook(root, "AI_TODO.md", B.writeTasks(todo, [...tasks.filter((t) => t.id !== mine.id), back]));
+  await B.writeBook(
+    root,
+    "AI_DONE.md",
+    B.appendIncident(await B.readBook(root, "AI_DONE.md"), `${mine.id}: merging ${mine.base} into ${mine.branch} conflicts and the AI could not resolve it — blocked until a person resolves it and presses Retry.`),
+  );
+  return true;
+}
+
+/** Clear the `blocked` mark of `ids` (Retry, or the branch merges cleanly again). Returns whether any was set. @adr 0539 */
+export async function applyUnblock(root: string, ids: readonly string[]): Promise<boolean> {
+  const attempts = await B.readAttempts(root);
+  let changed = false;
+  for (const id of ids) {
+    const a = attempts[id];
+    if (!a?.blocked) continue;
+    delete a.blocked;
+    changed = true;
+  }
+  if (changed) await B.writeAttempts(root, attempts);
+  return changed;
+}
+
 /** Is `id` still finally approved in an approvals sidecar text? Null when the text is unreadable. @adr 0538 */
 export function stillApproved(approvalsText: string, id: string): boolean | null {
   if (!approvalsText.trim()) return null;
@@ -273,10 +313,10 @@ export function stillApproved(approvalsText: string, id: string): boolean | null
   }
 }
 
-/** A Notes cell without the cli's own `attempt N ended: …; WIP on …` remarks. */
+/** A Notes cell without the cli's own `attempt N ended: …` / `blocked: …` remarks (`…; WIP on <branch>`). */
 function userNotes(notes: string): string {
   return notes
-    .replace(/(?:^|;\s*)attempt \d+ ended: .*?; WIP on \S+/g, "")
+    .replace(/(?:^|;\s*)(?:attempt \d+ ended: .*?|blocked: conflicts with \S+); WIP on \S+/g, "")
     .replace(/^;\s*/, "")
     .trim();
 }

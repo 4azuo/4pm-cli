@@ -37,6 +37,7 @@ import { ATTEMPTS_REL, findTables, replaceRows } from "./autonomous-books";
 import { approvalStates, buildApprovalEntries, mergeApprovalWrite, unapproveIds, type ApprovalBooks } from "./autonomous-approvals";
 import { applyDiscussionBatch } from "./autonomous-discussions";
 import { checkRowGuards } from "./autonomous-row-guards";
+import { applyUnblock } from "./autonomous-tasks";
 import { applyBookPatch, bookContentHash, bookRowsById, isBookRowId, type BookConflict } from "@4pm/dto";
 import { freshBooksRef, lastCommitTimes, mutateBooks, readBooksFile, resolveBases } from "./autonomous-git";
 import { listDesignEvidence } from "./autonomous-er";
@@ -510,6 +511,11 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
       // Files whose link this save removed (and no book still references) go in the same commit (ADR-0404).
       await pruneEvidence(dir, req.book, prevText, content);
       return { ok: true, added, addedIds };
+    }
+    case "taskRetry": {
+      // A person resolved the task's conflict with its base (ADR-0539): it may be picked again.
+      if (!(await applyUnblock(dir, [req.taskId]))) return { ok: false, error: "task is not blocked" };
+      return { ok: true };
     }
     default:
       return { ok: false, error: "not a book write" };

@@ -1,9 +1,10 @@
 /**
  * Git host helpers — the few host-side reads/writes the cli needs beyond plain git, through the
  * worker's authenticated `gh` (GitHub / GHE, incl. the GitHub-App shim) or `glab` (GitLab):
- * branch protection, the pull/merge-request state of a branch, and opening a PR into an explicit base.
+ * branch protection, the pull/merge-request state of a branch, opening a PR into an explicit base, and the
+ * open PRs that conflict with their target.
  * Every call is best-effort: an unknown host or a failing CLI yields `null` / an error string, never a throw.
- * @adr 0371 @adr 0356
+ * @adr 0371 @adr 0356 @adr 0539
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -83,6 +84,45 @@ export async function prStateOf(url: string, branch: string): Promise<"open" | "
     return s === "opened" ? "open" : s === "merged" ? "merged" : s === "closed" ? "closed" : null;
   } catch {
     return null;
+  }
+}
+
+/** An open pull / merge request whose head conflicts with its target (same-repo heads only). @adr 0539 */
+export interface ConflictingPr {
+  number: number;
+  title: string;
+  head: string;
+  base: string;
+  /** The head commit, to remember which state was already tried. */
+  headSha: string;
+}
+
+/**
+ * The open PRs/MRs of the repo at `url` that conflict with their target: `gh pr list` `mergeable == CONFLICTING`
+ * (GitHub may still be computing — `UNKNOWN` is skipped) / `glab mr list` `has_conflicts`. PRs from forks are left
+ * out (the cli cannot push to them). Empty on any failure.
+ */
+export async function conflictingPullRequests(url: string): Promise<ConflictingPr[]> {
+  const h = repoHost(url);
+  if (!h.provider) return [];
+  try {
+    if (h.provider === "gh") {
+      const repo = h.host && h.host !== "github.com" ? `${h.host}/${h.slug}` : h.slug;
+      const { stdout } = await run(
+        "gh",
+        ["pr", "list", "-R", repo, "--state", "open", "-L", "50", "--json", "number,title,headRefName,baseRefName,headRefOid,mergeable,isCrossRepository"],
+        { timeout: 60_000 },
+      );
+      return (JSON.parse(stdout) as Record<string, unknown>[])
+        .filter((p) => p.mergeable === "CONFLICTING" && p.isCrossRepository !== true)
+        .map((p) => ({ number: Number(p.number), title: String(p.title ?? ""), head: String(p.headRefName ?? ""), base: String(p.baseRefName ?? ""), headSha: String(p.headRefOid ?? "") }));
+    }
+    const { stdout } = await run("glab", ["mr", "list", "-R", h.slug, "-F", "json", "-P", "50"], { timeout: 60_000 });
+    return (JSON.parse(stdout) as Record<string, unknown>[])
+      .filter((m) => m.has_conflicts === true && m.source_project_id === m.target_project_id)
+      .map((m) => ({ number: Number(m.iid), title: String(m.title ?? ""), head: String(m.source_branch ?? ""), base: String(m.target_branch ?? ""), headSha: String(m.sha ?? "") }));
+  } catch {
+    return [];
   }
 }
 

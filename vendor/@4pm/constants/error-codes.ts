@@ -299,6 +299,8 @@ export const ErrorCode = {
   BOOK_ROW_HAS_DEPENDENTS: "BOOK_ROW_HAS_DEPENDENTS",
   // A book save edits / deletes a row the AI is working on (live AI_PROGRESS claim — ADR-0538). meta.id, meta.worker.
   BOOK_ROW_CLAIMED: "BOOK_ROW_CLAIMED",
+  // Only ADMIN / the project's PM may change this autonomous setting (`skipPullRequest` — ADR-0539). meta.key.
+  AUTONOMOUS_SETTING_FORBIDDEN: "AUTONOMOUS_SETTING_FORBIDDEN",
   // Another live team of the org already uses this code (ADR-0450).
   TEAM_CODE_TAKEN: "TEAM_CODE_TAKEN",
   // A routing entry serves a team not attached to the project (ADR-0450). meta.teamId.
@@ -547,6 +549,7 @@ export const CLI_ERROR_CODE_MAP: Record<string, { code: ErrorCode; status: numbe
   BOOK_STALE: { code: ErrorCode.BOOK_STALE, status: 409 },
   BOOK_ROW_HAS_DEPENDENTS: { code: ErrorCode.BOOK_ROW_HAS_DEPENDENTS, status: 422 },
   BOOK_ROW_CLAIMED: { code: ErrorCode.BOOK_ROW_CLAIMED, status: 409 },
+  AUTONOMOUS_SETTING_FORBIDDEN: { code: ErrorCode.AUTONOMOUS_SETTING_FORBIDDEN, status: 403 },
   ER_CHANGE_CONFLICT: { code: ErrorCode.ER_CHANGE_CONFLICT, status: 409 },
   ER_CHANGE_INVALID: { code: ErrorCode.ER_CHANGE_INVALID, status: 422 },
   ER_CHANGE_STALE: { code: ErrorCode.ER_CHANGE_STALE, status: 409 },
