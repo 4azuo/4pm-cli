@@ -337,7 +337,9 @@ async function installPinned(
   for (let attempt = 1; attempt <= TOOL_INSTALL_MAX_ATTEMPTS; attempt++) {
     const suffix = attempt > 1 ? ` (attempt ${attempt}/${TOOL_INSTALL_MAX_ATTEMPTS})` : "";
     onLine(`$ ${manager} ${args.join(" ")}${suffix}`);
-    const { code, out } = await run(manager, args, onLine, timeoutMs);
+    // Same umask 022 as a panel install, so the agent can execute the restored CLI (ADR-0487 §1).
+    const w = asToolInstall(manager, args);
+    const { code, out } = await run(w.cmd, w.args, onLine, timeoutMs);
     if (code === 0) return { ok: true };
     const { reason, retryable } = classifyToolFailure(code, out);
     // Fail fast on a permanent cause, or once the attempts are spent — attach the real npm/pnpm error.
@@ -377,9 +379,11 @@ export async function reconcileTools(
       .filter((r) => r.installed && r.version)
       .map((r) => [r.id, r.version as string]),
   );
+  let touched = false;
   for (const entry of manifest) {
     const current = versionByName.get(entry.name);
     if (current && current.includes(entry.version)) continue; // already at the recorded version
+    touched = true;
     onLine(`Restoring ${entry.name}@${entry.version}…`);
     const res = await installPinned(entry.name, entry.version, entry.manager, onLine, timeoutMs).catch(
       (err: unknown): Awaited<ReturnType<typeof installPinned>> => ({
@@ -401,5 +405,7 @@ export async function reconcileTools(
       });
     }
   }
+  // Re-expose what the restore left behind and drop the cached agent verdicts (ADR-0502).
+  if (touched) exposeInstalledTools();
   return failed;
 }
