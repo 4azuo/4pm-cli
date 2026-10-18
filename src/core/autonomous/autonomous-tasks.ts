@@ -365,7 +365,7 @@ export async function applyFinish(
 ): Promise<boolean> {
   if (!(await dropClaim(root, mine))) return false;
   const moved = await moveTaskEvidence(root, mine.id, evRoot);
-  await B.writeBook(root, "AI_DONE.md", B.appendDone(await B.readBook(root, "AI_DONE.md"), { id: mine.id, team: mine.task.team ?? "", tags: mine.task.tags ?? "", due: mine.task.due ?? "", group: mine.task.group, depends: mine.task.depends, desc: rehomeTaskLinks(mine.task.desc, mine.id), files: done.files, evidence: evidenceCell([...moved, ...done.evidence]), notes: done.notes }));
+  await B.writeBook(root, "AI_DONE.md", B.appendDone(await B.readBook(root, "AI_DONE.md"), { id: mine.id, title: mine.task.title ?? "", team: mine.task.team ?? "", tags: mine.task.tags ?? "", due: mine.task.due ?? "", group: mine.task.group, depends: mine.task.depends, desc: rehomeTaskLinks(mine.task.desc, mine.id), files: done.files, evidence: evidenceCell([...moved, ...done.evidence]), notes: done.notes }));
   const attempts = await B.readAttempts(root);
   delete attempts[mine.id];
   await B.writeAttempts(root, attempts);
@@ -425,7 +425,7 @@ export async function applyQuestion(root: string, mine: LocalClaim, question: st
   const qaId = nextId("QA", g, [qa, todo, done, attemptsText]);
   const { rows } = B.parseQa(qa);
   const qaDeps = mine.task.depends.filter((d) => d.startsWith("QA-")).join(", ");
-  await B.writeBook(root, "USER_QA.md", B.writeQa(qa, [...rows, { id: qaId, team: mine.task.team ?? "", tags: mine.task.tags ?? "", due: mine.task.due ?? "", group: mine.task.group, depends: qaDeps, original: `${mine.id}: ${mine.task.desc}`, question, answer: "" }]));
+  await B.writeBook(root, "USER_QA.md", B.writeQa(qa, [...rows, { id: qaId, title: mine.task.title ? `Question: ${mine.task.title}` : "", team: mine.task.team ?? "", tags: mine.task.tags ?? "", due: mine.task.due ?? "", group: mine.task.group, depends: qaDeps, original: `${mine.id}: ${mine.task.desc}`, question, answer: "" }]));
   const { tasks } = B.parseTasks(todo);
   const back: B.TaskRow = { ...mine.task, depends: [...mine.task.depends.filter((d) => d !== qaId), qaId], notes: appendNote(mine.task.notes, `waiting for ${qaId}; WIP on ${mine.branch}`) };
   await B.writeBook(root, "AI_TODO.md", B.writeTasks(todo, [...tasks.filter((t) => t.id !== mine.id), back]));
@@ -552,7 +552,7 @@ export async function hasIntakeWork(root: string, profileDir?: string): Promise<
 export async function applySplit(
   root: string,
   mine: LocalClaim,
-  children: { desc: string; priority?: string; notes?: string; size?: string }[],
+  children: { desc: string; title?: string; priority?: string; notes?: string; size?: string }[],
   evRoot: string,
 ): Promise<string[] | null> {
   if (!(await dropClaim(root, mine))) return null;
@@ -566,13 +566,13 @@ export async function applySplit(
     const deps = i === 0 ? mine.task.depends : [ids[i - 1]!];
     const notes = [c.size ? `size: ${c.size}` : "", c.notes ?? "", `split from ${mine.id}`, i === 0 ? `from: ${mine.branch}` : ""].filter(Boolean).join("; ");
     // A split child keeps its parent's team, tags and due date (ADR-0450 / ADR-0543).
-    return { id, priority: c.priority || mine.task.priority || "Medium", tag: "", depends: deps, group: mine.task.group, desc: c.desc, notes, team: mine.task.team ?? "", tags: mine.task.tags ?? "", due: mine.task.due ?? "" };
+    return { id, title: c.title ?? "", priority: c.priority || mine.task.priority || "Medium", tag: "", depends: deps, group: mine.task.group, desc: c.desc, notes, team: mine.task.team ?? "", tags: mine.task.tags ?? "", due: mine.task.due ?? "" };
   });
   const { tasks } = B.parseTasks(todo);
   await B.writeBook(root, "AI_TODO.md", B.writeTasks(todo, [...tasks, ...rows]));
   // The parent's attachments follow it to AI Done (ADR-0404); the books' links are rewritten in place.
   const moved = await moveTaskEvidence(root, mine.id, evRoot);
-  await B.writeBook(root, "AI_DONE.md", B.appendDone(await B.readBook(root, "AI_DONE.md"), { id: mine.id, team: mine.task.team ?? "", tags: mine.task.tags ?? "", due: mine.task.due ?? "", group: mine.task.group, depends: mine.task.depends, desc: rehomeTaskLinks(mine.task.desc, mine.id), files: "", evidence: evidenceCell(moved), notes: `split into ${ids.join(", ")} (after repeated attempts); WIP on ${mine.branch}` }));
+  await B.writeBook(root, "AI_DONE.md", B.appendDone(await B.readBook(root, "AI_DONE.md"), { id: mine.id, title: mine.task.title ?? "", team: mine.task.team ?? "", tags: mine.task.tags ?? "", due: mine.task.due ?? "", group: mine.task.group, depends: mine.task.depends, desc: rehomeTaskLinks(mine.task.desc, mine.id), files: "", evidence: evidenceCell(moved), notes: `split into ${ids.join(", ")} (after repeated attempts); WIP on ${mine.branch}` }));
   const attempts = await B.readAttempts(root);
   delete attempts[mine.id];
   await B.writeAttempts(root, attempts);

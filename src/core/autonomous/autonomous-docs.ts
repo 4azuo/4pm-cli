@@ -92,6 +92,8 @@ export interface IntakeSource {
   /** The source row's `Tags` / `Due` cells — copied onto the rows made from it. */
   tags: string;
   due: string;
+  /** The source row's `Title` ("" when it has none — ADR-0549). */
+  title: string;
 }
 
 /** The request text + team of each intake id (`REQ-…` from USER_TODO, an intake `QA-…` from USER_QA). */
@@ -99,10 +101,17 @@ export function intakeSources(ids: readonly string[], userTodo: string, userQa: 
   const qa = new Map(B.parseQa(userQa).rows.map((q) => [q.id, q]));
   return ids.map((id) => {
     if (id.startsWith("REQ-")) {
-      return { id, request: B.requestText(userTodo, id), team: cellOf(userTodo, id, "team"), tags: cellOf(userTodo, id, "tags"), due: cellOf(userTodo, id, "due") };
+      return {
+        id,
+        request: B.requestText(userTodo, id),
+        team: cellOf(userTodo, id, "team"),
+        tags: cellOf(userTodo, id, "tags"),
+        due: cellOf(userTodo, id, "due"),
+        title: cellOf(userTodo, id, "title"),
+      };
     }
     const q = qa.get(id);
-    return { id, request: q ? `${q.original}\nQ: ${q.question}\nA: ${q.answer}` : "", team: q?.team ?? "", tags: q?.tags ?? "", due: q?.due ?? "" };
+    return { id, request: q ? `${q.original}\nQ: ${q.question}\nA: ${q.answer}` : "", team: q?.team ?? "", tags: q?.tags ?? "", due: q?.due ?? "", title: q?.title ?? "" };
   });
 }
 
@@ -217,6 +226,8 @@ export async function addDocRows(root: string, before: ReadonlySet<string>, spec
       depends: [],
       group: rows[0]?.group ?? "",
       desc: `Docs for ${src?.id ?? `group ${g}`}: ${what}`,
+      // ADR-0549: named after the source row's title (else its id).
+      title: `Docs: ${src?.title || src?.id || `group ${g}`}`,
       notes: `doc types: ${spec.types.join(", ")}`,
       team: rows[0]?.team ?? "",
       tags: rows[0]?.tags ?? "",
@@ -434,6 +445,7 @@ export async function applyDocReview(dir: string, review: DocReview, final: bool
         "AI_DONE.md",
         B.appendDone(await B.readBook(dir, "AI_DONE.md"), {
           id: row.id,
+          title: row.title ?? "",
           team: row.team ?? "",
           tags: row.tags ?? "",
           due: row.due ?? "",

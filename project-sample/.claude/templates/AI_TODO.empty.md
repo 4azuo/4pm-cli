@@ -18,6 +18,7 @@
 > `.claude/.autonomous.attempts.json`, not the table.
 > The autonomous cli only takes tasks that are approved AND have their dependencies met → claims them in
 > `AI_PROGRESS.md` (one row per worker); runs group by group, within a group High → Medium → Low.
+> **Title** = a short name for the row (plain text, one line, ≤ 80 characters) — the web grid shows it on the row.
 
-| ID | Priority | Actions | Depends | Group | Task description | Notes |
-|----|----------|-----|---------|-------|------------------|-------|
+| ID | Title | Priority | Actions | Depends | Group | Task description | Notes |
+|----|-------|----------|-----|---------|-------|------------------|-------|

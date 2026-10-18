@@ -5,10 +5,12 @@
  * sidecar. Cells are matched by header name, so a legacy 3-column `AI_PROGRESS` still parses. Rewrites
  * touch only the table rows — the prose around the table is kept byte-for-byte. Every book may carry a
  * `Team` column (a team code, ADR-0450): it is read when present and added (after `ID`) the first time a
- * row with a team is written. Likewise the metadata columns `Tags` / `Due`, added after `Team` (else `ID`).
+ * row with a team is written. Likewise the metadata columns `Tags` / `Due`, added after `Team` (else `Title` / `ID`),
+ * and the row `Title`, added right after `ID` and clamped to `BOOK_TITLE_MAX` on every write.
  * AI_TODO's approval-action column is `Actions`; a legacy `Tag` header is renamed in place on every rewrite.
- * @adr 0371 @adr 0450 @adr 0543
+ * @adr 0371 @adr 0450 @adr 0543 @adr 0549
  */
+import { clampBookTitle } from "@4pm/dto";
 import { readFileInRoot, writeFileInRoot } from "../../utils/safe-path";
 import { join } from "node:path";
 
@@ -81,10 +83,10 @@ function get(t: MdTable, row: string[], name: string): string {
   return i >= 0 ? (row[i] ?? "") : "";
 }
 
-/** Add a `Team` column right after `ID` when `needed` and the table has none (old rows get ""). */
+/** Add a `Team` column right after `Title` (else `ID`) when `needed` and the table has none (old rows get ""). */
 function withTeamColumn(table: MdTable, needed: boolean): MdTable {
   if (!needed || col(table.header, "Team") >= 0) return table;
-  const at = col(table.header, "ID") + 1;
+  const at = (col(table.header, "Title") >= 0 ? col(table.header, "Title") : col(table.header, "ID")) + 1;
   return {
     ...table,
     header: [...table.header.slice(0, at), "Team", ...table.header.slice(at)],
@@ -92,10 +94,44 @@ function withTeamColumn(table: MdTable, needed: boolean): MdTable {
   };
 }
 
-/** Add the `Tags` / `Due` columns after `Team` (else `ID`) when `needed` and the table lacks them. @adr 0543 */
+/** Add the `Tags` / `Due` columns after `Team` (else `Title`, else `ID`) when `needed` and the table lacks them. @adr 0543 */
 function withMetaColumns(table: MdTable, needed: boolean): MdTable {
   if (!needed) return table;
-  return insertColumns(table, col(table.header, "Team") >= 0 ? "Team" : "ID", ["Tags", "Due"]);
+  return insertColumns(table, metaAnchor(table), ["Tags", "Due"]);
+}
+
+/** The column the `Tags` / `Due` columns follow: `Team`, else `Title`, else `ID`. */
+function metaAnchor(table: MdTable): string {
+  return col(table.header, "Team") >= 0 ? "Team" : col(table.header, "Title") >= 0 ? "Title" : "ID";
+}
+
+/** Add a `Title` column right after `ID` when `needed` and the table has none (old rows get ""). @adr 0549 */
+function withTitleColumn(table: MdTable, needed: boolean): MdTable {
+  return needed ? insertColumns(table, "ID", ["Title"]) : table;
+}
+
+/**
+ * Give the AI_TODO and USER_QA tables a `Title` column (before intake, so the agent fills an existing cell);
+ * rows are unchanged. @adr 0549
+ */
+export function withTitleColumns(md: string): string {
+  const t = parseTasks(md).table ?? parseQa(md).table;
+  if (!t || col(t.header, "Title") >= 0) return md;
+  return replaceRows(md, withTitleColumn(t, true), withTitleColumn(t, true).rows);
+}
+
+/** Clamp every `Title` cell of every table to one line of `BOOK_TITLE_MAX` chars (after an agent edit). @adr 0549 */
+export function clampTitles(md: string): string {
+  let out = md;
+  // Rewriting a table keeps the line count of the others, so re-find tables after each rewrite.
+  for (let k = 0; ; k++) {
+    const t = findTables(out)[k];
+    if (!t) return out;
+    const i = col(t.header, "Title");
+    if (i < 0) continue;
+    const rows = t.rows.map((r) => r.map((c, j) => (j === i ? clampBookTitle(c) : c)));
+    if (rows.some((r, n) => r[i] !== t.rows[n]![i])) out = replaceRows(out, t, rows);
+  }
 }
 
 /** The AI_TODO approval-action column name (formerly `Tag`). @adr 0543 */
@@ -129,6 +165,24 @@ export async function upgradeActionsHeader(root: string): Promise<boolean> {
   return true;
 }
 
+/** Give AI_TODO and USER_QA in `root` a `Title` column (before the intake agent edits them). @adr 0549 */
+export async function addTitleColumns(root: string): Promise<void> {
+  for (const book of ["AI_TODO.md", "USER_QA.md"]) {
+    const md = await readBook(root, book);
+    const next = withTitleColumns(md);
+    if (next !== md) await writeBook(root, book, next);
+  }
+}
+
+/** Clamp the `Title` cells of AI_TODO and USER_QA in `root` (after the intake agent edited them). @adr 0549 */
+export async function clampBookTitles(root: string): Promise<void> {
+  for (const book of ["AI_TODO.md", "USER_QA.md"]) {
+    const md = await readBook(root, book);
+    const next = clampTitles(md);
+    if (next !== md) await writeBook(root, book, next);
+  }
+}
+
 /** Build a row in the table's own column order from a name → value map. */
 function build(header: string[], values: Record<string, string>): string[] {
   return header.map((h) => values[h.toLowerCase()] ?? "");
@@ -148,6 +202,8 @@ export interface TaskRow {
   notes: string;
   /** Team code ("" = untagged — ADR-0450). Optional on rows built before teams existed. */
   team?: string;
+  /** `Title` cell — the row's short name. */
+  title?: string;
   /** `Tags` cell — tag codes. */
   tags?: string;
   /** `Due` cell — `YYYY-MM-DD`. */
@@ -177,6 +233,7 @@ export function parseTasks(md: string): { table: MdTable | null; tasks: TaskRow[
       desc: get(table, r, "Task description"),
       notes: get(table, r, "Notes"),
       team: get(table, r, "Team"),
+      title: get(table, r, "Title"),
       tags: get(table, r, "Tags"),
       due: get(table, r, "Due"),
     }))
@@ -189,7 +246,7 @@ export function writeTasks(md: string, tasks: TaskRow[]): string {
   const found = parseTasks(md).table;
   if (!found) return md;
   const table = withMetaColumns(
-    withTeamColumn(withActionsHeader(found), tasks.some((t) => Boolean(t.team))),
+    withTeamColumn(withTitleColumn(withActionsHeader(found), tasks.some((t) => Boolean(t.title))), tasks.some((t) => Boolean(t.team))),
     tasks.some((t) => Boolean(t.tags || t.due)),
   );
   return replaceRows(
@@ -198,6 +255,7 @@ export function writeTasks(md: string, tasks: TaskRow[]): string {
     tasks.map((t) =>
       build(table.header, {
         id: t.id,
+        title: clampBookTitle(t.title ?? ""),
         priority: t.priority,
         actions: t.tag,
         tags: t.tags ?? "",
@@ -315,13 +373,13 @@ function insertColumns(table: MdTable, after: string, names: string[]): MdTable 
  * keeping every other column (e.g. the web's `AI verify`).
  * @adr 0400 @adr 0404
  */
-function withDoneColumns(table: MdTable, team = false, meta = false): MdTable {
-  const base = insertColumns(insertColumns(table, "ID", ["Group", "Depends"]), "Files", ["Evidence"]);
+function withDoneColumns(table: MdTable, team = false, meta = false, title = false): MdTable {
+  const base = withTitleColumn(insertColumns(insertColumns(table, "ID", ["Group", "Depends"]), "Files", ["Evidence"]), title);
   const teamed = team ? insertColumns(base, "Group", ["Team"]) : base;
   return meta ? insertColumns(teamed, col(teamed.header, "Team") >= 0 ? "Team" : "Group", ["Tags", "Due"]) : teamed;
 }
 
-/** Append a Done row (`Timestamp | ID | Group | Depends | Task description | Files | Evidence | Notes`). */
+/** Append a Done row (`Timestamp | ID | Title | Group | Depends | Task description | Files | Evidence | Notes`). */
 export function appendDone(
   md: string,
   row: {
@@ -335,14 +393,16 @@ export function appendDone(
     team?: string;
     tags?: string;
     due?: string;
+    title?: string;
   },
 ): string {
   const found = findTables(md).find((t) => col(t.header, "ID") >= 0 && col(t.header, "Timestamp") >= 0);
   if (!found) return md;
-  const table = withDoneColumns(found, Boolean(row.team), Boolean(row.tags || row.due));
+  const table = withDoneColumns(found, Boolean(row.team), Boolean(row.tags || row.due), Boolean(row.title));
   const values = {
     timestamp: stamp(),
     id: row.id,
+    title: clampBookTitle(row.title ?? ""),
     team: row.team ?? "",
     tags: row.tags ?? "",
     due: row.due ?? "",
@@ -383,6 +443,8 @@ export interface QaRow {
   original: string;
   question: string;
   answer: string;
+  /** `Title` cell — the question's short name. */
+  title?: string;
   /** `Tags` / `Due` cells. */
   tags?: string;
   due?: string;
@@ -401,6 +463,7 @@ export function parseQa(md: string): { table: MdTable | null; rows: QaRow[] } {
       original: get(table, r, "Original request"),
       question: get(table, r, "Question / options"),
       answer: get(table, r, "Answer"),
+      title: get(table, r, "Title"),
       tags: get(table, r, "Tags"),
       due: get(table, r, "Due"),
     }))
@@ -412,13 +475,17 @@ export function parseQa(md: string): { table: MdTable | null; rows: QaRow[] } {
 export function writeQa(md: string, rows: QaRow[]): string {
   const found = parseQa(md).table;
   if (!found) return md;
-  const table = withMetaColumns(withTeamColumn(found, rows.some((q) => Boolean(q.team))), rows.some((q) => Boolean(q.tags || q.due)));
+  const table = withMetaColumns(
+    withTeamColumn(withTitleColumn(found, rows.some((q) => Boolean(q.title))), rows.some((q) => Boolean(q.team))),
+    rows.some((q) => Boolean(q.tags || q.due)),
+  );
   return replaceRows(
     md,
     table,
     rows.map((q) =>
       build(table.header, {
         id: q.id,
+        title: clampBookTitle(q.title ?? ""),
         team: q.team ?? "",
         tags: q.tags ?? "",
         due: q.due ?? "",

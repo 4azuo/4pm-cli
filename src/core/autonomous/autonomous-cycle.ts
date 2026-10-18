@@ -1379,7 +1379,7 @@ async function releaseTask(ctx: WsHandlerCtx, root: string, rootBase: RepoBase, 
       alert(ctx, { kind: "task-failed-limit", task: mine.id, message: `${mine.id} failed ${next} times; a decision was requested in USER_QA.` });
     } else {
       const out = await runAiPrompt(ctx, buildSplitPrompt(mine, reasons, await wipDiff(root, mine)), cycleRunId(), "local", false, undefined, undefined, true, false, runOverrides(cfg));
-      const children = parseJsonReply<{ children?: { desc: string; priority?: string; size?: string; notes?: string }[] }>(out.output)?.children?.filter((c) => c?.desc?.trim()) ?? [];
+      const children = parseJsonReply<{ children?: { desc: string; title?: string; priority?: string; size?: string; notes?: string }[] }>(out.output)?.children?.filter((c) => c?.desc?.trim()) ?? [];
       await syncBooks(root, rootBase.base);
       if (children.length >= 2) {
         let ids: string[] | null = null;
@@ -1501,6 +1501,8 @@ async function runIntake(
   const erOpenNote = await openErcNote(root, cfg.erDir).catch(() => "");
   const diagramNote = await intakeDiagramNote(root, cfg.diagramDir).catch(() => "");
   const evidenceGuide = await intakeEvidenceGuide(root, base).catch(() => "");
+  // The agent fills an existing `Title` cell (ADR-0549); a discarded intake drops this with its edits.
+  await B.addTitleColumns(root);
   const out = await runAiPrompt(ctx, buildIntakePrompt(cfg, ids, erOpenNote, groups, diagramNote, evidenceGuide) + context, cycleRunId(), "local", false, undefined, undefined, false, true, runOverrides(cfg));
   if (stoppedFromOutside(out)) {
     // Stopped by a restart or the policy: drop the half intake, nothing counted (re-run later).
@@ -1522,6 +1524,7 @@ async function runIntake(
   }
   await fillIntakeTeams(root, ctx.profileDir, ids, before);
   await fillIntakeMeta(root, sources, groups, before);
+  await B.clampBookTitles(root);
   let ercs = 0;
   const res = await publishIntake(
     root,

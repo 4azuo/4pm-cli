@@ -335,6 +335,8 @@ export const ErrorCode = {
   TAG_CODE_TAKEN: "TAG_CODE_TAKEN",
   TAG_UNKNOWN: "TAG_UNKNOWN",
   DUE_INVALID: "DUE_INVALID",
+  // A book row `Title` longer than BOOK_TITLE_MAX (meta.ids — ADR-0549).
+  BOOK_TITLE_TOO_LONG: "BOOK_TITLE_TOO_LONG",
   // Issue links (ADR-0546): a malformed issue ref (meta.ids); the issue is linked to another live row (meta.ref,
   // meta.rowId); no held external change to apply / dismiss.
   ISSUE_REF_INVALID: "ISSUE_REF_INVALID",

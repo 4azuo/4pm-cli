@@ -10,6 +10,7 @@
 > `.claude/templates/USER_TODO.sample.md`.
 >
 > **Columns (content only):** `ID` · `Group` · `Depends` (comma-separated `REQ-…`) · `Request`.
+> **Title** = a short name for the row (plain text, one line, ≤ 80 characters) — the web grid shows it on the row.
 
-| ID | Group | Depends | Request |
-|----|-------|---------|---------|
+| ID | Title | Group | Depends | Request |
+|----|-------|-------|---------|---------|

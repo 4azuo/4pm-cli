@@ -7,9 +7,9 @@
 > `TSK-…` ids (one ⇒ in `AI_DONE.md`; two or more ⇒ all PRs merged into the base branch) and/or `QA-…` ids
 > (wait for that answer — ADR-0371). **Notes** may carry `size: S|M` and `from: <branch>`.
 
-| ID | Priority | Actions | Depends | Group | Task description | Notes |
-|----|----------|-----|---------|-------|------------------|-------|
-| TSK-000001-001 | High | | | Auth | Add login-form validation per docs/auth.md | |
-| TSK-000001-002 | Medium | | TSK-000001-001 | Auth | Wire the login API call + error handling | After 001 |
-| TSK-000001-003 | Low | UpdateSpecFromDB | | Spec | Sync the project spec into project.spec.json on approve | Server action; size: S |
-| TSK-000001-004 | Medium | | TSK-000001-002, QA-000001-002 | Auth | Add the password-reset flow | Waits for QA-000001-002 (which mail provider?); size: M |
+| ID | Title | Priority | Actions | Depends | Group | Task description | Notes |
+|----|-------|----------|-----|---------|-------|------------------|-------|
+| TSK-000001-001 | Login form validation | High | | | Auth | Add login-form validation per docs/auth.md | |
+| TSK-000001-002 | Login API call + error handling | Medium | | TSK-000001-001 | Auth | Wire the login API call + error handling | After 001 |
+| TSK-000001-003 | Sync spec into project.spec.json | Low | UpdateSpecFromDB | | Spec | Sync the project spec into project.spec.json on approve | Server action; size: S |
+| TSK-000001-004 | Password-reset flow | Medium | | TSK-000001-002, QA-000001-002 | Auth | Add the password-reset flow | Waits for QA-000001-002 (which mail provider?); size: M |

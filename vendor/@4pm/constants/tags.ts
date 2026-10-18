@@ -28,6 +28,9 @@ export type TagScope = (typeof TagScope)[keyof typeof TagScope];
 /** A `Due` value: `YYYY-MM-DD`. */
 export const DUE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/** The longest book row `Title` (one line, plain text — metadata like `Tags` / `Due`). @adr 0549 */
+export const BOOK_TITLE_MAX = 80;
+
 /** Limits of the tag fields. */
 export const TAG_NAME_MAX = 40;
 export const TAG_DESCRIPTION_MAX = 200;

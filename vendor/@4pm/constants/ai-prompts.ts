@@ -466,7 +466,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "AI generate — AI_TODO tasks",
     description:
-      "Read-only: drafts AI_TODO engineering tasks from the user's description (ADR-0408). Keep the JSON array output shape ({key, priority, group, depends, description, notes}).",
+      "Read-only: drafts AI_TODO engineering tasks from the user's description (ADR-0408). Keep the JSON array output shape ({key, title, priority, group, depends, description, notes}).",
     requiredVars: ["entries", "description"],
     untrustedVars: { entries: "data", description: "request" },
   },
@@ -476,7 +476,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "AI generate — USER_TODO requests",
     description:
-      "Read-only: drafts USER_TODO requests from the user's description (ADR-0408). Keep the JSON array output shape ({key, group, depends, request}).",
+      "Read-only: drafts USER_TODO requests from the user's description (ADR-0408). Keep the JSON array output shape ({key, title, group, depends, request}).",
     requiredVars: ["entries", "description"],
     untrustedVars: { entries: "data", description: "request" },
   },
@@ -486,7 +486,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "AI generate — USER_QA questions",
     description:
-      "Read-only: drafts USER_QA questions from the user's description (ADR-0408). Keep the JSON array output shape ({key, group, depends, original, question}).",
+      "Read-only: drafts USER_QA questions from the user's description (ADR-0408). Keep the JSON array output shape ({key, title, group, depends, original, question}).",
     requiredVars: ["entries", "description"],
     untrustedVars: { entries: "data", description: "request" },
   },
@@ -496,7 +496,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "AI edit — AI_TODO tasks",
     description:
-      "Read-only: rewrites the selected AI_TODO tasks from the user's instruction (ADR-0417). Keep the JSON array output shape ({id, priority, group, depends, description, notes}).",
+      "Read-only: rewrites the selected AI_TODO tasks from the user's instruction (ADR-0417). Keep the JSON array output shape ({id, title, priority, group, depends, description, notes}).",
     requiredVars: ["entries", "context", "instruction"],
     untrustedVars: { entries: "data", context: "data", instruction: "request" },
   },
@@ -506,7 +506,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "AI edit — USER_TODO requests",
     description:
-      "Read-only: rewrites the selected USER_TODO requests from the user's instruction (ADR-0417). Keep the JSON array output shape ({id, group, depends, request}).",
+      "Read-only: rewrites the selected USER_TODO requests from the user's instruction (ADR-0417). Keep the JSON array output shape ({id, title, group, depends, request}).",
     requiredVars: ["entries", "context", "instruction"],
     untrustedVars: { entries: "data", context: "data", instruction: "request" },
   },
@@ -516,7 +516,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "AI edit — USER_QA questions",
     description:
-      "Read-only: rewrites the selected USER_QA questions from the user's instruction (ADR-0417). Keep the JSON array output shape ({id, group, depends, original, question}).",
+      "Read-only: rewrites the selected USER_QA questions from the user's instruction (ADR-0417). Keep the JSON array output shape ({id, title, group, depends, original, question}).",
     requiredVars: ["entries", "context", "instruction"],
     untrustedVars: { entries: "data", context: "data", instruction: "request" },
   },

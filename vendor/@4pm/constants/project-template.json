@@ -1,6 +1,31 @@
 {
-  "version": "1.1.3",
+  "version": "1.1.4",
   "changelog": [
+    {
+      "version": "1.1.4",
+      "date": "2026-10-18",
+      "summary": "Book rows get a short `Title` column (USER_TODO, USER_QA, AI_TODO, AI_DONE).",
+      "notes": [
+        "Each book table has a `Title` column right after `ID`: a one-line name of at most 80 characters, shown on the web grid row.",
+        "Titles are metadata like `Tags` / `Due`: editing one never voids an approval.",
+        "No manual change needed: the cli inserts the column into existing tables (old rows stay empty and the web shows the start of their content)."
+      ],
+      "files": [
+        "USER_TODO.md",
+        "USER_QA.md",
+        "AI_TODO.md",
+        "AI_DONE.md",
+        ".claude/templates/USER_TODO.empty.md",
+        ".claude/templates/USER_TODO.sample.md",
+        ".claude/templates/USER_QA.empty.md",
+        ".claude/templates/USER_QA.sample.md",
+        ".claude/templates/AI_TODO.empty.md",
+        ".claude/templates/AI_TODO.sample.md",
+        ".claude/templates/AI_DONE.empty.md",
+        ".claude/templates/AI_DONE.sample.md"
+      ],
+      "skippable": true
+    },
     {
       "version": "1.1.3",
       "date": "2026-10-07",

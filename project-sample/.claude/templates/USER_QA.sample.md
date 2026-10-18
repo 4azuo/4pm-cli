@@ -3,6 +3,6 @@
 > The AI asks; you answer + approve. The cycle re-analyses **only after the row is approved**. Approver/
 > date and answerer/date live in the JSON sidecars (ADR-0320), not here; the web grid shows them.
 
-| ID | Group | Depends | Original request | Question / options | Answer |
-|----|-------|---------|------------------|--------------------|--------|
-| QA-000001-001 | Auth | | Add a login screen | Email/password only, or also OAuth? (a) email+password, (b) also Google, (c) also GitHub | (a) email+password |
+| ID | Title | Group | Depends | Original request | Question / options | Answer |
+|----|-------|-------|---------|------------------|--------------------|--------|
+| QA-000001-001 | Login: which sign-in methods? | Auth | | Add a login screen | Email/password only, or also OAuth? (a) email+password, (b) also Google, (c) also GitHub | (a) email+password |

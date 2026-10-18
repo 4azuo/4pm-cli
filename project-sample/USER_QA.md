@@ -13,6 +13,7 @@
 >
 > **Columns (content only):** `ID` · `Group` · `Depends` (comma-separated `QA-…`) · `Original request` ·
 > `Question / options` · `Answer`.
+> **Title** = a short name for the row (plain text, one line, ≤ 80 characters) — the web grid shows it on the row.
 
-| ID | Group | Depends | Original request | Question / options | Answer |
-|----|-------|---------|------------------|--------------------|--------|
+| ID | Title | Group | Depends | Original request | Question / options | Answer |
+|----|-------|-------|---------|------------------|--------------------|--------|
