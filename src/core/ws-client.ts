@@ -93,6 +93,7 @@ import { configureRepoLock, failAllRepoWaiters, withRepoLock } from "./git/repo-
 import { loadAutonomousPolicy, onAutonomousStep, recordLastCheck, setAutonomousPolicy } from "./autonomous/autonomous-policy";
 import { work } from "./session/work-tracker";
 import { onReconnectVerifyClaim, runAutonomousCycle } from "./autonomous/autonomous-cycle";
+import { scheduleBookIndex } from "./autonomous/autonomous-book-index";
 import { startAutonomousScheduler } from "./autonomous/autonomous-scheduler";
 import { handleFsChannels } from "./ws-client/handlers/fs";
 import { handleGitChannels } from "./ws-client/handlers/git";
@@ -374,7 +375,8 @@ export class WsClient {
     context.bus.onLocalSubmit((input) => void runLocalCommand(this.hctx, input));
     // Autonomous cycle (ADR-0319/0392): the scheduler (or a manual `4pm auto-run`) triggers ONE cycle through this live
     // session over the control socket, so it reuses failover + metering instead of a raw `claude -p`.
-    context.bus.onAutonomousRun(() => void runAutonomousCycle(this.hctx));
+    // After every tick the books may have moved — refresh the server's book index (ADR-0545).
+    context.bus.onAutonomousRun(() => void runAutonomousCycle(this.hctx).finally(() => scheduleBookIndex(this.hctx)));
     // /reconnect ⇒ drop the socket / wake the backoff so the loop reconnects now.
     context.bus.onReconnect(() => this.reconnectNow());
     // Console sync (ADR-0150): mirror the authoritative transcript to the server while a web
@@ -953,6 +955,8 @@ export class WsClient {
         this.startKbRefresh();
         // A worker that was offline re-verifies its held autonomous claim; lost ⇒ its run stops (ADR-0371).
         onReconnectVerifyClaim(this.hctx);
+        // The server's book index of the served project, re-sent on every (re)connect (ADR-0545).
+        scheduleBookIndex(this.hctx, true);
         // Autonomous ticks come from this daemon's own scheduler (ADR-0392) — armed once (idempotent).
         startAutonomousScheduler({
           profileDir: this.context.profileDir,
@@ -1535,7 +1539,7 @@ export class WsClient {
 }
 
 /** Features reported in machine.status (`CliFeature`, ADR-0449). */
-const CLI_FEATURES: string[] = [CliFeature.CLIENT_VIEWER, CliFeature.BOOK_TEAMS, CliFeature.APPROVAL_PARTIES, CliFeature.DISCUSSIONS, CliFeature.ER, CliFeature.BOOK_PATCH, CliFeature.PACKAGES_MULTI_TARGET, CliFeature.AUTONOMOUS_RUN_NOW, CliFeature.RESTART, CliFeature.EVIDENCE_HISTORY, CliFeature.DIAGRAM, CliFeature.BRANCH_SYNC, CliFeature.BRANCH_CLEANUP, CliFeature.DOCS_PHASE];
+const CLI_FEATURES: string[] = [CliFeature.CLIENT_VIEWER, CliFeature.BOOK_TEAMS, CliFeature.APPROVAL_PARTIES, CliFeature.DISCUSSIONS, CliFeature.ER, CliFeature.BOOK_PATCH, CliFeature.PACKAGES_MULTI_TARGET, CliFeature.AUTONOMOUS_RUN_NOW, CliFeature.RESTART, CliFeature.EVIDENCE_HISTORY, CliFeature.DIAGRAM, CliFeature.BRANCH_SYNC, CliFeature.BRANCH_CLEANUP, CliFeature.DOCS_PHASE, CliFeature.BOOK_INDEX];
 
 /** The URLs of the approved http/sse MCP servers (system egress hosts — ADR-0439). */
 function mcpRemoteUrls(list: { definition: unknown }[] | undefined): string[] {

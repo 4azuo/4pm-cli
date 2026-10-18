@@ -5,8 +5,9 @@
  * sidecar. Cells are matched by header name, so a legacy 3-column `AI_PROGRESS` still parses. Rewrites
  * touch only the table rows — the prose around the table is kept byte-for-byte. Every book may carry a
  * `Team` column (a team code, ADR-0450): it is read when present and added (after `ID`) the first time a
- * row with a team is written.
- * @adr 0371 @adr 0450
+ * row with a team is written. Likewise the metadata columns `Tags` / `Due`, added after `Team` (else `ID`).
+ * AI_TODO's approval-action column is `Actions`; a legacy `Tag` header is renamed in place on every rewrite.
+ * @adr 0371 @adr 0450 @adr 0543
  */
 import { readFileInRoot, writeFileInRoot } from "../../utils/safe-path";
 import { join } from "node:path";
@@ -91,6 +92,43 @@ function withTeamColumn(table: MdTable, needed: boolean): MdTable {
   };
 }
 
+/** Add the `Tags` / `Due` columns after `Team` (else `ID`) when `needed` and the table lacks them. @adr 0543 */
+function withMetaColumns(table: MdTable, needed: boolean): MdTable {
+  if (!needed) return table;
+  return insertColumns(table, col(table.header, "Team") >= 0 ? "Team" : "ID", ["Tags", "Due"]);
+}
+
+/** The AI_TODO approval-action column name (formerly `Tag`). @adr 0543 */
+export const ACTIONS_HEADER = "Actions";
+
+/** Rename a legacy AI_TODO `Tag` header to `Actions` (no-op when already renamed). @adr 0543 */
+function withActionsHeader(table: MdTable): MdTable {
+  const i = col(table.header, "Tag");
+  if (i < 0 || col(table.header, ACTIONS_HEADER) >= 0) return table;
+  return { ...table, header: table.header.map((h, k) => (k === i ? ACTIONS_HEADER : h)) };
+}
+
+/** True when the AI_TODO table still has the legacy `Tag` header. @adr 0543 */
+export function hasLegacyTagHeader(md: string): boolean {
+  const t = parseTasks(md).table;
+  return Boolean(t && col(t.header, "Tag") >= 0 && col(t.header, ACTIONS_HEADER) < 0);
+}
+
+/** Rewrite AI_TODO with its legacy `Tag` header renamed to `Actions` (rows unchanged). @adr 0543 */
+export function upgradeTasksHeader(md: string): string {
+  const t = parseTasks(md).table;
+  if (!t || !hasLegacyTagHeader(md)) return md;
+  return replaceRows(md, withActionsHeader(t), t.rows);
+}
+
+/** Rename AI_TODO's legacy `Tag` header to `Actions` in `root`; true when the book changed. @adr 0543 */
+export async function upgradeActionsHeader(root: string): Promise<boolean> {
+  const todo = await readBook(root, "AI_TODO.md");
+  if (!hasLegacyTagHeader(todo)) return false;
+  await writeBook(root, "AI_TODO.md", upgradeTasksHeader(todo));
+  return true;
+}
+
 /** Build a row in the table's own column order from a name → value map. */
 function build(header: string[], values: Record<string, string>): string[] {
   return header.map((h) => values[h.toLowerCase()] ?? "");
@@ -102,6 +140,7 @@ function build(header: string[], values: Record<string, string>): string[] {
 export interface TaskRow {
   id: string;
   priority: string;
+  /** The `Actions` cell (approval actions — ADR-0311; the column was `Tag`). */
   tag: string;
   depends: string[];
   group: string;
@@ -109,6 +148,10 @@ export interface TaskRow {
   notes: string;
   /** Team code ("" = untagged — ADR-0450). Optional on rows built before teams existed. */
   team?: string;
+  /** `Tags` cell — tag codes. */
+  tags?: string;
+  /** `Due` cell — `YYYY-MM-DD`. */
+  due?: string;
 }
 
 /** Split a Depends cell into ids. */
@@ -127,12 +170,15 @@ export function parseTasks(md: string): { table: MdTable | null; tasks: TaskRow[
     .map((r) => ({
       id: get(table, r, "ID"),
       priority: get(table, r, "Priority"),
-      tag: get(table, r, "Tag"),
+      // `Actions` — a legacy `Tag` header is the same column until the next rewrite renames it.
+      tag: col(table.header, ACTIONS_HEADER) >= 0 ? get(table, r, ACTIONS_HEADER) : get(table, r, "Tag"),
       depends: splitIds(get(table, r, "Depends")),
       group: get(table, r, "Group"),
       desc: get(table, r, "Task description"),
       notes: get(table, r, "Notes"),
       team: get(table, r, "Team"),
+      tags: get(table, r, "Tags"),
+      due: get(table, r, "Due"),
     }))
     .filter((t) => /^(?:TSK|DOC)-/.test(t.id));
   return { table, tasks };
@@ -142,7 +188,10 @@ export function parseTasks(md: string): { table: MdTable | null; tasks: TaskRow[
 export function writeTasks(md: string, tasks: TaskRow[]): string {
   const found = parseTasks(md).table;
   if (!found) return md;
-  const table = withTeamColumn(found, tasks.some((t) => Boolean(t.team)));
+  const table = withMetaColumns(
+    withTeamColumn(withActionsHeader(found), tasks.some((t) => Boolean(t.team))),
+    tasks.some((t) => Boolean(t.tags || t.due)),
+  );
   return replaceRows(
     md,
     table,
@@ -150,7 +199,9 @@ export function writeTasks(md: string, tasks: TaskRow[]): string {
       build(table.header, {
         id: t.id,
         priority: t.priority,
-        tag: t.tag,
+        actions: t.tag,
+        tags: t.tags ?? "",
+        due: t.due ?? "",
         depends: t.depends.join(", "),
         group: t.group,
         "task description": t.desc,
@@ -264,23 +315,37 @@ function insertColumns(table: MdTable, after: string, names: string[]): MdTable 
  * keeping every other column (e.g. the web's `AI verify`).
  * @adr 0400 @adr 0404
  */
-function withDoneColumns(table: MdTable, team = false): MdTable {
+function withDoneColumns(table: MdTable, team = false, meta = false): MdTable {
   const base = insertColumns(insertColumns(table, "ID", ["Group", "Depends"]), "Files", ["Evidence"]);
-  return team ? insertColumns(base, "Group", ["Team"]) : base;
+  const teamed = team ? insertColumns(base, "Group", ["Team"]) : base;
+  return meta ? insertColumns(teamed, col(teamed.header, "Team") >= 0 ? "Team" : "Group", ["Tags", "Due"]) : teamed;
 }
 
 /** Append a Done row (`Timestamp | ID | Group | Depends | Task description | Files | Evidence | Notes`). */
 export function appendDone(
   md: string,
-  row: { id: string; group: string; depends: string[]; desc: string; files: string; evidence: string; notes: string; team?: string },
+  row: {
+    id: string;
+    group: string;
+    depends: string[];
+    desc: string;
+    files: string;
+    evidence: string;
+    notes: string;
+    team?: string;
+    tags?: string;
+    due?: string;
+  },
 ): string {
   const found = findTables(md).find((t) => col(t.header, "ID") >= 0 && col(t.header, "Timestamp") >= 0);
   if (!found) return md;
-  const table = withDoneColumns(found, Boolean(row.team));
+  const table = withDoneColumns(found, Boolean(row.team), Boolean(row.tags || row.due));
   const values = {
     timestamp: stamp(),
     id: row.id,
     team: row.team ?? "",
+    tags: row.tags ?? "",
+    due: row.due ?? "",
     group: row.group,
     depends: row.depends.join(", "),
     "task description": row.desc,
@@ -318,6 +383,9 @@ export interface QaRow {
   original: string;
   question: string;
   answer: string;
+  /** `Tags` / `Due` cells. */
+  tags?: string;
+  due?: string;
 }
 
 /** Parse the `USER_QA` table. */
@@ -333,6 +401,8 @@ export function parseQa(md: string): { table: MdTable | null; rows: QaRow[] } {
       original: get(table, r, "Original request"),
       question: get(table, r, "Question / options"),
       answer: get(table, r, "Answer"),
+      tags: get(table, r, "Tags"),
+      due: get(table, r, "Due"),
     }))
     .filter((q) => /^QA-/.test(q.id));
   return { table, rows };
@@ -342,7 +412,7 @@ export function parseQa(md: string): { table: MdTable | null; rows: QaRow[] } {
 export function writeQa(md: string, rows: QaRow[]): string {
   const found = parseQa(md).table;
   if (!found) return md;
-  const table = withTeamColumn(found, rows.some((q) => Boolean(q.team)));
+  const table = withMetaColumns(withTeamColumn(found, rows.some((q) => Boolean(q.team))), rows.some((q) => Boolean(q.tags || q.due)));
   return replaceRows(
     md,
     table,
@@ -350,6 +420,8 @@ export function writeQa(md: string, rows: QaRow[]): string {
       build(table.header, {
         id: q.id,
         team: q.team ?? "",
+        tags: q.tags ?? "",
+        due: q.due ?? "",
         group: q.group,
         depends: q.depends,
         "original request": q.original,

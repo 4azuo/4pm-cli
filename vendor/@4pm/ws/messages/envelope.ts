@@ -223,6 +223,8 @@ export const CliFeature = {
   // `DOC-…` rows: docs rounds, `autonomous.write {kind:"docReview"}`, the docs / lineage sidecars in `autonomous.read`, docs files in
   // `autonomous.evidence` (ADR-0536/0537).
   DOCS_PHASE: "docsPhase",
+  // `autonomous.bookIndex` — the compact index of the books branch for Home ▸ My work (ADR-0545).
+  BOOK_INDEX: "bookIndex",
 } as const;
 export type CliFeature = (typeof CliFeature)[keyof typeof CliFeature];
 

@@ -98,6 +98,7 @@
         "project.hooks",
         "project.docs_manage",
         "project.rule_manage",
+        "project.tag_manage",
         "project.agents",
         "project.secrets",
         "project.agent_tools",
@@ -266,6 +267,7 @@
         "project.hooks",
         "project.docs_manage",
         "project.rule_manage",
+        "project.tag_manage",
         "machine.config_template_read",
         "machine.config_template_manage"
       ]

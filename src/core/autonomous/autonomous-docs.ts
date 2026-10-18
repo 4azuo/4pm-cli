@@ -89,28 +89,66 @@ export interface IntakeSource {
   id: string;
   request: string;
   team: string;
+  /** The source row's `Tags` / `Due` cells — copied onto the rows made from it. */
+  tags: string;
+  due: string;
 }
 
 /** The request text + team of each intake id (`REQ-…` from USER_TODO, an intake `QA-…` from USER_QA). */
 export function intakeSources(ids: readonly string[], userTodo: string, userQa: string): IntakeSource[] {
   const qa = new Map(B.parseQa(userQa).rows.map((q) => [q.id, q]));
   return ids.map((id) => {
-    if (id.startsWith("REQ-")) return { id, request: B.requestText(userTodo, id), team: teamOf(userTodo, id) };
+    if (id.startsWith("REQ-")) {
+      return { id, request: B.requestText(userTodo, id), team: cellOf(userTodo, id, "team"), tags: cellOf(userTodo, id, "tags"), due: cellOf(userTodo, id, "due") };
+    }
     const q = qa.get(id);
-    return { id, request: q ? `${q.original}\nQ: ${q.question}\nA: ${q.answer}` : "", team: q?.team ?? "" };
+    return { id, request: q ? `${q.original}\nQ: ${q.question}\nA: ${q.answer}` : "", team: q?.team ?? "", tags: q?.tags ?? "", due: q?.due ?? "" };
   });
 }
 
-/** The `Team` cell of a row (via the books parser; "" when none). */
-function teamOf(md: string, id: string): string {
+/** One cell (`column` lower-cased) of a row, via the books parser; "" when none. */
+function cellOf(md: string, id: string, column: string): string {
   for (const t of B.findTables(md)) {
     const idIdx = t.header.findIndex((h) => h.toLowerCase() === "id");
-    const teamIdx = t.header.findIndex((h) => h.toLowerCase() === "team");
-    if (idIdx < 0 || teamIdx < 0) continue;
+    const colIdx = t.header.findIndex((h) => h.toLowerCase() === column);
+    if (idIdx < 0 || colIdx < 0) continue;
     const row = t.rows.find((r) => r[idIdx] === id);
-    if (row) return row[teamIdx] ?? "";
+    if (row) return row[colIdx] ?? "";
   }
   return "";
+}
+
+/**
+ * Copy each intake source's `Tags` / `Due` onto the new AI_TODO / USER_QA rows of the group it was given (group `i`
+ * for source `i`). A row the agent already tagged / dated keeps its own value.
+ * @adr 0543
+ */
+export async function fillIntakeMeta(
+  root: string,
+  sources: readonly IntakeSource[],
+  groups: readonly number[],
+  before: { AI_TODO: ReadonlySet<string>; USER_QA: ReadonlySet<string> },
+): Promise<void> {
+  const byGroup = new Map<string, IntakeSource>();
+  sources.forEach((src, i) => {
+    const g = groups[i];
+    if (g !== undefined && (src.tags || src.due)) byGroup.set(bookGroupCode(g), src);
+  });
+  if (!byGroup.size) return;
+  const metaOf = (id: string): IntakeSource | undefined => byGroup.get(bookGroupOf(id) ?? "");
+  const todo = await B.readBook(root, "AI_TODO.md");
+  const { tasks } = B.parseTasks(todo);
+  const fill = <T extends { id: string; tags?: string; due?: string }>(row: T, isNew: boolean): T => {
+    const src = isNew ? metaOf(row.id) : undefined;
+    if (!src) return row;
+    return { ...row, tags: row.tags || src.tags, due: row.due || src.due };
+  };
+  const nextTasks = tasks.map((t) => fill(t, !before.AI_TODO.has(t.id)));
+  if (nextTasks.some((t, i) => t !== tasks[i])) await B.writeBook(root, "AI_TODO.md", B.writeTasks(todo, nextTasks));
+  const qa = await B.readBook(root, "USER_QA.md");
+  const { rows } = B.parseQa(qa);
+  const nextQa = rows.map((q) => fill(q, !before.USER_QA.has(q.id)));
+  if (nextQa.some((q, i) => q !== rows[i])) await B.writeBook(root, "USER_QA.md", B.writeQa(qa, nextQa));
 }
 
 /**
@@ -181,6 +219,8 @@ export async function addDocRows(root: string, before: ReadonlySet<string>, spec
       desc: `Docs for ${src?.id ?? `group ${g}`}: ${what}`,
       notes: `doc types: ${spec.types.join(", ")}`,
       team: rows[0]?.team ?? "",
+      tags: rows[0]?.tags ?? "",
+      due: rows[0]?.due ?? "",
     };
     next = next.map((t) => (rows.includes(t) && !t.depends.some((d) => /^(?:TSK|DOC)-/.test(d)) ? { ...t, depends: [docId, ...t.depends] } : t));
     const first = next.findIndex((t) => rows.some((r) => r.id === t.id));
@@ -395,6 +435,8 @@ export async function applyDocReview(dir: string, review: DocReview, final: bool
         B.appendDone(await B.readBook(dir, "AI_DONE.md"), {
           id: row.id,
           team: row.team ?? "",
+          tags: row.tags ?? "",
+          due: row.due ?? "",
           group: row.group,
           depends: row.depends,
           desc: row.desc,

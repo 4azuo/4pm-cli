@@ -198,6 +198,9 @@ export const WsChannels = {
   // cli → server (one-way): an autonomous condition the project's managers must see (ADR-0371) —
   // protected base, lost claim, attempt limit, task split, task question. The server notifies them.
   AUTONOMOUS_ALERT: "autonomous.alert",
+  // cli → server (one-way): the compact index of the books branch for Home ▸ My work (ADR-0545) — sent on connect,
+  // after each books push and when the books ref moved.
+  AUTONOMOUS_BOOK_INDEX: "autonomous.bookIndex",
   // server → cli (one-way): the project's autonomous policy — the project switch, the server's `allowed`
   // verdict for this worker and the project-scoped settings; persisted by the cli (ADR-0507).
   AUTONOMOUS_POLICY: "autonomous.policy",

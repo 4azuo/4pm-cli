@@ -94,6 +94,11 @@ export const ErrorCode = {
   RULE_REGEX_UNSAFE: "RULE_REGEX_UNSAFE",
   RULE_ENFORCED: "RULE_ENFORCED",
   RULE_LIMIT_REACHED: "RULE_LIMIT_REACHED",
+  // chained rules (ADR-0542)
+  RULE_CHAIN_CYCLE: "RULE_CHAIN_CYCLE",
+  RULE_CHAIN_TOO_DEEP: "RULE_CHAIN_TOO_DEEP",
+  RULE_CHAIN_SOURCE_INVALID: "RULE_CHAIN_SOURCE_INVALID",
+  RULE_HAS_FOLLOWERS: "RULE_HAS_FOLLOWERS",
   // Global 4rum feed: per-user pinned orgs cap (ADR-0492)
   COMMUNITY_ORG_PIN_LIMIT: "COMMUNITY_ORG_PIN_LIMIT",
   // skill/subagent marketplace (ADR-0185)
@@ -323,6 +328,18 @@ export const ErrorCode = {
   DISCUSSION_LINK_APPROVED: "DISCUSSION_LINK_APPROVED",
   // Only the author, a TL of the author's team or the PM / ADMIN may resolve / reopen (ADR-0454).
   DISCUSSION_RESOLVE_FORBIDDEN: "DISCUSSION_RESOLVE_FORBIDDEN",
+  // Custom tags (ADR-0543): the tag is not in this scope / deleted; the code is already used in the org or project;
+  // a book save / discussion names a code the project doesn't offer (meta.codes); a Due is not a real
+  // YYYY-MM-DD date (meta.ids for book rows).
+  TAG_NOT_FOUND: "TAG_NOT_FOUND",
+  TAG_CODE_TAKEN: "TAG_CODE_TAKEN",
+  TAG_UNKNOWN: "TAG_UNKNOWN",
+  DUE_INVALID: "DUE_INVALID",
+  // Issue links (ADR-0546): a malformed issue ref (meta.ids); the issue is linked to another live row (meta.ref,
+  // meta.rowId); no held external change to apply / dismiss.
+  ISSUE_REF_INVALID: "ISSUE_REF_INVALID",
+  ISSUE_ALREADY_LINKED: "ISSUE_ALREADY_LINKED",
+  ISSUE_NO_PENDING: "ISSUE_NO_PENDING",
   // Admin cli version policy rejected (ADR-0363) — meta.reason: minAboveLatest | latestNotBlockable |
   // deadlinePast | invalidVersion.
   CLI_VERSION_POLICY_INVALID: "CLI_VERSION_POLICY_INVALID",

@@ -89,6 +89,10 @@ describe("discussion file", () => {
       createdAt: "2026-10-11T08:00:00.000Z",
       resolvedBy: "a1",
       resolvedAt: "2026-10-11T09:00:00.000Z",
+      tags: ["auth", "urgent"],
+      due: "2026-10-30",
+      mentions: ["p1"],
+      issues: ["jira:AUTH-1"],
       messages: [
         { id: "m1", by: "a1", label: "Acme \"QA\"", kind: "client" as const, at: "2026-10-11T08:00:00.000Z", body: "Google and Microsoft?\n\nOr only Google?" },
         { id: "m2", by: "p1", label: "PM", kind: "member" as const, at: "2026-10-11T08:20:00.000Z", body: "", deleted: "2026-10-11T08:30:00.000Z" },

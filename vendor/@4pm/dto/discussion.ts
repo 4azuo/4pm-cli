@@ -2,10 +2,14 @@
  * User discussions: the repo file format of `.4pm/discussions/<DSC-ID>.md` (front matter +
  * one block per message, stable ids), its serializer / parser shared by the server (render, reconcile) and
  * the API DTOs of Content ▸ Discussions. Front-matter values are JSON (valid YAML) so the file stays
- * readable and parses without a YAML library.
- * @adr 0454
+ * readable and parses without a YAML library. `tags` / `due` / `mentions` / `issues` are written only when set, so older
+ * files keep their bytes.
+ * @adr 0454 @adr 0543 @adr 0545
  */
 import { z } from "zod";
+import { TAG_CODE_RE, TAGS_PER_ITEM_MAX } from "@4pm/constants";
+import { isValidDue } from "./book-meta";
+import { ISSUE_REF_RE } from "./issue-sync";
 
 /** Repo folder of the discussion files (on the books branch). */
 export const DISCUSSIONS_DIR = ".4pm/discussions";
@@ -42,6 +46,14 @@ export interface DiscussionFile {
   status: "open" | "resolved";
   author: { id: string; label: string; kind: DiscussionAuthorKind };
   createdAt: string;
+  /** Tag codes (empty = none). */
+  tags: string[];
+  /** Due date `YYYY-MM-DD` (null = none). */
+  due: string | null;
+  /** Users @mentioned in any message (empty = none). */
+  mentions: string[];
+  /** Linked issue refs (link-only — ADR-0546). */
+  issues: string[];
   resolvedBy: string | null;
   resolvedAt: string | null;
   messages: DiscussionFileMessage[];
@@ -63,6 +75,10 @@ export function renderDiscussionFile(d: DiscussionFile): string {
     `createdAt: ${JSON.stringify(d.createdAt)}`,
     `resolvedBy: ${JSON.stringify(d.resolvedBy)}`,
     `resolvedAt: ${JSON.stringify(d.resolvedAt)}`,
+    ...(d.tags.length ? [`tags: ${JSON.stringify(d.tags)}`] : []),
+    ...(d.due ? [`due: ${JSON.stringify(d.due)}`] : []),
+    ...(d.mentions.length ? [`mentions: ${JSON.stringify(d.mentions)}`] : []),
+    ...(d.issues.length ? [`issues: ${JSON.stringify(d.issues)}`] : []),
     "---",
   ];
   const blocks = d.messages.map((m) => {
@@ -150,6 +166,10 @@ export function parseDiscussionFile(text: string): DiscussionFile | null {
     createdAt: typeof fm.createdAt === "string" ? fm.createdAt : "",
     resolvedBy: typeof fm.resolvedBy === "string" ? fm.resolvedBy : null,
     resolvedAt: typeof fm.resolvedAt === "string" ? fm.resolvedAt : null,
+    tags: Array.isArray(fm.tags) ? fm.tags.filter((x): x is string => typeof x === "string" && TAG_CODE_RE.test(x)) : [],
+    due: typeof fm.due === "string" && isValidDue(fm.due) ? fm.due : null,
+    mentions: Array.isArray(fm.mentions) ? fm.mentions.filter((x): x is string => typeof x === "string").slice(0, 200) : [],
+    issues: Array.isArray(fm.issues) ? fm.issues.filter((x): x is string => typeof x === "string" && ISSUE_REF_RE.test(x)).slice(0, 10) : [],
     messages: messages.filter((x) => x.id),
   };
 }
@@ -177,6 +197,12 @@ export interface DiscussionSummary {
   title: string;
   team: string;
   links: string[];
+  /** Tag codes. @adr 0543 */
+  tags: string[];
+  /** Due date `YYYY-MM-DD`, or null. */
+  due: string | null;
+  /** Linked issue refs (ADR-0546). */
+  issues: string[];
   status: "open" | "resolved";
   /** The repo says resolved but nobody confirmed it in the web (doesn't count for the approval gate). */
   resolvedInRepo: boolean;
@@ -192,7 +218,7 @@ export interface DiscussionSummary {
   pendingOps: number;
   /** The caller may resolve / reopen it. */
   canResolve: boolean;
-  /** The caller may edit its title / team / links. */
+  /** The caller may edit its title / team / links / tags / due. */
   canEditMeta: boolean;
 }
 
@@ -224,6 +250,13 @@ export const listDiscussionsQuerySchema = z.object({
 });
 export type ListDiscussionsQuery = z.infer<typeof listDiscussionsQuerySchema>;
 
+/** Tag codes of a discussion (catalog codes; the server checks them against the project's tags). */
+const discussionTags = z.array(z.string().trim().toLowerCase().regex(TAG_CODE_RE)).max(TAGS_PER_ITEM_MAX);
+/** Linked issue refs of a discussion (ADR-0546). */
+const discussionIssues = z.array(z.string().trim().regex(ISSUE_REF_RE)).max(10);
+/** A due date `YYYY-MM-DD` (null clears it). */
+const discussionDue = z.string().refine(isValidDue, { message: "invalid date" }).nullable();
+
 /** Body POST /projects/:id/discussions — open a discussion. @api project-0110 */
 export const createDiscussionSchema = z.object({
   title: z.string().trim().min(1).max(200),
@@ -232,6 +265,9 @@ export const createDiscussionSchema = z.object({
   links: z.array(z.string().regex(/^(REQ|TSK|DOC|QA)-[\w-]+$/)).max(20).default([]),
   addresseeUserIds: z.array(z.string().guid()).max(50).default([]),
   addresseeTeamIds: z.array(z.string().guid()).max(20).default([]),
+  tags: discussionTags.default([]),
+  due: discussionDue.default(null),
+  issues: discussionIssues.default([]),
 });
 export type CreateDiscussionRequest = z.infer<typeof createDiscussionSchema>;
 
@@ -249,11 +285,14 @@ export const editDiscussionMessageSchema = z.object({
 });
 export type EditDiscussionMessageRequest = z.infer<typeof editDiscussionMessageSchema>;
 
-/** Body PATCH /projects/:id/discussions/:discussionId — title / team / links / status. @api project-0113 */
+/** Body PATCH /projects/:id/discussions/:discussionId — title / team / links / tags / due / status. @api project-0113 */
 export const updateDiscussionSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   team: z.string().max(16).optional(),
   links: z.array(z.string().regex(/^(REQ|TSK|DOC|QA)-[\w-]+$/)).max(20).optional(),
+  tags: discussionTags.optional(),
+  due: discussionDue.optional(),
+  issues: discussionIssues.optional(),
   status: z.enum(["open", "resolved"]).optional(),
 });
 export type UpdateDiscussionRequest = z.infer<typeof updateDiscussionSchema>;

@@ -39,7 +39,7 @@ import { applyDiscussionBatch } from "./autonomous-discussions";
 import { checkRowGuards } from "./autonomous-row-guards";
 import { applyUnblock } from "./autonomous-tasks";
 import { applyDocReview, copyLineage, isDocFilePath, readDocFile } from "./autonomous-docs";
-import { applyBookPatch, bookContentHash, bookRowsById, isBookRowId, type BookConflict } from "@4pm/dto";
+import { applyBookPatch, bookCellsContentEqual, bookContentHash, bookRowsById, isBookRowId, withoutMetaCells, type BookConflict } from "@4pm/dto";
 import { freshBooksRef, lastCommitTimes, mutateBooks, readBooksFile, resolveBases } from "./autonomous-git";
 import { listDesignEvidence } from "./autonomous-er";
 import { listDiagramEvidence } from "./autonomous-diagram";
@@ -107,6 +107,20 @@ function entryBy(map: Record<string, unknown>, id: string): string | null {
   return e && typeof e === "object" && typeof (e as { by?: unknown }).by === "string"
     ? (e as { by: string }).by
     : null;
+}
+
+/**
+ * The ids a save adds or whose **content** it changes — `Tags` / `Due` edits alone don't count (metadata, ADR-0543),
+ * so they never make the editor a row's author.
+ */
+function contentChangedIds(prevMd: string, nextMd: string): Set<string> {
+  const prev = bookRowsById(prevMd);
+  const out = new Set<string>();
+  for (const [id, row] of bookRowsById(nextMd)) {
+    const before = prev.get(id);
+    if (!before || before.team !== row.team || !bookCellsContentEqual(before.cells, row.cells)) out.add(id);
+  }
+  return out;
 }
 
 /**
@@ -318,10 +332,11 @@ function checkSaveRules(
   const modified = [...next.keys()].filter((id) => prev.has(id) && JSON.stringify(prev.get(id)!.cells) !== JSON.stringify(next.get(id)!.cells));
   const fail = (code: NonNullable<WebWrite["code"]>, ids: string[], error: string): WebWrite => ({ ok: false, code, failedId: ids.join(","), error });
   if (rules.answerOnly) {
+    // The answer and the metadata (`Tags` / `Due` — ADR-0543) are what an answerer may change.
     const beyondAnswer = modified.filter((id) => {
-      const a = { ...prev.get(id)!.cells, answer: "" };
-      const b = { ...next.get(id)!.cells, answer: "" };
-      return JSON.stringify(a) !== JSON.stringify(b);
+      const a = { ...withoutMetaCells(prev.get(id)!.cells), answer: "" };
+      const b = { ...withoutMetaCells(next.get(id)!.cells), answer: "" };
+      return !bookCellsContentEqual(a, b);
     });
     const bad = [...added, ...removed, ...beyondAnswer];
     if (bad.length) return fail("USER_QA_ANSWER_ONLY", bad, "USER_QA_ANSWER_ONLY");
@@ -461,11 +476,10 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
       let approvalEntries: Record<string, ApprovalEntry> = {};
       let approvalBooksSaved: ApprovalBooks | null = null;
       if (touchesApprovals && req.book !== "aiDone") {
-        const prevRows = tableRowsById(await readText(dir, join(dir, file)));
-        const nextRows = tableRowsById(content);
+        const changedNow = contentChangedIds(await readText(dir, join(dir, file)), content);
         const authorsNow = await readJsonMap(dir, join(dir, AUTHORS_REL));
         if (!req.byIsAdmin) {
-          const self = approving.find((id) => (prevRows.get(id) !== nextRows.get(id) ? by : entryBy(authorsNow, id)) === by);
+          const self = approving.find((id) => (changedNow.has(id) ? by : entryBy(authorsNow, id)) === by);
           if (self) return { ok: false, code: "APPROVAL_SELF", failedId: self, error: "self-approval blocked" };
         }
         const books = await approvalBooksIn(dir);
@@ -498,8 +512,10 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
       const byLabel = req.byLabel ?? by;
       let added = 0;
       const addedIds: string[] = [];
-      for (const [id, cells] of next) {
-        if (prev.get(id) !== cells) authors[id] = { by, byLabel, at };
+      // Authorship follows content only: a `Tags` / `Due` edit keeps the row's author (ADR-0543).
+      const changed = contentChangedIds(prevText, content);
+      for (const id of next.keys()) {
+        if (changed.has(id)) authors[id] = { by, byLabel, at };
         if (!prev.has(id)) {
           added += 1;
           addedIds.push(id);

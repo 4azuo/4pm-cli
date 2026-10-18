@@ -13,6 +13,7 @@ export * from "./project";
 export * from "./quota";
 export * from "./rbac/catalog";
 export * from "./roles";
+export * from "./tags";
 export * from "./untrusted-content";
 export * from "./worker-pool";
 export * from "./worker-tools";

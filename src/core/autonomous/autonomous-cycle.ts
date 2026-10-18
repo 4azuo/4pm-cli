@@ -127,6 +127,7 @@ import {
   applyDocRoundDone,
   docManifest,
   implementDocsNote,
+  fillIntakeMeta,
   intakeSources,
   numberNewDocs,
   readDocs,
@@ -613,6 +614,10 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     let capReached: ("AI_TODO" | "USER_QA")[] = [];
     const capDetail = (): { capReached?: ("AI_TODO" | "USER_QA")[] } => (capReached.length ? { capReached } : {});
     if (!mine) {
+      // --- One-time rename of AI_TODO's legacy `Tag` header to `Actions` (ADR-0543) ---------------
+      if ((await publishBooks(root, rootBase.base, "chore(auto): AI_TODO Tag column → Actions", () => B.upgradeActionsHeader(root))) === "pushed") {
+        await log("[books] AI_TODO `Tag` column renamed to `Actions`");
+      }
       // --- Fold answered task questions into their tasks (cli) ------------------------------------
       const folded = await publishBooks(root, rootBase.base, "chore(auto): fold answered task questions", () => foldTaskAnswers(root));
       if (folded === "pushed") await log("[fold] task-question answers folded into their tasks");
@@ -1516,6 +1521,7 @@ async function runIntake(
     return { produced: null };
   }
   await fillIntakeTeams(root, ctx.profileDir, ids, before);
+  await fillIntakeMeta(root, sources, groups, before);
   let ercs = 0;
   const res = await publishIntake(
     root,

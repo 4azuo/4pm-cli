@@ -58,6 +58,7 @@ import { applyConfigText, readConfigText } from "../../profile/config-sync";
 import { listAiModels } from "../../ai/ai-models";
 import { readProfileConfig } from "../../../config/profile";
 import { enabledAiProviders } from "../../../utils/ai-cli";
+import { scheduleBookIndex } from "../../autonomous/autonomous-book-index";
 import type { WsHandlerCtx } from "../context";
 
 /** Route the worker-config channels; returns true when the message was handled. */
@@ -173,7 +174,11 @@ export function handleWorkerChannels(
         // A book write (side worktree + books-branch push) is a WorkTracker lease, so a restart waits for it.
         void work
           .track("bookWrite", `autonomous.write:${req.kind}`, () => writeAutonomous(root, ctx.profileDir, req, req.by ?? "unknown"))
-          .then((reply) => ctx.send(WsChannels.AUTONOMOUS_WRITE, reply, message.id));
+          .then((reply) => {
+            ctx.send(WsChannels.AUTONOMOUS_WRITE, reply, message.id);
+            // A web write moved the books — refresh the server's book index (ADR-0545).
+            if (reply.ok) scheduleBookIndex(ctx);
+          });
       }
       return true;
     }

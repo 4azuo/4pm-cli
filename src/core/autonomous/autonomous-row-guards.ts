@@ -2,9 +2,9 @@
  * Row guards of a web book save, checked on the books branch before anything is written: a deleted row
  * must have no dependents left in any book's `Depends`, and a row under a live `AI_PROGRESS` claim (the AI
  * is working on it) may not be added, edited or deleted.
- * @adr 0538
+ * @adr 0538 @adr 0543
  */
-import { bookDependents, bookRowsById, liveClaimedIds } from "@4pm/dto";
+import { bookCellsContentEqual, bookDependents, bookRowsById, liveClaimedIds } from "@4pm/dto";
 
 /** A guard refusal: the code, the first offending row and what blocks it. */
 export interface RowGuardRefusal {
@@ -30,7 +30,8 @@ export function checkRowGuards(
   const removed = [...prev.keys()].filter((id) => !next.has(id));
   const touched = [
     ...removed,
-    ...[...next.keys()].filter((id) => !prev.has(id) || JSON.stringify(prev.get(id)!.cells) !== JSON.stringify(next.get(id)!.cells)),
+    // A `Tags` / `Due` edit alone is metadata (ADR-0543) — allowed while the AI holds the row.
+    ...[...next.keys()].filter((id) => !prev.has(id) || prev.get(id)!.team !== next.get(id)!.team || !bookCellsContentEqual(prev.get(id)!.cells, next.get(id)!.cells)),
   ];
   const claimed = liveClaimedIds(progress, ttl);
   const busy = touched.find((id) => claimed.has(id));
