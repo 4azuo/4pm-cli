@@ -1,7 +1,7 @@
 {
   "error.serverDraining": "Máy chủ đang rút kết nối — sẽ kết nối lại (backoff + jitter).",
   "error.messageError": "Lỗi thông điệp: {error}",
-  "error.versionRejected": "Máy chủ từ chối phiên bản cli ({version}) — vui lòng cập nhật.",
+  "error.versionRejected": "Máy chủ từ chối phiên bản cli ({version}).",
   "error.sessionReplaced": "Một phiên khác của hồ sơ này đã tiếp quản — tiến trình này đang dừng. (Bạn có đang chạy `4pm start` hai lần cho cùng một hồ sơ không?)",
   "error.accountPaused": "Tài khoản này đang tạm dừng — sẽ thử lại cho đến khi được kích hoạt lại.",
   "error.platformIpBlocked": "IP của worker này ({ip}) không nằm trong CLI_IP_ALLOWLIST của hệ thống — hãy nhờ quản trị viên thêm vào. Sẽ thử lại mỗi 5 phút.",
@@ -202,5 +202,8 @@
   "update.lockedMandatory": "Image này bị khóa cập nhật (:full-locked) và cli {current} thấp hơn phiên bản tối thiểu {min} — hãy pull image mới và tạo lại container.",
   "update.lockedAvailable": "Đã có cli mới hơn ({latest}), nhưng image này bị khóa cập nhật (:full-locked) — hãy pull image mới để nâng cấp từ {current}.",
   "update.locked": "Image này bị khóa cập nhật (:full-locked) — cli ({version}) không tự cập nhật được. Hãy pull image mới và tạo lại container.",
-  "autonomous.runNowUnavailable": "Không thể chạy chế độ tự động lúc này: worker không phục vụ project nào."
+  "autonomous.runNowUnavailable": "Không thể chạy chế độ tự động lúc này: worker không phục vụ project nào.",
+  "update.rejectUpdating": "cli {current} không còn được hỗ trợ — sẽ cập nhật lên bản mới nhất khi công việc đang chạy hoàn tất…",
+  "update.rejectRetry": "Chưa cập nhật được sau khi bị từ chối phiên bản ({error}) — thử lại sau {minutes} phút",
+  "update.lockedRejected": "Image này bị khóa cập nhật (:full-locked) và máy chủ không còn hỗ trợ cli {current} — hãy kéo image mới hơn và tạo lại container."
 }

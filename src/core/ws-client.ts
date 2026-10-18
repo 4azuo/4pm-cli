@@ -52,6 +52,7 @@ import { deleteCredential, writeCredential, type Credential } from "./profile/cr
 import type { MachineFingerprint } from "./profile/fingerprint";
 import type { SessionBus } from "./session/session-bus";
 import { UpdateScheduler } from "./update-scheduler";
+import { updateAfterVersionReject } from "./update-on-reject";
 import { RestartWhenIdle } from "./session/restart-when-idle";
 import { CliApiError, requestWsToken } from "../services/api";
 import { getWorkingProfile } from "./ai/ai-profile-state";
@@ -133,6 +134,9 @@ const MAX_HASHCODE_INVALID_RETRIES = 5;
 
 /** Fixed retry interval while the worker's IP is outside the platform's CLI_IP_ALLOWLIST. @adr 0519 */
 const PLATFORM_IP_BLOCKED_RETRY_MS = 5 * 60_000;
+
+/** Retry interval after a version reject whose self-update could not run. @adr 0547 */
+const VERSION_REJECTED_RETRY_MS = 10 * 60_000;
 
 /** Close code server draining (graceful shutdown). */
 const CLOSE_DRAINING = 4001;
@@ -225,6 +229,8 @@ export class WsClient {
   private platformIpBlocked = false;
   /** The worker IP the server reported on the last platform IP block ("" when unknown). */
   private platformBlockedIp = "";
+  /** Set when the last handshake was refused with CLI_VERSION_UNSUPPORTED — run() self-updates. @adr 0547 */
+  private versionRejected = false;
   /** Org-configured reconnect cap (seconds) from the last ws_token — overrides env. */
   private orgReconnectMaxSec: number | null = null;
   /** Org timezone (IANA) from the last ws_token — a rented worker follows its renter's
@@ -607,6 +613,35 @@ export class WsClient {
   }
 
   /**
+   * After a version reject: self-update, then restart into the new binary. Returns null when the daemon
+   * is restarting or stopping (update-locked image), else why the update didn't run (run() retries later).
+   * @adr 0547
+   */
+  private async selfUpdateAfterReject(): Promise<string | null> {
+    this.bus.log(t("update.rejectUpdating", { current: CLI_VERSION }));
+    const outcome = await updateAfterVersionReject(
+      this.credential.serverUrl,
+      drainTimeoutMs(this.context.profileDir),
+    );
+    if (outcome.action === "updated") {
+      logger.info("update.reject.updated", { version: outcome.version });
+      this.bus.log(t("update.scheduledUpdated", { version: outcome.version }));
+      this.stop();
+      this.bus.requestRestart("update");
+      return null;
+    }
+    if (outcome.action === "locked") {
+      // An update-locked image can't replace itself (ADR-0432) — stop; the operator pulls a newer image.
+      this.stopped = true;
+      this.bus.log(t("update.lockedRejected", { current: CLI_VERSION }), "error");
+      this.shutdown("versionRejected");
+      return null;
+    }
+    logger.warn("update.reject.retry", { reason: outcome.reason });
+    return outcome.reason;
+  }
+
+  /**
    * Resolve the reconnect-backoff cap (ms): the org value (from ws_token) over the
    * env override over the default. Each is already clamped to the 1-min ceiling.
    */
@@ -697,10 +732,21 @@ export class WsClient {
         }
       }
       if (this.stopped) return;
+      // A rejected version updates itself before the next attempt; a failed update waits 10 min (ADR-0547).
+      let versionRetry = false;
+      if (this.versionRejected) {
+        this.versionRejected = false;
+        const retryReason = await this.selfUpdateAfterReject();
+        if (retryReason === null || this.stopped) return;
+        versionRetry = true;
+        reconnectDetail = t("update.rejectRetry", { error: retryReason, minutes: VERSION_REJECTED_RETRY_MS / 60_000 });
+      }
       // A platform IP block waits a fixed, long interval instead of the normal backoff (ADR-0519).
       const ipBlocked = this.platformIpBlocked;
       this.platformIpBlocked = false;
-      const wait = ipBlocked
+      const wait = versionRetry
+        ? VERSION_REJECTED_RETRY_MS
+        : ipBlocked
         ? PLATFORM_IP_BLOCKED_RETRY_MS
         : backoffJitterMs(
             Math.min(attempt, RECONNECT_BACKOFF_MAX_ATTEMPT),
@@ -988,11 +1034,10 @@ export class WsClient {
           return;
         }
         if (message.errorCode === "CLI_VERSION_UNSUPPORTED") {
-          // Server rejected the version — stop entirely; the user updates then reruns
-          this.stopped = true;
-          this.bus.log(t("error.versionRejected", { version: message.message ?? "" }), "error");
+          // Server rejected the version — run() updates the cli, then restarts into it (ADR-0547).
+          this.versionRejected = true;
+          this.bus.log(t("error.versionRejected", { version: message.message ?? CLI_VERSION }), "error");
           this.socket?.close();
-          this.shutdown("versionRejected");
           return;
         }
         if (message.errorCode === "SESSION_REPLACED") {

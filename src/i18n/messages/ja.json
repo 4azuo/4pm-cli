@@ -1,7 +1,7 @@
 {
   "error.serverDraining": "サーバーがドレイン中です — 再接続します（バックオフ + ジッター）。",
   "error.messageError": "メッセージエラー: {error}",
-  "error.versionRejected": "サーバーが cli のバージョン（{version}）を拒否しました — 更新してください。",
+  "error.versionRejected": "サーバーが cli のバージョン（{version}）を拒否しました。",
   "error.sessionReplaced": "このプロファイルの別のセッションが引き継ぎました — このインスタンスを停止します。（同じプロファイルで `4pm start` を二重に実行していませんか？）",
   "error.accountPaused": "このアカウントは一時停止中です — 再開されるまで再試行します。",
   "error.platformIpBlocked": "このワーカーの IP（{ip}）はプラットフォームの CLI_IP_ALLOWLIST に含まれていません — 管理者に追加を依頼してください。5 分ごとに再試行します。",
@@ -202,5 +202,8 @@
   "update.lockedMandatory": "このイメージは更新がロックされています（:full-locked）。cli {current} は最低サポートバージョン {min} 未満です — 新しいイメージを pull してコンテナを作り直してください。",
   "update.lockedAvailable": "新しい cli（{latest}）がありますが、このイメージは更新がロックされています（:full-locked）— {current} からアップグレードするには新しいイメージを pull してください。",
   "update.locked": "このイメージは更新がロックされています（:full-locked）— cli（{version}）は自己更新できません。新しいイメージを pull してコンテナを作り直してください。",
-  "autonomous.runNowUnavailable": "今は自律モードを実行できません：ワーカーがプロジェクトを担当していません。"
+  "autonomous.runNowUnavailable": "今は自律モードを実行できません：ワーカーがプロジェクトを担当していません。",
+  "update.rejectUpdating": "cli {current} はサポート対象外になりました — 実行中の作業が終わり次第、最新リリースに更新します…",
+  "update.rejectRetry": "バージョン拒否後の更新を実行できませんでした（{error}）— {minutes} 分後に再試行します",
+  "update.lockedRejected": "このイメージは更新ロック（:full-locked）されており、サーバーは cli {current} をサポートしていません — 新しいイメージを pull してコンテナを再作成してください。"
 }

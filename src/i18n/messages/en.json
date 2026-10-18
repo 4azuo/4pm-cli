@@ -1,7 +1,7 @@
 {
   "error.serverDraining": "Server draining — will reconnect (backoff + jitter).",
   "error.messageError": "Message error: {error}",
-  "error.versionRejected": "Server rejected the cli version ({version}) — please update.",
+  "error.versionRejected": "Server rejected the cli version ({version}).",
   "error.sessionReplaced": "Another session for this profile took over — this instance is stopping. (Are you running `4pm start` twice for the same profile?)",
   "error.accountPaused": "This account is paused — retrying until it is resumed.",
   "error.platformIpBlocked": "This worker's IP ({ip}) is not in the platform's CLI_IP_ALLOWLIST — ask an administrator to add it. Retrying every 5 minutes.",
@@ -202,5 +202,8 @@
   "update.lockedMandatory": "This image is update-locked (:full-locked) and cli {current} is below the minimum supported {min} — pull a newer image and recreate the container.",
   "update.lockedAvailable": "A newer cli ({latest}) is available, but this image is update-locked (:full-locked) — pull a newer image to upgrade from {current}.",
   "update.locked": "This image is update-locked (:full-locked) — the cli ({version}) cannot update itself. Pull a newer image and recreate the container.",
-  "autonomous.runNowUnavailable": "Autonomous mode can't run now: the worker serves no project."
+  "autonomous.runNowUnavailable": "Autonomous mode can't run now: the worker serves no project.",
+  "update.rejectUpdating": "cli {current} is no longer supported — updating to the latest release once running work finishes…",
+  "update.rejectRetry": "Update after the version reject did not run ({error}) — retrying in {minutes} min",
+  "update.lockedRejected": "This image is update-locked (:full-locked) and the server no longer supports cli {current} — pull a newer image and recreate the container."
 }
