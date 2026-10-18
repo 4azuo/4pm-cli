@@ -177,7 +177,7 @@ export type AutonomousPolicyReason =
   | "physicDisabled"
   | "physicNotReady"
   | "notAssigned"
-  /** A required project-template update is not merged into `<base>` yet — a soft gate (ADR-0550). */
+  /** A required project-template update is not merged into `<base>` yet — a soft gate. @adr 0550 */
   | "templateUpdateRequired";
 
 /** The policy the server pushes to one serving cli (`ws_token.autonomousPolicy` + `autonomous.policy`). */
