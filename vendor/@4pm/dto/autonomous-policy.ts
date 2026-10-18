@@ -57,7 +57,12 @@ export interface ProjectAutonomousSettings {
    * implement (default on; it runs only when the spec declares `docs_types`). @adr 0536
    */
   docsPhase: boolean;
+  /** At most this many requests / answered intake questions per intake run (1–50, default 1). @adr 0554 */
+  intakeBatchSize: number;
 }
+
+/** Upper bound of `intakeBatchSize` (= the server's group allocation cap per request). @adr 0554 */
+export const MAX_INTAKE_BATCH_SIZE = 50;
 
 /** The project-scoped keys (a worker settings write carrying one is refused). */
 export const PROJECT_AUTONOMOUS_KEYS = [
@@ -77,6 +82,7 @@ export const PROJECT_AUTONOMOUS_KEYS = [
   "autoResolvePrConflicts",
   "branchCleanup",
   "docsPhase",
+  "intakeBatchSize",
 ] as const satisfies readonly (keyof ProjectAutonomousSettings)[];
 
 /** Lower bound of `runTimeoutMinutes`. */
@@ -100,6 +106,7 @@ export const DEFAULT_PROJECT_AUTONOMOUS_SETTINGS: ProjectAutonomousSettings = {
   autoResolvePrConflicts: false,
   branchCleanup: DEFAULT_BRANCH_CLEANUP,
   docsPhase: true,
+  intakeBatchSize: 1,
 };
 
 /** Coerce an unknown object into full project-scoped settings (missing / invalid ⇒ default). */
@@ -141,6 +148,7 @@ export function readProjectAutonomousSettings(raw: unknown): ProjectAutonomousSe
       };
     })(),
     docsPhase: typeof o.docsPhase === "boolean" ? o.docsPhase : d.docsPhase,
+    intakeBatchSize: Math.min(MAX_INTAKE_BATCH_SIZE, Math.max(1, Math.floor(num(o.intakeBatchSize, d.intakeBatchSize)))),
   };
 }
 
@@ -317,6 +325,7 @@ export const projectAutonomousPolicyWriteSchema = z
         autoResolvePrConflicts: z.boolean().optional(),
         branchCleanup: z.object({ enabled: z.boolean(), afterDays: z.number().int().min(1).max(365) }).optional(),
         docsPhase: z.boolean().optional(),
+        intakeBatchSize: z.number().int().min(1).max(MAX_INTAKE_BATCH_SIZE).optional(),
       })
       .strict()
       .optional(),

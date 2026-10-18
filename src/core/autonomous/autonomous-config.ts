@@ -9,12 +9,13 @@
  * ADR-0507: the project-scoped knobs (claim TTL / check, attempts, run timeout, size hints, folders) come
  * from the server policy when one was received — `readAutonomousConfig` returns the **effective** config
  * (worker file ⊕ policy); every write is a patch of changed keys under a mutex, carrying who paused.
- * @adr 0321 @adr 0507
+ * ADR-0554: `intakeBatchSize` caps the ids one intake run takes in.
+ * @adr 0321 @adr 0507 @adr 0554
  */
 import { readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DIAGRAM_ROOT, ER_ROOT, EVIDENCE_ROOT, MOCKUP_ROOT, PROJECT_AUTONOMOUS_KEYS, SEQUENCE_ROOT, isSafeRepoDir, type AutonomousPausedBy } from "@4pm/dto";
+import { DIAGRAM_ROOT, ER_ROOT, EVIDENCE_ROOT, MAX_INTAKE_BATCH_SIZE, MOCKUP_ROOT, PROJECT_AUTONOMOUS_KEYS, SEQUENCE_ROOT, isSafeRepoDir, type AutonomousPausedBy } from "@4pm/dto";
 import { autonomousPolicy } from "./autonomous-policy";
 
 /** The autonomous knobs (parameters only — no logic). */
@@ -76,6 +77,8 @@ export interface AutonomousConfig {
   branchCleanup: { enabled: boolean; afterDays: number };
   /** Intake adds a `DOC-…` row per request, reviewed in rounds before its tasks run — policy-only. @adr 0536 */
   docsPhase: boolean;
+  /** At most this many requests / answered intake questions per intake run (1–50). @adr 0554 */
+  intakeBatchSize: number;
 }
 
 /** Lower bound of `runTimeoutMinutes`. @adr 0452 */
@@ -107,6 +110,7 @@ export const DEFAULT_AUTONOMOUS_CONFIG: AutonomousConfig = {
   autoResolvePrConflicts: false,
   branchCleanup: { enabled: false, afterDays: 14 },
   docsPhase: true,
+  intakeBatchSize: 1,
 };
 
 /** The config file path under a profile dir. */
@@ -167,6 +171,7 @@ function coerce(raw: unknown): AutonomousConfig {
     autoResolvePrConflicts: d.autoResolvePrConflicts,
     branchCleanup: d.branchCleanup,
     docsPhase: d.docsPhase,
+    intakeBatchSize: Math.min(MAX_INTAKE_BATCH_SIZE, Math.max(1, Math.floor(num(o.intakeBatchSize, d.intakeBatchSize)))),
   };
 }
 

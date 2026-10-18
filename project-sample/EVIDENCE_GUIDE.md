@@ -13,7 +13,8 @@ project's **preferences** only — file names, folders and formats stay as 4PM d
 
 ## Mockups
 - Follow the existing UI of the product where it can be seen; otherwise a clean, neutral layout.
-- Show the main states: empty, filled, loading and error, and the key interactions.
+- Show the key interactions. Declare the screen's states / server responses (empty, loading, error, success…) in the
+  `4pm-mockup-states` block — the viewer shows one tab per state; never draw a state switcher inside the page.
 - Use realistic sample data (names, amounts, dates) — never lorem ipsum.
 
 ## Sequence diagrams

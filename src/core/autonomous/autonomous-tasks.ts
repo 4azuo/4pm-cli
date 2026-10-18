@@ -474,6 +474,26 @@ export async function intakeIds(root: string, profileDir?: string): Promise<stri
   return [...reqs, ...qas].sort();
 }
 
+/**
+ * The ids one intake run takes in: the first `size` of `free` (book order), plus any free answered question whose
+ * `Depends` names a picked request — an answer never waits apart from its request.
+ * @adr 0554
+ */
+export function intakeBatch(free: string[], size: number, qaMd: string): string[] {
+  const picked = free.slice(0, Math.max(1, size));
+  const pickedSet = new Set(picked);
+  const deps = new Map(B.parseQa(qaMd).rows.map((q) => [q.id, q.depends]));
+  for (const id of free) {
+    if (pickedSet.has(id) || !id.startsWith("QA-")) continue;
+    const on = (deps.get(id) ?? "").split(/[,\s]+/).filter(Boolean);
+    if (on.some((d) => pickedSet.has(d))) {
+      picked.push(id);
+      pickedSet.add(id);
+    }
+  }
+  return picked;
+}
+
 /** What a worker waits for: rows people must act on before a cycle can take them. @adr 0529 */
 export interface WaitingCounts {
   /** Requests, tasks and answered questions not approved yet. */

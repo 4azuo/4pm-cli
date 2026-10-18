@@ -75,6 +75,7 @@ import {
   approvedIds,
   claimState,
   foldTaskAnswers,
+  intakeBatch,
   intakeIds,
   isSplitChild,
   pickTask,
@@ -659,7 +660,12 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
         // lost race costs neither an agent run nor server group ids.
         const intakeTtl = intakeClaimTtlMinutes(cfg.runTimeoutMinutes);
         const held = intakeHeldByOthers(await B.readBook(root, "AI_PROGRESS.md"), worker, intakeTtl);
-        const free = wanted.filter((id) => !held.has(id)).slice(0, BOOK_GROUPS_PER_REQUEST);
+        // At most `intakeBatchSize` ids per run (ADR-0554); the rest wait for the next cycle or another worker.
+        const free = intakeBatch(
+          wanted.filter((id) => !held.has(id)),
+          cfg.intakeBatchSize,
+          await B.readBook(root, "USER_QA.md"),
+        ).slice(0, BOOK_GROUPS_PER_REQUEST);
         if (free.length === 0) {
           intakeTakenBy = held.get(wanted[0]!) ?? null;
           await log(`[intake] ${wanted.join(", ")} already taken in by ${[...new Set(wanted.map((id) => held.get(id)))].join(", ")}`);
