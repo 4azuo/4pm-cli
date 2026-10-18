@@ -7,7 +7,7 @@
  */
 import { DUE_DATE_RE, TAG_CODE_RE } from "@4pm/constants";
 
-/** The metadata columns, lower-cased (as `bookRowsById` keys cells) — `Issue` too (ADR-0546). */
+/** The metadata columns, lower-cased (as `bookRowsById` keys cells) — `Issue` too. */
 export const BOOK_META_COLUMNS = ["tags", "due", "issue"] as const;
 
 /** The header names writers use for the metadata columns. */

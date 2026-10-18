@@ -201,7 +201,7 @@ export interface DiscussionSummary {
   tags: string[];
   /** Due date `YYYY-MM-DD`, or null. */
   due: string | null;
-  /** Linked issue refs (ADR-0546). */
+  /** Linked issue refs. */
   issues: string[];
   status: "open" | "resolved";
   /** The repo says resolved but nobody confirmed it in the web (doesn't count for the approval gate). */
@@ -252,7 +252,7 @@ export type ListDiscussionsQuery = z.infer<typeof listDiscussionsQuerySchema>;
 
 /** Tag codes of a discussion (catalog codes; the server checks them against the project's tags). */
 const discussionTags = z.array(z.string().trim().toLowerCase().regex(TAG_CODE_RE)).max(TAGS_PER_ITEM_MAX);
-/** Linked issue refs of a discussion (ADR-0546). */
+/** Linked issue refs of a discussion. */
 const discussionIssues = z.array(z.string().trim().regex(ISSUE_REF_RE)).max(10);
 /** A due date `YYYY-MM-DD` (null clears it). */
 const discussionDue = z.string().refine(isValidDue, { message: "invalid date" }).nullable();

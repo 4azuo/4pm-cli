@@ -1,5 +1,5 @@
 /**
- * Issue links of book rows (ADR-0544 / ADR-0546): the `Issue` cell ref format, the issue body layout 4PM manages
+ * Issue links of book rows: the `Issue` cell ref format, the issue body layout 4PM manages
  * (the body, the GitHub `Due:` line, the `<!-- 4pm:status -->` block at the end), and the API shapes of the links
  * and their sync history. Pure — shared by the server, community and the web.
  * @adr 0544 @adr 0546

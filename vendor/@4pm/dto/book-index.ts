@@ -61,7 +61,7 @@ export const bookIndexRowSchema = z.object({
   prUrl: z.string().max(500).optional(),
   /** AI_DONE: its Timestamp (ISO). */
   doneAt: z.string().max(40).optional(),
-  /** USER_TODO: the linked issue ref (`Issue` cell) and the full `Request` text it syncs (ADR-0546). */
+  /** USER_TODO: the linked issue ref (`Issue` cell) and the full `Request` text it syncs. */
   issueRef: z.string().max(200).optional(),
   request: z.string().max(BOOK_INDEX_REQUEST_MAX).optional(),
 });
