@@ -55,16 +55,20 @@ function intakeDesc(userTodo: string, userQa: string, id: string): string {
 }
 
 /**
- * Claim `ids` for intake (inside `publishBooks`): drops expired intake rows and this worker's own leftovers,
- * skips ids another worker holds live or that left the books meanwhile, and writes one row per remaining id.
- * Sets `mine.ids` to what was claimed; false (nothing to publish) when none is left.
+ * Claim intake ids (inside `publishBooks`): drops expired intake rows and this worker's own leftovers, skips the
+ * `wanted` ids another worker holds live or that left the books meanwhile, picks the batch from the rest (`pick`,
+ * on the current USER_QA; default: all of them) and writes one row per picked id. Run on every publish attempt, so
+ * a worker that lost the race to an id takes the next free one. Sets `mine.ids` to what was claimed; false (nothing
+ * to publish) when none is left.
+ * @adr 0556
  */
 export async function applyIntakeClaim(
   root: string,
-  ids: readonly string[],
+  wanted: readonly string[],
   mine: IntakeClaim,
   ttlMinutes: number,
   teamOf: (id: string) => string,
+  pick: (free: string[], userQa: string) => string[] = (free) => free,
 ): Promise<boolean> {
   const [prog, userTodo, userQa] = await Promise.all([
     B.readBook(root, "AI_PROGRESS.md"),
@@ -75,7 +79,7 @@ export async function applyIntakeClaim(
   const kept = intake.filter((r) => r.worker !== mine.worker && intakeClaimLive(r, ttlMinutes));
   const held = new Set(kept.map((r) => r.id));
   const present = (id: string): boolean => (id.startsWith("REQ-") ? userTodo : userQa).includes(id);
-  mine.ids = ids.filter((id) => !held.has(id) && present(id));
+  mine.ids = pick(wanted.filter((id) => !held.has(id) && present(id)), userQa);
   if (mine.ids.length === 0) return false;
   const rows: B.ClaimRow[] = mine.ids.map((id) => ({
     started: mine.started,

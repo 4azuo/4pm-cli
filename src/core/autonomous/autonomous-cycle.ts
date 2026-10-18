@@ -661,11 +661,12 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
         const intakeTtl = intakeClaimTtlMinutes(cfg.runTimeoutMinutes);
         const held = intakeHeldByOthers(await B.readBook(root, "AI_PROGRESS.md"), worker, intakeTtl);
         // At most `intakeBatchSize` ids per run (ADR-0554); the rest wait for the next cycle or another worker.
-        const free = intakeBatch(
+        // The batch is re-picked inside every publish attempt (ADR-0556): a lost race takes the next free ids.
+        const pickBatch = (ids: string[], qaMd: string): string[] => intakeBatch(ids, cfg.intakeBatchSize, qaMd).slice(0, BOOK_GROUPS_PER_REQUEST);
+        const free = pickBatch(
           wanted.filter((id) => !held.has(id)),
-          cfg.intakeBatchSize,
           await B.readBook(root, "USER_QA.md"),
-        ).slice(0, BOOK_GROUPS_PER_REQUEST);
+        );
         if (free.length === 0) {
           intakeTakenBy = held.get(wanted[0]!) ?? null;
           await log(`[intake] ${wanted.join(", ")} already taken in by ${[...new Set(wanted.map((id) => held.get(id)))].join(", ")}`);
@@ -677,10 +678,10 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
             root,
             rootBase.base,
             () => `chore(auto): intake ${intakeClaim.ids.join(", ")} claimed by ${worker}`,
-            () => applyIntakeClaim(root, free, intakeClaim, intakeTtl, teamOf),
+            () => applyIntakeClaim(root, wanted, intakeClaim, intakeTtl, teamOf, pickBatch),
           );
           if (claimed !== "pushed") {
-            await log(`[intake] could not claim ${free.join(", ")} (${claimed}) — skipped this cycle`);
+            await log(`[intake] could not claim any of ${wanted.join(", ")} (${claimed}) — skipped this cycle`);
           } else {
             await log(`[intake] claimed ${intakeClaim.ids.join(", ")}`);
             setAutonomousStep("intake", intakeClaim.ids);

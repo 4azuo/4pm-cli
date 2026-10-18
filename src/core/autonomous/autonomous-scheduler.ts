@@ -5,8 +5,9 @@
  * max ticks / quota) and the per-root serialization stay in `runAutonomousCycle`. Needs no cron
  * service, no extra process and no host privilege — it lives and dies with the `4pm start` daemon,
  * which a cycle needs anyway. One cli serves one physic project (1:1), so one job per process. It is an
- * engine-scoped lifecycle service: stopped when the daemon drains, so no restart leaves it ticking.
- * @adr 0392 @adr 0152 @adr 0321 @adr 0505
+ * engine-scoped lifecycle service: stopped when the daemon drains, so no restart leaves it ticking. Each fire
+ * waits a random 0–30 s first, so workers on the same schedule don't race for the books branch at once.
+ * @adr 0392 @adr 0152 @adr 0321 @adr 0505 @adr 0556
  */
 import { Cron } from "croner";
 import { logger } from "../../common/logger/logger";
@@ -29,6 +30,10 @@ let deps: AutonomousSchedulerDeps | null = null;
 let offConfigWrite: (() => void) | null = null;
 let job: Cron | null = null;
 let pattern = "";
+/** The jitter delay of the current fire, cleared on stop / re-arm. */
+let jitterTimer: NodeJS.Timeout | null = null;
+/** Upper bound of the random delay before a scheduled cycle. @adr 0556 */
+const TICK_JITTER_MS = 30_000;
 
 /**
  * True for a standard 5-field cron expression croner accepts in its strict (vixie) syntax — a step needs
@@ -63,6 +68,22 @@ function onTick(): void {
   deps.submit();
 }
 
+/** A cron fire: run `onTick` after a random 0–`TICK_JITTER_MS` delay (one pending delay at a time). @adr 0556 */
+function onFire(): void {
+  if (jitterTimer) return;
+  jitterTimer = setTimeout(() => {
+    jitterTimer = null;
+    onTick();
+  }, Math.floor(Math.random() * TICK_JITTER_MS));
+  jitterTimer.unref();
+}
+
+/** Cancel a pending jitter delay. */
+function clearJitter(): void {
+  if (jitterTimer) clearTimeout(jitterTimer);
+  jitterTimer = null;
+}
+
 /**
  * Submit one cycle now, outside the schedule (the web / public API "run now" — the same bus path as
  * `4pm auto-run`). Every gate of the cycle (paused, quiet hours, quota…) still applies inside it. False when
@@ -90,6 +111,7 @@ export function stopAutonomousScheduler(): void {
   offConfigWrite = null;
   job?.stop();
   job = null;
+  clearJitter();
   pattern = "";
   deps = null;
 }
@@ -109,7 +131,8 @@ export async function reloadAutonomousSchedule(): Promise<void> {
   }
   if (job && next === pattern) return;
   job?.stop();
+  clearJitter();
   pattern = next;
   // `unref` so the timer never keeps a process alive on its own; `catch` so a throw can't kill the job.
-  job = new Cron(next, { unref: true, catch: true }, onTick);
+  job = new Cron(next, { unref: true, catch: true }, onFire);
 }

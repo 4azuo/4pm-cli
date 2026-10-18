@@ -70,6 +70,15 @@ describe("applyIntakeClaim", () => {
     expect(B.parseClaims(await B.readBook(root, "AI_PROGRESS.md")).intake.map((r) => r.id)).toEqual(["REQ-000001-001"]);
   });
 
+  it("picks the batch from the ids still free, so a lost race takes the next request", async () => {
+    // Another worker won REQ-000001-001; this worker's batch of one moves on to REQ-000002-001.
+    writeFileSync(join(root, "AI_PROGRESS.md"), `# AI Progress\n\n${HEADER}| ${B.stamp()} | REQ-000001-001 | | other | c | 1 | Intake |\n`);
+    const mine: IntakeClaim = { claim: "c-new", worker: "me", started: B.stamp(), ids: [] };
+    const ok = await applyIntakeClaim(root, ["REQ-000001-001", "REQ-000002-001"], mine, 75, () => "", (free) => free.slice(0, 1));
+    expect(ok).toBe(true);
+    expect(mine.ids).toEqual(["REQ-000002-001"]);
+  });
+
   it("claims nothing when every id is held or gone", async () => {
     writeFileSync(join(root, "AI_PROGRESS.md"), `# AI Progress\n\n${HEADER}| ${B.stamp()} | REQ-000001-001 | | other | c | 1 | Intake |\n`);
     const mine: IntakeClaim = { claim: "c-new", worker: "me", started: B.stamp(), ids: [] };
