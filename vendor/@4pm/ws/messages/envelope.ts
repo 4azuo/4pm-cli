@@ -87,6 +87,13 @@ export interface MachineStatusPayload {
    * @adr 0528
    */
   reposReady?: boolean;
+  /**
+   * The project-template marker on the served root's `origin/<base>` (`version` = `.4pm/.4pm.json`
+   * `templateVersion`, null = no marker). Sent once read; absent before that and when idle. The server
+   * stores it per project and gates autonomous on a required update.
+   * @adr 0550
+   */
+  templateMarker?: { version: string | null };
   /** The machine-user's own AI-run wall-clock limit in seconds (`ProfileConfig.aiRunTimeoutSec`;
    *  `0` = unlimited) — persisted on `MachineLink` so a dispatch can resolve the **effective**
    * timeout (project override else this) and derive the SSE reply windows.

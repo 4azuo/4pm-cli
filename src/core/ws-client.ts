@@ -91,7 +91,7 @@ import type { WsHandlerCtx } from "./ws-client/context";
 import { cancelAllActiveRuns, handleCommandChannels, resetMemorySession, runLocalCommand } from "./ws-client/command-dispatch";
 import { lifecycle, type ShutdownReason } from "./session/lifecycle";
 import { configureRepoLock, failAllRepoWaiters, withRepoLock } from "./git/repo-lock";
-import { loadAutonomousPolicy, onAutonomousStep, recordLastCheck, setAutonomousPolicy } from "./autonomous/autonomous-policy";
+import { loadAutonomousPolicy, onAutonomousStep, recordLastCheck, setAutonomousPolicy, templateMarkerOf } from "./autonomous/autonomous-policy";
 import { work } from "./session/work-tracker";
 import { onReconnectVerifyClaim, runAutonomousCycle } from "./autonomous/autonomous-cycle";
 import { scheduleBookIndex } from "./autonomous/autonomous-book-index";
@@ -1280,6 +1280,8 @@ export class WsClient {
       ...(lifecycle.state === "draining" ? { drainingFor: lifecycle.drainingFor } : {}),
       // Repos in place for the served root (ADR-0528) — only once a clone-on-connect settled for it.
       ...(this.physicRoot && this.reposCheck?.root === this.physicRoot ? { reposReady: this.reposCheck.ready } : {}),
+      // The template marker on `origin/<base>` (ADR-0550) — only once read for the served root.
+      ...(this.physicRoot && templateMarkerOf(this.physicRoot) ? { templateMarker: templateMarkerOf(this.physicRoot)! } : {}),
       // The autonomous snapshot (ADR-0507).
       ...(this.physicRoot ? { autonomous: buildAutonomousSnapshot(this.physicRoot, this.context.profileDir) } : {}),
     });

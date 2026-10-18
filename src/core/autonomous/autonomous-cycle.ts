@@ -141,7 +141,8 @@ import { bookRowTeam } from "@4pm/dto";
 import { lifecycle } from "../session/lifecycle";
 import { work } from "../session/work-tracker";
 import { acquireRepo, type RepoLockHandle } from "../git/repo-lock";
-import { onAutonomousPolicy, policyBlockReason, setAutonomousStep } from "./autonomous-policy";
+import { onAutonomousPolicy, policyBlockReason, policyStopsRunningCycle, setAutonomousStep } from "./autonomous-policy";
+import { readBaseTemplateMarker, refreshBaseTemplateMarker } from "./template-marker";
 
 // ── Prompts (the agent's parts only) ──────────────────────────────────────────────────────────────
 
@@ -434,7 +435,7 @@ function cycleRunId(): string {
 
 /** True when a cancelled run was stopped by a restart drain or a blocking policy (keep the work). @adr 0505 @adr 0507 */
 function stoppedFromOutside(out: AiPromptOutcome): boolean {
-  return out.cancelled && (lifecycle.stopping || policyBlockReason() !== null);
+  return out.cancelled && (lifecycle.stopping || policyStopsRunningCycle());
 }
 
 /**
@@ -466,8 +467,9 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
   let repo: RepoLockHandle | null = null;
   const log = (line: string): Promise<void> => dayLog(root, line);
   // The policy turns blocking mid-cycle (project paused / switched off — ADR-0507): stop the AI run now.
+  // A soft reason (a required template update — ADR-0550) lets the cycle finish.
   const offPolicy = onAutonomousPolicy(() => {
-    if (policyBlockReason() && currentCycleRun) cancelActiveRun(currentCycleRun);
+    if (policyStopsRunningCycle() && currentCycleRun) cancelActiveRun(currentCycleRun);
   });
   try {
     const cfg = await readAutonomousConfig(profileDir);
@@ -491,7 +493,15 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     // The server's policy (ADR-0507): the project switch and this worker's `allowed`.
     const blocked = policyBlockReason();
     if (blocked) {
-      await log(blocked === "projectDisabled" ? "[skip] autonomous paused for the project" : `[skip] not allowed by the server (${blocked})`);
+      await log(
+        blocked === "projectDisabled"
+          ? "[skip] autonomous paused for the project"
+          : blocked === "templateUpdateRequired"
+            ? "[skip] a required project-template update is not merged yet"
+            : `[skip] not allowed by the server (${blocked})`,
+      );
+      // A merged Update PR resumes autonomous: re-read the base marker now (ADR-0550).
+      if (blocked === "templateUpdateRequired") await refreshBaseTemplateMarker(root);
       ctx.bus.autonomousDone(false, `policy: ${blocked}`);
       return;
     }
@@ -538,6 +548,8 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
 
     // --- Phase 1: sync the books branch (current books + current <base>) -------------------------
     const stashed = await syncBooks(root, rootBase.base);
+    // `<base>` was just fetched: report its template marker (a required update pauses autonomous — ADR-0550).
+    await readBaseTemplateMarker(root, rootBase.base).catch(() => undefined);
     if (stashed) {
       await log(`[autosave] uncommitted changes were stashed as "${stashed}"`);
       alert(ctx, { kind: "autosave", message: `Uncommitted changes in the project folder were stashed by the autonomous cycle as "${stashed}" (git stash list).` });

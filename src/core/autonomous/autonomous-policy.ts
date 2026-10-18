@@ -4,10 +4,11 @@
  * knobs every worker of the project shares. Persisted in the profile dir (`autonomous.policy.json`,
  * `0600`) so a cli restarted while offline never resumes a project that was paused meanwhile. Also keeps
  * the worker's last tick (`lastCheck`, skips included) and the running cycle's `step` for the
- * `machine.status.autonomous` snapshot.
+ * `machine.status.autonomous` snapshot, and the template marker last read on `origin/<base>` for
+ * `machine.status.templateMarker`.
  * A leaf module (no autonomous imports) — the config reader merges the policy on top of the worker file.
  * Without a policy the worker runs no cycle (it serves no ready project).
- * @adr 0507 @adr 0511 @adr 0529
+ * @adr 0507 @adr 0511 @adr 0529 @adr 0550
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -72,6 +73,19 @@ export function autonomousPolicy(): AutonomousPolicy | null {
   return policy;
 }
 
+/**
+ * Policy reasons that only stop new cycles: a running cycle finishes its work (no AI-run cancel). A
+ * required template update waits for the cycle in the repo lock's queue instead.
+ * @adr 0550
+ */
+const SOFT_REASONS: ReadonlySet<string> = new Set(["templateUpdateRequired"]);
+
+/** Should the running cycle be stopped (its AI run cancelled) under the current policy? @adr 0507 @adr 0550 */
+export function policyStopsRunningCycle(): boolean {
+  const r = policyBlockReason();
+  return r !== null && !SOFT_REASONS.has(r);
+}
+
 /** Why the policy blocks cycles right now (null = it does not). */
 export function policyBlockReason(): string | null {
   // No policy = the server has not assigned this worker a ready project (yet) — never run.
@@ -124,6 +138,31 @@ export function autonomousStep(): AutonomousStep | null {
 export function onAutonomousStep(fn: () => void): () => void {
   stepListeners.add(fn);
   return () => stepListeners.delete(fn);
+}
+
+let marker: { root: string; version: string | null } | null = null;
+
+/**
+ * Record the template marker read on `origin/<base>` of `root` (`version` null = no marker); a change
+ * re-sends `machine.status` at once (the server may pause / resume autonomous).
+ * @adr 0550
+ */
+export function setTemplateMarker(root: string, version: string | null): void {
+  if (marker?.root === root && marker.version === version) return;
+  marker = { root, version };
+  logger.info("autonomous.templateMarker", { version });
+  for (const fn of [...stepListeners]) {
+    try {
+      fn();
+    } catch {
+      /* a listener must not break the reader */
+    }
+  }
+}
+
+/** The template marker last read for `root`, or null when not read yet. @adr 0550 */
+export function templateMarkerOf(root: string): { version: string | null } | null {
+  return marker?.root === root ? { version: marker.version } : null;
 }
 
 /** The last tick, or null. */

@@ -13,6 +13,7 @@ import { logger } from "../../common/logger/logger";
 import { DEFAULT_AUTONOMOUS_CONFIG, onAutonomousConfigWrite, readAutonomousConfig, readAutonomousConfigSync } from "./autonomous-config";
 import { lifecycle } from "../session/lifecycle";
 import { policyBlockReason, recordLastCheck } from "./autonomous-policy";
+import { refreshBaseTemplateMarker } from "./template-marker";
 
 /** What the scheduler needs from the daemon (read live, so a rename/attach/idle is picked up). */
 export interface AutonomousSchedulerDeps {
@@ -55,6 +56,8 @@ function onTick(): void {
   const blocked = policyBlockReason();
   if (blocked) {
     recordLastCheck("skip", `policy: ${blocked}`);
+    // Paused for a required template update: re-read the base marker so a merged Update PR resumes it (ADR-0550).
+    if (blocked === "templateUpdateRequired") void refreshBaseTemplateMarker(deps.servedRoot()!);
     return;
   }
   deps.submit();
