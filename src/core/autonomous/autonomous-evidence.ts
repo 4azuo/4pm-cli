@@ -5,9 +5,10 @@
  * This module stages an uploaded file in the profile dir (outside the repo) until a `bookSave` commits it,
  * moves staged files into the books' worktree, prunes files no book references any more, carries a finished
  * task's evidence from AI_TODO to AI_DONE, lists the agent's own evidence on a task branch, and reads one
- * file for the web (`origin/autonomous-books/<base>` → `origin/<base>` → task branch → working tree) — an
- * evidence file, an intake mockup, or a sequence diagram / ER file.
- * @adr 0404 @adr 0418 @adr 0453
+ * file for the web (`origin/autonomous-books/<base>` → the task / request / DOC branch → `origin/<base>` → working
+ * tree) — an evidence file, an intake mockup, or a sequence diagram / ER file. Mockups and sequences are work output
+ *: listed from `<base>` and the open request / DOC branches, restored with a commit on `<base>`.
+ * @adr 0404 @adr 0418 @adr 0453 @adr 0563
  */
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -25,10 +26,12 @@ import {
   type EvidenceBookKey,
 } from "@4pm/dto";
 import type { AutonomousEvidenceReply, EvidenceCommit } from "@4pm/ws";
+import { parseQa } from "./autonomous-books";
 import { mkdirInRoot, readFileInRoot, resolveEntry, resolveForRead, writeFileInRoot } from "../../utils/safe-path";
 import { execInProject } from "../agent/agent-spawn";
 import { booksBranch } from "./autonomous-tasks";
-import { mutateBooks } from "./autonomous-git";
+import { gitQuiet } from "./autonomous-git";
+import { commitToBase, locateBase } from "../git/base-edit";
 
 // Project git runs as the agent user when uid separation is on (ADR-0430); unchanged otherwise.
 const run = execInProject;
@@ -116,7 +119,7 @@ export async function applyStagedEvidence(
 }
 
 /** Every file under `rel` (repo-relative, posix), recursively. */
-async function listFiles(root: string, rel: string): Promise<string[]> {
+export async function listFiles(root: string, rel: string): Promise<string[]> {
   const out: string[] = [];
   // Symlink-safe (ADR-0430): only list a folder that really is inside the project.
   const real = resolveForRead(root, join(root, rel));
@@ -139,22 +142,67 @@ async function removeEmptyDirs(root: string, rel: string): Promise<void> {
 }
 
 /**
- * The intake UI mockups: `.html` files under `mockupDir` on the books branch (ADR-0448; else `origin/<base>`,
- * else the working tree),
- * as repo paths, sorted.
+ * The open request / DOC branches of a base on the remote (`dev/<base>/<GROUP>/REQ-…` / `QA-…` / `DOC-…`), plus the
+ * work branches of `alsoIds` (tasks parked on a question keep its sequence diagram on their WIP branch).
+ * @adr 0563
  */
-export async function listMockups(root: string, base: string | null, mockupDir: string): Promise<string[]> {
-  const keep = (paths: string[]): string[] =>
-    paths.filter((p) => p.startsWith(`${mockupDir}/`) && p.toLowerCase().endsWith(".html") && isSafeRepoDir(p)).sort();
-  for (const ref of base ? [`origin/${booksBranch(base)}`, `origin/${base}`] : []) {
+export async function openDesignBranches(root: string, base: string, alsoIds: readonly string[] = []): Promise<string[]> {
+  const out = await gitQuiet(root, ["for-each-ref", "--format=%(refname:short)", `refs/remotes/origin/dev/${base}/`]);
+  const also = new Set(alsoIds);
+  return out
+    .split("\n")
+    .map((l) => l.trim().replace(/^origin\//, ""))
+    .filter((b) => /\/(?:REQ|QA|DOC)-\d{6}-\d{3}$/.test(b) || also.has(b.slice(b.lastIndexOf("/") + 1)));
+}
+
+/** The tasks / DOC rows that asked the live questions of USER_QA (`Original request` = `<ID>: …`). @adr 0563 */
+export function questionAskers(userQa: string): string[] {
+  const ids = new Set<string>();
+  for (const q of parseQa(userQa).rows) {
+    const m = /^((?:TSK|DOC)-\d{6}-\d{3})\b/.exec(q.original.trim());
+    if (m) ids.add(m[1]!);
+  }
+  return [...ids];
+}
+
+/**
+ * The work-output files under `dir` (mockups / sequences): on `origin/<base>` and on each open request / DOC branch
+ * and on the WIP branch of each task in `alsoIds` (a file only on a branch maps to it in `refs`); else the working tree.
+ * @adr 0563
+ */
+export async function listWorkOutput(
+  root: string,
+  base: string | null,
+  dir: string,
+  keep: (p: string) => boolean,
+  alsoIds: readonly string[] = [],
+): Promise<{ paths: string[]; refs: Record<string, string> }> {
+  const refs: Record<string, string> = {};
+  const seen = new Set<string>();
+  const ls = async (ref: string): Promise<string[] | null> => {
     try {
-      const { stdout } = await run("git", ["ls-tree", "-r", "--name-only", ref, "--", `${mockupDir}/`], { cwd: root });
-      return keep(stdout.split("\n").map((l) => l.trim()).filter(Boolean));
+      const { stdout } = await run("git", ["ls-tree", "-r", "--name-only", ref, "--", `${dir}/`], { cwd: root });
+      return String(stdout).split("\n").map((l) => l.trim()).filter((p) => p && keep(p));
     } catch {
-      // This ref doesn't exist (no books branch yet / no remote base) — try the next, then the working tree.
+      return null;
+    }
+  };
+  const onBase = base ? await ls(`origin/${base}`) : null;
+  if (!onBase) return { paths: (await listFiles(root, dir)).filter(keep).sort(), refs };
+  for (const p of onBase) seen.add(p);
+  for (const branch of await openDesignBranches(root, base!, alsoIds)) {
+    for (const p of (await ls(`origin/${branch}`)) ?? []) {
+      if (seen.has(p)) continue;
+      seen.add(p);
+      refs[p] = branch;
     }
   }
-  return keep(await listFiles(root, mockupDir));
+  return { paths: [...seen].sort(), refs };
+}
+
+/** The intake UI mockups: `.html` files under `mockupDir` on `<base>` and the open request / DOC branches. @adr 0418 @adr 0563 */
+export async function listMockups(root: string, base: string | null, mockupDir: string): Promise<{ paths: string[]; refs: Record<string, string> }> {
+  return listWorkOutput(root, base, mockupDir, (p) => p.startsWith(`${mockupDir}/`) && p.toLowerCase().endsWith(".html") && isSafeRepoDir(p));
 }
 
 /** The text of every book in `dir` (missing ⇒ empty), joined — a file is "referenced" when its path appears. */
@@ -286,8 +334,9 @@ export async function readEvidenceFile(
   // A past version (ADR-0515): that commit only, no fallbacks.
   if (rev) bytes = await showBytes(root, rev, path);
   else if (base) bytes = await showBytes(root, `origin/${booksBranch(base)}`, path);
-  if (!bytes && base && !rev) bytes = await showBytes(root, `origin/${base}`, path);
+  // A work branch (a task / request / DOC whose PR is not merged yet) before `<base>` — its file is the newer one.
   if (!bytes && ref && !rev) bytes = await showBytes(root, `origin/${ref}`, path);
+  if (!bytes && base && !rev) bytes = await showBytes(root, `origin/${base}`, path);
   if (!bytes && !rev) bytes = await readFileInRoot(root, join(root, path)).catch(() => null);
   if (!bytes) return { error: "evidence not found" };
   // The reply rides one WS frame (8 MB): base64 of the 5 MB evidence cap fits, a bigger file is refused.
@@ -321,9 +370,10 @@ export async function evidenceHistory(root: string, ref: string, path: string): 
 }
 
 /**
- * Restore a mockup / sequence file to its content at `rev`: write it back onto the books branch as a new commit
- * (only its folder is committed). `unchanged` when the file already has that content.
- * @api machine-0086 @adr 0515
+ * Restore a mockup / sequence file to its content at `rev`: write it back onto `<base>` as a new commit (the off-tree
+ * base commit of ADR-0511 — mockups and sequences are work output since ADR-0563). `unchanged` when the file already
+ * has that content.
+ * @api machine-0086 @adr 0515 @adr 0563
  */
 export async function restoreEvidenceVersion(
   root: string,
@@ -338,19 +388,12 @@ export async function restoreEvidenceVersion(
   }
   const bytes = await showBytes(root, rev, path);
   if (!bytes) return { ok: false, error: "this version does not contain the file" };
-  const folder = path.startsWith(`${dirs.mockupDir}/`) ? dirs.mockupDir : dirs.sequenceDir;
-  const pub = await mutateBooks(
-    root,
-    base,
-    `evidence: restore ${path} to ${rev.slice(0, 7)} (${who})`,
-    async (dir) => {
-      if (!resolveEntry(dir, join(dir, path))) return false;
-      await writeFileInRoot(dir, join(dir, path), bytes);
-      return true;
-    },
-    [folder],
-  );
-  if (pub === "pushed") return { ok: true, result: "published" };
-  if (pub === "unchanged") return { ok: true, result: "unchanged" };
-  return { ok: false, error: "could not push the restore to the books branch (retry)" };
+  const loc = await locateBase(root, path).catch(() => null);
+  if (!loc || !base) return { ok: false, error: "no remote base branch to restore on" };
+  try {
+    const sha = await commitToBase(root, loc, [{ op: "put", path: loc.rel, data: bytes }], { message: `evidence: restore ${path} to ${rev.slice(0, 7)}`, by: who });
+    return { ok: true, result: sha ? "published" : "unchanged" };
+  } catch (err) {
+    return { ok: false, error: `could not push the restore to ${base} (${err instanceof Error ? err.message : String(err)})` };
+  }
 }

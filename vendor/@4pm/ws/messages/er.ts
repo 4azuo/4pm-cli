@@ -93,7 +93,7 @@ export type ErWriteRequest =
       id: string;
       decision: "approve" | "reject";
       reason?: string;
-      /** The server-signed approval entry (approve; absent in legacy mode — the cli writes an unsigned one). */
+      /** The server-signed approval entry (approve; absent in unsigned mode — the cli writes an unsigned one). */
       entry?: ApprovalEntry;
       /** The ERC file hash the approver signed (`sha256:<hex>`) — the cli refuses a mismatch. */
       h?: string;

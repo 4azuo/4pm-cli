@@ -30,8 +30,7 @@ export interface ScaffoldPublish {
   committed: boolean;
   pushed: boolean;
   branch: string | null;
-  prUrl: string | null;
-  step: "submodule" | "commit" | "push" | "pr" | null;
+  step: "submodule" | "commit" | "push" | null;
   error: string | null;
   /** The classified failure when `step` is set (else null). @adr 0501 */
   errorCode: ProjectFailCode | null;
@@ -46,7 +45,7 @@ export function readScaffoldPublish(raw: unknown): ScaffoldPublish | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
   const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
-  const step = r.step === "submodule" || r.step === "commit" || r.step === "push" || r.step === "pr" ? r.step : null;
+  const step = r.step === "submodule" || r.step === "commit" || r.step === "push" ? r.step : null;
   const submodules = Array.isArray(r.submodules)
     ? (r.submodules as Record<string, unknown>[]).map((x) => {
         const ok = x.ok === true;
@@ -60,7 +59,6 @@ export function readScaffoldPublish(raw: unknown): ScaffoldPublish | null {
     committed: r.committed === true,
     pushed: r.pushed === true,
     branch: str(r.branch),
-    prUrl: str(r.prUrl),
     step,
     error,
     errorCode: step ? classifyProjectFailure(error) : null,
@@ -416,7 +414,7 @@ export interface ProjectAiScopeSettings {
 
 /**
  * Per-project git-auth method for the worker. `self` = the worker uses its own
- * gh/glab credentials (self-host default); `deploy-key` = legacy alias of `self`;
+ * gh/glab credentials (self-host default); `deploy-key` = an alias of `self`;
  * `github-app` = the server mints per-job GitHub-App installation tokens from the project's App
  * credential (ADR-0356, stored in its own table — never in settings); `gitlab-group-token` = the
  * server serves the project's stored GitLab group token to the worker's git helper / `glab` shim
@@ -1056,14 +1054,14 @@ export interface RepoProbeResponse {
     /** 4PM tracking files present at the source (resettable). */
     tracking: string[];
     /**
-     * The parsed `project.spec.json` at `ref`; null when absent or unreadable. Absent from an older cli.
+     * The parsed `project.spec.json` at `ref`; null when absent or unreadable.
      * @adr 0393
      */
-    spec?: Record<string, unknown> | null;
+    spec: Record<string, unknown> | null;
     /** `project.spec.json` exists but could not be read (bad JSON / too large) — ADR-0393. */
-    specError?: string | null;
-    /** `model` of `.claude/settings.json` at `ref`; null when absent. Absent from an older cli. @adr 0394 */
-    settingsModel?: string | null;
+    specError: string | null;
+    /** `model` of `.claude/settings.json` at `ref`; null when absent. @adr 0394 */
+    settingsModel: string | null;
   } | null;
   /** The base branch is protected on the host; null = unknown host / branch missing. @adr 0371 */
   protected: boolean | null;

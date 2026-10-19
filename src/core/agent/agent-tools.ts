@@ -36,7 +36,7 @@ async function readSettingsObject(root: string, path: string): Promise<Record<st
 
 /**
  * Coerce an unknown value into a normalized permissions block. Headless-only: the mode is
- * always `bypassPermissions` (there is no TTY/human to answer an interactive prompt) and the legacy
+ * always `bypassPermissions` (there is no TTY/human to answer an interactive prompt) and an
  * `ask` list is dropped — a hand-edited `ask`/non-bypass mode in the file is normalized away here.
  * @adr 0328
  */

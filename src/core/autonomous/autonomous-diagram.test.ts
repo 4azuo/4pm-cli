@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_PROJECT_AUTONOMOUS_SETTINGS } from "@4pm/dto";
-import { blockedDiagramGroups, prepareIntakeDiagram, readDiagram, writeDiagram } from "./autonomous-diagram";
+import { blockedDiagramGroups, publishIntakeSdcs, readDiagram, writeDiagram } from "./autonomous-diagram";
 import { writeEr } from "./autonomous-er";
 import { syncBooks } from "./autonomous-git";
 import { resetApprovalTrustForTest } from "./autonomous-approvals";
@@ -110,22 +110,19 @@ describe("autonomous hooks", () => {
     policy({ diagramAutoApprove: false });
     await save(billing(), 0);
     await approve("SDC-1");
-    await syncBooks(root, "main");
-    writeFileSync(join(root, ".4pm/diagrams/billing.drawio"), "tampered\n");
-    mkdirSync(join(root, ".4pm/diagrams/changes"), { recursive: true });
+    const { dir } = await syncBooks(root, "main");
     const sdc =
       '# Queue\n\n```json sd-meta\n{"title":"Queue","source":"intake","group":"TSK-000007","module":"billing","page":"Runtime"}\n```\n\n```xml\n<mxGraphModel><root><object id="queue-invoices" label="invoices" kind="queue"><mxCell vertex="1" parent="1" /></object><object id="l-b-q" kind="event"><mxCell edge="1" parent="1" source="svc-billing" target="queue-invoices" /></object></root></mxGraphModel>\n```\n\nWhy.\n';
-    writeFileSync(join(root, ".4pm/diagrams/changes/SDC-NEW-1.md"), sdc);
-    const manual = await prepareIntakeDiagram(root, `origin/${BOOKS}`, { diagramDir: ".4pm/diagrams", diagramAutoApprove: false });
-    expect(manual).toMatchObject({ created: ["SDC-2"], skipped: [], tampered: true });
-    expect(readFileSync(join(root, ".4pm/diagrams/billing.drawio"), "utf8")).toContain("svc-billing");
-    expect(readFileSync(join(root, ".4pm/diagrams/changes/SDC-2.md"), "utf8")).toContain('"baseVersion": 1');
-    expect([...(await blockedDiagramGroups(root, ".4pm/diagrams"))]).toEqual(["TSK-000007"]);
-    // Same intake under auto-approve: applied at once, nothing blocks, the new cell is placed.
-    writeFileSync(join(root, ".4pm/diagrams/changes/SDC-NEW-1.md"), sdc.replace("TSK-000007", "TSK-000008").replace(/queue-invoices/g, "queue-b").replace("l-b-q", "l-b-q2"));
-    await prepareIntakeDiagram(root, `origin/${BOOKS}`, { diagramDir: ".4pm/diagrams", diagramAutoApprove: true });
-    expect([...(await blockedDiagramGroups(root, ".4pm/diagrams"))]).toEqual([]);
-    const placed = readFileSync(join(root, ".4pm/diagrams/billing.drawio"), "utf8");
+    const manual = await publishIntakeSdcs(dir, { diagramDir: ".4pm/diagrams", diagramAutoApprove: false }, [{ name: "SDC-NEW-1.md", content: sdc }]);
+    expect(manual).toMatchObject({ created: ["SDC-2"], skipped: [] });
+    expect(readFileSync(join(dir, ".4pm/diagrams/billing.drawio"), "utf8")).toContain("svc-billing");
+    expect(readFileSync(join(dir, ".4pm/diagrams/changes/SDC-2.md"), "utf8")).toContain('"baseVersion": 1');
+    expect([...(await blockedDiagramGroups(dir, ".4pm/diagrams"))]).toEqual(["TSK-000007"]);
+    // Same intake under auto-approve: applied at once, nothing new blocks, the new cell is placed.
+    const auto = sdc.replace("TSK-000007", "TSK-000008").replace(/queue-invoices/g, "queue-b").replace("l-b-q", "l-b-q2");
+    await publishIntakeSdcs(dir, { diagramDir: ".4pm/diagrams", diagramAutoApprove: true }, [{ name: "SDC-NEW-1.md", content: auto }]);
+    expect([...(await blockedDiagramGroups(dir, ".4pm/diagrams"))]).toEqual(["TSK-000007"]);
+    const placed = readFileSync(join(dir, ".4pm/diagrams/billing.drawio"), "utf8");
     expect(placed).toMatch(/id="queue-b"[\s\S]*?<mxGeometry x="40" y="160"/);
   });
 

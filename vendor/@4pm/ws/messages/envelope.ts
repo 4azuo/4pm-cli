@@ -78,7 +78,7 @@ export interface MachineStatusPayload {
   version: string;
   /** The physic project folder the cli is serving (null = not attached). */
   physicPath?: string | null;
-  /** Does the physic project folder still exist on the machine? (Legacy manual `config.physicPath` only.) */
+  /** Does the physic project folder still exist on the machine? (A configured `config.physicPath` only.) */
   physicPathExists?: boolean;
   /**
    * The served root holds every declared repo (`.git` in place; no repo declared ⇒ the folder exists) and
@@ -131,12 +131,6 @@ export interface MachineStatusPayload {
    */
   egress?: "container" | "none";
   egressReason?: string;
-  /**
-   * Optional features this cli implements (`CliFeature` values) — persisted on `MachineLink.features` so
-   * the server can refuse a feature an older serving cli would mishandle (`CLI_UPDATE_REQUIRED`).
-   * @adr 0449
-   */
-  features?: string[];
   /** The cli's process id — with `startedAt`, tells a restarted process from a lingering one. @adr 0505 */
   pid?: number;
   /** When this cli process started (ISO). @adr 0505 */
@@ -193,47 +187,6 @@ export interface AutonomousPolicyPayload {
   reason?: string;
   settings: Record<string, unknown>;
 }
-
-/**
- * Feature flags a cli reports in `machine.status.features`.
- * `clientViewer` — fs.list/read/download and git.diff honour `viewer: "client"`; `bookTeams`,
- * `approvalParties`, `discussions` — see each value.
- * @adr 0449
- */
-export const CliFeature = {
-  CLIENT_VIEWER: "clientViewer",
-  // Book `Team` column, `servedTeams` scheduling and the bookSave write rules (ADR-0450/0454).
-  BOOK_TEAMS: "bookTeams",
-  // Party approvals merged into `parties[]` (ADR-0451).
-  APPROVAL_PARTIES: "approvalParties",
-  // Discussion batches on the books branch (ADR-0454).
-  DISCUSSIONS: "discussions",
-  // The project ER channels `er.read` / `er.write` (ADR-0453).
-  ER: "er",
-  // Row-level book patches (`bookSave.patch` / `baseHash`), server-given `userTodo` ids and server-allocated
-  // intake groups (ADR-0455).
-  BOOK_PATCH: "bookPatch",
-  // Multi-target package installer: new kinds, Codex targets, requires, `.4pm/packages.json` (ADR-0460/0461/0462).
-  PACKAGES_MULTI_TARGET: "packagesMultiTarget",
-  // `autonomous.write {kind:"runNow"}` — run one autonomous cycle now (ADR-0482).
-  AUTONOMOUS_RUN_NOW: "autonomousRunNow",
-  // `cli.restart` — restart at the first idle moment (ADR-0497).
-  RESTART: "restart",
-  // Evidence file history: `autonomous.evidenceHistory`, `autonomous.evidence.rev`, `evidenceRestore` (ADR-0515).
-  EVIDENCE_HISTORY: "evidenceHistory",
-  // The system-diagram channels `diagram.read` / `diagram.write`, auto-approve of ER / diagram changes (ADR-0530).
-  DIAGRAM: "diagram",
-  // Task branches merged with `<base>` on resume / before delivery, direct merge, `git.prResolve`, `taskRetry` (ADR-0539).
-  BRANCH_SYNC: "branchSync",
-  // `git.branchCleanup` (list / delete / log / restore) and the daily cleanup of 4PM branches (ADR-0540).
-  BRANCH_CLEANUP: "branchCleanup",
-  // `DOC-…` rows: docs rounds, `autonomous.write {kind:"docReview"}`, the docs / lineage sidecars in `autonomous.read`, docs files in
-  // `autonomous.evidence` (ADR-0536/0537).
-  DOCS_PHASE: "docsPhase",
-  // `autonomous.bookIndex` — the compact index of the books branch for Home ▸ My work (ADR-0545).
-  BOOK_INDEX: "bookIndex",
-} as const;
-export type CliFeature = (typeof CliFeature)[keyof typeof CliFeature];
 
 /** Where a command originated: server-dispatched (web) or cli-local (TUI). @adr 0057 */
 export type CommandOrigin = "server" | "local";
@@ -840,7 +793,7 @@ export interface AutonomousStatus {
 
 /**
  * One signed approvals-file entry — structurally mirrors `@4pm/dto` `ApprovalEntry` (the cli writes it
- * verbatim; `h`/`kid`/`sig` are absent on a legacy entry).
+ * verbatim; `h`/`kid`/`sig` are absent on an unsigned entry).
  * @adr 0438
  */
 export interface ApprovalEntry {
@@ -905,7 +858,10 @@ export interface AutonomousBooks {
 
 /** autonomous.read reply — the whole autonomous surface in one read. */
 export interface AutonomousReadRequest {
-  _?: never;
+  /** Page of AI Done rows, newest first (default 1). @adr 0563 */
+  donePage?: number;
+  /** AI Done rows per page (default 50, max 200). @adr 0563 */
+  doneSize?: number;
 }
 export interface AutonomousReadReply {
   /** `.autonomous.settings.json` text (empty-defaults when absent). */
@@ -949,6 +905,59 @@ export interface AutonomousReadReply {
   docs?: string;
   /** `.autonomous.lineage.json` text — which request each book group came from. @adr 0537 */
   lineage?: string;
+  /** AI Done rows in the live book (`books.aiDone` holds one page of them). @adr 0563 */
+  doneTotal?: number;
+  /** Mockups / sequences that exist only on an open request / DOC branch: path → branch (pass it as machine-0073 `ref`). @adr 0563 */
+  evidenceRefs?: Record<string, string>;
+  /** Archived row ids the live books still name (in a `Depends`) — they count as done. @adr 0563 */
+  archivedDone?: string[];
+}
+
+/** autonomous.archive — search the archived book rows. @api machine-0096 @adr 0563 */
+export interface AutonomousArchiveRequest {
+  /** Finish date range `YYYY-MM-DD` (inclusive). */
+  from?: string;
+  to?: string;
+  book?: "USER_TODO" | "USER_QA" | "AI_DONE";
+  /** Row id prefix. */
+  id?: string;
+  /** Case-insensitive text in any cell. */
+  q?: string;
+  team?: string;
+  tag?: string;
+  /** The row author's user id (authors sidecar). */
+  requester?: string;
+  state?: string;
+  delivery?: "open" | "merged" | "closed" | "direct";
+  page?: number;
+  size?: number;
+}
+
+/** One archived row with its archived sidecar entries. */
+export interface AutonomousArchiveRow {
+  book: "USER_TODO" | "USER_QA" | "AI_DONE";
+  /** `YYYY-MM` folder it is in. */
+  month: string;
+  id: string;
+  title: string;
+  team?: string;
+  tags?: string;
+  state?: string;
+  delivery?: "open" | "merged" | "closed" | "direct";
+  /** AI Done `Timestamp`, or the request's finish time. */
+  finishedAt: string;
+  /** Every cell by its header. */
+  cells: Record<string, string>;
+  approval?: unknown;
+  author?: unknown;
+  lineage?: unknown;
+}
+export interface AutonomousArchiveReply {
+  rows: AutonomousArchiveRow[];
+  total: number;
+  page: number;
+  size: number;
+  error?: string;
 }
 
 /** autonomous.logs — tail one day's tick log. */
@@ -971,7 +980,7 @@ export type AutonomousWriteRequest =
   // separation of duties — a non-ADMIN can't approve a row they wrote (ADR-0320).
   // `signed` (ADR-0438): the server-signed entries to write for the approved ids, keyed by id. The cli
   // re-hashes each row on `<base>` (or in the saved content) and refuses a mismatch (`APPROVAL_STALE`).
-  // Absent (an older server) ⇒ the cli writes an unsigned legacy entry.
+  // Absent (no signing key yet) ⇒ the cli writes an unsigned entry.
   | {
       kind: "approvals";
       taskId: string;
@@ -1322,7 +1331,7 @@ export interface PackagesInstallRequest {
   version: string;
   packageId: string;
   files: PackagePayloadFile[];
-  /** Provider targets for skill/subagent/hook (absent ⇒ claude, the pre-ADR-0460 behaviour). */
+  /** Provider targets for skill/subagent/hook (absent ⇒ claude). */
   providers?: ("claude" | "codex")[];
   /** The package's `requires` (`<kind>:<slug>`), recorded for the requiredBy bookkeeping. */
   requires?: string[];
@@ -1391,7 +1400,7 @@ export interface PackagesRemoveReply {
 /**
  * Docs & code dependency graph — the cli builds a graph of the physic project from the 4PM Doc Header
  * (docs) and file headers + imports (code); the web renders it as a graph or a tree. Deterministic +
- * bounded. v2 fields are optional so an older cli's reply still parses.
+ * bounded.
  * @adr 0155 @adr 0488
  */
 
@@ -1415,12 +1424,11 @@ export interface GraphNode {
   /** Stable id: the Doc Header `id` (else the relpath) for docs, the relpath for code, `er.<ENTITY>`. */
   id: string;
   label: string;
-  /** Doc kind (`req`, `adr`, …, `unclassified`) or code kind (`service`, …); v1: `doc` | `fn`. */
+  /** Doc kind (`req`, `adr`, …, `unclassified`) or code kind (`service`, …). */
   kind: string;
   /** The source file (relpath); empty for an `er` node. */
   file: string;
-  /** v2. */
-  layer?: GraphLayer;
+  layer: GraphLayer;
   title?: string;
   feature?: string[];
   status?: string;
@@ -1433,8 +1441,7 @@ export interface GraphNode {
 export interface GraphEdge {
   from: string;
   to: string;
-  /** v2 edge type; absent from an older cli. */
-  type?: GraphEdgeType;
+  type: GraphEdgeType;
 }
 
 /** Deterministic structure metrics (v2). */
@@ -1466,14 +1473,12 @@ export interface GraphBuildRequest {
 export interface GraphBuildReply {
   nodes: GraphNode[];
   edges: GraphEdge[];
-  /** Node ids with no inbound and no outbound edge (v1: no inbound). */
+  /** Node ids with no inbound and no outbound edge. */
   orphans: string[];
-  /** v2: tree roots. */
-  roots?: string[];
-  /** v2. */
-  metrics?: GraphMetrics;
-  /** v2. */
-  issues?: GraphIssue[];
+  /** Tree roots. */
+  roots: string[];
+  metrics: GraphMetrics;
+  issues: GraphIssue[];
 }
 
 /**
@@ -1518,12 +1523,9 @@ export interface RagStatusRequest {
 export interface RagStatusReply {
   installed: boolean;
   installing: boolean;
-  /** Node engine probe. Absent from an older (Python-engine) cli. */
-  runtime?: { node: string; nodeOk: boolean; npm: boolean; sqliteExt: boolean };
-  /** Older cli only (Python engine) — the web asks to update the worker cli. */
-  python?: { found: boolean; version: string };
-  /** Node engine: `{transformers, sqliteVec}`; older cli: `{pip, fastembed, sqliteVec}`. */
-  deps: { transformers?: boolean; sqliteVec: boolean; pip?: boolean; fastembed?: boolean };
+  /** Node engine probe. */
+  runtime: { node: string; nodeOk: boolean; npm: boolean; sqliteExt: boolean };
+  deps: { transformers: boolean; sqliteVec: boolean };
   /** Ordered prerequisite checklist. */
   prereqs?: RagPrereq[];
   model: { present: boolean; name: string };
@@ -1533,8 +1535,8 @@ export interface RagStatusReply {
   installLog: string[];
   /** The vector index state. @adr 0157 */
   index: RagIndex;
-  /** This machine user's search settings. Absent from an older cli. @adr 0496 */
-  settings?: RagSettings;
+  /** This machine user's search settings. @adr 0496 */
+  settings: RagSettings;
 }
 
 /** Per-machine-user RAG search settings (`.claude/rag/settings.json`). @adr 0496 */
@@ -1594,7 +1596,7 @@ export interface RagQueryResult {
   title?: string;
   kind?: string;
   /** Matching chunks in this file (results are grouped per file). @adr 0496 */
-  hits?: number;
+  hits: number;
   /** Further matching chunks of the same file (best first, ≤ 3). @adr 0496 */
   more?: { snippet: string; score: number }[];
 }
@@ -1989,13 +1991,11 @@ export interface ScaffoldPublishResult {
   pushed: boolean;
   /** The published branch (null when HEAD's branch is unknown). */
   branch: string | null;
-  /** The opened (or already open) pull/merge request URL. */
-  prUrl: string | null;
   /** The first step that failed, or null (`submodule` = a declared submodule could not be attached). */
-  step: "submodule" | "commit" | "push" | "pr" | null;
+  step: "submodule" | "commit" | "push" | null;
   /** The failure reason (English, from git/gh/glab), or null. */
   error: string | null;
-  /** Per-submodule attach outcome; absent from an older cli. @adr 0370 */
+  /** Per-submodule attach outcome. @adr 0370 */
   submodules?: { dir: string; ok: boolean; error: string | null }[];
 }
 
@@ -2423,6 +2423,8 @@ export type AutonomousAlertKind =
   | "docs-review"
   // Intake skipped: a book reached the subscription's monthly new-row limit (ADR-0541).
   | "book-cap"
+  // A request / DOC PR was closed without merge — its group waits until Retry (ADR-0563).
+  | "pr-closed"
   // An informational cycle event for automation rules (ADR-0458): no notification, `event` carries it.
   | "event";
 

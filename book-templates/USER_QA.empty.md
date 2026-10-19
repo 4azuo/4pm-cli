@@ -4,9 +4,9 @@
 > **ID `QA-{groupid:000000}-{qaid:000}`**: the original request and what's unclear + options, leaving the
 > `Answer` blank. You fill the `Answer`; the autonomous cycle folds it back into a re-analysis **only after
 > the row is approved**. Approval + authorship (who answered / who approved, with dates) live in JSON
-> sidecars, not in this table (ADR-0320): `.claude/.autonomous.approvals.json` +
-> `.claude/.autonomous.authors.json` — the web USER_QA grid shows them and enforces four-eyes (the person
-> who answered can't approve their own answer, except ADMIN). See `.claude/templates/USER_QA.sample.md`.
+> sidecars, not in this table (ADR-0320): `.4pm/.autonomous.approvals.json` +
+> `.4pm/.autonomous.authors.json` — the web USER_QA grid shows them and enforces four-eyes (the person
+> who answered can't approve their own answer, except ADMIN).
 >
 > A question raised **while implementing a task** (ADR-0371) is also a row here: its id is added to the
 > task's `Depends` in `AI_TODO.md`, and the task waits until this row is answered + approved.

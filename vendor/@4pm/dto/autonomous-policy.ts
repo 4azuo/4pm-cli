@@ -5,7 +5,7 @@
  * autonomous policy, and the worker snapshot each cli reports back (`machine.status.autonomous`).
  * `effective = projectEnabled ∧ allowed ∧ worker enabled`. The section also holds the switch that sends
  * every change of a ready project through autonomous (`enforceAutonomousPath`).
- * @adr 0507 @adr 0511
+ * @adr 0507 @adr 0511 @adr 0563
  */
 import { z } from "zod";
 import { EVIDENCE_ROOT, MOCKUP_ROOT, isSafeRepoDir, type MachineAiRun } from "./machine";
@@ -57,12 +57,11 @@ export interface ProjectAutonomousSettings {
    * implement (default on; it runs only when the spec declares `docs_types`). @adr 0536
    */
   docsPhase: boolean;
-  /** At most this many requests / answered intake questions per intake run (1–50, default 1). @adr 0554 */
-  intakeBatchSize: number;
+  /** A `Done` request stays in the live books this many days before the archive moves it (1–3650, default 30). */
+  archiveAfterDays: number;
+  /** The books-sync PR into `<base>` is refreshed at most this often (minutes, 1–1440, default 10). */
+  booksSyncMinutes: number;
 }
-
-/** Upper bound of `intakeBatchSize` (= the server's group allocation cap per request). @adr 0554 */
-export const MAX_INTAKE_BATCH_SIZE = 50;
 
 /** The project-scoped keys (a worker settings write carrying one is refused). */
 export const PROJECT_AUTONOMOUS_KEYS = [
@@ -82,7 +81,8 @@ export const PROJECT_AUTONOMOUS_KEYS = [
   "autoResolvePrConflicts",
   "branchCleanup",
   "docsPhase",
-  "intakeBatchSize",
+  "archiveAfterDays",
+  "booksSyncMinutes",
 ] as const satisfies readonly (keyof ProjectAutonomousSettings)[];
 
 /** Lower bound of `runTimeoutMinutes`. */
@@ -106,7 +106,8 @@ export const DEFAULT_PROJECT_AUTONOMOUS_SETTINGS: ProjectAutonomousSettings = {
   autoResolvePrConflicts: false,
   branchCleanup: DEFAULT_BRANCH_CLEANUP,
   docsPhase: true,
-  intakeBatchSize: 1,
+  archiveAfterDays: 30,
+  booksSyncMinutes: 10,
 };
 
 /** Coerce an unknown object into full project-scoped settings (missing / invalid ⇒ default). */
@@ -148,7 +149,8 @@ export function readProjectAutonomousSettings(raw: unknown): ProjectAutonomousSe
       };
     })(),
     docsPhase: typeof o.docsPhase === "boolean" ? o.docsPhase : d.docsPhase,
-    intakeBatchSize: Math.min(MAX_INTAKE_BATCH_SIZE, Math.max(1, Math.floor(num(o.intakeBatchSize, d.intakeBatchSize)))),
+    archiveAfterDays: Math.min(3650, Math.max(1, Math.floor(num(o.archiveAfterDays, d.archiveAfterDays)))),
+    booksSyncMinutes: Math.min(1440, Math.max(1, Math.floor(num(o.booksSyncMinutes, d.booksSyncMinutes)))),
   };
 }
 
@@ -208,7 +210,8 @@ export interface AutonomousCheckDetail {
   intake?: { tasks: number; questions: number; changeRequests: number };
   /** Rows waiting on people (served teams only): to approve, blocking ER change requests, unanswered questions, unfinished dependencies. */
   /** `blocked` = approved tasks blocked by a merge conflict with their base, waiting for a Retry. @adr 0539 */
-  waiting?: { approval: number; changeRequests: number; answers: number; dependencies: number; blocked?: number };
+  /** `merge` = rows waiting for their request / DOC PR to merge into `<base>`. @adr 0563 */
+  waiting?: { approval: number; changeRequests: number; answers: number; dependencies: number; blocked?: number; merge?: number };
   /** The task this cycle worked on. */
   taskId?: string;
   /** The worker holding the intake ids (`intake taken`). */
@@ -325,7 +328,8 @@ export const projectAutonomousPolicyWriteSchema = z
         autoResolvePrConflicts: z.boolean().optional(),
         branchCleanup: z.object({ enabled: z.boolean(), afterDays: z.number().int().min(1).max(365) }).optional(),
         docsPhase: z.boolean().optional(),
-        intakeBatchSize: z.number().int().min(1).max(MAX_INTAKE_BATCH_SIZE).optional(),
+        archiveAfterDays: z.number().int().min(1).max(3650).optional(),
+        booksSyncMinutes: z.number().int().min(1).max(1440).optional(),
       })
       .strict()
       .optional(),

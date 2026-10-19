@@ -80,6 +80,9 @@ export const ErrorCode = {
   CHECKLIST_ORG_READONLY: "CHECKLIST_ORG_READONLY",
   // doc types (ADR-0457)
   DOC_TYPE_KEY_TAKEN: "DOC_TYPE_KEY_TAKEN",
+  // ADR-0564: a second enabled spec doc template of one spec type / a non-text or too big template file.
+  DOC_TEMPLATE_DUPLICATE: "DOC_TEMPLATE_DUPLICATE",
+  DOC_TEMPLATE_NOT_TEXT: "DOC_TEMPLATE_NOT_TEXT",
   DOC_TYPE_SYSTEM_READONLY: "DOC_TYPE_SYSTEM_READONLY",
   DOC_TYPE_SOURCE_READONLY: "DOC_TYPE_SOURCE_READONLY",
   DOC_TYPE_DISABLED: "DOC_TYPE_DISABLED",
@@ -267,9 +270,6 @@ export const ErrorCode = {
   CLI_VERSION_UNSUPPORTED: "CLI_VERSION_UNSUPPORTED",
   // The worker runs an update-locked image (ADR-0432/0434): a cli update is refused — pull a newer image.
   CLI_UPDATE_LOCKED: "CLI_UPDATE_LOCKED",
-  // The serving cli is too old for this feature (it lacks the needed `CliFeature`) — update the worker.
-  // meta.feature names it (ADR-0449).
-  CLI_UPDATE_REQUIRED: "CLI_UPDATE_REQUIRED",
   // The serving worker cli is draining for a restart / update and accepts no new work (ADR-0505).
   CLI_RESTARTING: "CLI_RESTARTING",
   // The worker's repo queue for the project is full while its working tree is held (ADR-0506).

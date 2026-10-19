@@ -6,9 +6,11 @@
  * with `baseVersion` / `base` filled from the current model).
  * @adr 0453 @arch 0053
  */
-import { readdir, rm } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join, posix } from "node:path";
 import {
+  APPROVALS_SIDECAR_REL,
+  AUTHORS_SIDECAR_REL,
   ER_MODULE_RE,
   ER_SIDECAR_REL,
   coerceErSidecar,
@@ -25,11 +27,11 @@ import {
   type ErcSource,
 } from "@4pm/dto";
 import { gitQuiet } from "./autonomous-git";
-import { readFileInRoot, resolveEntry, resolveForRead, writeFileInRoot } from "../../utils/safe-path";
+import { readFileInRoot, resolveForRead, writeFileInRoot } from "../../utils/safe-path";
 
 /** The approvals / authors sidecars (shared with the books). */
-export const APPROVALS_REL = ".claude/.autonomous.approvals.json";
-export const AUTHORS_REL = ".claude/.autonomous.authors.json";
+export const APPROVALS_REL = APPROVALS_SIDECAR_REL;
+export const AUTHORS_REL = AUTHORS_SIDECAR_REL;
 
 /** Where the ER is read from: a git ref (`origin/autonomous-books/<base>`, a commit) or a directory. */
 export interface ErSource {
@@ -264,8 +266,3 @@ export async function numberNewErcs(
   return { created, skipped };
 }
 
-/** Remove a file of `root` (symlink-safe; missing is fine). */
-export async function removeInRoot(root: string, rel: string): Promise<void> {
-  const target = resolveEntry(root, join(root, rel));
-  if (target) await rm(target, { force: true });
-}

@@ -3,6 +3,7 @@
  */
 export * from "./attachment";
 export * from "./autonomous-approval";
+export * from "./autonomous-books-set";
 export * from "./autonomous-docs";
 export * from "./autonomous-policy";
 export * from "./base";
@@ -20,7 +21,6 @@ export * from "./diagram-model";
 export * from "./discussion";
 export * from "./er-change";
 export * from "./er-model";
-export * from "./evidence-guide";
 export * from "./git-credential";
 export * from "./git-overview";
 export * from "./issue-sync";

@@ -12,7 +12,9 @@ import { join, posix } from "node:path";
 import {
   DOCS_SIDECAR_REL,
   DOC_NUMBERED_TYPES,
-  DOC_TYPE_DIRS,
+  DOC_TEMPLATES_DIR,
+  docTypeDir,
+  type DocTemplateMeta,
   LINEAGE_REQUEST_MAX,
   LINEAGE_SIDECAR_REL,
   NEW_DOC_FILE_RE,
@@ -70,16 +72,37 @@ export function docRunnable(docs: DocsSidecar, id: string): boolean {
 
 // ── The spec's Docs section ──────────────────────────────────────────────────────────────────────
 
-/** The spec's Docs section as on `origin/<base>` (else the working tree); no types when there is no spec. */
+/**
+ * The spec's Docs section as on `origin/<base>` (else the working tree); no types when there is no spec. The
+ * `numbered` flag of each type follows its mirrored spec doc template (`.4pm/doc-templates/<type>/meta.json`) when
+ * there is one, else the built-in default.
+ * @adr 0536 @adr 0564
+ */
 export async function readSpecDocsAt(root: string, base: string): Promise<SpecDocs> {
   let text = "";
   if (base) text = await gitQuiet(root, ["show", `origin/${base}:project.spec.json`]).catch(() => "");
   if (!text.trim()) text = await readFileInRoot(root, join(root, "project.spec.json"), "utf8").catch(() => "");
+  let spec: SpecDocs;
   try {
-    return readSpecDocs(JSON.parse(text || "{}"));
+    spec = readSpecDocs(JSON.parse(text || "{}"));
   } catch {
-    return { types: [], org: "" };
+    return { types: [], org: "", numbered: [] };
   }
+  const numbered = new Set(spec.numbered ?? []);
+  for (const t of spec.types) {
+    const rel = `${DOC_TEMPLATES_DIR}/${t}/meta.json`;
+    const raw = base ? await gitQuiet(root, ["show", `origin/${base}:${rel}`]) : await readFileInRoot(root, join(root, rel), "utf8").catch(() => "");
+    try {
+      const meta = JSON.parse(raw || "null") as Partial<DocTemplateMeta> | null;
+      if (meta && typeof meta.numbered === "boolean") {
+        if (meta.numbered) numbered.add(t);
+        else numbered.delete(t);
+      }
+    } catch {
+      /* no / invalid template — the default stays */
+    }
+  }
+  return { ...spec, numbered: spec.types.filter((t) => numbered.has(t)) };
 }
 
 // ── Intake post-step: DOC rows + lineage ─────────────────────────────────────────────────────────
@@ -297,19 +320,20 @@ export async function numberNewDocs(
   docId: string,
   allocate: DocNumberAllocator,
   log: (line: string) => Promise<void>,
+  numberedTypes: readonly string[] = DOC_NUMBERED_TYPES,
 ): Promise<{ from: string; to: string; type: string; number: number }[]> {
   const changed = await changedDocFiles(cwd, base);
   const fresh = changed.filter((f) => f.status !== "D" && NEW_DOC_FILE_RE.test(posix.basename(f.path)));
   const byType = new Map<string, string[]>();
   for (const f of fresh) {
     const type = docTypeOfPath(f.path);
-    if (!type || !DOC_NUMBERED_TYPES.includes(type)) continue;
+    if (!type || !numberedTypes.includes(type)) continue;
     byType.set(type, [...(byType.get(type) ?? []), f.path]);
   }
   if (byType.size === 0) return [];
   const refs = ["HEAD", `origin/${base}`, ...(await openDocBranches(cwd, base)).map((b) => `origin/${b}`)];
   const req: { type: string; count: number; floor: number }[] = [];
-  for (const [type, paths] of byType) req.push({ type, count: paths.length, floor: await highestNumber(cwd, DOC_TYPE_DIRS[type]!, refs) });
+  for (const [type, paths] of byType) req.push({ type, count: paths.length, floor: await highestNumber(cwd, docTypeDir(type), refs) });
   const given = await allocate(req).catch(() => null);
   if (!given) await log(`[docs] ${docId}: the server gave no doc numbers — numbering above the highest found in the repo`);
   const renames: { from: string; to: string; type: string; number: number }[] = [];
@@ -348,13 +372,13 @@ export async function numberNewDocs(
  * The DOC's file manifest after a round: every doc file the branch changed against its fork point (a file created in
  * an earlier round stays `created`), with the number of a numbered file.
  */
-export async function docManifest(cwd: string, base: string, prev: readonly DocManifestFile[]): Promise<DocManifestFile[]> {
+export async function docManifest(cwd: string, base: string, prev: readonly DocManifestFile[], numberedTypes: readonly string[] = DOC_NUMBERED_TYPES): Promise<DocManifestFile[]> {
   const prevCreated = new Set(prev.filter((f) => f.action === "created").map((f) => f.path));
   return (await changedDocFiles(cwd, base))
     .filter((f) => f.status !== "D")
     .map((f) => {
       const type = docTypeOfPath(f.path) ?? "";
-      const m = DOC_NUMBERED_TYPES.includes(type) ? NUMBERED_DOC_FILE_RE.exec(posix.basename(f.path)) : null;
+      const m = numberedTypes.includes(type) ? NUMBERED_DOC_FILE_RE.exec(posix.basename(f.path)) : null;
       return {
         path: f.path,
         type,
@@ -466,9 +490,15 @@ export async function applyDocReview(dir: string, review: DocReview, final: bool
 
 // ── Prompt context ───────────────────────────────────────────────────────────────────────────────
 
-/** The doc types block of the docs prompt: `- adr → docs/adr/ (numbered)` per declared type. */
+/** The doc types block of the docs prompt: `- adr → docs/adr/ (numbered)` per declared type. @adr 0564 */
 export function docTypesBlock(spec: SpecDocs): string {
-  return spec.types.map((t) => `- ${t} → \`${DOC_TYPE_DIRS[t]}${DOC_TYPE_DIRS[t]!.endsWith(".md") ? "" : "/"}\`${DOC_NUMBERED_TYPES.includes(t) ? " (numbered)" : ""}`).join("\n");
+  const numbered = spec.numbered ?? DOC_NUMBERED_TYPES;
+  return spec.types
+    .map((t) => {
+      const dir = docTypeDir(t);
+      return `- ${t} → \`${dir}${dir.endsWith(".md") ? "" : "/"}\`${numbered.includes(t) ? " (numbered)" : ""}`;
+    })
+    .join("\n");
 }
 
 /** The earlier rounds' reviews for the docs prompt ("" before the first review). */
@@ -481,22 +511,6 @@ export function reviewHistoryText(entry: DocEntry | undefined): string {
 export function previousFilesText(entry: DocEntry | undefined): string {
   if (!entry?.files.length) return "";
   return entry.files.map((f) => `- \`${f.path}\` (${f.action}${f.number ? `, #${docNumberCode(f.number)}` : ""})`).join("\n");
-}
-
-/**
- * The accepted docs of a task's group for the implement prompt: the DOC's files (on the branch the task starts from)
- * and the reviewers' opinions of the accepted round; "" when the group has no accepted DOC.
- */
-export function implementDocsNote(docs: DocsSidecar, taskId: string): string {
-  const g = bookGroupOf(taskId);
-  if (!g) return "";
-  const hit = Object.entries(docs).find(([id, e]) => id.startsWith(`DOC-${g}-`) && e.state === "accepted");
-  if (!hit) return "";
-  const [id, e] = hit;
-  const files = e.files.map((f) => `- \`${f.path}\``).join("\n");
-  const last = e.history.filter((h) => h.round === e.round && h.opinion.trim());
-  const opinions = last.length ? `\nReviewer notes on the accepted docs:\n${last.map((h) => `- ${h.opinion.replace(/\s+/g, " ").slice(0, 1000)}`).join("\n")}\n` : "";
-  return `\nACCEPTED DOCS of this request (${id}, reviewed by people — read them first and follow them; keep them true if your work changes a detail):\n${files || "- (no files)"}\n${opinions}`;
 }
 
 // ── Reading a doc file for the review ────────────────────────────────────────────────────────────

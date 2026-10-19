@@ -27,10 +27,10 @@ beforeEach(() => {
   resetApprovalTrustForTest();
   root = mkdtempSync(join(tmpdir(), "4pm-save-"));
   profileDir = mkdtempSync(join(tmpdir(), "4pm-prof-"));
-  mkdirSync(join(root, ".claude"));
+  mkdirSync(join(root, ".4pm"), { recursive: true });
   writeFileSync(join(root, "USER_TODO.md"), BEFORE);
-  writeFileSync(join(root, ".claude/.autonomous.authors.json"), JSON.stringify({ "REQ-000001-001": { by: "writer" } }));
-  writeFileSync(join(root, ".claude/.autonomous.approvals.json"), "{}");
+  writeFileSync(join(root, ".4pm/.autonomous.authors.json"), JSON.stringify({ "REQ-000001-001": { by: "writer" } }));
+  writeFileSync(join(root, ".4pm/.autonomous.approvals.json"), "{}");
 });
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
@@ -42,13 +42,13 @@ describe("bookSave with approvals", () => {
     const r = await writeAutonomous(root, profileDir, { kind: "bookSave", book: "userTodo", content: AFTER, approve: ["REQ-000001-001"], by: "editor" }, "editor");
     expect(r).toMatchObject({ ok: false, code: "APPROVAL_SELF", failedId: "REQ-000001-001" });
     expect(readFileSync(join(root, "USER_TODO.md"), "utf8")).toBe(BEFORE);
-    expect(json(".claude/.autonomous.approvals.json")).toEqual({});
+    expect(json(".4pm/.autonomous.approvals.json")).toEqual({});
   });
 
   it("lets a non-author approve an unedited row and an ADMIN approve their own edit", async () => {
     const ok = await writeAutonomous(root, profileDir, { kind: "bookSave", book: "userTodo", content: BEFORE, approve: ["REQ-000001-001"], by: "reviewer" }, "reviewer");
     expect(ok.ok).toBe(true);
-    expect(json(".claude/.autonomous.approvals.json")["REQ-000001-001"]).toMatchObject({ approved: true, by: "reviewer" });
+    expect(json(".4pm/.autonomous.approvals.json")["REQ-000001-001"]).toMatchObject({ approved: true, by: "reviewer" });
     const admin = await writeAutonomous(
       root,
       profileDir,
@@ -68,6 +68,6 @@ describe("bookSave with approvals", () => {
       "reviewer",
     );
     expect(r).toMatchObject({ ok: false, code: "APPROVAL_STALE", failedId: "REQ-000001-001" });
-    expect(json(".claude/.autonomous.approvals.json")).toEqual({});
+    expect(json(".4pm/.autonomous.approvals.json")).toEqual({});
   });
 });

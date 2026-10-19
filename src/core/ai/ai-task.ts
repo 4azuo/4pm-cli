@@ -12,8 +12,8 @@ import type { UsageReportPayload } from "@4pm/ws";
 import { createAccountLeaser } from "./ai-account-lease";
 import { runAiFailover, type AiRunHandlers } from "./ai-runner";
 import { aiProviderOf } from "./ai-stream";
-import { getPinnedCredential, getWorkingCredential, getWorkingProfile } from "./ai-profile-state";
-import { isUnifiedConfig, planAiRun, profileDisplayLabel, resolveClaudeAuthMode } from "../../utils/ai-cli";
+import { getPinnedCredential, getWorkingCredential } from "./ai-profile-state";
+import { planAiRun, profileDisplayLabel, resolveClaudeAuthMode } from "../../utils/ai-cli";
 import { readProfileConfig } from "../../config/profile";
 import { acquireRunSlot, type RunSlotOutcome, type RunSlotQueueInfo } from "../ws-client/run-slot";
 import type { WsHandlerCtx } from "../ws-client/context";
@@ -38,17 +38,14 @@ export function createAiTaskRunner(ctx: WsHandlerCtx): AiTaskRunner {
 /** One one-shot generation through `runAiFailover`, metered like a dispatched AI run. */
 async function generate(ctx: WsHandlerCtx, prompt: string, cwd: string, label: string): Promise<string | null> {
   const config = readProfileConfig(ctx.profileDir);
-  const cmd = config.aiCli || "claude";
   // Working-first hint, as for a dispatched run (ADR-0057/0182/0250): the operator's pin, else the
-  // remembered working credential / profile dir.
-  const unified = isUnifiedConfig(config);
-  const pinned = unified ? getPinnedCredential(ctx.profileDir) : null;
-  const hint = unified
-    ? {
-        credential:
-          pinned ?? ((config.aiFailoverMode ?? "remember") === "remember" ? getWorkingCredential(ctx.profileDir) : null),
-      }
-    : { dir: getWorkingProfile(ctx.profileDir, cmd) };
+  // remembered working credential.
+  const pinned = getPinnedCredential(ctx.profileDir);
+  const hint = {
+    credential:
+      pinned ??
+      ((config.aiFailoverMode ?? "remember") === "remember" ? getWorkingCredential(ctx.profileDir) : null),
+  };
   const plan = planAiRun(prompt, config, hint, new Map(), true);
   // On-use self-install (ADR-0396): a missing AI CLI is installed before the first attempt spawns.
   await ensureAiClisFor(ctx.profileDir, plan.attempts.map((a) => a.cmd), (line) => ctx.bus.log(line));

@@ -15,7 +15,7 @@ const HEAD = "| ID | Group | Depends | Request |\n|---|---|---|---|\n";
 const A = "REQ-000001-001";
 const B = "REQ-000002-001";
 const BASE = `${HEAD}| ${A} | | | Add login |\n| ${B} | | ${A} | Add logout |\n`;
-const APPROVALS = ".claude/.autonomous.approvals.json";
+const APPROVALS = ".4pm/.autonomous.approvals.json";
 
 let root: string;
 let profileDir: string;
@@ -33,7 +33,7 @@ function stamp(minutes: number): string {
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "4pm-rows-"));
   profileDir = mkdtempSync(join(tmpdir(), "4pm-prof-"));
-  mkdirSync(join(root, ".claude"));
+  mkdirSync(join(root, ".4pm"), { recursive: true });
   writeFileSync(join(root, "USER_TODO.md"), BASE);
 });
 afterEach(() => {
@@ -68,7 +68,7 @@ describe("book-save row rules", () => {
   });
 
   it("releases a conflict-blocked task on taskRetry, and refuses an unblocked one", async () => {
-    const attempts = ".claude/.autonomous.attempts.json";
+    const attempts = ".4pm/.autonomous.attempts.json";
     const blocked = { count: 0, last: "", at: "", blocked: { reason: "merge-conflict", at: "x", base: "b", head: "h" } };
     writeFileSync(join(root, attempts), JSON.stringify({ "TSK-000003-001": blocked }));
     const ok = await writeAutonomous(root, profileDir, { kind: "taskRetry", taskId: "TSK-000003-001", by: "u1" }, "u1");

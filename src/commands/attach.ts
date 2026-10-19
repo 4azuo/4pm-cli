@@ -42,7 +42,7 @@ export async function runAttach(profileDir: string, profileName: string): Promis
   }
 
   // whoami works locally — the attach host shares the profile's credential (hashcode 3).
-  const credential = readCredential(profileDir, profileName);
+  const credential = readCredential(profileDir);
   const info: SessionInfo = {
     version: conn.info.version,
     scope: conn.info.scope,

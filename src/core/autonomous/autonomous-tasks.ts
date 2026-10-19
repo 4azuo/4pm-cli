@@ -1,11 +1,12 @@
 /**
  * Autonomous task rules — the book transitions the cli performs in code: eligibility
- * (approval, attempts, `TSK-…` dependencies — one done / two-or-more merged — and `QA-…` answers),
- * claim / take-over of an expired claim, finish, release (failure / overrun), task question (`QA-…` into
- * `Depends`), auto-split, and the fold of task-question answers. Every mutator edits the book files in
- * the working tree and is meant to run inside `publishBooks` (which pushes them as the lock). The
- * worker's own live claim is mirrored in `<profileDir>/autonomous-claim.json` for resume / reconnect.
- * @adr 0371
+ * (approval, attempts, `TSK-…` dependencies — one done / two-or-more merged — `QA-…` answers, and the merge
+ * gates of the group's request / DOC PR), claim / take-over of an expired claim, finish, release (failure /
+ * overrun), task question (`QA-…` into `Depends`), auto-split, and the fold of task-question answers. Every
+ * mutator edits the book files of a books checkout and is meant to run inside `publishBooks` (which pushes them
+ * as the lock). The worker's own live claim — a task, a DOC round or a request being taken in — is mirrored in
+ * `<profileDir>/autonomous-claim.json` for resume / reconnect.
+ * @adr 0371 @adr 0563
  */
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -13,13 +14,15 @@ import * as B from "./autonomous-books";
 import { isMerged, type RepoBase } from "./autonomous-git";
 import { evidenceCell, moveTaskEvidence, rehomeTaskLinks } from "./autonomous-evidence";
 import { readFileInRoot } from "../../utils/safe-path";
-import { BOOK_STATE, approvalEntrySchema, bookRowStates, bookRowTeam, buildDependsWaiting, type WaitingItem } from "@4pm/dto";
+import { APPROVALS_SIDECAR_REL, BOOK_STATE, mergeWait, approvalEntrySchema, bookRowStates, bookRowTeam, buildDependsWaiting, type DeliveryRecord, type WaitingItem } from "@4pm/dto";
 import { verifiedApprovedIds } from "./autonomous-approvals";
 import { servesTeam } from "./autonomous-teams";
 import { docRunnable, readDocs, readLineage } from "./autonomous-docs";
+import { archivedIds } from "./autonomous-archive";
+import type { IntakePatch } from "./autonomous-intake";
 
 /** The approvals sidecar. */
-const APPROVALS_REL = ".claude/.autonomous.approvals.json";
+const APPROVALS_REL = APPROVALS_SIDECAR_REL;
 
 /** This worker's live claim, mirrored locally (resume after a restart / reconnect). */
 export interface LocalClaim {
@@ -35,6 +38,20 @@ export interface LocalClaim {
   from?: string | null;
   /** The task row as it was at the previous claim — the text the branch's earlier work was written for. @adr 0538 */
   prevTask?: B.TaskRow;
+  /** `intake` = a `REQ-…` / answered intake `QA-…` taken in on its own branch. @adr 0563 */
+  kind?: "intake";
+  /** The book groups the server allocated to this intake (stable across its attempts). @adr 0563 */
+  groups?: number[];
+  /**
+   * A finished intake whose books publish failed after its request PR / merge: the patch + delivery, so the next cycle
+   * only publishes again (no second agent run, no second PR). @adr 0563
+   */
+  publish?: { patch: IntakePatch; delivery?: DeliveryRecord };
+}
+
+/** Is this claim an intake of a request / answered intake question? @adr 0563 */
+export function isIntakeClaim(c: Pick<LocalClaim, "id" | "kind">): boolean {
+  return c.kind === "intake" || B.isIntakeClaimId(c.id);
 }
 
 /** Local claim file path. */
@@ -58,16 +75,16 @@ export async function writeLocalClaim(profileDir: string, c: LocalClaim | null):
 }
 
 /**
- * Group id of a task or docs row: `TSK-GGGGGG-NNN` / `DOC-GGGGGG-NNN` ⇒ `GRP-GGGGGG` (deterministic — dependency
- * branches derive from it).
- * @adr 0536
+ * Group id of a task, docs, request or question row: `TSK-GGGGGG-NNN` / `DOC-…` / `REQ-…` / `QA-…` ⇒ `GRP-GGGGGG`
+ * (deterministic — dependency branches derive from it).
+ * @adr 0536 @adr 0563
  */
 export function groupOf(taskId: string): string {
-  const m = /^(?:TSK|DOC)-(\d+)-\d+/.exec(taskId);
+  const m = /^(?:TSK|DOC|REQ|QA)-(\d+)-\d+/.exec(taskId);
   return m ? `GRP-${m[1]}` : "GRP-000000";
 }
 
-/** The task branch `dev/<base>/<GROUP>/<TSK>` (ADR-0371 §1, named per ADR-0372 — `<base>/…` can't coexist with `<base>`). */
+/** The work branch `dev/<base>/<GROUP>/<ID>` of a task / DOC / request (ADR-0371 §1, named per ADR-0372 — `<base>/…` can't coexist with `<base>`). */
 export function taskBranch(base: string, taskId: string): string {
   return `dev/${base}/${groupOf(taskId)}/${taskId}`;
 }
@@ -92,7 +109,7 @@ function doneBranch(notes: string): string | null {
 
 /**
  * Approved ids from the approvals sidecar — only entries whose server signature verifies and whose row
- * content is unchanged count (the legacy `approved: true` rule before this cli ever received keys).
+ * content is unchanged count (the unsigned `approved: true` rule before this cli ever received keys).
  * @adr 0438
  */
 export async function approvedIds(root: string): Promise<Set<string>> {
@@ -115,9 +132,15 @@ export function claimAgeHours(c: B.ClaimRow): number {
   return Number.isFinite(t) ? (Date.now() - t) / 3_600_000 : Infinity;
 }
 
+/** The claim row of `id` in `AI_PROGRESS` (task or intake rows). */
+export function claimRowOf(progress: string, id: string): B.ClaimRow | undefined {
+  const { claims, intake } = B.parseClaims(progress);
+  return [...claims, ...intake].find((c) => c.id === id);
+}
+
 /** Is this worker's claim still live on the current books (same claim id, within the TTL)? */
 export async function claimState(root: string, mine: LocalClaim, ttlHours: number): Promise<"live" | "expired" | "lost"> {
-  const row = B.parseClaims(await B.readBook(root, "AI_PROGRESS.md")).claims.find((c) => c.id === mine.id);
+  const row = claimRowOf(await B.readBook(root, "AI_PROGRESS.md"), mine.id);
   if (!row || row.claim !== mine.claim) return "lost";
   return claimAgeHours(row) >= ttlHours ? "expired" : "live";
 }
@@ -137,9 +160,9 @@ export interface Candidate {
  * one ⇒ done (its PR opened), two or more ⇒ all merged into `<base>`. A task of a group in `blockedGroups`
  * (`TSK-<GGGGGG>` — its ER change request is not applied yet, ADR-0453) waits. A `DOC-…` row runs
  * while its docs entry is pending (never in `review`) and is not held back by its group's change requests; a
- * `DOC-…` dependency is satisfied once accepted (in AI Done) and never counts toward the merged rule — a task whose
- * only dependency is its DOC branches from the DOC branch.
- * @adr 0536
+ * `DOC-…` dependency is satisfied once accepted (in AI Done) **and** its DOC PR is merged into `<base>`, and never
+ * counts toward the merged rule. Every DOC / task row of a group whose request PR is not merged waits (`mergeWait`).
+ * @adr 0536 @adr 0563
  */
 export async function pickTask(
   root: string,
@@ -148,7 +171,7 @@ export async function pickTask(
 ): Promise<Candidate | null> {
   // A team-restricted worker only takes its teams' tasks (ADR-0450).
   const served = (team: string | undefined): boolean => (opts.profileDir ? servesTeam(opts.profileDir, team) : true);
-  const [todo, prog, done, qa, attempts, approved, docs] = await Promise.all([
+  const [todo, prog, done, qa, attempts, approved, docs, lineage] = await Promise.all([
     B.readBook(root, "AI_TODO.md"),
     B.readBook(root, "AI_PROGRESS.md"),
     B.readBook(root, "AI_DONE.md"),
@@ -156,6 +179,7 @@ export async function pickTask(
     B.readAttempts(root),
     approvedIds(root),
     readDocs(root),
+    readLineage(root),
   ]);
   const claims = B.parseClaims(prog).claims;
   const skip = opts.skip ?? new Set<string>();
@@ -169,6 +193,8 @@ export async function pickTask(
   }
   // 2. Fresh tasks.
   const doneMap = B.doneRows(done);
+  // An archived task / doc is done too (ADR-0563); its branch is found by name.
+  for (const id of await archivedIds(root)) if (!doneMap.has(id)) doneMap.set(id, "");
   const qaRows = new Map(B.parseQa(qa).rows.map((q) => [q.id, q]));
   const claimed = new Set(claims.map((c) => c.id));
   const rank = (p: string): number => ({ high: 0, medium: 1, low: 2 })[p.trim().toLowerCase()] ?? 1;
@@ -191,17 +217,14 @@ export async function pickTask(
         return !q || !B.qaOpen(q) || (q.answer.trim().length > 0 && approved.has(d));
       });
     if (!qaOk) continue;
+    // The group's request PR / DOC PR must be in <base> first: the branch starts from it (ADR-0563).
+    if (mergeWait(t, lineage, docs)) continue;
     const docDeps = t.depends.filter((d) => d.startsWith("DOC-"));
     if (docDeps.some((d) => !doneMap.has(d))) continue;
     const deps = t.depends.filter((d) => d.startsWith("TSK-"));
     if (deps.some((d) => !doneMap.has(d))) continue;
     let from: string | null = null;
-    if (deps.length === 0 && docDeps.length === 1) {
-      // The accepted docs of the request: continue from the DOC branch until a task PR carries them into <base>.
-      const dep = docDeps[0]!;
-      const branch = doneBranch(doneMap.get(dep) ?? "") ?? taskBranch(rootBase.base, dep);
-      if (!(await isMerged(root, rootBase.url, branch, rootBase.base))) from = branch;
-    } else if (deps.length === 1) {
+    if (deps.length === 1) {
       const dep = deps[0]!;
       const branch = doneBranch(doneMap.get(dep) ?? "") ?? taskBranch(rootBase.base, dep);
       // Continue from the dependency's branch while its PR is not merged yet.
@@ -221,6 +244,8 @@ export async function pickTask(
   }
   return null;
 }
+
+export { mergeWait, type MergeWait } from "@4pm/dto";
 
 /** Claim a candidate on the books (inside `publishBooks`): false when it is no longer free. */
 export async function applyClaim(root: string, cand: Candidate, mine: Omit<LocalClaim, "branch" | "base" | "task" | "from">, ttlHours: number): Promise<boolean> {
@@ -253,13 +278,21 @@ export async function applyClaim(root: string, cand: Candidate, mine: Omit<Local
   return true;
 }
 
-/** Remove this worker's claim row; false when it is no longer ours (lost). */
+/** Remove this worker's claim row (task or intake); false when it is no longer ours (lost). */
 export async function dropClaim(root: string, mine: LocalClaim): Promise<boolean> {
   const prog = await B.readBook(root, "AI_PROGRESS.md");
-  const claims = B.parseClaims(prog).claims;
-  const row = claims.find((c) => c.id === mine.id);
+  const { claims, intake } = B.parseClaims(prog);
+  const row = [...claims, ...intake].find((c) => c.id === mine.id);
   if (!row || row.claim !== mine.claim) return false;
-  await B.writeBook(root, "AI_PROGRESS.md", B.writeClaims(prog, claims.filter((c) => c.id !== mine.id)));
+  await B.writeBook(
+    root,
+    "AI_PROGRESS.md",
+    B.writeClaims(
+      prog,
+      claims.filter((c) => c.id !== mine.id),
+      intake.filter((c) => c.id !== mine.id),
+    ),
+  );
   return true;
 }
 
@@ -360,12 +393,12 @@ export function previousTaskText(mine: LocalClaim): string {
 export async function applyFinish(
   root: string,
   mine: LocalClaim,
-  done: { files: string; notes: string; evidence: string[] },
+  done: { files: string; notes: string; evidence: string[]; delivery?: string },
   evRoot: string,
 ): Promise<boolean> {
   if (!(await dropClaim(root, mine))) return false;
   const moved = await moveTaskEvidence(root, mine.id, evRoot);
-  await B.writeBook(root, "AI_DONE.md", B.appendDone(await B.readBook(root, "AI_DONE.md"), { id: mine.id, title: mine.task.title ?? "", team: mine.task.team ?? "", tags: mine.task.tags ?? "", due: mine.task.due ?? "", group: mine.task.group, depends: mine.task.depends, desc: rehomeTaskLinks(mine.task.desc, mine.id), files: done.files, evidence: evidenceCell([...moved, ...done.evidence]), notes: done.notes }));
+  await B.writeBook(root, "AI_DONE.md", B.appendDone(await B.readBook(root, "AI_DONE.md"), { id: mine.id, title: mine.task.title ?? "", team: mine.task.team ?? "", tags: mine.task.tags ?? "", due: mine.task.due ?? "", group: mine.task.group, depends: mine.task.depends, desc: rehomeTaskLinks(mine.task.desc, mine.id), files: done.files, evidence: evidenceCell([...moved, ...done.evidence]), ...(done.delivery ? { delivery: done.delivery } : {}), notes: done.notes }));
   const attempts = await B.readAttempts(root);
   delete attempts[mine.id];
   await B.writeAttempts(root, attempts);
@@ -433,24 +466,19 @@ export async function applyQuestion(root: string, mine: LocalClaim, question: st
 }
 
 /**
- * Fold task-question answers: each answered + approved open `QA-…` that some task depends on is
- * appended to those tasks' Notes and kept in `USER_QA` with `State` = `Done` (a folded / absent QA counts as
- * resolved). Returns true when the books changed. Intake questions (no dependent task) are left for the intake agent.
- * @adr 0562
+ * Fold task-question answers: each answered + approved open `QA-…` that some task depends on is kept in `USER_QA`
+ * with `State` = `Done` (a folded / absent QA counts as resolved). The task's agent reads the answer itself from
+ * `USER_QA.md` in its books overlay — nothing is copied into the task. Returns true when the books changed. Intake
+ * questions (no dependent task) are left for intake.
+ * @adr 0562 @adr 0563
  */
 export async function foldTaskAnswers(root: string): Promise<boolean> {
   const [todo, qa, approved] = await Promise.all([B.readBook(root, "AI_TODO.md"), B.readBook(root, "USER_QA.md"), approvedIds(root)]);
   const { tasks } = B.parseTasks(todo);
   const { rows } = B.parseQa(qa);
-  const answered = rows.filter((q) => B.qaOpen(q) && q.answer.trim() && approved.has(q.id) && tasks.some((t) => t.depends.includes(q.id)));
-  if (answered.length === 0) return false;
-  const byId = new Map(answered.map((q) => [q.id, q]));
-  const next = tasks.map((t) => {
-    const add = t.depends.filter((d) => byId.has(d)).map((d) => `answer ${d}: ${byId.get(d)!.answer}`);
-    return add.length ? { ...t, notes: appendNote(t.notes, add.join("; ")) } : t;
-  });
-  await B.writeBook(root, "AI_TODO.md", B.writeTasks(todo, next));
-  await B.writeBook(root, "USER_QA.md", B.writeQa(qa, rows.map((q) => (byId.has(q.id) ? { ...q, state: BOOK_STATE.done } : q))));
+  const answered = new Set(rows.filter((q) => B.qaOpen(q) && q.answer.trim() && approved.has(q.id) && tasks.some((t) => t.depends.includes(q.id))).map((q) => q.id));
+  if (answered.size === 0) return false;
+  await B.writeBook(root, "USER_QA.md", B.writeQa(qa, rows.map((q) => (answered.has(q.id) ? { ...q, state: BOOK_STATE.done } : q))));
   return true;
 }
 
@@ -475,7 +503,7 @@ export async function requestWaiting(root: string): Promise<(id: string) => Wait
       ...B.parseClaims(prog).claims.map((c) => c.id),
       ...B.parseQa(qa).rows.filter(B.qaOpen).map((q) => q.id),
     ],
-    doneIds: new Set(B.doneRows(done).keys()),
+    doneIds: new Set([...B.doneRows(done).keys(), ...(await archivedIds(root))]),
     lineage,
   });
   const deps = B.requestDepends(userTodo);
@@ -484,9 +512,10 @@ export async function requestWaiting(root: string): Promise<(id: string) => Wait
 
 /**
  * Mark finished history: a `Taken in` request / question becomes `Done` once no row of the groups made from it
- * (lineage) is open any more — every task / doc in AI_DONE, no claim, no open question. True when a book changed
- * (run inside `publishBooks`).
- * @adr 0562
+ * (lineage) is open any more — every task / doc in AI_DONE, no claim, no open question, none in the trash — and goes
+ * back to `Taken in` when one is open again (restored from the trash). True when a book changed (run inside
+ * `publishBooks`).
+ * @adr 0562 @adr 0563
  */
 export async function markDoneRows(root: string): Promise<boolean> {
   const [userTodo, todo, qa, done, prog, lineage] = await Promise.all([
@@ -503,8 +532,10 @@ export async function markDoneRows(root: string): Promise<boolean> {
       ...B.parseTasks(todo).tasks.map((t) => t.id),
       ...B.parseClaims(prog).claims.map((c) => c.id),
       ...B.parseQa(qa).rows.filter(B.qaOpen).map((q) => q.id),
+      // A trashed task is restorable until purged: its request is not finished yet.
+      ...B.trashedIds(todo),
     ],
-    doneIds: new Set(B.doneRows(done).keys()),
+    doneIds: new Set([...B.doneRows(done).keys(), ...(await archivedIds(root))]),
     lineage,
   });
   let changed = false;
@@ -514,7 +545,10 @@ export async function markDoneRows(root: string): Promise<boolean> {
   ] as const) {
     const finished = new Map<string, string>();
     for (const [id, state] of bookRowStates(md)) {
-      if (state === BOOK_STATE.takenIn && waitingOf([id]).length === 0) finished.set(id, BOOK_STATE.done);
+      const open = waitingOf([id]).length > 0;
+      if (state === BOOK_STATE.takenIn && !open) finished.set(id, BOOK_STATE.done);
+      // A row of its groups came back (a task restored from the trash, a retry): the request is open again.
+      else if (state === BOOK_STATE.done && open) finished.set(id, BOOK_STATE.takenIn);
     }
     const next = B.setRowStates(md, finished);
     if (next !== md) {
@@ -540,32 +574,15 @@ export async function intakeIds(root: string, profileDir?: string): Promise<stri
   ]);
   const served = (md: string, id: string): boolean => (profileDir ? servesTeam(profileDir, bookRowTeam(md, id)) : true);
   const open = new Set(B.openRowIds(userTodo, "REQ-"));
-  const reqs = [...approved].filter((id) => open.has(id) && served(userTodo, id) && waiting(id).length === 0);
+  const attempts = await B.readAttempts(root);
+  // A request whose intake hit the attempt limit waits for Retry (ADR-0563).
+  const free = (id: string): boolean => !attempts[id]?.blocked;
+  const reqs = [...approved].filter((id) => open.has(id) && served(userTodo, id) && waiting(id).length === 0 && free(id));
   const taskDeps = new Set(B.parseTasks(todo).tasks.flatMap((t) => t.depends));
   const qas = B.parseQa(qa)
-    .rows.filter((q) => B.qaOpen(q) && !taskDeps.has(q.id) && q.answer.trim() && approved.has(q.id) && served(qa, q.id))
+    .rows.filter((q) => B.qaOpen(q) && !taskDeps.has(q.id) && q.answer.trim() && approved.has(q.id) && served(qa, q.id) && free(q.id))
     .map((q) => q.id);
   return [...reqs, ...qas].sort();
-}
-
-/**
- * The ids one intake run takes in: the first `size` of `free` (book order), plus any free answered question whose
- * `Depends` names a picked request — an answer never waits apart from its request.
- * @adr 0554
- */
-export function intakeBatch(free: string[], size: number, qaMd: string): string[] {
-  const picked = free.slice(0, Math.max(1, size));
-  const pickedSet = new Set(picked);
-  const deps = new Map(B.parseQa(qaMd).rows.map((q) => [q.id, q.depends]));
-  for (const id of free) {
-    if (pickedSet.has(id) || !id.startsWith("QA-")) continue;
-    const on = (deps.get(id) ?? "").split(/[,\s]+/).filter(Boolean);
-    if (on.some((d) => pickedSet.has(d))) {
-      picked.push(id);
-      pickedSet.add(id);
-    }
-  }
-  return picked;
 }
 
 /** What a worker waits for: rows people must act on before a cycle can take them. @adr 0529 */
@@ -578,8 +595,10 @@ export interface WaitingCounts {
   answers: number;
   /** Approved tasks waiting on unfinished tasks, and approved requests waiting on unfinished dependencies. @adr 0561 */
   dependencies: number;
-  /** Approved tasks blocked by a merge conflict with their base. @adr 0539 */
+  /** Approved tasks blocked by a merge conflict with their base, or a request whose intake hit the attempt limit. @adr 0539 */
   blocked: number;
+  /** Approved DOC / task rows waiting for their request / DOC PR to merge into `<base>`. @adr 0563 */
+  merge: number;
 }
 
 /**
@@ -591,7 +610,7 @@ export interface WaitingCounts {
  * @adr 0529 @adr 0453 @adr 0536 @adr 0561
  */
 export async function waitingCounts(root: string, profileDir: string | undefined, changeRequests: number): Promise<WaitingCounts> {
-  const [userTodo, todo, qa, done, approved, attempts, docs, waiting] = await Promise.all([
+  const [userTodo, todo, qa, done, approved, attempts, docs, waiting, lineage] = await Promise.all([
     B.readBook(root, "USER_TODO.md"),
     B.readBook(root, "AI_TODO.md"),
     B.readBook(root, "USER_QA.md"),
@@ -600,6 +619,7 @@ export async function waitingCounts(root: string, profileDir: string | undefined
     B.readAttempts(root),
     readDocs(root),
     requestWaiting(root),
+    readLineage(root),
   ]);
   const served = (team: string | undefined): boolean => (profileDir ? servesTeam(profileDir, team) : true);
   const reqIds = B.openRowIds(userTodo, "REQ-").filter((id) => served(bookRowTeam(userTodo, id)));
@@ -607,19 +627,25 @@ export async function waitingCounts(root: string, profileDir: string | undefined
   const qaRows = B.parseQa(qa).rows.filter((q) => B.qaOpen(q) && served(q.team));
   const qaById = new Map(qaRows.map((q) => [q.id, q]));
   const doneMap = B.doneRows(done);
+  for (const id of await archivedIds(root)) if (!doneMap.has(id)) doneMap.set(id, "");
   let approval = reqIds.filter((id) => !approved.has(id)).length;
   // A DOC round waiting for its review is waiting on a person's approval too (ADR-0536).
   approval += tasks.filter((t) => !approved.has(t.id) || docs[t.id]?.state === "review").length;
   approval += qaRows.filter((q) => q.answer.trim() && !approved.has(q.id)).length;
   let answers = 0;
   let dependencies = 0;
-  let blocked = 0;
+  let blocked = reqIds.filter((id) => approved.has(id) && attempts[id]?.blocked).length;
+  let merge = 0;
   // Approved requests held back from intake by an unfinished dependency (ADR-0561).
   dependencies += reqIds.filter((id) => approved.has(id) && waiting(id).length > 0).length;
   for (const t of tasks) {
     if (!approved.has(t.id) || docs[t.id]?.state === "review") continue;
     if (attempts[t.id]?.blocked) {
       blocked++;
+      continue;
+    }
+    if (mergeWait(t, lineage, docs)) {
+      merge++;
       continue;
     }
     const qaWait = t.depends.some((d) => {
@@ -629,17 +655,12 @@ export async function waitingCounts(root: string, profileDir: string | undefined
     if (qaWait) answers++;
     else if (t.depends.some((d) => /^(?:TSK|DOC)-/.test(d) && !doneMap.has(d))) dependencies++;
   }
-  return { approval, changeRequests, answers, dependencies, blocked };
+  return { approval, changeRequests, answers, dependencies, blocked, merge };
 }
 
 /** Is anything waiting on people? */
 export function anyWaiting(w: WaitingCounts): boolean {
-  return w.approval + w.changeRequests + w.answers + w.dependencies + w.blocked > 0;
-}
-
-/** Is there intake work for this worker (an approved request / answered question of its teams)? */
-export async function hasIntakeWork(root: string, profileDir?: string): Promise<boolean> {
-  return (await intakeIds(root, profileDir)).length > 0;
+  return w.approval + w.changeRequests + w.answers + w.dependencies + w.blocked + w.merge > 0;
 }
 
 /**

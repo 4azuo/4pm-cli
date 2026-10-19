@@ -17,18 +17,20 @@ import type {
   AutonomousEvidenceRequest,
   AutonomousEvidenceHistoryReply,
   AutonomousEvidenceHistoryRequest,
+  AutonomousArchiveReply,
+  AutonomousArchiveRequest,
   AutonomousLogsReply,
   AutonomousReadReply,
+  AutonomousReadRequest,
   AutonomousStatus,
   AutonomousWriteReply,
   AutonomousWriteRequest,
 } from "@4pm/ws";
-import { DOCS_SIDECAR_REL, LINEAGE_SIDECAR_REL, isSafeRepoDir } from "@4pm/dto";
+import { APPROVALS_SIDECAR_REL, ARCHIVE_INDEX_REL, AUTHORS_SIDECAR_REL, parseArchiveIndex, DOCS_SIDECAR_REL, HISTORIES_REL, LINEAGE_SIDECAR_REL, isSafeRepoDir } from "@4pm/dto";
 import {
   readAutonomousConfig,
   readAutonomousConfigSync,
   readAutonomousConfigText,
-  repoDirsOf,
   writeAutonomousConfig,
 } from "./autonomous-config";
 import { readHistories } from "./autonomous-history";
@@ -38,16 +40,19 @@ import { approvalStates, buildApprovalEntries, mergeApprovalWrite, unapproveIds,
 import { applyDiscussionBatch } from "./autonomous-discussions";
 import { checkRowGuards } from "./autonomous-row-guards";
 import { applyUnblock } from "./autonomous-tasks";
-import { applyDocReview, copyLineage, isDocFilePath, readDocFile } from "./autonomous-docs";
+import { applyDocReview, copyLineage, isDocFilePath, readDocFile, readDocs, readLineage, writeDocs, writeLineage } from "./autonomous-docs";
 import { applyBookPatch, bookCellsContentEqual, bookContentHash, bookRowsById, isBookRowId, withoutMetaCells, type BookConflict } from "@4pm/dto";
 import { freshBooksRef, lastCommitTimes, mutateBooks, readBooksFile, resolveBases } from "./autonomous-git";
 import { listDesignEvidence } from "./autonomous-er";
 import { listDiagramEvidence } from "./autonomous-diagram";
+import { readArchive } from "./autonomous-archive";
 import {
   applyStagedEvidence,
   evidenceHistory,
   isVersionedEvidencePath,
   listMockups,
+  listWorkOutput,
+  questionAskers,
   pruneEvidence,
   readEvidenceFile,
   restoreEvidenceVersion,
@@ -56,10 +61,10 @@ import {
 import { isValidCronSchedule, reloadAutonomousSchedule, runAutonomousNow } from "./autonomous-scheduler";
 import { t } from "../../i18n";
 
-const APPROVALS_REL = ".claude/.autonomous.approvals.json";
+const APPROVALS_REL = APPROVALS_SIDECAR_REL;
 // Authorship sidecar (ADR-0320): `{ "<id>": { by, at } }` — the last human who wrote (created/edited)
 // a row, server-stamped on a `bookSave`. Used to enforce separation of duties on approval.
-const AUTHORS_REL = ".claude/.autonomous.authors.json";
+const AUTHORS_REL = AUTHORS_SIDECAR_REL;
 const LOG_DIR_REL = ".claude/logs";
 const BOOK_FILES: Record<keyof AutonomousBooks, string> = {
   userTodo: "USER_TODO.md",
@@ -215,7 +220,7 @@ export function buildAutonomousSnapshot(root: string | null, profileDir: string)
   let consecutiveFails = 0;
   if (root) {
     try {
-      const histPath = resolveForRead(root, join(root, ".claude/.autonomous.histories.json"));
+      const histPath = resolveForRead(root, join(root, HISTORIES_REL));
       if (histPath) consecutiveFails = Number((JSON.parse(readFileSync(histPath, "utf8")) as { consecutiveFails?: number }).consecutiveFails) || 0;
     } catch {
       /* no histories yet */
@@ -234,8 +239,30 @@ export function buildAutonomousSnapshot(root: string | null, profileDir: string)
   };
 }
 
-/** autonomous.read — the whole autonomous surface in one reply (config from the profile dir). @adr 0321 */
-export async function readAutonomous(root: string, profileDir: string): Promise<AutonomousReadReply> {
+/** Keep only the entries of a JSON map whose key passes `keep` (unparsable text is returned as it is). */
+function filterJsonMap(text: string, keep: (key: string) => boolean): string {
+  const map = parseJson(text);
+  if (!map) return text;
+  return JSON.stringify(Object.fromEntries(Object.entries(map).filter(([k]) => keep(k))));
+}
+
+/** One page of AI Done rows (newest first) with the header and the incidents table kept; and the row count. @adr 0563 */
+function doneRowsPage(md: string, page: number, size: number): { md: string; total: number } {
+  const table = findTables(md).find((t) => t.header.some((h) => h.toLowerCase() === "id") && t.header.some((h) => h.toLowerCase() === "timestamp"));
+  if (!table) return { md, total: 0 };
+  const total = table.rows.length;
+  const newest = [...table.rows].reverse();
+  const rows = newest.slice((page - 1) * size, page * size).reverse();
+  return { md: replaceRows(md, table, rows), total };
+}
+
+/**
+ * autonomous.read — the whole autonomous surface in one reply (config from the profile dir). Bounded: the
+ * live books, AI Done one page at a time, and only the sidecar entries of rows present in the live books (archived
+ * ones are read with `autonomous.archive`). Mockups / sequences come from `<base>` and the open request / DOC branches.
+ * @adr 0321 @adr 0563
+ */
+export async function readAutonomous(root: string, profileDir: string, req: AutonomousReadRequest = {}): Promise<AutonomousReadReply> {
   // The books live on `autonomous-books/<base>` (ADR-0448): read them from the remote books branch — the
   // working tree may be on a task branch while the agent works — falling back to the working tree when
   // there is no remote base.
@@ -246,13 +273,22 @@ export async function readAutonomous(root: string, profileDir: string): Promise<
   };
   const cfg = await readAutonomousConfig(profileDir);
   const booksRef = base ? await freshBooksRef(root, base) : null;
-  // Sequences, ER change requests and book attachments for the Evidences rail (ADR-0453).
+  // ER change requests and book attachments for the Evidences rail (ADR-0453) — books branch.
   const design: Partial<AutonomousReadReply> = {
     ...(await listDesignEvidence(root, booksRef, cfg).catch(() => ({}))),
     // System-diagram change requests (ADR-0530).
     ...(await listDiagramEvidence(root, booksRef, cfg.diagramDir).catch(() => ({}))),
   };
-  const [settings, approvals, authors, attempts, docs, lineage, mockups, status, ...books] = await Promise.all([
+  // Mockups / sequences are work output (ADR-0563): `<base>` + the open request / DOC branches.
+  const keepSeq = (p: string): boolean => p.startsWith(`${cfg.sequenceDir}/`) && /\/(?:TSK|QA)-\d{6}-\d{3}\.md$/.test(p);
+  // A task's question sequence rides the task's WIP branch until the task is delivered.
+  const askers = questionAskers(await read(BOOK_FILES.userQa).catch(() => ""));
+  const [mockList, seqList] = await Promise.all([
+    listMockups(root, base || null, cfg.mockupDir).catch(() => ({ paths: [] as string[], refs: {} as Record<string, string> })),
+    listWorkOutput(root, base || null, cfg.sequenceDir, keepSeq, askers).catch(() => ({ paths: [] as string[], refs: {} as Record<string, string> })),
+  ]);
+  design.sequences = seqList.paths;
+  const [settings, approvalsAll, authorsAll, attempts, docsAll, lineageAll, status, ...books] = await Promise.all([
     readAutonomousConfigText(profileDir),
     read(APPROVALS_REL, "{}"),
     read(AUTHORS_REL, "{}"),
@@ -260,14 +296,26 @@ export async function readAutonomous(root: string, profileDir: string): Promise<
     // The DOC rounds + the request lineage (ADR-0536/0537).
     read(DOCS_SIDECAR_REL, "{}"),
     read(LINEAGE_SIDECAR_REL, "{}"),
-    // Intake UI mockups (ADR-0418) — the AI Todo rows offer a viewer for their group's files.
-    listMockups(root, base || null, cfg.mockupDir).catch(() => [] as string[]),
     getAutonomousStatus(root, profileDir),
     ...Object.values(BOOK_FILES).map((f) => read(f)),
   ]);
   const keys = Object.keys(BOOK_FILES) as (keyof AutonomousBooks)[];
   const bookMap = {} as AutonomousBooks;
   keys.forEach((k, i) => (bookMap[k] = books[i] ?? ""));
+  // Only the sidecar entries of rows in the live books (and change requests, which key the approvals too).
+  const liveIds = new Set<string>(Object.values(bookMap).flatMap((md) => [...bookRowsById(md).keys()]));
+  for (const e of [...(design.ercs ?? []), ...(design.sdcs ?? [])]) liveIds.add(e.id);
+  const liveGroups = new Set([...liveIds].map((id) => /-(\d{6})-\d{3}$/.exec(id)?.[1] ?? "").filter(Boolean));
+  const approvals = filterJsonMap(approvalsAll, (k) => liveIds.has(k));
+  const authors = filterJsonMap(authorsAll, (k) => liveIds.has(k));
+  const docs = filterJsonMap(docsAll, (k) => liveIds.has(k));
+  const lineage = filterJsonMap(lineageAll, (k) => liveGroups.has(k));
+  // AI Done one page at a time when asked (the AI Done grid — ADR-0563); other readers get every live row (the
+  // archive keeps the live book small).
+  const done = req.donePage
+    ? doneRowsPage(bookMap.aiDone, Math.max(1, Math.floor(req.donePage)), Math.min(200, Math.max(1, Math.floor(req.doneSize ?? 50))))
+    : doneRowsPage(bookMap.aiDone, 1, Number.MAX_SAFE_INTEGER);
+  bookMap.aiDone = done.md;
   // Per-id verification (ADR-0438) so the web can mark unsigned / changed-after-approval rows.
   const approvalStatesById = approvalStates(parseJson(approvals) ?? {}, {
     userTodo: bookMap.userTodo,
@@ -275,9 +323,46 @@ export async function readAutonomous(root: string, profileDir: string): Promise<
     aiTodo: bookMap.aiTodo,
   });
   // Last commit time of every listed artifact for the Evidences "Last modified" column (ADR-0514).
-  const listed = [...mockups, ...(design.sequences ?? []), ...(design.ercs ?? []).map((e) => e.path), ...(design.evidence ?? [])];
-  const modifiedAt = await lastCommitTimes(root, booksRef ?? "HEAD", listed);
-  return { settings, status, books: bookMap, approvals, authors, attempts, docs, lineage, mockups, approvalStates: approvalStatesById, ...design, modifiedAt };
+  const onBooks = [...(design.ercs ?? []).map((e) => e.path), ...(design.evidence ?? [])];
+  const onBase = [...mockList.paths, ...seqList.paths].filter((p) => !mockList.refs[p] && !seqList.refs[p]);
+  const modifiedAt = {
+    ...(await lastCommitTimes(root, booksRef ?? "HEAD", onBooks)),
+    ...(await lastCommitTimes(root, base ? `origin/${base}` : "HEAD", onBase)),
+  };
+  const evidenceRefs = { ...mockList.refs, ...seqList.refs };
+  // Archived rows the live books still depend on count as done for the web's waiting lines (ADR-0563).
+  const index = parseArchiveIndex(await read(ARCHIVE_INDEX_REL, "{}"));
+  const liveText = Object.values(bookMap).join("\n");
+  const archivedDone = Object.keys(index).filter((id) => liveText.includes(id));
+  return {
+    settings,
+    status,
+    books: bookMap,
+    approvals,
+    authors,
+    attempts,
+    docs,
+    lineage,
+    mockups: mockList.paths,
+    approvalStates: approvalStatesById,
+    ...design,
+    modifiedAt,
+    evidenceRefs,
+    archivedDone,
+    doneTotal: done.total,
+  };
+}
+
+/** autonomous.archive — search the archived rows on the books branch. @api machine-0096 @adr 0563 */
+export async function readAutonomousArchive(root: string, req: AutonomousArchiveRequest): Promise<AutonomousArchiveReply> {
+  const base = (await resolveBases(root).catch(() => null))?.root.base ?? "";
+  const ref = base ? await freshBooksRef(root, base) : null;
+  if (!ref) return { rows: [], total: 0, page: 1, size: req.size ?? 20, error: "no books branch" };
+  try {
+    return await readArchive(root, ref, req);
+  } catch (err) {
+    return { rows: [], total: 0, page: 1, size: req.size ?? 20, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 /** autonomous.logs — tail one day's tick log (default today). */
@@ -286,6 +371,35 @@ export async function readAutonomousLogs(root: string, date?: string): Promise<A
   const text = await readText(root, join(root, LOG_DIR_REL, `autonomous-tick-${day}.log`));
   const lines = text ? text.split("\n").filter((l) => l.length > 0).slice(-500) : [];
   return { date: day, lines };
+}
+
+/**
+ * Retry a closed request / DOC PR (inside the web write's books publish): every lineage delivery of the request (or the
+ * DOC row's `pr`) that is `closed` turns back to `open` with `reopen` — the next cycle opens a new PR from its branch.
+ * True when anything changed.
+ * @adr 0563
+ */
+async function applyDeliveryRetry(dir: string, id: string): Promise<boolean> {
+  let changed = false;
+  if (id.startsWith("DOC-")) {
+    const docs = await readDocs(dir);
+    const e = docs[id];
+    if (e?.pr?.state === "closed") {
+      docs[id] = { ...e, pr: { branch: e.pr.branch, state: "open", reopen: true } };
+      await writeDocs(dir, docs);
+      changed = true;
+    }
+    return changed;
+  }
+  const lin = await readLineage(dir);
+  for (const [g, e] of Object.entries(lin)) {
+    if ((e.source === id || e.root === id) && e.delivery?.state === "closed") {
+      lin[g] = { ...e, delivery: { branch: e.delivery.branch, state: "open", reopen: true } };
+      changed = true;
+    }
+  }
+  if (changed) await writeLineage(dir, lin);
+  return changed;
 }
 
 /** Result of a web book write before it is published. */
@@ -549,8 +663,11 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
       return { ok: true };
     }
     case "taskRetry": {
-      // A person resolved the task's conflict with its base (ADR-0539): it may be picked again.
-      if (!(await applyUnblock(dir, [req.taskId]))) return { ok: false, error: "task is not blocked" };
+      // A person resolved the task's conflict with its base (ADR-0539) or reset a failed intake: it may be picked again;
+      // a request / DOC whose PR was closed gets a new PR from its branch on the next cycle (ADR-0563).
+      const unblocked = await applyUnblock(dir, [req.taskId]);
+      const reopened = await applyDeliveryRetry(dir, req.taskId);
+      if (!unblocked && !reopened) return { ok: false, error: "task is not blocked" };
       return { ok: true };
     }
     default:
@@ -618,7 +735,6 @@ export async function writeAutonomous(
               res = await applyWebWrite(dir, profileDir, req, by);
               return res.ok;
             },
-            repoDirsOf(await readAutonomousConfig(profileDir)),
           )
         : "unchanged";
       if (res === undefined) res = await applyWebWrite(root, profileDir, req, by); // no remote base ⇒ working tree

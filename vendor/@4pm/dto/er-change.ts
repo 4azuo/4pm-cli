@@ -459,7 +459,7 @@ export interface ErHistoryEntry {
   commit?: string;
 }
 
-/** `.claude/.autonomous.er.json` — cli-owned. */
+/** `.4pm/.autonomous.er.json` — cli-owned. */
 export interface ErSidecar {
   version: number;
   entities: Record<string, { v: number; module: string }>;
@@ -468,7 +468,7 @@ export interface ErSidecar {
 }
 
 /** Relative path of the ER sidecar. */
-export const ER_SIDECAR_REL = ".claude/.autonomous.er.json";
+export const ER_SIDECAR_REL = ".4pm/.autonomous.er.json";
 
 /** An empty sidecar. */
 export function emptyErSidecar(): ErSidecar {

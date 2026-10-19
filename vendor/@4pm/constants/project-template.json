@@ -1,6 +1,29 @@
 {
-  "version": "1.1.4",
+  "version": "1.2.0",
   "changelog": [
+    {
+      "version": "1.2.0",
+      "date": "2026-10-19",
+      "summary": "Autonomous records move to `.4pm/`; the book templates leave the project.",
+      "notes": [
+        "The cli-owned autonomous records (`.autonomous.approvals.json`, authors, attempts, docs, lineage, ER / diagram state, branch deletions) now live under `.4pm/` instead of `.claude/` — the cli moves them on the books branch by itself.",
+        "`.claude/templates/` and the `project.secrets` sample files are removed: the book templates are kept inside the cli.",
+        "`.gitignore` ignores `.4pm/.autonomous.histories.json` and `.4pm/.autonomous.lock` instead of their `.claude/` copies.",
+        "`AI_DONE.md` gains a `Delivery` column (the PR state of each task); existing tables get it on the next finished task."
+      ],
+      "files": [
+        ".gitignore",
+        "AI_TODO.md",
+        "AI_DONE.md",
+        "AI_PROGRESS.md",
+        "USER_TODO.md",
+        "USER_QA.md",
+        ".claude/AUTONOMOUS.md",
+        ".claude/templates/",
+        "project.secrets.json.sample"
+      ],
+      "skippable": true
+    },
     {
       "version": "1.1.4",
       "date": "2026-10-18",

@@ -89,8 +89,8 @@ async function pullKb(dir: string): Promise<void> {
  * happens only the first time (when the repo URL is first known from a dispatch) — subsequent
  * freshness is handled by `refreshSupportKb` on a daily timer, plus a background pull here when the
  * clone is stale (e.g. after a restart, before the timer knew the token), so a dispatch never blocks
- * on a network fetch. An older clone whose remote URL still embeds a token is scrubbed to the plain
- * URL.
+ * on a network fetch. The clone's remote is the plain URL; a private repo's token rides the git auth
+ * header only.
  */
 async function ensureRepo(profileDir: string, repo: SupportAnswerRequest["repo"]): Promise<string> {
   const dir = repoDir(profileDir, repo.url, repo.branch);
@@ -98,13 +98,6 @@ async function ensureRepo(profileDir: string, repo: SupportAnswerRequest["repo"]
   if (repo.token) kbTokens.set(dir, repo.token);
   else kbTokens.delete(dir);
   if (existsSync(join(dir, ".git"))) {
-    // Scrub a token-bearing remote URL left by an older cli (the token must not sit in the clone).
-    const current = await execFileAsync("git", ["-C", dir, "remote", "get-url", "origin"], { env: gitEnv })
-      .then((r) => r.stdout.trim())
-      .catch(() => repo.url);
-    if (current !== repo.url) {
-      await execFileAsync("git", ["-C", dir, "remote", "set-url", "origin", repo.url], { env: gitEnv }).catch(() => undefined);
-    }
     const marker = existsSync(join(dir, ".git", "FETCH_HEAD")) ? join(dir, ".git", "FETCH_HEAD") : join(dir, ".git", "HEAD");
     if (Date.now() - statSync(marker).mtimeMs > KB_STALE_MS) {
       void pullKb(dir).catch((err: unknown) => logger.warn("support.kb.refresh.failed", { dir, error: String(err) }));

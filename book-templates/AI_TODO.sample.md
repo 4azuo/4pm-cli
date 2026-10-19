@@ -3,7 +3,7 @@
 > Tasks are generated from `USER_TODO.md`. ID format `TSK-{groupid:000000}-{taskid:000}` (group ids are allocated by the 4PM server — never pick one by hand).
 > **Priority** = High / Medium / Low. **Actions** = optional catalog action(s) (e.g. `UpdateSpecFromDB`) whose
 > action runs from the server down to the project on approve (committed on Save — ADR-0311).
-> **Approval** lives in `.claude/.autonomous.approvals.json` (ADR-0152), not the table. **Depends** =
+> **Approval** lives in `.4pm/.autonomous.approvals.json` (ADR-0152), not the table. **Depends** =
 > `TSK-…` ids (one ⇒ in `AI_DONE.md`; two or more ⇒ all PRs merged into the base branch) and/or `QA-…` ids
 > (wait for that answer — ADR-0371). **Notes** may carry `size: S|M` and `from: <branch>`.
 

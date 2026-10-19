@@ -5,11 +5,10 @@
 # AI_PLACEHOLDER.md holds only keys + explanations, so it IS committed (not listed here).
 project.secrets.json
 
-# Autonomous workflow — files generated at runtime (lock, per-day logs, state + cron history)
-.claude/.autonomous.lock
+# Autonomous workflow — files generated at runtime (lock, per-day tick logs, run history — ADR-0563)
+.4pm/.autonomous.lock
+.4pm/.autonomous.histories.json
 .claude/logs/
-.claude/.autonomous.histories.json
-.claude/cron.out
 
 # RAG — engine, runtime, models and index are generated on the worker (not committed; the folder
 # also carries its own .gitignore — ADR-0489)

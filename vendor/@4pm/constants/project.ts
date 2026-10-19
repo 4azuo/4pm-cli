@@ -82,7 +82,7 @@ export const AI_TASK_TAGS = ["UpdateSpecFromDB"] as const;
 /** Union type of AI Todo task tags. */
 export type AiTaskTag = (typeof AI_TASK_TAGS)[number];
 
-/** True when a raw cell token is a known task tag (drops unknown/legacy text). */
+/** True when a raw cell token is a known task tag (drops unknown text). */
 export function isAiTaskTag(value: string): value is AiTaskTag {
   return (AI_TASK_TAGS as readonly string[]).includes(value);
 }

@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { blockedErGroups, prepareIntakeEr, readEr, writeEr } from "./autonomous-er";
+import { blockedErGroups, publishIntakeErcs, readEr, writeEr } from "./autonomous-er";
 import { syncBooks } from "./autonomous-git";
 import { resetApprovalTrustForTest } from "./autonomous-approvals";
 
@@ -107,23 +107,21 @@ describe("ER change requests", () => {
 });
 
 describe("autonomous hooks", () => {
-  it("numbers an intake change request, restores the approved files and blocks the group", async () => {
+  it("numbers an intake change request in the books worktree and blocks the group", async () => {
     await save("  ORDER {\n    uuid id PK\n  }", 0);
     await approve("ERC-1");
-    await syncBooks(root, "main");
-    // The agent edits an approved module (reverted) and writes a new change request.
-    writeFileSync(join(root, ".4pm/er/billing.md"), "tampered\n");
-    mkdirSync(join(root, ".4pm/er/changes"), { recursive: true });
-    writeFileSync(
-      join(root, ".4pm/er/changes/ERC-NEW-1.md"),
-      '# Vouchers\n\n```json er-meta\n{"title":"Vouchers","source":"intake","group":"TSK-000007","module":"billing"}\n```\n\n```mermaid\nerDiagram\n  VOUCHER { uuid id PK }\n  ORDER ||--o{ VOUCHER : uses\n```\n\nWhy.\n',
-    );
-    const out = await prepareIntakeEr(root, `origin/${BOOKS}`, ".4pm/er");
-    expect(out).toMatchObject({ created: ["ERC-2"], skipped: [], tampered: true });
-    expect(readFileSync(join(root, ".4pm/er/billing.md"), "utf8")).toContain("ORDER");
-    const erc = readFileSync(join(root, ".4pm/er/changes/ERC-2.md"), "utf8");
+    const { dir } = await syncBooks(root, "main");
+    const file = {
+      name: "ERC-NEW-1.md",
+      content:
+        '# Vouchers\n\n```json er-meta\n{"title":"Vouchers","source":"intake","group":"TSK-000007","module":"billing"}\n```\n\n```mermaid\nerDiagram\n  VOUCHER { uuid id PK }\n  ORDER ||--o{ VOUCHER : uses\n```\n\nWhy.\n',
+    };
+    const out = await publishIntakeErcs(dir, ".4pm/er", [file]);
+    expect(out).toMatchObject({ created: ["ERC-2"], skipped: [] });
+    expect(readFileSync(join(dir, ".4pm/er/billing.md"), "utf8")).toContain("ORDER");
+    const erc = readFileSync(join(dir, ".4pm/er/changes/ERC-2.md"), "utf8");
     expect(erc).toContain('"baseVersion": 1');
     expect(erc).toContain('"ORDER": 1');
-    expect([...(await blockedErGroups(root, ".4pm/er"))]).toEqual(["TSK-000007"]);
+    expect([...(await blockedErGroups(dir, ".4pm/er"))]).toEqual(["TSK-000007"]);
   });
 });

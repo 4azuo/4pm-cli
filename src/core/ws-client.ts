@@ -32,7 +32,6 @@ import {
   decryptPayload,
   deriveSessionKey,
   encryptPayload,
-  CliFeature,
   WsChannels,
   type EcdhSession,
   type GitTokenReply,
@@ -55,7 +54,7 @@ import { UpdateScheduler } from "./update-scheduler";
 import { updateAfterVersionReject } from "./update-on-reject";
 import { RestartWhenIdle } from "./session/restart-when-idle";
 import { CliApiError, requestWsToken } from "../services/api";
-import { getWorkingProfile } from "./ai/ai-profile-state";
+import { getWorkingDir } from "./ai/ai-profile-state";
 import { INSECURE_URL_BLOCKED, insecureTransportAllowed, isInsecureRemoteUrl } from "../utils/secure-url";
 import { t } from "../i18n";
 import { aiAccountLabels, claudeHomeDirs } from "../utils/ai-cli";
@@ -1238,14 +1237,9 @@ export class WsClient {
   private sendMachineStatus(): void {
     const config = readProfileConfig(this.context.profileDir);
     const physicPath = config.physicPath ?? null;
-    // Configured AI-credential count (ADR-0256): the unified list (ADR-0182) when present, else the
-    // legacy per-provider lists — the failover profile count the server uses as the derived
-    // re-attach-cap floor factor (`effective × profileCount × 1.2`).
-    const aiProfileCount = Array.isArray(config.aiProfiles)
-      ? config.aiProfiles.length
-      : (config.claudeHome?.length ?? 0) +
-        (config.codexHome?.length ?? 0) +
-        (config.antigravityHome?.length ?? 0);
+    // Configured AI-credential count (ADR-0256) — the failover profile count the server uses as the
+    // derived re-attach-cap floor factor (`effective × profileCount × 1.2`).
+    const aiProfileCount = config.aiProfiles?.length ?? 0;
     this.send(WsChannels.MACHINE_STATUS, {
       status: "online",
       projects: [],
@@ -1270,8 +1264,6 @@ export class WsClient {
         const cap = egressCapability();
         return { egress: cap.egress, ...(cap.reason ? { egressReason: cap.reason } : {}) };
       })(),
-      // Optional features this cli implements — the server gates features an older cli lacks (ADR-0449).
-      features: CLI_FEATURES,
       // Process identity + lifecycle (ADR-0505): tells a restarted process from a lingering one and
       // lets the web show "Restarting" while a drain waits for running work.
       pid: process.pid,
@@ -1321,7 +1313,7 @@ export class WsClient {
       const config = readProfileConfig(this.context.profileDir);
       // Usage is a Claude-subscription metric; a blank/mixed aiCli (ADR-0182) reads Claude.
       const aiCli = config.aiCli || "claude";
-      const working = getWorkingProfile(this.context.profileDir, aiCli);
+      const working = getWorkingDir(this.context.profileDir, "claude");
       // Check the profile actually in use first (its creds + `/usage`), then the rest.
       const configured = claudeHomeDirs(config);
       const dirs = working ? [working, ...configured.filter((d) => d !== working)] : configured;
@@ -1584,9 +1576,6 @@ export class WsClient {
     this.shutdown("logout");
   }
 }
-
-/** Features reported in machine.status (`CliFeature`, ADR-0449). */
-const CLI_FEATURES: string[] = [CliFeature.CLIENT_VIEWER, CliFeature.BOOK_TEAMS, CliFeature.APPROVAL_PARTIES, CliFeature.DISCUSSIONS, CliFeature.ER, CliFeature.BOOK_PATCH, CliFeature.PACKAGES_MULTI_TARGET, CliFeature.AUTONOMOUS_RUN_NOW, CliFeature.RESTART, CliFeature.EVIDENCE_HISTORY, CliFeature.DIAGRAM, CliFeature.BRANCH_SYNC, CliFeature.BRANCH_CLEANUP, CliFeature.DOCS_PHASE, CliFeature.BOOK_INDEX];
 
 /** The URLs of the approved http/sse MCP servers (system egress hosts — ADR-0439). */
 function mcpRemoteUrls(list: { definition: unknown }[] | undefined): string[] {

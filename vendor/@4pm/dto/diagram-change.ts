@@ -484,7 +484,7 @@ export interface DiagramHistoryEntry {
   commit?: string;
 }
 
-/** `.claude/.autonomous.diagram.json` — cli-owned. */
+/** `.4pm/.autonomous.diagram.json` — cli-owned. */
 export interface DiagramSidecar {
   version: number;
   cells: Record<string, { v: number; module: string; page: string }>;
@@ -493,7 +493,7 @@ export interface DiagramSidecar {
 }
 
 /** Relative path of the diagram sidecar. */
-export const DIAGRAM_SIDECAR_REL = ".claude/.autonomous.diagram.json";
+export const DIAGRAM_SIDECAR_REL = ".4pm/.autonomous.diagram.json";
 
 /** An empty sidecar. */
 export function emptyDiagramSidecar(): DiagramSidecar {

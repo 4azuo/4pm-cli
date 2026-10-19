@@ -25,7 +25,7 @@ export async function runVersion(
 
   const serverUrl =
     serverUrlFlag ??
-    readCredential(profileDir, profileName)?.serverUrl ??
+    readCredential(profileDir)?.serverUrl ??
     process.env.FOURPM_SERVER;
   if (!serverUrl) return;
 

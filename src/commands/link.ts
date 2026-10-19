@@ -61,7 +61,7 @@ export async function runLink(
   // username (readable, no --profile needed).
   const profileName = explicitProfile ?? sanitizeProfileName(username);
   // Renew if the profile already exists, else add a new one — notified below.
-  const existed = readCredential(profileDir(profileName), profileName) != null;
+  const existed = readCredential(profileDir(profileName)) != null;
   const dir = profileDir(profileName);
   writeCredential(dir, {
     serverUrl,

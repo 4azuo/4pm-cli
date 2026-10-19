@@ -18,13 +18,12 @@ import {
   docManifest,
   docOverlaps,
   docRunnable,
-  implementDocsNote,
   intakeSources,
   numberNewDocs,
   recordIntakeLineage,
 } from "./autonomous-docs";
 
-const TODO_HEAD = "| ID | Priority | Tag | Depends | Group | Task description | Notes |\n|---|---|---|---|---|---|---|\n";
+const TODO_HEAD = "| ID | Priority | Actions | Depends | Group | Task description | Notes |\n|---|---|---|---|---|---|---|\n";
 const DONE = "## Done\n\n| Timestamp | ID | Group | Depends | Task description | Files | Evidence | Notes |\n|---|---|---|---|---|---|---|---|\n\n## Incidents\n\n| Timestamp | Note |\n|---|---|\n";
 const SPEC = { types: ["adr", "api"], org: "" };
 
@@ -37,7 +36,7 @@ function read(rel: string): string {
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "4pm-docs-"));
-  mkdirSync(join(root, ".claude"));
+  mkdirSync(join(root, ".4pm"), { recursive: true });
   writeFileSync(join(root, "AI_DONE.md"), DONE);
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
@@ -65,7 +64,7 @@ describe("DOC rows after an intake", () => {
     const userTodo = "| ID | Team | Group | Depends | Request |\n|---|---|---|---|---|\n| REQ-000005-001 | FE | | | Users can log in |\n";
     const sources = intakeSources(["REQ-000005-001"], userTodo, "");
     await recordIntakeLineage(root, sources, [7, 8], new Set(["000007"]));
-    const lin = parseLineage(read(".claude/.autonomous.lineage.json"));
+    const lin = parseLineage(read(".4pm/.autonomous.lineage.json"));
     expect(Object.keys(lin)).toEqual(["000007"]);
     expect(lin["000007"]).toMatchObject({ source: "REQ-000005-001", request: "Users can log in", team: "FE" });
   });
@@ -81,7 +80,7 @@ describe("DOC rounds and reviews", () => {
   });
 
   it("parks a finished round in review with its manifest", async () => {
-    const docs = parseDocsSidecar(read(".claude/.autonomous.docs.json"));
+    const docs = parseDocsSidecar(read(".4pm/.autonomous.docs.json"));
     expect(docs["DOC-000007-001"]).toMatchObject({ round: 1, state: "review", head: "abc", files });
     expect(docRunnable(docs, "DOC-000007-001")).toBe(false);
     expect(B.parseTasks(read("AI_TODO.md")).tasks.map((t) => t.id)).toContain("DOC-000007-001");
@@ -90,7 +89,7 @@ describe("DOC rounds and reviews", () => {
   it("revise makes the row runnable again", async () => {
     const r = await applyDocReview(root, { id: "DOC-000007-001", round: 1, decision: "revise", opinion: "Add the error cases" }, true, "u1", "a@x");
     expect(r).toEqual({ ok: true, decided: "revise" });
-    const docs = parseDocsSidecar(read(".claude/.autonomous.docs.json"));
+    const docs = parseDocsSidecar(read(".4pm/.autonomous.docs.json"));
     expect(docs["DOC-000007-001"]!.state).toBe("pending");
     expect(docs["DOC-000007-001"]!.history).toEqual([expect.objectContaining({ round: 1, decision: "revise", opinion: "Add the error cases", by: "u1" })]);
   });
@@ -117,26 +116,12 @@ describe("helpers", () => {
     expect(docOverlaps(docs, "DOC-000008-001", [{ path: "CHANGELOG.md", type: "changelog", action: "updated" }])).toEqual({ "CHANGELOG.md": ["DOC-000007-001"] });
   });
 
-  it("lists the accepted docs of a task's group for the implement prompt", () => {
-    const docs: DocsSidecar = {
-      "DOC-000007-001": {
-        round: 2,
-        state: "accepted",
-        branch: "b",
-        files: [{ path: "docs/api/0003-login.md", type: "api", action: "created", number: 3 }],
-        history: [{ round: 2, at: "", by: "u", decision: "proceed", opinion: "Use 401 for bad tokens", final: true }],
-      },
-    };
-    const note = implementDocsNote(docs, "TSK-000007-002");
-    expect(note).toContain("docs/api/0003-login.md");
-    expect(note).toContain("Use 401 for bad tokens");
-    expect(implementDocsNote(docs, "TSK-000008-001")).toBe("");
-  });
-
   it("reads the spec's Docs section from fields or top-level keys", () => {
-    expect(readSpecDocs({ fields: [{ id: "docs_types", value: ["adr", "bogus", "api"] }, { id: "docs_org", value: "One file per topic" }] })).toEqual({
-      types: ["adr", "api"],
+    // An invalid key is dropped; a project's own type (ADR-0564) is kept, not numbered by default.
+    expect(readSpecDocs({ fields: [{ id: "docs_types", value: ["adr", "Bad Key!", "runbook", "api"] }, { id: "docs_org", value: "One file per topic" }] })).toEqual({
+      types: ["adr", "runbook", "api"],
       org: "One file per topic",
+      numbered: ["adr", "api"],
     });
     expect(readSpecDocs({ docs_types: "page, adr" }).types).toEqual(["page", "adr"]);
     expect(readSpecDocs(null).types).toEqual([]);

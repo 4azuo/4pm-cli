@@ -54,7 +54,7 @@ export function encodeExportedCredential(profile: string, credential: Credential
  * captured straight into a secret). Exit code 1 when the profile is not linked.
  */
 export function runCredentialExport(dir: string, name: string): void {
-  const credential = readCredential(dir, name);
+  const credential = readCredential(dir);
   if (!credential) {
     console.error(t("credential.exportNotLinked", { profile: name }));
     process.exitCode = 1;
@@ -78,7 +78,7 @@ export function importCredentialFromEnv(explicitProfile: string | null): string 
   }
   const name = explicitProfile ?? decoded.profile;
   const dir = profileDir(name); // created 0700 when missing
-  if (readCredential(dir, name)) return null;
+  if (readCredential(dir)) return null;
   writeCredential(dir, decoded.credential);
   ensureProfileConfig(dir);
   writeDefaultProfile(name);

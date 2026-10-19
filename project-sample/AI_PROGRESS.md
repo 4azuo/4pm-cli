@@ -4,8 +4,7 @@
 > table on the base branch (commit + push = the claim; a lost push race means another worker won the task)
 > and clears the row when the task finishes or is released. **Do not edit by hand** while a cycle runs.
 > `Worker` = the claiming worker · `Claim` = a unique claim id · `Attempt` = which try this is (see
-> `.claude/.autonomous.attempts.json`). A claim older than `claimTtlHours` (default 6) may be taken over.
-> Per `.claude/templates/AI_PROGRESS.sample.md`.
+> `.4pm/.autonomous.attempts.json`). A claim older than `claimTtlHours` (default 6) may be taken over.
 
 | Started | ID | Worker | Claim | Attempt | Task description |
 |---|---|---|---|---|---|

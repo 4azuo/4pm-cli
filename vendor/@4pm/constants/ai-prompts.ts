@@ -223,10 +223,10 @@ const PROMPT_META: PromptMeta[] = [
     phase: 1,
     title: "Autonomous — intake",
     description:
-      "Analyses approved user requests + answered intake questions into sized AI tasks, and writes UI mockups to the mockup folder (ADR-0418), sequence diagrams and ER change requests (ADR-0453) and system-diagram change requests (ADR-0530), following the project evidence guide (ADR-0532) — books + mockups + sequences + change requests only; no git/code.",
+      "Analyses ONE approved request (or answered intake question) on its own branch into sized AI tasks, and writes UI mockups (ADR-0418), sequence diagrams and ER change requests (ADR-0453) and system-diagram change requests (ADR-0530), following the project evidence guide (ADR-0532). Its context — books, discussions, ER, diagram, evidence guide — is read from the working tree, never pasted in (ADR-0563), starting from the run's context manifest `.4pm/context/<ID>.md` (ADR-0565); books + mockups + sequences + change requests only; no git/code.",
     requiredVars: ["booksIntro", "groupIds", "sMaxFiles", "sMaxLines", "mMaxFiles", "mMaxLines"],
-    // The project's evidence guide is repo text (ADR-0532).
-    untrustedVars: { evidenceGuide: "data" },
+    // Every repo text the agent reads (books, discussions, evidence guide) is named as data by the prompt itself (ADR-0563).
+    untrustedVars: {},
   },
   {
     key: "cli.autonomous.implement",
@@ -234,9 +234,9 @@ const PROMPT_META: PromptMeta[] = [
     phase: 1,
     title: "Autonomous — implement",
     description:
-      "Implements exactly one task on the prepared branches (commit only); may add an ER change request (ADR-0453); `docsNote` lists the accepted docs of its group (ADR-0536). Keep the final JSON status block intact.",
+      "Implements exactly one task on the prepared branches (commit only); may add an ER change request (ADR-0453). Its context — mockups, sequence, ER, diagram, answers, discussions, accepted docs, evidence guide — is read from the working tree (ADR-0563), starting from the run's context manifest (ADR-0565). Keep the final JSON status block intact.",
     requiredVars: ["taskId", "desc", "branch", "subLines"],
-    untrustedVars: { desc: "request", notes: "request", evidenceGuide: "data", previousTask: "request", conflictPaths: "data" },
+    untrustedVars: { desc: "request", notes: "request", previousTask: "request", conflictPaths: "data" },
   },
   {
     key: "cli.autonomous.docs",
@@ -244,10 +244,10 @@ const PROMPT_META: PromptMeta[] = [
     phase: 1,
     title: "Autonomous — docs round",
     description:
-      "Writes / updates the project documentation of ONE request on its DOC branch, following the spec's doc types and docs organization (ADR-0536): new numbered files named `NEW-<n>-<slug>.md` (the cli numbers them), the review opinions of earlier rounds applied, evidences updated only when a review asks. Docs only — no application code. Keep the final JSON status block intact.",
+      "Writes / updates the project documentation of ONE request on its DOC branch, following the spec's doc types and docs organization (ADR-0536) and the mirrored doc templates `.4pm/doc-templates/` (ADR-0564): new numbered files named `NEW-<n>-<slug>.md` (the cli numbers them), the review opinions of earlier rounds applied, evidences updated only when a review asks; context from the run's manifest (ADR-0565). Docs only — no application code. Keep the final JSON status block intact.",
     requiredVars: ["docId", "group", "round", "request", "docTypes", "branch"],
     // The request / notes / review opinions are people's text; the docs organization and evidence guide are repo text.
-    untrustedVars: { request: "request", desc: "request", notes: "request", reviewNote: "request", docsOrg: "data", evidenceGuide: "data" },
+    untrustedVars: { request: "request", desc: "request", notes: "request", reviewNote: "request", docsOrg: "data" },
   },
   {
     key: "cli.autonomous.split",

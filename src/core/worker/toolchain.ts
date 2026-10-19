@@ -294,18 +294,15 @@ export async function ensureTool(profileDir: string, tool: SelfInstallTool, onLi
   return installTool(tool, onLine);
 }
 
-/** The AI providers used by the enabled profiles of this cli's config (unified list, else legacy). */
+/** The AI providers used by the enabled profiles of this cli's config (none ⇒ the pinned / default CLI). */
 export function usedAiTools(profileDir: string): SelfInstallTool[] {
   const config = readProfileConfig(profileDir);
   const out = new Set<SelfInstallTool>();
-  if (Array.isArray(config.aiProfiles) && config.aiProfiles.length > 0) {
-    for (const p of config.aiProfiles) {
-      if (p.enabled === false) continue;
-      if (p.provider === "claude" || p.provider === "codex") out.add(p.provider);
-    }
-  } else {
-    if ((config.claudeHome ?? []).some((p) => p.enabled !== false)) out.add("claude");
-    if ((config.codexHome ?? []).some((p) => p.enabled !== false)) out.add("codex");
+  for (const p of config.aiProfiles ?? []) {
+    if (p.enabled === false) continue;
+    if (p.provider === "claude" || p.provider === "codex") out.add(p.provider);
+  }
+  if (out.size === 0) {
     const cli = aiToolOfCommand(config.aiCli || "claude");
     if (cli) out.add(cli);
   }

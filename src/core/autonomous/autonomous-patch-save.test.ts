@@ -28,7 +28,7 @@ function book(): string {
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "4pm-patch-"));
   profileDir = mkdtempSync(join(tmpdir(), "4pm-prof-"));
-  mkdirSync(join(root, ".claude"));
+  mkdirSync(join(root, ".4pm"), { recursive: true });
   writeFileSync(join(root, "USER_TODO.md"), BASE);
 });
 afterEach(() => {

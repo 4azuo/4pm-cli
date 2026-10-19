@@ -271,7 +271,7 @@ export function readProjectNetworkSettings(raw: unknown): ProjectNetworkSettings
   };
 }
 
-/** Read `organizations.settings.network` (a stored legacy `logRetentionDays` is ignored). */
+/** Read `organizations.settings.network`. */
 export function readOrgNetworkSettings(raw: unknown): OrgNetworkSettings {
   const n = (raw ?? {}) as Partial<Record<keyof OrgNetworkSettings, unknown>>;
   return { deny: readRules(n.deny) };

@@ -1,13 +1,13 @@
 /**
- * Remember which AI-CLI profile (CLAUDE_CONFIG_DIR / CODEX_HOME dir) last worked, per
- * command, so the next prompt tries it first. Persisted in the profile dir.
+ * Remember which AI credential (provider + CLAUDE_CONFIG_DIR / CODEX_HOME dir) last worked, so the next
+ * prompt tries it first, and the operator's pin. Persisted in the profile dir.
  * Best-effort — never breaks a run.
  * @adr 0057
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-/** Map of aiCli command → last working profile dir. */
+/** The state map (reserved keys below → credential keys). */
 type ProfileState = Record<string, string>;
 
 /** Path to the state file inside the profile directory. */
@@ -26,33 +26,18 @@ function readState(profileDir: string): ProfileState {
   }
 }
 
-/** The last known working profile dir for a command, or null. */
-export function getWorkingProfile(profileDir: string, cmd: string): string | null {
-  return readState(profileDir)[cmd] ?? null;
-}
-
-/** Persist the working profile dir for a command (best-effort). */
-export function setWorkingProfile(profileDir: string, cmd: string, dir: string): void {
-  const state = readState(profileDir);
-  if (state[cmd] === dir) return;
-  state[cmd] = dir;
-  try {
-    writeFileSync(statePath(profileDir), JSON.stringify(state, null, 2), "utf8");
-  } catch {
-    // Best-effort.
-  }
-}
-
-/**
- * Reserved key for the unified working credential — kept in the same state file
- * alongside the legacy per-cmd dirs; the `::` in a credential key never collides with a cmd name.
- * @adr 0182
- */
+/** Reserved key for the working credential. @adr 0182 */
 const WORKING_CREDENTIAL_KEY = "__credential__";
 
-/** The last known working credential key (unified mixed list), or null. @adr 0182 */
+/** The last known working credential key, or null. @adr 0182 */
 export function getWorkingCredential(profileDir: string): string | null {
   return readState(profileDir)[WORKING_CREDENTIAL_KEY] ?? null;
+}
+
+/** The dir of the working credential when it is a `provider` one (`<provider>::<dir>`), else null. */
+export function getWorkingDir(profileDir: string, provider: string): string | null {
+  const key = getWorkingCredential(profileDir);
+  return key?.startsWith(`${provider}::`) ? key.slice(provider.length + 2) : null;
 }
 
 /** Persist the working credential key (best-effort). */

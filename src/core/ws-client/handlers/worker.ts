@@ -20,9 +20,11 @@ import {
   type AgentToolsReadRequest,
   type AgentToolsWriteRequest,
   type AgentWriteRequest,
+  type AutonomousArchiveRequest,
   type AutonomousEvidenceRequest,
   type AutonomousEvidenceHistoryRequest,
   type AutonomousLogsRequest,
+  type AutonomousReadRequest,
   type AutonomousWriteRequest,
   type ConfigReadReply,
   type ConfigWriteReply,
@@ -43,7 +45,8 @@ import {
   type SecretsWriteRequest,
   type WsEnvelope,
 } from "@4pm/ws";
-import { readAutonomous, readAutonomousEvidence, readAutonomousEvidenceHistory, readAutonomousLogs, writeAutonomous } from "../../autonomous/autonomous";
+import { readAutonomous,
+  readAutonomousArchive, readAutonomousEvidence, readAutonomousEvidenceHistory, readAutonomousLogs, writeAutonomous } from "../../autonomous/autonomous";
 import { readDiscussions } from "../../autonomous/autonomous-discussions";
 import { readEr, writeEr } from "../../autonomous/autonomous-er";
 import { readDiagram, writeDiagram } from "../../autonomous/autonomous-diagram";
@@ -76,13 +79,22 @@ export function handleWorkerChannels(
       return true;
     }
     case WsChannels.AUTONOMOUS_READ:
-      // Request/reply (machine-0028): settings + status + books + approvals.
+      // Request/reply (machine-0028): settings + status + books (AI Done paged — ADR-0563) + the live sidecar entries.
       if (ctx.physicRoot) {
-        void readAutonomous(ctx.physicRoot, ctx.profileDir).then((reply) =>
+        void readAutonomous(ctx.physicRoot, ctx.profileDir, (payload ?? {}) as unknown as AutonomousReadRequest).then((reply) =>
           ctx.send(WsChannels.AUTONOMOUS_READ, reply, message.id),
         );
       }
       return true;
+    case WsChannels.AUTONOMOUS_ARCHIVE: {
+      // Request/reply (machine-0096): search the archived book rows on the books branch (ADR-0563).
+      const root = ctx.physicRoot;
+      const req = (payload ?? {}) as unknown as AutonomousArchiveRequest;
+      void (root ? readAutonomousArchive(root, req) : Promise.resolve({ rows: [], total: 0, page: 1, size: 20, error: "no project served" })).then((reply) =>
+        ctx.send(WsChannels.AUTONOMOUS_ARCHIVE, reply, message.id),
+      );
+      return true;
+    }
     case WsChannels.DISCUSSIONS_READ: {
       // Request/reply (ADR-0454): discussion files on the books branch — blobs, contents, a batch commit.
       const root = ctx.physicRoot;

@@ -9,13 +9,13 @@
  * ADR-0507: the project-scoped knobs (claim TTL / check, attempts, run timeout, size hints, folders) come
  * from the server policy when one was received — `readAutonomousConfig` returns the **effective** config
  * (worker file ⊕ policy); every write is a patch of changed keys under a mutex, carrying who paused.
- * ADR-0554: `intakeBatchSize` caps the ids one intake run takes in.
- * @adr 0321 @adr 0507 @adr 0554
+ * ADR-0563: `archiveAfterDays` / `booksSyncMinutes` (archive + books sync); one request per intake claim.
+ * @adr 0321 @adr 0507 @adr 0563
  */
 import { readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DIAGRAM_ROOT, ER_ROOT, EVIDENCE_ROOT, MAX_INTAKE_BATCH_SIZE, MOCKUP_ROOT, PROJECT_AUTONOMOUS_KEYS, SEQUENCE_ROOT, isSafeRepoDir, type AutonomousPausedBy } from "@4pm/dto";
+import { DIAGRAM_ROOT, ER_ROOT, EVIDENCE_ROOT, MOCKUP_ROOT, PROJECT_AUTONOMOUS_KEYS, SEQUENCE_ROOT, isSafeRepoDir, type AutonomousPausedBy } from "@4pm/dto";
 import { autonomousPolicy } from "./autonomous-policy";
 
 /** The autonomous knobs (parameters only — no logic). */
@@ -77,8 +77,10 @@ export interface AutonomousConfig {
   branchCleanup: { enabled: boolean; afterDays: number };
   /** Intake adds a `DOC-…` row per request, reviewed in rounds before its tasks run — policy-only. @adr 0536 */
   docsPhase: boolean;
-  /** At most this many requests / answered intake questions per intake run (1–50). @adr 0554 */
-  intakeBatchSize: number;
+  /** A `Done` request stays in the live books this many days before the archive moves it — policy-only. @adr 0563 */
+  archiveAfterDays: number;
+  /** The books-sync PR is refreshed at most this often (minutes) — policy-only. @adr 0563 */
+  booksSyncMinutes: number;
 }
 
 /** Lower bound of `runTimeoutMinutes`. @adr 0452 */
@@ -110,7 +112,8 @@ export const DEFAULT_AUTONOMOUS_CONFIG: AutonomousConfig = {
   autoResolvePrConflicts: false,
   branchCleanup: { enabled: false, afterDays: 14 },
   docsPhase: true,
-  intakeBatchSize: 1,
+  archiveAfterDays: 30,
+  booksSyncMinutes: 10,
 };
 
 /** The config file path under a profile dir. */
@@ -171,7 +174,8 @@ function coerce(raw: unknown): AutonomousConfig {
     autoResolvePrConflicts: d.autoResolvePrConflicts,
     branchCleanup: d.branchCleanup,
     docsPhase: d.docsPhase,
-    intakeBatchSize: Math.min(MAX_INTAKE_BATCH_SIZE, Math.max(1, Math.floor(num(o.intakeBatchSize, d.intakeBatchSize)))),
+    archiveAfterDays: d.archiveAfterDays,
+    booksSyncMinutes: d.booksSyncMinutes,
   };
 }
 
@@ -287,29 +291,6 @@ export async function pauseAutonomous(profileDir: string, by: AutonomousPausedBy
   const cfg = await readWorkerAutonomousConfig(profileDir);
   if (cfg.paused) return;
   await patchAutonomousConfig(profileDir, { paused: true, pausedBy: by, pausedAt: new Date().toISOString(), ...(reason ? { pausedReason: reason } : {}) });
-}
-
-/**
- * The repo folders the cli commits with the books: every evidence root in use + the mockup folder, and the ER +
- * sequence folders, and the system-diagram folder.
- * @adr 0418 @adr 0453 @adr 0530
- */
-export function repoDirsOf(cfg: Pick<AutonomousConfig, "evidenceDir" | "mockupDir"> & Partial<Pick<AutonomousConfig, "erDir" | "sequenceDir" | "diagramDir">>): string[] {
-  return [
-    ...new Set([
-      EVIDENCE_ROOT,
-      cfg.evidenceDir,
-      cfg.mockupDir,
-      ...(cfg.erDir ? [cfg.erDir] : []),
-      ...(cfg.sequenceDir ? [cfg.sequenceDir] : []),
-      ...(cfg.diagramDir ? [cfg.diagramDir] : []),
-    ]),
-  ];
-}
-
-/** The books-branch-only folders stripped from task branches (ER + sequences + system diagram). @adr 0453 @adr 0530 */
-export function booksOnlyDirsOf(cfg: Pick<AutonomousConfig, "erDir" | "sequenceDir"> & Partial<Pick<AutonomousConfig, "diagramDir">>): string[] {
-  return [cfg.erDir, cfg.sequenceDir, ...(cfg.diagramDir ? [cfg.diagramDir] : [])];
 }
 
 /** True when `now` (local) falls inside the `HH:MM-HH:MM` quiet-hours window (supports crossing midnight). */

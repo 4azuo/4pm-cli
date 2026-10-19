@@ -113,6 +113,13 @@ export async function buildGraph(root: string, mode: "docs" | "code" | "all"): P
     const code = m === "docs" ? [] : await readAll(root, walked.code, budget);
     return buildDocModel({ mode: m, docs, code, configs, options: await docOptions(root) });
   } catch {
-    return { nodes: [], edges: [], orphans: [] };
+    return {
+      nodes: [],
+      edges: [],
+      orphans: [],
+      roots: [],
+      metrics: { depthScore: 100, maxDepth: 0, avgDepth: 0, idealDepth: 3, cycles: 0, unclassified: 0, brokenRefs: 0, perRoot: [] },
+      issues: [],
+    };
   }
 }

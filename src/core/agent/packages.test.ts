@@ -150,19 +150,3 @@ describe("installPackage", () => {
     expect(existsSync(join(root, "CLAUDE.md"))).toBe(true);
   });
 });
-
-describe("legacy manifest", () => {
-  it("migrates .claude/.4pm-packages.json to .4pm/packages.json", async () => {
-    await mkdir(join(root, ".claude/skills/old"), { recursive: true });
-    await writeFile(join(root, ".claude/skills/old/SKILL.md"), "# old");
-    await writeFile(
-      join(root, ".claude/.4pm-packages.json"),
-      JSON.stringify({ old: { kind: "skill", version: "1.0.0", packageId: "p", installedAt: "x", sha256: "y" } }),
-    );
-    const list = await listPackages(root, []);
-    expect(list.installed[0]).toMatchObject({ kind: "skill", slug: "old", providers: ["claude"] });
-    expect(list.installed[0]!.sha256).toBe(list.installed[0]!.currentSha256);
-    expect(existsSync(join(root, ".4pm/packages.json"))).toBe(true);
-    expect(existsSync(join(root, ".claude/.4pm-packages.json"))).toBe(false);
-  });
-});

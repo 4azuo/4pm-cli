@@ -15,9 +15,9 @@ import type { EgressRunKind } from "../network/egress-state";
 import type { AiRunSource } from "@4pm/ws";
 import { ensureAiClisFor } from "../worker/toolchain";
 import type { WsHandlerCtx } from "../ws-client/context";
-import { isUnifiedConfig, planPolicyRun, type AiRunPolicy } from "../../utils/ai-cli";
+import { planPolicyRun, type AiRunPolicy } from "../../utils/ai-cli";
 import { createAccountLeaser } from "./ai-account-lease";
-import { getPinnedCredential, getWorkingCredential, getWorkingProfile } from "./ai-profile-state";
+import { getPinnedCredential, getWorkingCredential } from "./ai-profile-state";
 import { runAiFailover, type AiRunHandlers } from "./ai-runner";
 import type { AiUsage } from "./ai-stream";
 
@@ -66,12 +66,13 @@ export type AiTextRunner = (prompt: string, opts: AiTextRunOptions) => Promise<A
 export function createAiTextRunner(ctx: WsHandlerCtx): AiTextRunner {
   return async (prompt, opts) => {
     const config = readProfileConfig(ctx.profileDir);
-    const unified = isUnifiedConfig(config);
-    const pinned = unified ? getPinnedCredential(ctx.profileDir) : null;
     // Working-first, as for a dispatched run (ADR-0057/0182/0250): the pin, else the remembered credential.
-    const hint = unified
-      ? { credential: pinned ?? ((config.aiFailoverMode ?? "remember") === "remember" ? getWorkingCredential(ctx.profileDir) : null) }
-      : { dir: getWorkingProfile(ctx.profileDir, config.aiCli || "claude") };
+    const pinned = getPinnedCredential(ctx.profileDir);
+    const hint = {
+      credential:
+        pinned ??
+        ((config.aiFailoverMode ?? "remember") === "remember" ? getWorkingCredential(ctx.profileDir) : null),
+    };
     const plan = planPolicyRun(prompt, config, hint, opts.policy);
     // On-use self-install (ADR-0396): a missing AI CLI is installed before the first attempt spawns.
     await ensureAiClisFor(ctx.profileDir, plan.attempts.map((a) => a.cmd), (line) =>

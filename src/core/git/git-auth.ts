@@ -274,7 +274,7 @@ function setDevTsconfig(): void {
 
 /**
  * Apply the served project's git-auth from the `ws_token` (method + App host). For a server-managed method
- * with a host, scope the helper + shim to it; otherwise (`self`, legacy `deploy-key`, none) undo any earlier
+ * with a host, scope the helper + shim to it; otherwise (`self`, its alias `deploy-key`, none) undo any earlier
  * server-managed configuration (revoking what this worker still holds) and serve the worker's own gh / glab
  * login instead. Returns true when a server-managed path is active.
  */

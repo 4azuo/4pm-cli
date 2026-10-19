@@ -399,7 +399,7 @@ export async function ragQuery(root: string, queryText: string, k?: number, kind
         score: Math.round(r.score * 10000) / 10000,
         ...(r.title ? { title: r.title } : {}),
         ...(r.kind ? { kind: r.kind } : {}),
-        ...(r.hits ? { hits: r.hits } : {}),
+        hits: r.hits ?? 1,
         ...(r.more?.length ? { more: r.more.map((m) => ({ snippet: m.snippet.slice(0, 600), score: Math.round(m.score * 10000) / 10000 })) } : {}),
       }));
     return { results };

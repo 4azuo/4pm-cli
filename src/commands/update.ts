@@ -31,7 +31,7 @@ export async function runUpdate(
   // `??` would keep the empty string and dial nowhere.
   const serverUrl = (
     serverUrlFlag ||
-    readCredential(profileDir, profileName)?.serverUrl ||
+    readCredential(profileDir)?.serverUrl ||
     process.env.FOURPM_SERVER ||
     "http://localhost:42001"
   ).replace(/\/$/, "");

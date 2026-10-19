@@ -1,20 +1,31 @@
 /**
  * Autonomous git steps — everything the cycle does with git runs here, in code, never in the
  * agent: resolve each repo's `<base>` explicitly (spec / `.gitmodules`, else origin/HEAD — never the
- * checked-out branch), sync the books branch `autonomous-books/<base>` (which follows `<base>`), publish
- * the books there as an optimistic lock (a rejected non-fast-forward push = a lost race ⇒ reset +
- * re-evaluate), prepare the task branch `dev/<base>/<GROUP>/<TSK>` from `<base>` in the root and each
- * submodule, save work in progress, and deliver (push + PR into each repo's base). `<base>` itself only
- * ever changes through PRs, so it can be protected. The ER folder and the sequence diagrams are books-branch
- * only too: stripped from task branches like the sidecars.
- * @adr 0371 @adr 0448 @adr 0453
+ * checked-out branch), keep the books branch `autonomous-books/<base>` holding only the books set (created once as
+ * an orphan from the books set of `<base>`), publish the books there as an
+ * optimistic lock (a rejected non-fast-forward push = a lost race ⇒ reset + re-evaluate) from a persistent side
+ * worktree, prepare the REQ / DOC / TSK branch `dev/<base>/<GROUP>/<ID>` from `<base>` in the root and each
+ * submodule, save work in progress, and deliver (push + PR into each repo's base). The books set never rides a
+ * work branch (it is a never-committed overlay — `autonomous-overlay`); a books-set path an agent still committed
+ * is restored before the push.
+ * @adr 0371 @adr 0448 @adr 0563
  */
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { BRANCH_DELETIONS_REL, DIAGRAM_SIDECAR_REL, DISCUSSIONS_DIR, DOCS_SIDECAR_REL, ER_SIDECAR_REL, EVIDENCE_ROOT, LINEAGE_SIDECAR_REL } from "@4pm/dto";
-import { ATTEMPTS_REL } from "./autonomous-books";
+import {
+  BOOK_FILES,
+  DIAGRAM_ROOT,
+  ER_ROOT,
+  EVIDENCE_ROOT,
+  SIDECAR_RELS,
+  BOOKS_INDEX_REL,
+  booksSetDirs,
+  isBooksSetPath,
+  type BooksSetDirs,
+} from "@4pm/dto";
 import { booksBranch } from "./autonomous-tasks";
+import { autonomousPolicy } from "./autonomous-policy";
 import { openPullRequest, prStateOf } from "../git/git-host";
 import { attachSubmoduleBranches } from "../git/submodule-branch";
 import { readFileInRoot } from "../../utils/safe-path";
@@ -23,128 +34,55 @@ import { execInProject } from "../agent/agent-spawn";
 // Project git runs as the agent user when uid separation is on (ADR-0430); unchanged otherwise.
 const run = execInProject;
 
-/**
- * The book files + sidecars — with the evidence / mockup folders (`addRepoDirs`) the ONLY paths ever pushed
- * to the books branch.
- * @adr 0404 @adr 0418
- */
-export const BOOK_PATHS = [
-  "AI_TODO.md",
-  "AI_DONE.md",
-  "AI_PROGRESS.md",
-  "USER_TODO.md",
-  "USER_QA.md",
-  ".claude/.autonomous.approvals.json",
-  ".claude/.autonomous.authors.json",
-  ATTEMPTS_REL,
-  ER_SIDECAR_REL,
-  DIAGRAM_SIDECAR_REL,
-  BRANCH_DELETIONS_REL,
-  // The DOC rounds + the request lineage (ADR-0536/0537).
-  DOCS_SIDECAR_REL,
-  LINEAGE_SIDECAR_REL,
-];
+/** The 4PM commit identity. */
+const IDENT = ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app"];
 
 /**
- * The cli-owned sidecars — written only by the cli's own code (web writes, claim/finish/release/split/fold),
- * never by an agent run: an agent's edits are reverted on intake and stripped from task branches.
- * @adr 0438
+ * The folders that decide the books set: the project's policy folders, else the defaults (the policy is pushed by
+ * the server before any cycle runs).
+ * @adr 0563
  */
-export const SIDECAR_PATHS = [
-  ".claude/.autonomous.approvals.json",
-  ".claude/.autonomous.authors.json",
-  ATTEMPTS_REL,
-  ER_SIDECAR_REL,
-  DIAGRAM_SIDECAR_REL,
-  BRANCH_DELETIONS_REL,
-  DOCS_SIDECAR_REL,
-  LINEAGE_SIDECAR_REL,
-];
+export function booksDirsNow(): BooksSetDirs {
+  const s = autonomousPolicy()?.settings;
+  return { evidenceDir: s?.evidenceDir ?? EVIDENCE_ROOT, erDir: s?.erDir ?? ER_ROOT, diagramDir: s?.diagramDir ?? DIAGRAM_ROOT };
+}
 
-/**
- * Put the sidecars back to their version at `ref` in the working tree + index — tracked ones restored,
- * ones absent at `ref` removed. Returns the paths that differed (an agent edited them).
- * @adr 0438
- */
-async function restoreSidecars(root: string, ref: string): Promise<string[]> {
-  const changed: string[] = [];
-  for (const p of SIDECAR_PATHS) {
-    const atRef = (await gitQuiet(root, ["ls-tree", "--name-only", ref, "--", p])).trim() !== "";
-    if (atRef) {
-      const diff = (await gitQuiet(root, ["diff", "--name-only", ref, "--", p])).trim();
-      if (!diff) continue;
-      await gitQuiet(root, ["checkout", ref, "--", p]);
-      changed.push(p);
-    } else if (existsSync(join(root, p))) {
-      await gitQuiet(root, ["rm", "-q", "--cached", "--ignore-unmatch", "--", p]);
-      await gitQuiet(root, ["clean", "-fq", "--", p]);
-      changed.push(p);
-    }
-  }
-  return changed;
+/** The pathspecs of the books set: the book files, the sidecars, the layout guide and its folders (with every evidence root). */
+export function booksSetPathspecs(dirs: BooksSetDirs = booksDirsNow()): string[] {
+  return [...new Set([...BOOK_FILES, ...SIDECAR_RELS, BOOKS_INDEX_REL, ...booksSetDirs(dirs), EVIDENCE_ROOT, dirs.evidenceDir])];
 }
 
 /**
- * Put the discussion files back to `ref` — they are written only by the cli's discussion batches, never by
- * an agent run. Returns `[".4pm/discussions"]` when the agent changed them, else `[]`.
- * @adr 0454
+ * Safety net before a REQ / DOC / TSK branch is pushed: every books-set path the branch changed since its fork
+ * point with `origin/<base>` (an agent force-committed an overlay file) is put back to the fork point and the
+ * restore is committed, so neither the branch nor its PR carries books. Returns the restored paths.
+ * @adr 0563 @adr 0438
  */
-async function restoreDiscussions(root: string, ref: string): Promise<string[]> {
-  return restoreDirToRef(root, ref, DISCUSSIONS_DIR);
-}
-
-/**
- * Put one repo folder back to `ref` (working tree + index): files added since are dropped, the others
- * restored. Returns `[dir]` when anything differed, else `[]`.
- * @adr 0454 @adr 0453
- */
-export async function restoreDirToRef(root: string, ref: string, dir: string): Promise<string[]> {
-  const atRef = new Set((await gitQuiet(root, ["ls-tree", "-r", "--name-only", ref, "--", dir])).split("\n").filter(Boolean));
-  const atHead = (await gitQuiet(root, ["ls-files", "--", dir])).split("\n").filter(Boolean);
-  const dirty =
-    (await gitQuiet(root, ["status", "--porcelain", "--", dir])).trim() !== "" ||
-    (await gitQuiet(root, ["diff", "--name-only", ref, "--", dir])).trim() !== "";
-  if (!dirty) return [];
-  // Files the agent added (tracked now, absent at ref) leave the index; the others go back to ref.
-  const added = atHead.filter((p) => !atRef.has(p));
-  if (added.length) await gitQuiet(root, ["rm", "-q", "--cached", "--", ...added]);
-  if (atRef.size) await gitQuiet(root, ["checkout", ref, "--", dir]);
-  await gitQuiet(root, ["clean", "-fdq", "--", dir]);
-  return [dir];
-}
-
-/**
- * Remove an agent's sidecar changes from a task branch before it is pushed: restore the sidecars to the
- * branch's fork point with `origin/<base>` (not the base tip — a restore to the tip would make the PR
- * rewrite whatever changed on `<base>` since) and commit the restore when anything differed, so
- * neither the branch nor its PR carries sidecar changes. Returns the reverted paths.
- * @adr 0438
- */
-export async function stripSidecarsFromBranch(root: string, base: string, taskId: string, dirs: readonly string[] = []): Promise<string[]> {
+export async function stripBooksSetFromBranch(root: string, base: string, id: string, dirs: BooksSetDirs = booksDirsNow()): Promise<string[]> {
   if (!(await hasRemoteBranch(root, base))) return [];
   const fork = (await gitQuiet(root, ["merge-base", "HEAD", `origin/${base}`])).trim();
   if (!fork) return [];
-  // `dirs`: the books-branch-only folders (ER + sequences — ADR-0453).
-  const changed = [...(await restoreSidecars(root, fork)), ...(await restoreDiscussions(root, fork))];
-  for (const d of dirs) changed.push(...(await restoreDirToRef(root, fork, d)));
+  const changed = (await gitQuiet(root, ["diff", "--name-only", fork, "HEAD"]))
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((p) => p && isBooksSetPath(p, dirs));
   if (changed.length === 0) return [];
-  // Commit only the restored paths (a pathspec naming a file git does not know fails the commit).
-  if ((await gitQuiet(root, ["diff", "--cached", "--name-only", "--", ...changed])).trim()) {
-    await git(root, ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "commit", "-q", "-m", `chore(${taskId}): restore autonomous sidecars (4PM)`, "--", ...changed]);
+  const atFork = new Set((await gitQuiet(root, ["ls-tree", "-r", "--name-only", fork, "--", ...changed])).split("\n").filter(Boolean));
+  const back = changed.filter((p) => atFork.has(p));
+  const gone = changed.filter((p) => !atFork.has(p));
+  if (back.length) await gitQuiet(root, ["checkout", fork, "--", ...back]);
+  if (gone.length) await gitQuiet(root, ["rm", "-q", "--cached", "--ignore-unmatch", "--", ...gone]);
+  if ((await gitQuiet(root, ["diff", "--cached", "--name-only"])).trim()) {
+    await git(root, [...IDENT, "commit", "-q", "-m", `chore(${id}): keep the books out of the branch (4PM)`]);
   }
   return changed;
 }
 
-/**
- * Stage the folders committed with the books — the evidence roots and the intake mockups:
- * additions, edits and deletions. Separate from `BOOK_PATHS` so an absent folder (nothing to
- * commit) never fails the books' own `git add`. `dirs` defaults to the default evidence root.
- * @adr 0404 @adr 0418
- */
-async function addRepoDirs(root: string, dirs: string[] = [EVIDENCE_ROOT]): Promise<void> {
-  for (const d of dirs) {
-    const tracked = (await gitQuiet(root, ["ls-files", "--", d])).trim();
-    if (tracked || existsSync(join(root, d))) await gitQuiet(root, ["add", "-A", "--", d]);
+/** Stage every books-set change in a books checkout (additions, edits and deletions). */
+async function stageBooksSet(dir: string, extra: readonly string[] = []): Promise<void> {
+  for (const p of [...new Set([...booksSetPathspecs(), ...extra])]) {
+    const tracked = (await gitQuiet(dir, ["ls-files", "--", p])).trim();
+    if (tracked || existsSync(join(dir, p))) await gitQuiet(dir, ["add", "-A", "--", p]);
   }
 }
 
@@ -249,28 +187,65 @@ export async function currentBranch(cwd: string): Promise<string> {
 }
 
 /**
- * Commit everything in `cwd` as a work-in-progress snapshot; true when something was committed. The
- * cli-owned sidecars are never part of it (an agent's edits to them are discarded).
- * @adr 0438
+ * Is HEAD a 4PM `wip(…)` commit that no remote has yet (never pushed, not a merge)? Then the next snapshot amends it
+ * instead of stacking another commit — a branch reaches the remote with one commit per stop, never a force-push.
+ * @adr 0563
  */
-export async function wipCommit(cwd: string, message: string): Promise<boolean> {
-  await gitQuiet(cwd, ["add", "-A"]);
-  for (const p of SIDECAR_PATHS) {
-    if ((await gitQuiet(cwd, ["ls-files", "--", p])).trim()) {
-      await gitQuiet(cwd, ["reset", "-q", "--", p]);
-      await gitQuiet(cwd, ["checkout", "--", p]);
-    }
-  }
-  const staged = (await gitQuiet(cwd, ["diff", "--cached", "--name-only"])).trim();
-  if (!staged) return false;
-  await git(cwd, ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "commit", "-q", "-m", message]).catch(() => undefined);
-  return true;
+async function unpushedWipHead(cwd: string): Promise<boolean> {
+  const subject = (await gitQuiet(cwd, ["log", "-1", "--format=%s"])).trim();
+  if (!subject.startsWith("wip(")) return false;
+  const parents = (await gitQuiet(cwd, ["rev-list", "--parents", "-n", "1", "HEAD"])).trim().split(/\s+/);
+  if (parents.length !== 2) return false;
+  return !(await gitQuiet(cwd, ["branch", "-r", "--contains", "HEAD"])).trim();
 }
 
 /**
- * Make sure the books branch exists on the remote: created from `origin/<base>` the first time (a ref
- * create, no checkout; a racing creator just wins). Returns the ref to work from — `origin/<books>` —
- * or null when there is no remote `<base>` (local-only repo: the books stay on the local base).
+ * Commit everything in `cwd` as a work-in-progress snapshot; true when something was committed. The books set is
+ * never part of it (an agent's edits of the overlay are dropped from the index). An unpushed `wip(…)` HEAD is amended
+ * (the local WIP commits squash into one; a final `feat(…)` / `docs(…)` message replaces it).
+ * @adr 0438 @adr 0563
+ */
+export async function wipCommit(cwd: string, message: string): Promise<boolean> {
+  await gitQuiet(cwd, ["add", "-A"]);
+  const dirs = booksDirsNow();
+  const staged = (await gitQuiet(cwd, ["diff", "--cached", "--name-only"])).split("\n").filter(Boolean);
+  const books = staged.filter((p) => isBooksSetPath(p, dirs));
+  if (books.length) await gitQuiet(cwd, ["reset", "-q", "--", ...books]);
+  const amend = await unpushedWipHead(cwd);
+  if (staged.length === books.length) {
+    // Nothing new, but the final message still replaces an unpushed WIP subject.
+    if (amend && !message.startsWith("wip(")) await git(cwd, [...IDENT, "commit", "-q", "--amend", "-m", message]).catch(() => undefined);
+    return false;
+  }
+  await git(cwd, [...IDENT, "commit", "-q", ...(amend ? ["--amend"] : []), "-m", message]).catch(() => undefined);
+  return true;
+}
+
+
+/** The repository's common `.git` folder (a worktree's `.git` is only a file pointing there). */
+async function commonGitDir(cwd: string): Promise<string> {
+  const d = (await gitQuiet(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
+  return d || join(cwd, ".git");
+}
+
+/**
+ * Turn the tree checked out in `dir` into the books set only: every path outside it is removed. True when anything
+ * changed (staged).
+ * @adr 0563
+ */
+async function keepOnlyBooksSet(dir: string, dirs: BooksSetDirs): Promise<boolean> {
+  const all = (await gitQuiet(dir, ["ls-files"])).split("\n").filter(Boolean);
+  const drop = all.filter((p) => !isBooksSetPath(p, dirs));
+  for (let i = 0; i < drop.length; i += 200) await gitQuiet(dir, ["rm", "-q", "--cached", "--", ...drop.slice(i, i + 200)]);
+  if (drop.length) await gitQuiet(dir, ["clean", "-fdqx"]);
+  return drop.length > 0;
+}
+
+/**
+ * Make sure the books branch exists on the remote. Created the first time as an orphan branch holding the books set
+ * `origin/<base>` carries (a racing worker that pushed first simply wins). Returns the ref to work from —
+ * `origin/<books>` — or null when there is no remote `<base>` (a local-only repo keeps the books on the local base).
+ * @adr 0448 @adr 0563
  */
 export async function ensureBooksBranch(root: string, base: string): Promise<string | null> {
   const books = booksBranch(base);
@@ -278,40 +253,60 @@ export async function ensureBooksBranch(root: string, base: string): Promise<str
   await gitQuiet(root, ["fetch", "-q", "origin", books]);
   if (await hasRemoteBranch(root, books)) return `origin/${books}`;
   if (!(await hasRemoteBranch(root, base))) return null;
-  await gitQuiet(root, ["push", "-q", "origin", `refs/remotes/origin/${base}:refs/heads/${books}`]);
-  await gitQuiet(root, ["fetch", "-q", "origin", books]);
+  const dirs = booksDirsNow();
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const dir = join(await commonGitDir(root), `4pm-books-init-${process.pid}-${Date.now()}`);
+    await git(root, ["worktree", "add", "-q", "--detach", dir, `origin/${base}`]);
+    try {
+      // An orphan: the books branch shares no history with `<base>`.
+      await git(dir, ["checkout", "-q", "--orphan", `4pm-books-init-${process.pid}`]);
+      await keepOnlyBooksSet(dir, dirs);
+      await git(dir, [...IDENT, "commit", "-q", "--allow-empty", "-m", "chore(books): the autonomous books (4PM)"]);
+      const pushed = await git(dir, ["push", "-q", "origin", `HEAD:refs/heads/${books}`]).then(
+        () => true,
+        () => false,
+      );
+      await gitQuiet(root, ["fetch", "-q", "origin", books]);
+      if (pushed || (await hasRemoteBranch(root, books))) break;
+    } finally {
+      await gitQuiet(root, ["worktree", "remove", "--force", dir]);
+      await gitQuiet(root, ["worktree", "prune"]);
+    }
+  }
   return (await hasRemoteBranch(root, books)) ? `origin/${books}` : null;
 }
 
-/**
- * Bring `origin/<base>` into the checked-out books branch when `<base>` moved, so intake plans against
- * current code. Only book paths differ between the two branches, so a conflict can only be in them —
- * the books side wins (`-X ours`). A merge that still fails is aborted (the books stay usable).
- */
-async function mergeBaseIntoBooks(root: string, base: string): Promise<void> {
-  if (!(await hasRemoteBranch(root, base))) return;
-  try {
-    await git(root, ["merge-base", "--is-ancestor", `origin/${base}`, "HEAD"]);
-    return; // already contains <base>
-  } catch {
-    // <base> moved — merge it below
-  }
-  try {
-    await git(root, ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "merge", "-q", "--no-edit", "-X", "ours", "-m", `chore(auto): sync ${base} into the books (4PM)`, `origin/${base}`]);
-  } catch {
-    await gitQuiet(root, ["merge", "--abort"]);
-  }
+/** The persistent books worktree of a checkout (detached on the books branch, never the main working tree). */
+export function booksTreeDir(root: string): string {
+  return join(root, ".git", "4pm-books");
 }
 
 /**
- * Phase 1: leave the working tree on a fresh books branch (current books + current `<base>` code). A
- * dirty task branch is first saved (`wip:` commit — nothing is lost); a dirty tree on any other branch is
- * stashed. A repo without a remote `<base>` keeps working on the local base.
+ * Reset the books worktree to `ref` (created on first use; a stale registration is pruned). Every book read and
+ * write of the cycle happens there, so the main working tree stays on the work branch.
+ * @adr 0563
  */
-export async function syncBooks(root: string, base: string): Promise<string | null> {
+async function resetBooksTree(root: string, ref: string): Promise<string> {
+  const dir = booksTreeDir(root);
+  if (!existsSync(join(dir, ".git"))) {
+    await gitQuiet(root, ["worktree", "prune"]);
+    await git(root, ["worktree", "add", "-q", "--force", "--detach", dir, ref]);
+    return dir;
+  }
+  await git(dir, ["checkout", "-q", "--detach", "--force", ref]);
+  await gitQuiet(dir, ["reset", "-q", "--hard", ref]);
+  await gitQuiet(dir, ["clean", "-fdqx"]);
+  return dir;
+}
+
+/**
+ * Phase 1: fetch, make sure the books branch is books-only, and reset the books worktree to it. A dirty main tree is
+ * saved first: a `wip:` commit on a 4PM branch, else a NAMED stash, returned so the cycle can tell the managers. The
+ * main working tree keeps its branch. A repo without a remote `<base>` works on its local checkout (`dir` = root).
+ * @adr 0506 @adr 0563
+ */
+export async function syncBooks(root: string, base: string): Promise<{ stashed: string | null; dir: string; ref: string | null }> {
   const cur = await currentBranch(root);
-  // Uncommitted changes outside a task branch are stashed under a NAMED stash, returned so the cycle can
-  // tell the managers where they went (ADR-0506) — never silently.
   let stashed: string | null = null;
   if ((await gitQuiet(root, ["status", "--porcelain"])).trim()) {
     if (cur.startsWith("dev/") || cur.includes("/dev/")) await wipCommit(root, "wip: autosave before sync (4PM)");
@@ -323,104 +318,55 @@ export async function syncBooks(root: string, base: string): Promise<string | nu
   }
   await git(root, ["fetch", "-q", "--prune", "origin"]);
   const ref = await ensureBooksBranch(root, base);
-  if (ref) {
-    await git(root, ["checkout", "-q", "-B", booksBranch(base), ref]);
-    await mergeBaseIntoBooks(root, base);
-  } else await git(root, ["checkout", "-q", base]);
+  if (!ref) return { stashed, dir: root, ref: null };
+  const dir = await resetBooksTree(root, ref);
+  return { stashed, dir, ref };
+}
+
+/** Bring the main tree's submodules up to the checked-out commit and onto their branches. */
+export async function updateSubmodules(root: string): Promise<void> {
   await gitQuiet(root, ["submodule", "update", "--init", "-q"], 300_000);
   await attachSubmoduleBranches(root);
-  return stashed;
 }
 
 /** Outcome of a books publish. */
 export type PublishResult = "pushed" | "unchanged" | "aborted" | "failed";
 
 /**
- * Publish a change to the books on the books branch: on a fresh `origin/autonomous-books/<base>` (with
- * `<base>` merged in), apply `change` (it edits the book files and returns false to abort — e.g. the task
- * is no longer free), commit only the book paths, push. A non-fast-forward rejection means another
- * worker pushed first: fetch, reset, and re-apply `change` against the new state. Up to 5 attempts.
+ * Publish a change to the books on the books branch, from a books checkout `dir` (the books worktree, or a temporary
+ * one): on a fresh `origin/autonomous-books/<base>`, apply `change` (it edits the book files and returns false to
+ * abort — e.g. the task is no longer free), commit only books-set paths, push. A non-fast-forward rejection means
+ * another worker pushed first: fetch, reset, and re-apply `change` against the new state. Up to 5 attempts.
+ * @adr 0371 @adr 0563
  */
 export async function publishBooks(
-  root: string,
+  dir: string,
   base: string,
   message: string | (() => string),
   change: () => Promise<boolean>,
-  opts: { detach?: boolean; dirs?: string[] } = {},
+  opts: { dirs?: string[] } = {},
 ): Promise<PublishResult> {
   const books = booksBranch(base);
   for (let attempt = 1; attempt <= 5; attempt++) {
-    const ref = await ensureBooksBranch(root, base);
+    const ref = await ensureBooksBranch(dir, base);
     if (ref) {
-      // A side worktree works detached (the books branch may be checked out in the main worktree).
-      if (opts.detach) await git(root, ["checkout", "-q", "--detach", ref]);
-      else await git(root, ["checkout", "-q", "-B", books, ref]);
-      await mergeBaseIntoBooks(root, base);
+      await git(dir, ["checkout", "-q", "--detach", "--force", ref]);
+      await gitQuiet(dir, ["reset", "-q", "--hard", ref]);
+      await gitQuiet(dir, ["clean", "-fdqx"]);
     }
     if (!(await change())) return "aborted";
-    await gitQuiet(root, ["add", "--", ...BOOK_PATHS.filter((p) => existsSync(join(root, p)))]);
-    await addRepoDirs(root, opts.dirs);
-    const staged = (await gitQuiet(root, ["diff", "--cached", "--name-only"])).trim();
+    await stageBooksSet(dir, opts.dirs);
+    const staged = (await gitQuiet(dir, ["diff", "--cached", "--name-only"])).trim();
     if (!staged) return "unchanged";
     // A message function is read after `change` (e.g. the ER version an apply produced — ADR-0453).
-    await git(root, ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "commit", "-q", "-m", typeof message === "string" ? message : message()]);
+    await git(dir, [...IDENT, "commit", "-q", "-m", typeof message === "string" ? message : message()]);
     try {
-      await git(root, ["push", "-q", "origin", `HEAD:refs/heads/${ref ? books : base}`]);
+      await git(dir, ["push", "-q", "origin", `HEAD:refs/heads/${ref ? books : base}`]);
       return "pushed";
     } catch (err) {
       const msg = String(err);
       if (!/non-fast-forward|fetch first|rejected|stale info/i.test(msg)) return "failed";
       await new Promise((r) => setTimeout(r, 500 + Math.random() * 2000 * attempt));
-    }
-  }
-  return "failed";
-}
-
-/**
- * Publish the agent's intake edits (already in the working tree on the books branch): commit the books,
- * push, and on a rejection rebase onto the fresh books branch once more; a conflict aborts and discards
- * this intake (it re-runs next cycle).
- */
-export async function publishIntake(
-  root: string,
-  base: string,
-  message: string,
-  dirs?: string[],
-  onGuard?: (reverted: string[]) => void | Promise<void>,
-  prepare?: (ref: string) => Promise<void>,
-): Promise<PublishResult> {
-  // Guard (ADR-0438): drop any commit the agent made (only the staged books below are published) and
-  // put the cli-owned sidecars back — an intake agent never approves, authors or counts attempts.
-  const books = booksBranch(base);
-  const target = (await hasRemoteBranch(root, books)) ? books : base;
-  const ref = (await hasRemoteBranch(root, target)) ? `origin/${target}` : "HEAD";
-  if (ref !== "HEAD") await gitQuiet(root, ["reset", "-q", ref]);
-  const reverted = [...(await restoreSidecars(root, ref)), ...(await restoreDiscussions(root, ref))];
-  if (reverted.length && onGuard) await onGuard(reverted);
-  // The cli's own post-intake step (ADR-0453: restore the approved ER, number new change requests).
-  if (prepare) await prepare(ref);
-  await gitQuiet(root, ["add", "--", ...BOOK_PATHS.filter((p) => existsSync(join(root, p)))]);
-  // The evidence roots + the mockup folder the intake agent may write (ADR-0418).
-  await addRepoDirs(root, dirs);
-  const staged = (await gitQuiet(root, ["diff", "--cached", "--name-only"])).trim();
-  // Anything else the agent touched is not intake — drop it (intake edits the books only).
-  await gitQuiet(root, ["checkout", "--", "."]);
-  await gitQuiet(root, ["clean", "-fdq", "--", "."]);
-  if (!staged) return "unchanged";
-  await git(root, ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "commit", "-q", "-m", message]);
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    try {
-      await git(root, ["push", "-q", "origin", `HEAD:refs/heads/${target}`]);
-      return "pushed";
-    } catch {
-      await gitQuiet(root, ["fetch", "-q", "origin", target]);
-      try {
-        await git(root, ["rebase", "-q", `origin/${target}`]);
-      } catch {
-        await gitQuiet(root, ["rebase", "--abort"]);
-        await gitQuiet(root, ["reset", "-q", "--hard", `origin/${target}`]);
-        return "aborted";
-      }
     }
   }
   return "failed";
@@ -532,7 +478,7 @@ export async function mutateBooks(
   const dir = join(root, ".git", `4pm-books-${process.pid}-${Date.now()}`);
   await git(root, ["worktree", "add", "-q", "--detach", dir, ref]);
   try {
-    return await publishBooks(dir, base, message, () => fn(dir), { detach: true, dirs });
+    return await publishBooks(dir, base, message, () => fn(dir), { ...(dirs ? { dirs } : {}) });
   } finally {
     await gitQuiet(root, ["worktree", "remove", "--force", dir]);
     await gitQuiet(root, ["worktree", "prune"]);

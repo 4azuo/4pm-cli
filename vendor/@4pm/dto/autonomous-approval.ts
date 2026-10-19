@@ -153,7 +153,7 @@ export function approvalSigningPayload(p: { projectId: string; rowId: string; by
   return [APPROVAL_PAYLOAD_VERSION, p.projectId, p.rowId, p.by, p.at, p.h].join("|");
 }
 
-/** One entry of `.claude/.autonomous.approvals.json` — signed by the server (legacy entries lack h/kid/sig). */
+/** One entry of `.4pm/.autonomous.approvals.json` — signed by the server (an unsigned one, written before any signing key exists, lacks h/kid/sig). */
 export const approvalEntrySchema = z.object({
   approved: z.literal(true),
   /** Stable userId of the approver (SoD key). */
@@ -180,7 +180,7 @@ export interface ApprovalPublicKey {
 
 /**
  * Verification state of one row's approval, as `autonomous.read` reports it: `approved` (valid
- * signature, unchanged content), `unsigned` (legacy entry), `invalid` (bad / unknown-key signature),
+ * signature, unchanged content), `unsigned` (no signing key yet), `invalid` (bad / unknown-key signature),
  * `stale` (content changed after approval). Ids without an entry are absent.
  */
 export type ApprovalState = "approved" | "unsigned" | "invalid" | "stale";

@@ -15,7 +15,7 @@ import { mergeApprovalWrite, unapproveIds } from "./autonomous-approvals";
 
 const TODO = `# AI Todo
 
-| ID | Priority | Tag | Depends | Group | Task description | Notes |
+| ID | Priority | Actions | Depends | Group | Task description | Notes |
 |---|---|---|---|---|---|---|
 | TSK-000001-001 | High | | | GRP-000001 | Add login | |
 `;

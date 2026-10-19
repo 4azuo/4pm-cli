@@ -3,15 +3,17 @@
  * `DOC-…` row — round, state, branch, the files it produced, the review history), the review a person submits
  * after a round, the spec's Docs section (doc types → folders, numbered or not), the `NEW-<n>-<slug>.md` names the
  * agent gives new numbered files before the server numbers them, and the lineage sidecar that keeps which request
- * each book group came from (the `REQ-…` row is removed by intake).
- * @adr 0536 @adr 0537
+ * each book group came from (the `REQ-…` row is removed by intake). Since ADR-0563 an accepted DOC row and a request
+ * carry the delivery of their branch into `<base>` (`pr` / `delivery`), which their group's later rows wait for.
+ * @adr 0536 @adr 0537 @adr 0563
  */
 import { z } from "zod";
+import { parseDelivery, type DeliveryRecord } from "./autonomous-books-set";
 
 /** The docs sidecar on the books branch (cli-owned). @adr 0536 */
-export const DOCS_SIDECAR_REL = ".claude/.autonomous.docs.json";
+export const DOCS_SIDECAR_REL = ".4pm/.autonomous.docs.json";
 /** The lineage sidecar on the books branch (cli-owned, written at intake). @adr 0537 */
-export const LINEAGE_SIDECAR_REL = ".claude/.autonomous.lineage.json";
+export const LINEAGE_SIDECAR_REL = ".4pm/.autonomous.lineage.json";
 
 /** Doc type (spec `docs_types` key) → its folder under the repo, or a root file (`CHANGELOG.md`). */
 export const DOC_TYPE_DIRS: Readonly<Record<string, string>> = {
@@ -28,8 +30,16 @@ export const DOC_TYPE_DIRS: Readonly<Record<string, string>> = {
   changelog: "CHANGELOG.md",
 };
 
-/** The spec's doc types, in the order the spec form lists them. */
+/** The spec's built-in doc types, in the order the spec form lists them. */
 export const SPEC_DOC_TYPES = Object.keys(DOC_TYPE_DIRS);
+
+/** A doc type key — a built-in one, or a project's own type added with a spec doc template. @adr 0564 */
+export const DOC_TYPE_KEY_PATTERN = /^[a-z][a-z0-9-]{1,39}$/;
+
+/** The folder (or root file) of a doc type: the built-in one, else `docs/<type>`. @adr 0564 */
+export function docTypeDir(type: string): string {
+  return DOC_TYPE_DIRS[type] ?? `docs/${type}`;
+}
 
 /** Doc types whose files are `NNNN-slug.md` with a server-allocated number. @adr 0536 */
 export const DOC_NUMBERED_TYPES: readonly string[] = ["page", "window", "adr", "sad", "api", "cache", "component", "biz-flow", "data-model"];
@@ -48,15 +58,19 @@ export function docNumberCode(n: number): string {
   return String(n).padStart(DOC_NUMBER_DIGITS, "0");
 }
 
-/** The spec's Docs section: the selected doc types (known ones only) and the organization text. */
+/** The spec's Docs section: the selected doc types and the organization text; `numbered` = the numbered ones. */
 export interface SpecDocs {
   types: string[];
   org: string;
+  /** The types whose files are `NNNN-slug.md` (the built-in defaults, overridden by a doc template's `numbered`). */
+  numbered?: string[];
 }
 
 /**
  * Read the Docs section of a `project.spec.json` object — `fields: [{id, value}]` or top-level keys; a
- * multiselect value is an array or a comma list. Unknown types are dropped.
+ * multiselect value is an array or a comma list. Keys that are not valid doc type keys are dropped; a project's own
+ * types are kept. `numbered` starts from the built-in defaults.
+ * @adr 0564
  */
 export function readSpecDocs(spec: unknown): SpecDocs {
   const o = (spec && typeof spec === "object" ? spec : {}) as Record<string, unknown>;
@@ -69,17 +83,31 @@ export function readSpecDocs(spec: unknown): SpecDocs {
   };
   const raw = field("docs_types");
   const list = Array.isArray(raw) ? raw.map(String) : typeof raw === "string" ? raw.split(",") : [];
-  const types = [...new Set(list.map((t) => t.trim()).filter((t) => t in DOC_TYPE_DIRS))];
+  const types = [...new Set(list.map((t) => t.trim()).filter((t) => t in DOC_TYPE_DIRS || DOC_TYPE_KEY_PATTERN.test(t)))];
   const org = field("docs_org");
-  return { types, org: typeof org === "string" ? org : "" };
+  return { types, org: typeof org === "string" ? org : "", numbered: types.filter((t) => DOC_NUMBERED_TYPES.includes(t)) };
 }
 
-/** The doc type a repo path belongs to (by folder / root file), or null. */
+/** The doc type a repo path belongs to (by folder / root file; `docs/<type>/…` for a project's own type), or null. @adr 0564 */
 export function docTypeOfPath(path: string): string | null {
   for (const [type, dir] of Object.entries(DOC_TYPE_DIRS)) {
     if (dir.endsWith(".md") ? path === dir : path.startsWith(`${dir}/`)) return type;
   }
-  return null;
+  const own = /^docs\/([a-z][a-z0-9-]{1,39})\//.exec(path)?.[1];
+  return own ?? null;
+}
+
+/** The spec doc template mirror of one type in the repo: `.4pm/doc-templates/<type>/`. @adr 0564 */
+export const DOC_TEMPLATES_DIR = ".4pm/doc-templates";
+
+/** `meta.json` of a mirrored spec doc template. @adr 0564 */
+export interface DocTemplateMeta {
+  name: string;
+  description: string;
+  numbered: boolean;
+  version: number;
+  /** File name of the template file in the folder (absent when the template has none). */
+  templateFile?: string;
 }
 
 /** One file a DOC row produced. */
@@ -121,6 +149,8 @@ export interface DocEntry {
   history: DocReviewRecord[];
   /** Files this DOC shares with other open DOC rows (path → their ids), computed at the end of each round. */
   overlaps?: Record<string, string[]>;
+  /** The DOC branch's PR into `<base>`, opened once the row is accepted; its group's tasks wait for it. @adr 0563 */
+  pr?: DeliveryRecord;
 }
 
 /** The docs sidecar: DOC id → entry. */
@@ -143,6 +173,7 @@ export function parseDocsSidecar(text: string | null | undefined): DocsSidecar {
         files: Array.isArray(e.files) ? e.files.filter((f) => f && typeof f.path === "string") : [],
         history: Array.isArray(e.history) ? e.history.filter((h) => h && typeof h.round === "number") : [],
         ...(e.overlaps && typeof e.overlaps === "object" ? { overlaps: e.overlaps } : {}),
+        ...(parseDelivery(e.pr) ? { pr: parseDelivery(e.pr)! } : {}),
       };
     }
     return out;
@@ -189,6 +220,8 @@ export interface LineageEntry {
   at: string;
   /** For a `QA-…` source: the request it came from (resolved through that QA's own group). */
   root?: string;
+  /** The request branch's PR (mockups / sequences) into `<base>`; the group's DOC / tasks wait for it. @adr 0563 */
+  delivery?: DeliveryRecord;
 }
 
 /** The lineage sidecar: group code (`GGGGGG`) → entry. */
@@ -213,6 +246,7 @@ export function parseLineage(text: string | null | undefined): LineageSidecar {
         at: typeof e.at === "string" ? e.at : "",
         ...(typeof e.team === "string" && e.team ? { team: e.team } : {}),
         ...(typeof e.root === "string" && e.root ? { root: e.root } : {}),
+        ...(parseDelivery(e.delivery) ? { delivery: parseDelivery(e.delivery)! } : {}),
       };
     }
     return out;

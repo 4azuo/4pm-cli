@@ -3,7 +3,7 @@
  * project id (from `ws_token`, persisted in the profile dir so a tick before the next connect still
  * enforces them), verifies every approvals-file entry (Ed25519 signature over projectId|rowId|by|at|h,
  * and `h` = the hash of the row's current content cells), and builds the entries the web writes.
- * Before this cli ever received keys, the legacy rule holds (`approved: true` is enough).
+ * Before this cli ever received keys, the unsigned rule holds (`approved: true` is enough).
  * @adr 0438
  */
 import { createHash, createPublicKey, verify, type KeyObject } from "node:crypto";
@@ -26,7 +26,7 @@ const TRUST_FILE = "approval-trust.json";
 /** The books an approval can target, by `AutonomousBooks` key. */
 export type ApprovalBooks = { userTodo: string; userQa: string; aiTodo: string };
 
-/** Loaded trust; `null` = never received keys (legacy rule). */
+/** Loaded trust; `null` = never received keys (unsigned rule). */
 let trust: { keys: Map<string, KeyObject>; projectId: string | null } | null = null;
 
 /** Decode the pushed keys (invalid ones dropped). */
@@ -53,8 +53,8 @@ export function loadApprovalTrust(profileDir: string): void {
 }
 
 /**
- * Apply the trust carried on a `ws_token`. Keys absent (older server / signing off) ⇒ keep what is
- * stored; once keys were received they are never dropped (no downgrade to the legacy rule).
+ * Apply the trust carried on a `ws_token`. Keys absent (signing off) ⇒ keep what is
+ * stored; once keys were received they are never dropped (no downgrade to the unsigned rule).
  */
 export function setApprovalTrust(keys: ApprovalPublicKey[] | undefined, projectId: string | null | undefined, profileDir: string): void {
   if (!keys || keys.length === 0) return;
@@ -68,7 +68,7 @@ export function setApprovalTrust(keys: ApprovalPublicKey[] | undefined, projectI
 
 /**
  * Replace only the keys (a live `approval.keys` push), keeping the served project id. An empty list is
- * ignored — never a downgrade to the legacy rule.
+ * ignored — never a downgrade to the unsigned rule.
  * @adr 0440
  */
 export function replaceApprovalKeys(keys: ApprovalPublicKey[], profileDir: string): void {
@@ -130,7 +130,7 @@ export function approvalStates(map: Record<string, unknown>, books: ApprovalBook
   return out;
 }
 
-/** The ids that count as approved (verified + unchanged; legacy rule before keys were received). */
+/** The ids that count as approved (verified + unchanged; unsigned rule before keys were received). */
 export function verifiedApprovedIds(map: Record<string, unknown>, books: ApprovalBooks): Set<string> {
   return new Set(Object.entries(approvalStates(map, books)).filter(([, st]) => st === "approved").map(([id]) => id));
 }
@@ -140,7 +140,7 @@ export type ApprovalWrite = { ok: true; entries: Record<string, ApprovalEntry> }
 
 /**
  * The entries to write for `ids`: the server-signed one when given (after checking its `h` against the
- * row in `book`), else an unsigned legacy entry. A missing row or a hash mismatch ⇒ `staleId`.
+ * row in `book`), else an unsigned entry. A missing row or a hash mismatch ⇒ `staleId`.
  */
 export function buildApprovalEntries(
   ids: readonly string[],

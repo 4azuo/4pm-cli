@@ -1,9 +1,10 @@
 /**
  * Tests for the dedicated books branch on real temp git repos (a bare remote + a clone): the books are
- * published to `autonomous-books/<base>` (created from `<base>` the first time) and never to `<base>`; the
- * books branch follows `<base>` (its code is merged in, the books side wins); reads use the books branch
- * and fall back to `<base>` before it exists; web writes go through a side worktree of it.
- * @adr 0448
+ * published to `autonomous-books/<base>` (created books-only from `<base>` the first time) and never to `<base>`;
+ * the books branch never takes `<base>` code; the cycle works in a books worktree while the main tree keeps
+ * its branch; reads use the books branch and fall back to `<base>` before it exists; web writes go through a side
+ * worktree of it.
+ * @adr 0448 @adr 0563
  */
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -78,11 +79,11 @@ describe("publishBooks", () => {
     expect(remoteFile("main", "AI_TODO.md")).not.toContain("TSK-000001-001");
   });
 
-  it("merges new <base> code into the books branch and keeps the books", async () => {
+  it("never takes <base> code into the books branch and keeps the books", async () => {
     await publishBooks(root, "main", "chore(auto): claim", addTask(root, "TSK-000001-001"));
     landOnMain("app.ts", "v2\n");
     await publishBooks(root, "main", "chore(auto): claim", addTask(root, "TSK-000001-002"));
-    expect(remoteFile(BOOKS, "app.ts")).toBe("v2");
+    expect(() => remoteFile(BOOKS, "app.ts")).toThrow();
     const todo = remoteFile(BOOKS, "AI_TODO.md");
     expect(todo).toContain("TSK-000001-001");
     expect(todo).toContain("TSK-000001-002");
@@ -99,13 +100,14 @@ describe("syncBooks + readBooksFile", () => {
     expect(await readBooksFile(other, "main", "AI_TODO.md")).toContain("TSK-000001-001");
   });
 
-  it("leaves the working tree on the books branch with the current <base> code", async () => {
-    await publishBooks(root, "main", "chore(auto): claim", addTask(root, "TSK-000001-001"));
-    landOnMain("app.ts", "v3\n");
-    await syncBooks(root, "main");
-    expect(g(root, "rev-parse", "--abbrev-ref", "HEAD")).toBe(BOOKS);
-    expect(readFileSync(join(root, "app.ts"), "utf8")).toBe("v3\n");
-    expect(readFileSync(join(root, "AI_TODO.md"), "utf8")).toContain("TSK-000001-001");
+  it("resets the books worktree to the books branch and leaves the main tree on its branch", async () => {
+    const other = join(tmp, "writer");
+    execFileSync("git", ["clone", "-q", remote, other]);
+    await publishBooks(other, "main", "chore(auto): claim", addTask(other, "TSK-000001-001"));
+    const { dir } = await syncBooks(root, "main");
+    expect(g(root, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+    expect(readFileSync(join(dir, "AI_TODO.md"), "utf8")).toContain("TSK-000001-001");
+    expect(readFileSync(join(root, "AI_TODO.md"), "utf8")).not.toContain("TSK-000001-001");
   });
 });
 

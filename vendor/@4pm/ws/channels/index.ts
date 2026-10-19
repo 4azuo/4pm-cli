@@ -63,6 +63,8 @@ export const WsChannels = {
   // Discussion files on the books branch (ADR-0454): list blobs / read files / find a batch commit.
   DISCUSSIONS_READ: "discussions.read",
   AUTONOMOUS_LOGS: "autonomous.logs",
+  // search the archived book rows (`.4pm/archive/<YYYY-MM>/` on the books branch — ADR-0563)
+  AUTONOMOUS_ARCHIVE: "autonomous.archive",
   // read one committed book evidence file (ADR-0404): origin/<base> → task branch → working tree
   AUTONOMOUS_EVIDENCE: "autonomous.evidence",
   // the versions (commits) of one mockup / sequence file (ADR-0515)

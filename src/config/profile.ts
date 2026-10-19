@@ -2,8 +2,8 @@
  * Multi-instance profiles: each cli instance runs with its own profile
  * `4pm --profile <name>` (or the FOURPM_PROFILE env var) — a separate config dir +
  * `.cre` at ~/.4pm/profiles/<name>/. Without `--profile`, the default profile is keyed
- * by the paired MACHINE userId, stored in the ~/.4pm/default pointer;
- * `default` is only the legacy fallback (pre-ADR-0047).
+ * by the paired MACHINE userId, stored in the ~/.4pm/default pointer
+ * (`default` until the first link writes it).
  * @adr 0014 @adr 0047
  */
 import {
@@ -20,10 +20,10 @@ import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { Locale } from "@4pm/constants";
 import { ensureDir } from "../common/io/ensure-dir";
-import type { AiCredential, AiProfile } from "../utils/ai-cli";
+import type { AiCredential } from "../utils/ai-cli";
 import { agentUser, registerAgentRoot, repairWorkspaceProjects, shareWithAgent, traversableByAgent } from "../utils/agent-user";
 
-/** Legacy default profile name (pre-ADR-0047 fallback). */
+/** The profile name used before a link writes the default pointer. */
 export const DEFAULT_PROFILE = "default";
 
 /** Path to the ~/.4pm/default pointer (holds the userId of the default profile). */
@@ -32,15 +32,14 @@ function defaultPointerPath(): string {
 }
 
 /**
- * The default profile name = the userId in ~/.4pm/default, falling back to
- * the legacy `default` profile when the pointer is absent.
+ * The default profile name = the userId in ~/.4pm/default, else `default` (not linked yet).
  */
 export function defaultProfileName(): string {
   try {
     const userId = readFileSync(defaultPointerPath(), "utf8").trim();
     if (userId) return userId;
   } catch {
-    // no pointer ⇒ legacy fallback
+    // no pointer yet
   }
   return DEFAULT_PROFILE;
 }
@@ -122,27 +121,12 @@ export interface ProfileConfig {
   /** AI CLI the TUI input box drives — defaults to "claude". @adr 0057 */
   aiCli?: string;
   /**
-   * Claude profiles to run — each `{ profile, args?, model? }` sets CLAUDE_CONFIG_DIR to
-   * its `profile` dir. A **list** of candidates tried in order until one authenticates
-   * (the working one is remembered). `args` are EXTRA pre-prompt args appended
-   * after the hardcoded required metering flags; `model` is passed as `--model`.
-   * @adr 0158 @adr 0057
-   */
-  claudeHome?: AiProfile[];
-  /** Codex profiles to run — same shape; each sets CODEX_HOME to its `profile` dir. */
-  codexHome?: AiProfile[];
-  /**
-   * Reserved for the future antigravity CLI (schema only) — stored/editable but not
-   * spawned with a home dir yet.
-   */
-  antigravityHome?: AiProfile[];
-  /**
-   * Unified mixed credential list. Each `{ provider, profile, args?, model?, enabled?,
-   * label? }` names the AI CLI it drives, so a single ordered list intermixes claude/codex/
-   * antigravity accounts. When present (≥1 usable entry) it REPLACES `claudeHome`/`codexHome`/
-   * `antigravityHome` + the single `aiCli` for the run plan: failover walks it in order and can
-   * cross providers. Absent ⇒ the legacy per-`aiCli` plan (backward-compatible — no migration).
-   * @adr 0182
+   * The AI credential list. Each `{ provider, profile, args?, model?, enabled?, label? }` names the
+   * AI CLI it drives (CLAUDE_CONFIG_DIR / CODEX_HOME = its `profile` dir), so one ordered list
+   * intermixes claude/codex/antigravity accounts: failover walks it in order (the working one is
+   * remembered) and can cross providers. `args` are EXTRA pre-prompt args appended after the
+   * hardcoded required metering flags; `model` is passed as `--model`.
+   * @adr 0182 @adr 0158 @adr 0057
    */
   aiProfiles?: AiCredential[];
   /**

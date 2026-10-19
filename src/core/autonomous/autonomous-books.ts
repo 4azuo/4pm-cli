@@ -2,16 +2,16 @@
  * Autonomous books model — parse and rewrite the Markdown tables of the five book files the
  * cli now edits in code (claim, finish, release, question, split): `AI_TODO` tasks, the multi-row
  * `AI_PROGRESS` claims, `AI_DONE` (Done + Incidents), `USER_QA`, plus the `.autonomous.attempts.json`
- * sidecar. Cells are matched by header name, so a legacy 3-column `AI_PROGRESS` still parses. Rewrites
+ * sidecar. Cells are matched by header name. Rewrites
  * touch only the table rows — the prose around the table is kept byte-for-byte. Every book may carry a
  * `Team` column (a team code, ADR-0450): it is read when present and added (after `ID`) the first time a
  * row with a team is written. Likewise the metadata columns `Tags` / `Due`, added after `Team` (else `Title` / `ID`),
  * and the row `Title`, added right after `ID` and clamped to `BOOK_TITLE_MAX` on every write.
- * AI_TODO's approval-action column is `Actions`; a legacy `Tag` header is renamed in place on every rewrite.
+ * AI_TODO's approval-action column is `Actions`.
  * USER_TODO / USER_QA rows the cycle used keep a `State` (last column) instead of being removed.
  * @adr 0371 @adr 0450 @adr 0543 @adr 0549 @adr 0562
  */
-import { BOOK_STATE_HEADER, clampBookTitle, parseBookState } from "@4pm/dto";
+import { ATTEMPTS_SIDECAR_REL, BOOK_STATE_HEADER, clampBookTitle, parseBookState } from "@4pm/dto";
 import { readFileInRoot, writeFileInRoot } from "../../utils/safe-path";
 import { join } from "node:path";
 
@@ -135,36 +135,8 @@ export function clampTitles(md: string): string {
   }
 }
 
-/** The AI_TODO approval-action column name (formerly `Tag`). @adr 0543 */
+/** The AI_TODO approval-action column name. @adr 0543 */
 export const ACTIONS_HEADER = "Actions";
-
-/** Rename a legacy AI_TODO `Tag` header to `Actions` (no-op when already renamed). @adr 0543 */
-function withActionsHeader(table: MdTable): MdTable {
-  const i = col(table.header, "Tag");
-  if (i < 0 || col(table.header, ACTIONS_HEADER) >= 0) return table;
-  return { ...table, header: table.header.map((h, k) => (k === i ? ACTIONS_HEADER : h)) };
-}
-
-/** True when the AI_TODO table still has the legacy `Tag` header. @adr 0543 */
-export function hasLegacyTagHeader(md: string): boolean {
-  const t = parseTasks(md).table;
-  return Boolean(t && col(t.header, "Tag") >= 0 && col(t.header, ACTIONS_HEADER) < 0);
-}
-
-/** Rewrite AI_TODO with its legacy `Tag` header renamed to `Actions` (rows unchanged). @adr 0543 */
-export function upgradeTasksHeader(md: string): string {
-  const t = parseTasks(md).table;
-  if (!t || !hasLegacyTagHeader(md)) return md;
-  return replaceRows(md, withActionsHeader(t), t.rows);
-}
-
-/** Rename AI_TODO's legacy `Tag` header to `Actions` in `root`; true when the book changed. @adr 0543 */
-export async function upgradeActionsHeader(root: string): Promise<boolean> {
-  const todo = await readBook(root, "AI_TODO.md");
-  if (!hasLegacyTagHeader(todo)) return false;
-  await writeBook(root, "AI_TODO.md", upgradeTasksHeader(todo));
-  return true;
-}
 
 /** Give AI_TODO and USER_QA in `root` a `Title` column (before the intake agent edits them). @adr 0549 */
 export async function addTitleColumns(root: string): Promise<void> {
@@ -227,8 +199,7 @@ export function parseTasks(md: string): { table: MdTable | null; tasks: TaskRow[
     .map((r) => ({
       id: get(table, r, "ID"),
       priority: get(table, r, "Priority"),
-      // `Actions` — a legacy `Tag` header is the same column until the next rewrite renames it.
-      tag: col(table.header, ACTIONS_HEADER) >= 0 ? get(table, r, ACTIONS_HEADER) : get(table, r, "Tag"),
+      tag: get(table, r, ACTIONS_HEADER),
       depends: splitIds(get(table, r, "Depends")),
       group: get(table, r, "Group"),
       desc: get(table, r, "Task description"),
@@ -247,7 +218,7 @@ export function writeTasks(md: string, tasks: TaskRow[]): string {
   const found = parseTasks(md).table;
   if (!found) return md;
   const table = withMetaColumns(
-    withTeamColumn(withTitleColumn(withActionsHeader(found), tasks.some((t) => Boolean(t.title))), tasks.some((t) => Boolean(t.team))),
+    withTeamColumn(withTitleColumn(found, tasks.some((t) => Boolean(t.title))), tasks.some((t) => Boolean(t.team))),
     tasks.some((t) => Boolean(t.tags || t.due)),
   );
   return replaceRows(
@@ -294,7 +265,7 @@ export function isIntakeClaimId(id: string): boolean {
 }
 
 /**
- * Parse `AI_PROGRESS` (a legacy 3-column table yields claims with no worker/claim id): `claims` = the task
+ * Parse `AI_PROGRESS`: `claims` = the task
  * claims (`TSK-…`, and `DOC-…` docs rounds — ADR-0536), `intake` = the intake claims (`REQ-…` / `QA-…` being taken in).
  * @adr 0529
  */
@@ -315,8 +286,7 @@ export function parseClaims(md: string): { table: MdTable | null; claims: ClaimR
 
 /**
  * Rewrite `AI_PROGRESS` with `claims` (task claims) and `intake` (intake claims — omitted ⇒ the current
- * ones are kept, so a task-claim write never drops an intake row), upgrading a legacy table to the
- * multi-row header.
+ * ones are kept, so a task-claim write never drops an intake row), always with the multi-row header.
  * @adr 0529
  */
 export function writeClaims(md: string, claims: ClaimRow[], intake?: ClaimRow[]): string {
@@ -383,17 +353,18 @@ function insertColumns(table: MdTable, after: string, names: string[]): MdTable 
 }
 
 /**
- * Upgrade a Done table in place: `Group` + `Depends` after `ID` and `Evidence` after `Files`,
- * keeping every other column (e.g. the web's `AI verify`).
- * @adr 0400 @adr 0404
+ * Upgrade a Done table in place: `Group` + `Depends` after `ID`, `Evidence` after `Files` and `Delivery` after
+ * `Evidence`, keeping every other column (e.g. the web's `AI verify`).
+ * @adr 0400 @adr 0404 @adr 0563
  */
-function withDoneColumns(table: MdTable, team = false, meta = false, title = false): MdTable {
-  const base = withTitleColumn(insertColumns(insertColumns(table, "ID", ["Group", "Depends"]), "Files", ["Evidence"]), title);
+function withDoneColumns(table: MdTable, team = false, meta = false, title = false, delivery = false): MdTable {
+  const ev = insertColumns(insertColumns(table, "ID", ["Group", "Depends"]), "Files", ["Evidence"]);
+  const base = withTitleColumn(delivery ? insertColumns(ev, "Evidence", ["Delivery"]) : ev, title);
   const teamed = team ? insertColumns(base, "Group", ["Team"]) : base;
   return meta ? insertColumns(teamed, col(teamed.header, "Team") >= 0 ? "Team" : "Group", ["Tags", "Due"]) : teamed;
 }
 
-/** Append a Done row (`Timestamp | ID | Title | Group | Depends | Task description | Files | Evidence | Notes`). */
+/** Append a Done row (`Timestamp | ID | Title | Group | Depends | Task description | Files | Evidence | Delivery | Notes`). */
 export function appendDone(
   md: string,
   row: {
@@ -408,11 +379,13 @@ export function appendDone(
     tags?: string;
     due?: string;
     title?: string;
+    /** The `Delivery` cell (`PR open #12` / `direct` …) — ADR-0563. */
+    delivery?: string;
   },
 ): string {
   const found = findTables(md).find((t) => col(t.header, "ID") >= 0 && col(t.header, "Timestamp") >= 0);
   if (!found) return md;
-  const table = withDoneColumns(found, Boolean(row.team), Boolean(row.tags || row.due), Boolean(row.title));
+  const table = withDoneColumns(found, Boolean(row.team), Boolean(row.tags || row.due), Boolean(row.title), Boolean(row.delivery));
   const values = {
     timestamp: stamp(),
     id: row.id,
@@ -425,9 +398,44 @@ export function appendDone(
     "task description": row.desc,
     files: row.files,
     evidence: row.evidence,
+    delivery: row.delivery ?? "",
     notes: row.notes,
   };
   return replaceRows(md, table, [...table.rows, build(table.header, values)]);
+}
+
+/** One AI Done row whose delivery is still open (`PR open …`): its id, `Delivery` cell and Notes. @adr 0563 */
+export interface OpenDelivery {
+  id: string;
+  delivery: string;
+  notes: string;
+}
+
+/** The AI Done rows whose `Delivery` says the PR is still open. @adr 0563 */
+export function openDeliveries(md: string): OpenDelivery[] {
+  const table = findTables(md).find((t) => col(t.header, "ID") >= 0 && col(t.header, "Timestamp") >= 0);
+  if (!table || col(table.header, "Delivery") < 0) return [];
+  return table.rows
+    .map((r) => ({ id: get(table, r, "ID"), delivery: get(table, r, "Delivery"), notes: get(table, r, "Notes") }))
+    .filter((r) => r.delivery.toLowerCase().startsWith("pr open"));
+}
+
+/** Rewrite the `Delivery` cell of AI Done rows (`id → cell`); unchanged text when none applies. @adr 0563 */
+export function setDoneDelivery(md: string, cells: ReadonlyMap<string, string>): string {
+  const table = findTables(md).find((t) => col(t.header, "ID") >= 0 && col(t.header, "Timestamp") >= 0);
+  if (!table || cells.size === 0) return md;
+  const c = col(table.header, "Delivery");
+  if (c < 0) return md;
+  let changed = false;
+  const rows = table.rows.map((r) => {
+    const next = cells.get(get(table, r, "ID"));
+    if (next === undefined || r[c] === next) return r;
+    changed = true;
+    const copy = [...r];
+    copy[c] = next;
+    return copy;
+  });
+  return changed ? replaceRows(md, table, rows) : md;
 }
 
 /** Append an Incident row (`Timestamp | Note`). */
@@ -554,43 +562,6 @@ export function stripStateRows(md: string): string {
   return open.length === t.rows.length ? md : replaceRows(md, t, open);
 }
 
-/**
- * Put back, after the intake agent, the rows of `before` that are missing in `now`: the history rows (`State` kept)
- * and the `takenIn` ids the agent removed (`State` = `Taken in`). Rows keep `before`'s order; rows the agent added
- * follow. Cells are matched by header, so a column the agent's table lacks is added.
- * @adr 0562
- */
-export function restoreStateRows(before: string, now: string, takenIn: ReadonlySet<string>, takenInState: string): string {
-  const old = mainTable(before);
-  const cur = mainTable(now);
-  if (!old || !cur) return now;
-  const curIds = new Map(cur.rows.map((r) => [get(cur, r, "ID"), r] as const));
-  const back = old.rows.filter((r) => {
-    const id = get(old, r, "ID");
-    return !curIds.has(id) && (parseBookState(get(old, r, BOOK_STATE_HEADER)) !== null || takenIn.has(id));
-  });
-  if (back.length === 0) return now;
-  let header = [...cur.header];
-  for (const h of [...old.header, BOOK_STATE_HEADER]) if (col(header, h) < 0) header = [...header, h];
-  const toHeader = (t: MdTable, r: string[], state?: string): string[] =>
-    header.map((h) => (state !== undefined && h.toLowerCase() === BOOK_STATE_HEADER.toLowerCase() ? state : get(t, r, h)));
-  const backIds = new Set(back.map((r) => get(old, r, "ID")));
-  const rows: string[][] = [];
-  const used = new Set<string>();
-  for (const r of old.rows) {
-    const id = get(old, r, "ID");
-    if (backIds.has(id)) {
-      const own = get(old, r, BOOK_STATE_HEADER);
-      rows.push(toHeader(old, r, parseBookState(own) ? own : takenInState));
-    } else if (curIds.has(id)) {
-      rows.push(toHeader(cur, curIds.get(id)!));
-      used.add(id);
-    }
-  }
-  for (const r of cur.rows) if (!used.has(get(cur, r, "ID"))) rows.push(toHeader(cur, r));
-  return replaceRows(now, { ...cur, header }, rows);
-}
-
 /** Set the `State` of rows (id → value); the column is added when missing. Unchanged text when nothing changes. @adr 0562 */
 export function setRowStates(md: string, states: ReadonlyMap<string, string>): string {
   const found = mainTable(md);
@@ -612,8 +583,8 @@ export function setRowStates(md: string, states: ReadonlyMap<string, string>): s
 
 // ── Attempts sidecar ─────────────────────────────────────────────────────────────────────────────
 
-/** Relative path of the attempts sidecar (committed on `<base>` with the books). */
-export const ATTEMPTS_REL = ".claude/.autonomous.attempts.json";
+/** Relative path of the attempts sidecar (on the books branch — ADR-0563). */
+export const ATTEMPTS_REL = ATTEMPTS_SIDECAR_REL;
 
 /** One task's attempt record. */
 export interface AttemptEntry {
@@ -627,8 +598,10 @@ export interface AttemptEntry {
   /**
    * The task's branch conflicts with `<base>` and the agent could not resolve it: never picked until a person
    * presses Retry or the branch merges cleanly again (`base` / `head` = the shas it was blocked at). @adr 0539
+   * `pr-closed`: the request / DOC PR of its group was closed without merge; `attempt-limit`: a request's intake failed
+   * `maxTaskAttempts` times — both wait for Retry. @adr 0563
    */
-  blocked?: { reason: "merge-conflict"; at: string; base: string; head: string };
+  blocked?: { reason: "merge-conflict" | "pr-closed" | "attempt-limit"; at: string; base: string; head: string; url?: string };
 }
 
 /** Read the attempts map (`{}` on any error). */
@@ -651,6 +624,23 @@ export async function writeAttempts(root: string, map: Record<string, AttemptEnt
 /** `YYYY-MM-DD HH:mm:ss` UTC — the books' timestamp format. */
 export function stamp(d = new Date()): string {
   return d.toISOString().slice(0, 19).replace("T", " ");
+}
+
+/**
+ * The ids in a book's trash block (`<!-- 4pm:todo-trash {retentionHours, items[]} -->`, AI_TODO / USER_TODO) still
+ * within retention — restorable, so still alive for done marks and the archive. A malformed block keeps none.
+ * @adr 0538 @adr 0563
+ */
+export function trashedIds(md: string, now = Date.now()): string[] {
+  const raw = /<!--\s*4pm:todo-trash\s*([\s\S]*?)-->/.exec(md)?.[1];
+  if (!raw) return [];
+  try {
+    const t = JSON.parse(raw.trim()) as { retentionHours?: number; items?: { id?: string; deletedAt?: string }[] };
+    const keep = (Number(t.retentionHours) || 24) * 3_600_000;
+    return (t.items ?? []).filter((it) => it.id && now - Date.parse(it.deletedAt ?? "") < keep).map((it) => it.id!);
+  } catch {
+    return [];
+  }
 }
 
 /** Parse a books timestamp (UTC) → epoch ms (NaN when unparsable). */

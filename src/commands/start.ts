@@ -75,7 +75,7 @@ export async function runStart(
   profileDir: string,
   profileName: string,
 ): Promise<void> {
-  const credential = readCredential(profileDir, profileName);
+  const credential = readCredential(profileDir);
   if (!credential) {
     console.error(t("start.notLinked", { profile: profileName }));
     process.exitCode = 1;

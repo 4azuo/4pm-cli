@@ -311,7 +311,7 @@ export async function commitAndPush(
   emit: (step: string, message: string) => void,
   opts: { message?: string; paths?: string[] } = {},
 ): Promise<ScaffoldPublishResult> {
-  const result: ScaffoldPublishResult = { committed: false, pushed: false, branch: null, prUrl: null, step: null, error: null };
+  const result: ScaffoldPublishResult = { committed: false, pushed: false, branch: null, step: null, error: null };
   const fail = (step: "commit" | "push", error: string): ScaffoldPublishResult => {
     result.step = step;
     result.error = error;
@@ -746,14 +746,21 @@ async function resetTemplateManagedClaude(
   await rm(join(claude, "skills"), { recursive: true, force: true });
 }
 
+/** The cli's own book templates (`book-templates/`, bundled as `dist/book-templates`). @adr 0563 */
+function bookTemplatesDir(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [resolve(here, "book-templates"), ...[1, 2, 3].map((up) => resolve(here, `${"../".repeat(up)}book-templates`))];
+  return candidates.find((c) => existsSync(c)) ?? candidates[0]!;
+}
+
 /**
- * Reset the 4PM tracking files to the template's empty versions
- * (`.claude/templates/<NAME>.empty.md`), so a project started from a branch that already carried a
- * scaffold does not inherit the previous run's tasks and progress. Code and other files are untouched.
- * @adr 0370 §3
+ * Reset the 4PM tracking files to the cli's empty book templates (`book-templates/<NAME>.empty.md` — kept out of the
+ * projects since ADR-0563), so a project started from a branch that already carried a scaffold does not inherit the
+ * previous run's tasks and progress. Code and other files are untouched.
+ * @adr 0370 §3 @adr 0563
  */
 async function resetTrackingFiles(target: string, emit: (step: string, message: string) => void): Promise<void> {
-  const templates = join(sampleDir(), ".claude", "templates");
+  const templates = bookTemplatesDir();
   const reset: string[] = [];
   for (const file of SCAFFOLD_TRACKING_FILES) {
     const empty = join(templates, file.replace(/\.md$/, ".empty.md"));
@@ -823,7 +830,7 @@ async function applyDefaultModel(dir: string, spec: Record<string, unknown>, emi
 
 /**
  * Read a scalar spec field from either the self-describing envelope (`fields[].id/value` —
- * `features/spec/envelope.ts`) or the legacy flat shape. Empty when absent/non-string.
+ * `features/spec/envelope.ts`) or a flat key/value object. Empty when absent/non-string.
  */
 function readSpecField(spec: Record<string, unknown>, key: string): string {
   const fields = (spec as { fields?: unknown }).fields;

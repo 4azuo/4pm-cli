@@ -204,8 +204,8 @@ export interface WsTokenResponse {
   mcpServers?: { name: string; definition: McpServerDefinition }[];
   /**
    * The server's approval-signing public keys — the cli persists them and from then on counts an
-   * autonomous approval only when its signature verifies. Absent (older server / no signing key) ⇒ the
-   * cli keeps its last stored keys, or the unsigned legacy behaviour when it never had any.
+   * autonomous approval only when its signature verifies. Absent (no signing key yet) ⇒ the cli keeps
+   * its last stored keys, or accepts unsigned approvals when it never had any.
    * @adr 0438
    */
   approvalKeys?: ApprovalPublicKey[];
@@ -1253,8 +1253,8 @@ export type TaskApproveRequestBody = z.infer<typeof taskApproveRequestSchema>;
 
 /**
  * One task in a batch approve: its id plus the catalog tags it carries (read by the web
- * from the `AI_TODO.md` `Tag` column). Tags are validated as free strings here and filtered to the
- * known `AiTaskTag` catalog server-side (an unknown/legacy token maps to no handler and is dropped).
+ * from the `AI_TODO.md` `Actions` column). Tags are validated as free strings here and filtered to the
+ * known `AiTaskTag` catalog server-side (an unknown token maps to no handler and is dropped).
  * @adr 0311
  */
 export const taskApproveEntrySchema = z.object({
@@ -1521,6 +1521,33 @@ export const autonomousLogsQuerySchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 });
 export type AutonomousLogsQuery = z.infer<typeof autonomousLogsQuerySchema>;
+
+/** Query GET /machines/:id/autonomous — one page of AI Done rows (newest first). @api machine-0028 @adr 0563 */
+export const autonomousReadQuerySchema = z.object({
+  donePage: z.coerce.number().int().min(1).max(100_000).optional(),
+  doneSize: z.coerce.number().int().min(1).max(200).optional(),
+});
+export type AutonomousReadQuery = z.infer<typeof autonomousReadQuerySchema>;
+
+/** A `YYYY-MM-DD` day. */
+const daySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+
+/** Query GET /machines/:id/autonomous/archive — search the archived book rows. @api machine-0096 @adr 0563 */
+export const autonomousArchiveQuerySchema = z.object({
+  from: daySchema.optional(),
+  to: daySchema.optional(),
+  book: z.enum(["USER_TODO", "USER_QA", "AI_DONE"]).optional(),
+  id: z.string().regex(/^[A-Z]{2,3}(?:-\d{1,6}(?:-\d{0,3})?)?$/).optional(),
+  q: z.string().max(200).optional(),
+  team: z.string().max(40).optional(),
+  tag: z.string().max(60).optional(),
+  requester: z.string().uuid().optional(),
+  state: z.enum(["Taken in", "Done"]).optional(),
+  delivery: z.enum(["open", "merged", "closed", "direct"]).optional(),
+  page: z.coerce.number().int().min(1).max(100_000).optional(),
+  size: z.coerce.number().int().min(1).max(100).optional(),
+});
+export type AutonomousArchiveQuery = z.infer<typeof autonomousArchiveQuerySchema>;
 
 /** A subagent/skill name — safe file/dir stem (no traversal). */
 const agentNameSchema = z.string().min(1).max(64).regex(/^[\w.-]+$/);

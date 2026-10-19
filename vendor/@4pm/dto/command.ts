@@ -212,7 +212,7 @@ export const dispatchCommandRequestSchema = z
      * AI job: which of the 15 AI functions this dispatch is — the caller stamps it (the
      * end user never picks). With `pick:"idle"` it drives the job-aware routing over the project's
      * worker-routing table (pools before lone machines → job priority → member index, with
-     * exhaustion failover). Absent ⇒ the flat idle pool (backward compatible). Ignored with an
+     * exhaustion failover). Absent ⇒ the flat idle pool (the default). Ignored with an
      * explicit `machineLinkId`.
      * @adr 0284
      */
@@ -394,7 +394,7 @@ export interface TranscriptEntry {
   durationMs?: number;
   /**
    * For an `aireq` marker — the run's prompt + resolved flags, so the web can open a
-   * details modal from the clickable CLI name. Absent on every other entry (and on a pre-ADR-0265 cli).
+   * details modal from the clickable CLI name. Absent on every other entry.
    * @adr 0265
    */
   aiMeta?: AiRunMeta;

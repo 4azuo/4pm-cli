@@ -24,7 +24,7 @@ const MOUNTABLE: { provider: AiProvider; loginFiles: string[]; model: string }[]
 
 /**
  * The per-profile record of mount folder names already adopted (or found configured) — never adopted again.
- * A pre-ADR-0466 entry `claude` / `codex` names the legacy folder of the same name.
+ * An entry `claude` / `codex` names the folder of the same name.
  */
 function adoptedPath(profileDir: string): string {
   return join(profileDir, "ai-mount-adopted.json");
@@ -46,10 +46,9 @@ function rawDir(value: string): string {
   return isAbsolute(value) ? resolve(value) : resolve(homedir(), value);
 }
 
-/** True when any configured profile — enabled or not, any list — points at `dir`. */
+/** True when any configured profile — enabled or not — points at `dir`. */
 function isReferenced(config: ProfileConfig, dir: string): boolean {
-  const lists: (AiProfile[] | undefined)[] = [config.aiProfiles, config.claudeHome, config.codexHome, config.antigravityHome];
-  return lists.some((l) => (l ?? []).some((p) => typeof p.profile === "string" && p.profile.trim() && rawDir(p.profile.trim()) === dir));
+  return (config.aiProfiles ?? []).some((p) => typeof p.profile === "string" && p.profile.trim() && rawDir(p.profile.trim()) === dir);
 }
 
 /** True when the mount holds a login the container can see (a mount that is absent or empty ⇒ false). */
@@ -76,9 +75,8 @@ function mountFolders(root: string, provider: AiProvider): string[] {
 }
 
 /**
- * Append a profile for each mounted login no profile references (once per mount folder per worker profile).
- * Unified configs get an `aiProfiles` entry; a legacy per-provider config (no `aiProfiles`) gets it in
- * `claudeHome` / `codexHome` so its plan is not replaced. Returns the provider of each folder added.
+ * Append an `aiProfiles` entry for each mounted login no profile references (once per mount folder per
+ * worker profile). Returns the provider of each folder added.
  */
 export function adoptMountedAiLogins(profileDir: string): AiProvider[] {
   const root = resolve(homedir(), "ai-creds");
@@ -96,17 +94,8 @@ export function adoptMountedAiLogins(profileDir: string): AiProvider[] {
       recordChanged = true;
       if (isReferenced(config, dir)) continue; // the operator already wired it
       const profile = `ai-creds/${folder}`;
-      const unified = Array.isArray(config.aiProfiles) && config.aiProfiles.length > 0;
-      const legacy = !unified && [config.claudeHome, config.codexHome, config.antigravityHome].some((l) => (l?.length ?? 0) > 0);
-      if (legacy) {
-        // A new `aiProfiles` list would replace the legacy plan — extend the provider's own list instead.
-        const entry: AiProfile = { profile, args: [], model: m.model };
-        const list = (m.provider === "claude" ? config.claudeHome : config.codexHome) ?? [];
-        writeProfileConfig(profileDir, m.provider === "claude" ? { claudeHome: [...list, entry] } : { codexHome: [...list, entry] });
-      } else {
-        const entry: AiCredential = { provider: m.provider, profile, args: [], model: m.model };
-        writeProfileConfig(profileDir, { aiProfiles: [...(config.aiProfiles ?? []), entry] });
-      }
+      const entry: AiCredential = { provider: m.provider, profile, args: [], model: m.model };
+      writeProfileConfig(profileDir, { aiProfiles: [...(config.aiProfiles ?? []), entry] });
       added.push(m.provider);
       logger.info("ai.mount.adopted", { provider: m.provider, profile });
     }
@@ -205,15 +194,9 @@ export function disableUnloggedDefaults(profileDir: string): string[] {
     });
     return changed ? next : null;
   };
-  const unified = patchList<AiCredential>(config.aiProfiles, (p) => p.provider);
-  const claude = patchList<AiProfile>(config.claudeHome, () => "claude");
-  const codex = patchList<AiProfile>(config.codexHome, () => "codex");
-  if (switched.length === 0) return [];
-  writeProfileConfig(profileDir, {
-    ...(unified ? { aiProfiles: unified } : {}),
-    ...(claude ? { claudeHome: claude } : {}),
-    ...(codex ? { codexHome: codex } : {}),
-  });
+  const next = patchList<AiCredential>(config.aiProfiles, (p) => p.provider);
+  if (switched.length === 0 || !next) return [];
+  writeProfileConfig(profileDir, { aiProfiles: next });
   try {
     writeFileSync(disabledPath(profileDir), JSON.stringify([...done, ...switched]), { mode: 0o600 });
   } catch (err) {

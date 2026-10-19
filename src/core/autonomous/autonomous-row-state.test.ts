@@ -28,15 +28,6 @@ describe("row State helpers", () => {
     expect(B.stripStateRows(TODO)).toContain("REQ-000014-002");
   });
 
-  it("restores the history rows and the taken-in rows the agent removed, in order", () => {
-    // The agent took REQ-000014-002 in (removed it) and left REQ-000014-003 alone.
-    const agent = B.stripStateRows(TODO).replace(/\| REQ-000014-002 .*\n/, "");
-    const back = B.restoreStateRows(TODO, agent, new Set(["REQ-000014-002"]), "Taken in");
-    expect(B.openRowIds(back, "REQ-")).toEqual(["REQ-000014-003"]);
-    const ids = B.findTables(back)[0]!.rows.map((r) => `${r[0]}=${r[5]}`);
-    expect(ids).toEqual(["REQ-000014-001=Taken in", "REQ-000014-002=Taken in", "REQ-000014-003="]);
-  });
-
   it("adds the State column when setting a state on a book without one", () => {
     const plain = "| ID | Request |\n|---|---|\n| REQ-000001-001 | a |\n";
     const next = B.setRowStates(plain, new Map([["REQ-000001-001", "Done"]]));
@@ -74,8 +65,8 @@ describe("markDoneRows", () => {
     writeFileSync(join(root, "USER_TODO.md"), TODO);
     writeFileSync(join(root, "USER_QA.md"), "| ID | Group | Depends | Original request | Question / options | Answer |\n|---|---|---|---|---|---|\n");
     writeFileSync(join(root, "AI_DONE.md"), "| Timestamp | ID | Task description | Files | Notes |\n|---|---|---|---|---|\n| t | TSK-000015-001 | a | | |\n");
-    mkdirSync(join(root, ".claude"), { recursive: true });
-    writeFileSync(join(root, ".claude/.autonomous.lineage.json"), JSON.stringify({ "000015": { source: "REQ-000014-001", request: "seed", at: "" } }));
+    mkdirSync(join(root, ".4pm"), { recursive: true });
+    writeFileSync(join(root, ".4pm/.autonomous.lineage.json"), JSON.stringify({ "000015": { source: "REQ-000014-001", request: "seed", at: "" } }));
   });
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
@@ -86,5 +77,18 @@ describe("markDoneRows", () => {
     expect(await markDoneRows(root)).toBe(true);
     expect(readFileSync(join(root, "USER_TODO.md"), "utf8")).toContain("| REQ-000014-001 | Seed |  |  | seed roles | Done |");
     expect(await markDoneRows(root)).toBe(false);
+  });
+
+  it("keeps a request Taken in while a task of it is in the trash, and reopens a Done one when the task comes back", async () => {
+    const head = "| ID | Priority | Actions | Depends | Group | Task description | Notes |\n|---|---|---|---|---|---|---|\n";
+    const trash = `\n<!-- 4pm:todo-trash {"retentionHours":24,"items":[{"id":"TSK-000015-002","deletedAt":"${new Date().toISOString()}"}]} -->\n`;
+    writeFileSync(join(root, "AI_TODO.md"), head + trash);
+    expect(await markDoneRows(root)).toBe(false);
+    writeFileSync(join(root, "AI_TODO.md"), head);
+    expect(await markDoneRows(root)).toBe(true);
+    // Restored: the row is back in AI_TODO.
+    writeFileSync(join(root, "AI_TODO.md"), `${head}| TSK-000015-002 | High | | | 000015 | b | |\n`);
+    expect(await markDoneRows(root)).toBe(true);
+    expect(readFileSync(join(root, "USER_TODO.md"), "utf8")).toContain("| seed roles | Taken in |");
   });
 });

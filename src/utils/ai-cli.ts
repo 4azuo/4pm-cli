@@ -3,7 +3,7 @@
  * natural-language prompt; by default it goes to `claude` (print mode) so the AI agent
  * itself decides whether to call `gh`/`glab`/`git`/etc. — no command whitelist.
  *
- * Each provider (claudeHome / codexHome / antigravityHome) is a **list** of profiles: the
+ * The credentials are ONE ordered mixed list (`aiProfiles`, each naming its provider): the
  * runner tries them in order until one authenticates, then remembers the working one
  * (working-first ordering here). Every profile's `args` are EXTRA pre-prompt args
  * appended AFTER the hardcoded required args — they can add options but never
@@ -249,14 +249,9 @@ export function isUsableCredential(c: AiCredential): boolean {
 /** Config knobs the planner reads (subset of ProfileConfig). */
 export interface AiCliConfig {
   aiCli?: string;
-  claudeHome?: AiProfile[];
-  codexHome?: AiProfile[];
-  /** Reserved for the future antigravity CLI — stored but not spawned yet (schema only). */
-  antigravityHome?: AiProfile[];
   /**
-   * Unified mixed credential list. When present (with ≥1 usable entry) it REPLACES
-   * the per-provider lists for the run plan: one ordered, cross-provider failover chain. Absent
-   * ⇒ the legacy per-`aiCli` single-provider plan.
+   * The mixed credential list: one ordered, cross-provider failover chain. Empty ⇒ one default-env
+   * attempt of the pinned (else default) CLI.
    * @adr 0182
    */
   aiProfiles?: AiCredential[];
@@ -329,16 +324,15 @@ export function resolveClaudeAuthMode(config: AiCliConfig): "subscription" | "ap
   return key && key.trim() ? "api-key" : "subscription";
 }
 
-/** True when the unified mixed list drives the run (≥1 usable entry) — else the legacy plan. */
-export function isUnifiedConfig(config: AiCliConfig): boolean {
-  return Array.isArray(config.aiProfiles) && config.aiProfiles.some(isUsableCredential);
+/** The usable credentials of the list, config order. */
+function usableCredentials(config: AiCliConfig): AiCredential[] {
+  return (config.aiProfiles ?? []).filter(isUsableCredential);
 }
 
 /**
  * The provider the operator pinned via `aiCli`. When it names a known provider the unified run
  * is **scoped** to that provider's credentials — failover stays within the
  * active CLI; a blank/"—"/unknown value ⇒ null = **mixed** (fail over across the whole list).
- * Legacy per-`aiCli` configs already run one provider, so this only affects the unified plan.
  * @adr 0182 @adr 0197
  */
 export function activeProvider(config: AiCliConfig): AiProvider | null {
@@ -347,20 +341,14 @@ export function activeProvider(config: AiCliConfig): AiProvider | null {
 }
 
 /**
- * AI providers this worker can run: those with a usable entry in the unified list, else those with a
- * usable legacy per-provider profile, plus the pinned `aiCli`; with nothing configured the default
- * `claude` (its default home) still runs. Drives the marketplace's not-enabled-provider warning.
+ * AI providers this worker can run: those with a usable entry in the list; with none, the pinned
+ * `aiCli` (else the default `claude`) on its default home. Drives the marketplace's not-enabled-provider
+ * warning.
  * @adr 0460
  */
 export function enabledAiProviders(config: AiCliConfig): AiProvider[] {
-  const out = new Set<AiProvider>();
-  if (isUnifiedConfig(config)) {
-    for (const c of config.aiProfiles!) if (isUsableCredential(c)) out.add(c.provider);
-    return [...out];
-  }
-  if ((config.claudeHome ?? []).some(isUsableProfile)) out.add("claude");
-  if ((config.codexHome ?? []).some(isUsableProfile)) out.add("codex");
-  if ((config.antigravityHome ?? []).some(isUsableProfile)) out.add("antigravity");
+  const out = new Set<AiProvider>(usableCredentials(config).map((c) => c.provider));
+  if (out.size) return [...out];
   const pinned = activeProvider(config);
   if (pinned) out.add(pinned);
   if (out.size === 0) out.add(DEFAULT_AI_CLI as AiProvider);
@@ -368,13 +356,11 @@ export function enabledAiProviders(config: AiCliConfig): AiProvider[] {
 }
 
 /**
- * The effective claude profile list for the OAuth-only paths (usage snapshot, %session rotation,
- * support answer): the unified list's claude entries when it drives the run, else the legacy
- * `claudeHome`.
+ * The claude entries of the list for the OAuth-only paths (usage snapshot, %session rotation,
+ * support answer).
  */
 function claudeProfilesOf(config: AiCliConfig): AiProfile[] {
-  if (isUnifiedConfig(config)) return config.aiProfiles!.filter((c) => c.provider === "claude");
-  return config.claudeHome ?? [];
+  return (config.aiProfiles ?? []).filter((c) => c.provider === "claude");
 }
 
 /** Ordered credential keys of the usable claude entries (for unified %session rotation). */
@@ -403,17 +389,11 @@ function profileDirs(profiles: AiProfile[] | undefined): string[] {
 }
 
 /**
- * Every configured AI credential dir (all providers, legacy lists + the unified list) — the dirs whose
- * contents an agent run must never read or edit (ADR-0347 deny rules).
+ * Every configured AI credential dir (all providers) — the dirs whose contents an agent run must never
+ * read or edit (ADR-0347 deny rules).
  */
 export function allAiProfileDirs(config: AiCliConfig): string[] {
-  const dirs = [
-    ...profileDirs(config.claudeHome),
-    ...profileDirs(config.codexHome),
-    ...profileDirs(config.antigravityHome),
-    ...profileDirs(config.aiProfiles),
-  ];
-  return [...new Set(dirs)];
+  return [...new Set(profileDirs(config.aiProfiles))];
 }
 
 /**
@@ -646,17 +626,10 @@ export function profileAccountEmail(dir: string): string | null {
  * @adr 0354
  */
 export function aiAccountLabels(config: AiCliConfig): string[] {
-  const labels = isUnifiedConfig(config)
-    ? config
-        .aiProfiles!.filter(isUsableCredential)
-        .map((c) => {
-          const dir = resolveHomePath(c.profile);
-          return profileAccountEmail(dir) ?? (c.label?.trim() || basename(dir));
-        })
-    : [...profileDirs(config.claudeHome), ...profileDirs(config.codexHome), ...profileDirs(config.antigravityHome)].map(
-        // Admin-only — never masked (ADR-0395).
-        (dir) => unmaskedProfileLabel(dir),
-      );
+  const labels = usableCredentials(config).map((c) => {
+    const dir = resolveHomePath(c.profile);
+    return profileAccountEmail(dir) ?? (c.label?.trim() || basename(dir));
+  });
   return [...new Set(labels)];
 }
 
@@ -667,43 +640,25 @@ export function profileEnvVar(cmd: string): string | null {
   return null;
 }
 
-/** The profile list configured for a given AI CLI (empty when none / unsupported). */
-function profilesFor(config: AiCliConfig, cmd: string): AiProfile[] {
-  const envVar = profileEnvVar(cmd);
-  if (envVar === "CLAUDE_CONFIG_DIR") return config.claudeHome ?? [];
-  if (envVar === "CODEX_HOME") return config.codexHome ?? [];
-  return [];
-}
-
 /**
  * The configured profile labels (account email, else dir basename) for the active AI CLI
  * — for showing the current/available profile in the header. Empty when none configured.
  */
 export function profileLabels(config: AiCliConfig): string[] {
-  // Unified list ⇒ every provider's entries (mixed), preferring an explicit `label` (ADR-0182).
-  if (isUnifiedConfig(config)) {
-    return config
-      .aiProfiles!.filter(isUsableCredential)
-      .map((c) => credentialDisplayLabel(c.label, resolveHomePath(c.profile)));
-  }
-  const cmd = config.aiCli ?? DEFAULT_AI_CLI;
-  return profileDirs(profilesFor(config, cmd)).map((dir) => profileDisplayLabel(dir));
+  // Every provider's entries (mixed), preferring an explicit `label` (ADR-0182).
+  return usableCredentials(config).map((c) => credentialDisplayLabel(c.label, resolveHomePath(c.profile)));
 }
 
-/** Working-first hint fed to {@link planAiRun}: a legacy profile dir OR a unified credential key. */
+/** Working-first hint fed to {@link planAiRun}: the working credential key. */
 export interface AiWorkingHint {
-  /** Legacy per-`aiCli` working profile dir (moved to the front). */
-  dir?: string | null;
-  /** Unified working credential key (moved to the front). @adr 0182 */
+  /** The working credential key (moved to the front). @adr 0182 */
   credential?: string | null;
 }
 
 /**
- * Build the run plan for a typed prompt. When the unified mixed list drives the run
- * the attempts span all providers in list order (a prompt can fail over claude→codex); otherwise
- * the legacy per-`aiCli` plan applies. Attempts are ordered working-first: the hinted credential
- * (unified) or dir (legacy) is moved to the front. No usable profile ⇒ a single "default" attempt
- * (the CLI's own default env).
+ * Build the run plan for a typed prompt: the attempts span the list in order (a prompt can fail over
+ * claude→codex), working-first (the hinted credential moves to the front). No usable credential ⇒ a
+ * single "default" attempt (the CLI's own default env).
  * @adr 0182
  */
 export function planAiRun(
@@ -716,19 +671,17 @@ export function planAiRun(
   readOnly = false,
   bypass = false,
 ): AiPlan {
-  return isUnifiedConfig(config)
-    ? planUnifiedRun(prompt, config, hint.credential ?? null, resume, oneShot, override, readOnly, bypass)
-    : planLegacyRun(prompt, config, hint.dir ?? null, resume, oneShot, override, readOnly, bypass);
+  return planListRun(prompt, config, hint.credential ?? null, resume, oneShot, override, readOnly, bypass);
 }
 
 /**
- * The unified mixed-list plan: an ordered failover chain over `aiProfiles`. By default
+ * The list plan: an ordered failover chain over `aiProfiles`. By default
  * it spans every provider (mixed), but a specific `aiCli` **scopes** the chain to that provider's
  * credentials — failover stays within the active CLI; only "—" (blank) fails over
  * across providers.
  * @adr 0182 @adr 0197
  */
-function planUnifiedRun(
+function planListRun(
   prompt: string,
   config: AiCliConfig,
   workingCredential: string | null,
@@ -742,15 +695,16 @@ function planUnifiedRun(
   // Scope to the pinned provider unless "—" (mixed) is selected.
   const active = activeProvider(config);
   // Duplicate dirs collapse to the first entry across all providers, before scoping (ADR-0409).
-  const usable = dropDuplicateDirs(config.aiProfiles!.filter(isUsableCredential));
+  const usable = dropDuplicateDirs(usableCredentials(config));
   const scoped = active ? usable.filter((c) => c.provider === active) : usable;
-  // Pinned provider with no usable credential ⇒ a single default attempt on its own default env
-  // (mirrors the legacy no-profile fallback in planLegacyRun — never silently spills to another CLI).
-  if (active && scoped.length === 0) {
+  // No usable credential (for the pinned provider) ⇒ a single default attempt on its own default env —
+  // never silently spills to another CLI.
+  if (scoped.length === 0) {
+    const cmd = active ?? DEFAULT_AI_CLI;
     return {
-      cmd: active,
+      cmd,
       attempts: [
-        { cmd: active, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, active, undefined, oneShot, override, readOnly, bypass, allAiProfileDirs(config)), stdin: prompt, env: { ...baseEnv, ...overrideEnv(active, override) } },
+        { cmd, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, cmd, undefined, oneShot, override, readOnly, bypass, allAiProfileDirs(config)), stdin: prompt, env: { ...baseEnv, ...overrideEnv(cmd, override) } },
       ],
     };
   }
@@ -782,58 +736,6 @@ function planUnifiedRun(
   return { cmd: attempts[0]?.cmd ?? DEFAULT_AI_CLI, attempts };
 }
 
-/** The legacy single-provider plan (per `aiCli`) — unchanged behavior for pre-ADR-0182 configs. */
-function planLegacyRun(
-  prompt: string,
-  config: AiCliConfig,
-  workingDir: string | null,
-  resume: Map<string, string>,
-  oneShot: boolean,
-  override?: AiRunOverride,
-  readOnly = false,
-  bypass = false,
-): AiPlan {
-  // `||` (not `??`): a blank aiCli ("mixed"/none — ADR-0182) falls back to claude here.
-  const cmd = config.aiCli || DEFAULT_AI_CLI;
-  const baseEnv = config.aiEnv ?? {};
-  const envVar = profileEnvVar(cmd);
-  const defaultPlan: AiPlan = {
-    cmd,
-    attempts: [
-      { cmd, label: "default", dir: null, key: null, args: buildRunArgs({ profile: "" }, cmd, undefined, oneShot, override, readOnly, bypass, allAiProfileDirs(config)), stdin: prompt, env: { ...baseEnv, ...overrideEnv(cmd, override) } },
-    ],
-  };
-  if (!envVar) return defaultPlan;
-
-  // Resolve each configured profile to its home dir (dropping blank/disabled entries — ADR-0180).
-  const resolved = dropDuplicateDirs(profilesFor(config, cmd).filter(isUsableProfile))
-    .map((p) => ({ profile: p, dir: resolveHomePath(p.profile) }));
-  if (resolved.length === 0) return defaultPlan;
-
-  // Working-first ordering.
-  const ordered =
-    workingDir && resolved.some((r) => r.dir === workingDir)
-      ? [
-          resolved.find((r) => r.dir === workingDir)!,
-          ...resolved.filter((r) => r.dir !== workingDir),
-        ]
-      : resolved;
-  const attempts: AiAttempt[] = ordered.map(({ profile, dir }) => {
-    const key = credentialKey(cmd, dir);
-    return {
-      cmd,
-      label: profileDisplayLabel(dir),
-      dir,
-      key,
-      args: buildRunArgs(profile, cmd, resume.get(key), oneShot, override, readOnly, bypass, [...allAiProfileDirs(config), dir]),
-      stdin: prompt,
-      env: { ...baseEnv, [envVar]: dir, ...overrideEnv(cmd, override) },
-      ...(profile.apiKey ? { apiKey: profile.apiKey } : {}),
-    };
-  });
-  return { cmd, attempts };
-}
-
 /**
  * The provider args of a restricted (non-dispatch) runner — support answer, research, FAQ compose,
  * memory compaction. `args(cmd)` returns what follows the common prefix (required metering args ·
@@ -846,8 +748,8 @@ export interface AiRunPolicy {
 }
 
 /**
- * Plan a restricted runner's prompt over the SAME credentials and order as {@link planAiRun} (unified or
- * legacy list, disabled / duplicate dirs dropped, the active-provider scope, working-first hint) with the
+ * Plan a restricted runner's prompt over the SAME credentials and order as {@link planAiRun} (disabled /
+ * duplicate dirs dropped, the active-provider scope, working-first hint) with the
  * runner's policy args instead of the dispatch modes. The profile's free-form `args` are not applied.
  * No attempt left ⇒ one default-env claude attempt (the CLI's own config), as before.
  * @adr 0520
@@ -888,28 +790,15 @@ export function planPolicyRun(
       ...(apiKey ? { apiKey } : {}),
     };
   };
-  let candidates: { cmd: string; dir: string; label: string; model?: string; apiKey?: ApiKeyDescriptor }[];
-  if (isUnifiedConfig(config)) {
-    const active = activeProvider(config);
-    candidates = dropDuplicateDirs(config.aiProfiles!.filter(isUsableCredential))
-      .filter((c) => !active || c.provider === active)
-      .map((c) => {
-        const dir = resolveHomePath(c.profile);
-        return { cmd: c.provider, dir, label: credentialDisplayLabel(c.label, dir), model: c.model, apiKey: c.apiKey };
-      });
-  } else {
-    const cmd = config.aiCli || DEFAULT_AI_CLI;
-    candidates = profileEnvVar(cmd)
-      ? dropDuplicateDirs(profilesFor(config, cmd).filter(isUsableProfile)).map((p) => {
-          const dir = resolveHomePath(p.profile);
-          return { cmd, dir, label: profileDisplayLabel(dir), model: p.model, apiKey: p.apiKey };
-        })
-      : [];
-  }
-  // Working-first: the hinted credential (unified) or dir (legacy) moves to the front.
-  const head = candidates.findIndex((c) =>
-    hint.credential ? credentialKey(c.cmd, c.dir) === hint.credential : hint.dir ? c.dir === hint.dir : false,
-  );
+  const active = activeProvider(config);
+  const candidates = dropDuplicateDirs(usableCredentials(config))
+    .filter((c) => !active || c.provider === active)
+    .map((c) => {
+      const dir = resolveHomePath(c.profile);
+      return { cmd: c.provider as string, dir, label: credentialDisplayLabel(c.label, dir), model: c.model, apiKey: c.apiKey };
+    });
+  // Working-first: the hinted credential moves to the front.
+  const head = hint.credential ? candidates.findIndex((c) => credentialKey(c.cmd, c.dir) === hint.credential) : -1;
   if (head > 0) candidates.unshift(candidates.splice(head, 1)[0]!);
   const attempts = candidates
     .map((c) => build(c.cmd, c.dir, c.label, c.model, c.apiKey))

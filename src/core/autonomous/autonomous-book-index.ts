@@ -7,6 +7,8 @@
  */
 import { WsChannels } from "@4pm/ws";
 import {
+  APPROVALS_SIDECAR_REL,
+  AUTHORS_SIDECAR_REL,
   DOCS_SIDECAR_REL,
   LINEAGE_SIDECAR_REL,
   buildBookIndex,
@@ -19,8 +21,8 @@ import { approvalRowHash, approvalStates, bookOfRow, type ApprovalBooks } from "
 import { ATTEMPTS_REL } from "./autonomous-books";
 import { freshBooksRef, gitQuiet, readBooksFile, resolveBases } from "./autonomous-git";
 
-const APPROVALS_REL = ".claude/.autonomous.approvals.json";
-const AUTHORS_REL = ".claude/.autonomous.authors.json";
+const APPROVALS_REL = APPROVALS_SIDECAR_REL;
+const AUTHORS_REL = AUTHORS_SIDECAR_REL;
 /** Debounce between a trigger and the push. */
 const DEBOUNCE_MS = 15_000;
 

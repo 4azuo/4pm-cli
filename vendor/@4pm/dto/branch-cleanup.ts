@@ -1,6 +1,6 @@
 /**
  * Branch cleanup — the dead branches of a repo (merged, PR closed, task gone, stale), their deletion on the
- * remote + the workers, and the deletion log kept on the books branch (`.claude/.autonomous.branch-deletions.json`)
+ * remote + the workers, and the deletion log kept on the books branch (`.4pm/.autonomous.branch-deletions.json`)
  * so any worker can restore a branch while its commit still exists.
  * @adr 0540
  */
@@ -14,7 +14,7 @@ export type BranchReason = (typeof BRANCH_REASONS)[number];
 export const BRANCH_STALE_DAYS = 30;
 
 /** The deletion log sidecar on the books branch. */
-export const BRANCH_DELETIONS_REL = ".claude/.autonomous.branch-deletions.json";
+export const BRANCH_DELETIONS_REL = ".4pm/.autonomous.branch-deletions.json";
 
 /** One cleanup candidate of a repo. */
 export interface BranchCandidate {

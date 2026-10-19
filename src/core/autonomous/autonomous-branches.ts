@@ -2,7 +2,7 @@
  * Branch cleanup on the worker: list a repo's dead branches (merged into the base, PR merged / closed, the 4PM
  * task gone, no commit for 30 days), delete chosen ones on the remote and locally (never the base, the books
  * branch, a branch with an open PR, a live task's WIP or the checked-out branch — re-checked right before each
- * push), keep a deletion log on the books branch (`.claude/.autonomous.branch-deletions.json`, never pruned — it
+ * push), keep a deletion log on the books branch (`.4pm/.autonomous.branch-deletions.json`, never pruned — it
  * costs 4PM nothing) and restore a logged branch while its commit still exists. With the project's
  * `branchCleanup` on, the first cycle of the day (any worker — the books push is the lock) deletes the dead 4PM
  * task branches older than `afterDays`.
@@ -112,16 +112,7 @@ async function liveTaskIds(root: string, base: string): Promise<Set<string>> {
   const [todo, progress] = await Promise.all([readBooksFile(root, base, "AI_TODO.md"), readBooksFile(root, base, "AI_PROGRESS.md")]);
   const ids = new Set<string>(B.parseTasks(todo ?? "").tasks.map((t) => t.id));
   for (const c of B.parseClaims(progress ?? "").claims) ids.add(c.id);
-  const trash = /<!--\s*4pm:todo-trash\s*([\s\S]*?)-->/.exec(todo ?? "")?.[1];
-  if (trash) {
-    try {
-      const t = JSON.parse(trash.trim()) as { retentionHours?: number; items?: { id?: string; deletedAt?: string }[] };
-      const keep = (Number(t.retentionHours) || 24) * 3_600_000;
-      for (const it of t.items ?? []) if (it.id && Date.now() - Date.parse(it.deletedAt ?? "") < keep) ids.add(it.id);
-    } catch {
-      /* a malformed trash keeps nothing alive */
-    }
-  }
+  for (const id of B.trashedIds(todo ?? "")) ids.add(id);
   for (const id of [...ids]) {
     const g = /^TSK-(\d{6})-/.exec(id)?.[1];
     if (g) ids.add(`DOC-${g}-001`);

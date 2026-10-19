@@ -106,16 +106,18 @@ export async function autoResolveOnePr(
   worker: string,
   timeoutMs: number,
   log: (line: string) => Promise<void>,
+  /** The books checkout the attempt is recorded in (the books worktree — ADR-0563). */
+  bdir: string = root,
 ): Promise<boolean> {
   const prefix = `dev/${rootBase.base}/`;
   const prs = (await conflictingPullRequests(rootBase.url)).filter((p) => p.head.startsWith(prefix) && p.base === rootBase.base);
   if (!prs.length) return false;
   await gitQuiet(root, ["fetch", "-q", "origin", rootBase.base]);
   const baseSha = (await gitQuiet(root, ["rev-parse", `origin/${rootBase.base}`])).trim();
-  const attempts = await B.readAttempts(root);
+  const attempts = await B.readAttempts(bdir);
   const pr = prs.find((p) => attempts[prKey(p.number)]?.last !== `${p.headSha}:${baseSha}`);
   if (!pr) return false;
-  const claimed = await publishBooks(root, rootBase.base, `chore(auto): resolve PR #${pr.number} by ${worker}`, () => recordPrAttempt(root, pr, baseSha));
+  const claimed = await publishBooks(bdir, rootBase.base, `chore(auto): resolve PR #${pr.number} by ${worker}`, () => recordPrAttempt(bdir, pr, baseSha));
   if (claimed !== "pushed") return false;
   await log(`[resolve] PR #${pr.number} (${pr.head}) conflicts with ${rootBase.base} — the AI resolves it`);
   const out = await resolvePullRequest(ctx, root, pr, timeoutMs);

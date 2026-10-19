@@ -15,13 +15,11 @@ import {
   SDC_NEW_FILE_RE,
   applyDiagramPatch,
   diagramCellVersionAt,
-  diagramCompactText,
   diagramConflicts,
   diagramDeltaFromEdit,
   diagramMasterOf,
   diagramPatchCells,
   diagramPatchIsEmpty,
-  diagramSlice,
   ercBlocks,
   parseDiagramModules,
   parseSdcFile,
@@ -30,10 +28,10 @@ import {
   type SdcMeta,
 } from "@4pm/dto";
 import type { ApprovalEntry, ApprovalState, AutonomousReadReply, DiagramChangeFile, DiagramReadReply, DiagramReadRequest, DiagramWriteReply, DiagramWriteRequest } from "@4pm/ws";
-import { readAutonomousConfig, repoDirsOf, type AutonomousConfig } from "./autonomous-config";
-import { freshBooksRef, gitQuiet, mutateBooks, resolveBases, restoreDirToRef } from "./autonomous-git";
+import { readAutonomousConfig, type AutonomousConfig } from "./autonomous-config";
+import { freshBooksRef, gitQuiet, mutateBooks, resolveBases } from "./autonomous-git";
 import { approvalTrustActive, ercApprovalStateOf, ercFileHash } from "./autonomous-approvals";
-import { APPROVALS_REL, AUTHORS_REL, dirSource, readJsonMap, refSource, removeInRoot, writeJson } from "./autonomous-er-store";
+import { APPROVALS_REL, AUTHORS_REL, dirSource, readJsonMap, refSource, writeJson } from "./autonomous-er-store";
 import {
   diagramModelsOf,
   diagramModulesAtVersion,
@@ -350,7 +348,6 @@ export async function writeDiagram(root: string, profileDir: string, req: Diagra
             out = await applyDiagramWrite(dir, cfg.diagramDir, req, cfg.diagramAutoApprove);
             return out.publish;
           },
-          repoDirsOf(cfg),
         )
       : "unchanged";
     if (out === undefined) out = await applyDiagramWrite(root, cfg.diagramDir, req, cfg.diagramAutoApprove);
@@ -376,21 +373,20 @@ async function newSdcFiles(root: string, diagramDir: string): Promise<NewSdcFile
 }
 
 /**
- * After an intake run (inside `publishIntake`, books branch checked out): keep the agent's new change requests
- * aside, put the whole diagram folder back to `ref`, number the new ones, and apply them under auto-approve.
+ * Number and publish an intake's system-diagram change requests into the books checkout `dir` (inside the intake
+ * publish); applied at once under `diagramAutoApprove`.
+ * @adr 0530 @adr 0563
  */
-export async function prepareIntakeDiagram(
-  root: string,
-  ref: string,
+export async function publishIntakeSdcs(
+  dir: string,
   cfg: Pick<AutonomousConfig, "diagramDir" | "diagramAutoApprove">,
+  files: readonly NewSdcFile[],
   team?: string,
-): Promise<{ created: string[]; skipped: { name: string; reason: string }[]; tampered: boolean }> {
-  const fresh = await newSdcFiles(root, cfg.diagramDir);
-  for (const f of fresh) await removeInRoot(root, `${cfg.diagramDir}/changes/${f.name}`);
-  const tampered = (await restoreDirToRef(root, ref, cfg.diagramDir)).length > 0;
-  const { created, skipped } = fresh.length ? await numberNewSdcs(root, cfg.diagramDir, fresh, { source: "intake", ...(team ? { team } : {}) }) : { created: [], skipped: [] };
-  if (cfg.diagramAutoApprove && created.length) await autoApplySdcs(root, cfg.diagramDir, created);
-  return { created, skipped, tampered };
+): Promise<{ created: string[]; skipped: { name: string; reason: string }[] }> {
+  if (files.length === 0) return { created: [], skipped: [] };
+  const res = await numberNewSdcs(dir, cfg.diagramDir, files, { source: "intake", ...(team ? { team } : {}) });
+  if (cfg.diagramAutoApprove && res.created.length) await autoApplySdcs(dir, cfg.diagramDir, res.created);
+  return res;
 }
 
 /** The change requests an implement agent wrote on its task branch (working tree first, then HEAD). */
@@ -437,41 +433,6 @@ export async function blockingSdcCount(root: string, diagramDir: string): Promis
   return snap.changes.filter((c) => ercBlocks(snap.sidecar.changes[c.id]?.state ?? "pending")).length;
 }
 
-/** Cap of the compact master text given to an agent. */
-const COMPACT_MAX = 20_000;
-
-/** The intake agent's `diagramNote`: the approved master (compact text) and the open change requests. */
-export async function intakeDiagramNote(root: string, diagramDir: string): Promise<string> {
-  const snap = await loadDiagram(dirSource(root), diagramDir);
-  const master = diagramMasterOf(diagramModelsOf(snap), snap.order);
-  const text = master.cells.length ? diagramCompactText(master).slice(0, COMPACT_MAX) : "(empty — no system diagram yet; a request that introduces components may create the first module)";
-  const open = snap.changes.filter((c) => ercBlocks(snap.sidecar.changes[c.id]?.state ?? "pending"));
-  const lines = open.map((c) => {
-    const doc = parseSdcFile(c.content).doc;
-    const cells = doc ? diagramPatchCells(sdcPatch(master, doc)).join(", ") : "?";
-    return `- \`${c.path}\` (${snap.sidecar.changes[c.id]?.state ?? "pending"}) — ${doc?.meta.title ?? c.id}; touches: ${cells}`;
-  });
-  const openNote = open.length
-    ? `Open system-diagram change requests (a request touching the same cells gets a USER_QA question or records the open one in \`depends\`, never a second conflicting change):\n${lines.join("\n")}`
-    : "Open system-diagram change requests: none.";
-  return `Approved system diagram (v${snap.sidecar.version}; module / page, then cells):\n${text}\n${openNote}`;
-}
-
-/** The implement agent's `diagramNote`: the components and links its group's applied changes touched, as they are now. */
-export async function implementDiagramContext(root: string, base: string, diagramDir: string, group: string): Promise<string> {
-  const ref = await freshBooksRef(root, base);
-  const src = ref ? refSource(root, ref) : dirSource(root);
-  const snap = await loadDiagram(src, diagramDir);
-  if (snap.modules.length === 0) return "";
-  const master = diagramMasterOf(diagramModelsOf(snap), snap.order);
-  const mine = snap.changes.filter((c) => parseSdcFile(c.content).doc?.meta.group === group && snap.sidecar.changes[c.id]?.state === "applied");
-  const where = ref ? `\`git show ${ref}:${diagramDir}/<module>.drawio\`` : `\`${diagramDir}/<module>.drawio\``;
-  const head = `\nSYSTEM DIAGRAM: the approved diagram (v${snap.sidecar.version}) is on the books branch — read a module with ${where}. Do NOT edit it; propose a change as described in the rules.\n`;
-  const ids = [...new Set(mine.flatMap((c) => parseSdcFile(c.content).doc?.cells.map((x) => x.cell.id) ?? []))];
-  if (ids.length === 0) return head;
-  const slice = diagramSlice(master, ids);
-  return `${head}Components and links this task's group changed (${mine.map((c) => c.id).join(", ")}), as they are now:\n${diagramCompactText(master, slice.cells).slice(0, COMPACT_MAX)}\n`;
-}
 
 /** The system-diagram part of the Evidences listing of `autonomous.read`. */
 export async function listDiagramEvidence(root: string, ref: string | null, diagramDir: string): Promise<Pick<AutonomousReadReply, "sdcs" | "diagramDir">> {

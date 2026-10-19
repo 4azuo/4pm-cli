@@ -13,7 +13,7 @@ import { spawn } from "node:child_process";
 import type { AiModelsReply, AiModelsRequest } from "@4pm/ws";
 import { readProfileConfig } from "../../config/profile";
 import { claudeHomeDirs } from "../../utils/ai-cli";
-import { getWorkingProfile } from "./ai-profile-state";
+import { getWorkingDir } from "./ai-profile-state";
 import { hasTool, kickInstall, recentInstallFailure } from "../worker/toolchain";
 import { agentAiCliStatus } from "../worker/agent-ai-cli";
 import { agentSpawnArgs } from "../agent/agent-spawn";
@@ -141,7 +141,7 @@ export async function listAiModels(profileDir: string, req: AiModelsRequest): Pr
     const blocked = blockedReply(provider, aiCli);
     if (blocked) return blocked;
     // The profile in use first (its account decides availability), else the first configured one.
-    const working = getWorkingProfile(profileDir, aiCli);
+    const working = getWorkingDir(profileDir, "claude");
     const dir = working ?? claudeHomeDirs(config)[0] ?? null;
     const key = `${provider}|${dir ?? ""}`;
     const hit = cache.get(key);

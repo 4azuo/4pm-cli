@@ -258,8 +258,8 @@ export type ManualUpdateResult =
  * Manual update (`4pm update`) / operator "Update" push: install the server's latest version. Reuses
  * the same npm/self-download path as startup auto-update. Throws only when the server is unreachable.
  * `force` (the operator "Update" action) installs the server's latest **unconditionally**,
- * even when the running version compares equal — so a build the version compare can't tell apart (e.g. a
- * `-suffix`/`+build` an OLDER cli's compareSemver ignores) still applies on an explicit command, instead
+ * even when the running version compares equal — so a build the version compare can't tell apart still
+ * applies on an explicit command, instead
  * of no-op'ing as "already latest" and leaving the web modal to time out.
  * @adr 0289 @adr 0308
  */

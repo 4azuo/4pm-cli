@@ -50,9 +50,6 @@ export interface SlashLiveState {
 /** Config keys the operator may set/delete via /config. */
 const CONFIG_KEYS = [
   "aiCli",
-  "claudeHome",
-  "codexHome",
-  "antigravityHome",
   "physicPath",
   "commandHistoryUploadMinutes",
   "autoUpdate",
@@ -112,15 +109,6 @@ function parseConfigAssignment(
     case "physicPath":
       if (!value) return { error: t("slash.config.missingValue", { key }) };
       return { patch: { [key]: value } };
-    case "claudeHome":
-    case "codexHome":
-    case "antigravityHome": {
-      // Space-separated profile dirs → `{ profile, model:"" }` objects (failover order —
-      // ADR-0057). `args`/`model` per profile are set by editing config.json directly.
-      const dirs = valueTokens.filter((t) => t.trim());
-      if (dirs.length === 0) return { error: t("slash.config.missingValue", { key }) };
-      return { patch: { [key]: dirs.map((profile) => ({ profile, model: "" })) } };
-    }
     case "commandHistoryUploadMinutes": {
       const n = Number(value);
       if (!Number.isFinite(n) || n <= 0) return { error: t("slash.config.notPositive", { value }) };
@@ -303,8 +291,7 @@ function aiProfileLabel(c: AiCredential): string {
  * /ai-profile [list | use <n> | reset] — view the worker's AI credential profiles and
  * switch which one runs. `use <n>` PINS entry `n`: it is tried first on every prompt
  * (overriding aiFailoverMode), with failover to the rest kept as a backup; `reset` returns to
- * automatic failover. Operates on the unified mixed list (`config.aiProfiles`); a legacy
- * per-provider config has nothing to switch here.
+ * automatic failover. Operates on the credential list (`config.aiProfiles`).
  * @adr 0182 @adr 0250
  */
 function runAiProfile(ctx: SlashContext): void {
@@ -317,7 +304,6 @@ function runAiProfile(ctx: SlashContext): void {
   if (action === "list") {
     if (list.length === 0) {
       ctx.print(t("slash.aiProfile.none"), "warn");
-      ctx.print(t("slash.aiProfile.legacyHint"));
       return;
     }
     const pinned = getPinnedCredential(dir);

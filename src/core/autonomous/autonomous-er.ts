@@ -11,14 +11,12 @@
 import { join } from "node:path";
 import {
   AUTO_APPROVER,
-  designGroupKey,
   ERC_ID_RE,
   ERC_NEW_FILE_RE,
   EVIDENCE_ROOT,
   applyErPatch,
   erConflicts,
   erDeltaFromEdit,
-  erFocus,
   erMasterOf,
   erPatchEntities,
   erPatchIsEmpty,
@@ -27,14 +25,13 @@ import {
   isEvidencePath,
   parseErDiagram,
   parseErcFile,
-  serializeErDiagram,
   serializeErcFile,
   type ErModel,
   type ErcMeta,
 } from "@4pm/dto";
 import type { ApprovalEntry, ApprovalState, AutonomousReadReply, ErChangeFile, ErReadReply, ErReadRequest, ErWriteReply, ErWriteRequest } from "@4pm/ws";
-import { readAutonomousConfig, repoDirsOf, type AutonomousConfig } from "./autonomous-config";
-import { freshBooksRef, gitQuiet, mutateBooks, resolveBases, restoreDirToRef } from "./autonomous-git";
+import { readAutonomousConfig, type AutonomousConfig } from "./autonomous-config";
+import { freshBooksRef, gitQuiet, mutateBooks, resolveBases } from "./autonomous-git";
 import { approvalTrustActive, ercApprovalStateOf, ercFileHash } from "./autonomous-approvals";
 import {
   APPROVALS_REL,
@@ -48,7 +45,6 @@ import {
   numberNewErcs,
   readJsonMap,
   refSource,
-  removeInRoot,
   versionCommits,
   writeErSidecar,
   writeJson,
@@ -352,7 +348,6 @@ export async function writeEr(root: string, profileDir: string, req: ErWriteRequ
             out = await applyErWrite(dir, cfg.erDir, req, cfg.erAutoApprove);
             return out.publish;
           },
-          repoDirsOf(cfg),
         )
       : "unchanged";
     if (out === undefined) out = await applyErWrite(root, cfg.erDir, req, cfg.erAutoApprove);
@@ -378,23 +373,21 @@ async function newErcFiles(root: string, erDir: string): Promise<NewErcFile[]> {
 }
 
 /**
- * After an intake run (inside `publishIntake`, books branch checked out): keep the agent's new change
- * requests aside, put the whole ER folder back to `ref` (the approved files are never edited by an agent),
- * then number the new ones. Returns the ids created, the skipped files and whether the agent edited the ER.
+ * Number and publish an intake's change requests into the books checkout `dir` (inside the intake publish, re-done
+ * on every push retry so parallel requests never share a number); applied at once under `erAutoApprove`.
+ * @adr 0453 @adr 0563
  */
-export async function prepareIntakeEr(
-  root: string,
-  ref: string,
+export async function publishIntakeErcs(
+  dir: string,
   erDir: string,
+  files: readonly NewErcFile[],
   team?: string,
   autoApprove = false,
-): Promise<{ created: string[]; skipped: { name: string; reason: string }[]; tampered: boolean }> {
-  const fresh = await newErcFiles(root, erDir);
-  for (const f of fresh) await removeInRoot(root, `${erDir}/changes/${f.name}`);
-  const tampered = (await restoreDirToRef(root, ref, erDir)).length > 0;
-  const { created, skipped } = fresh.length ? await numberNewErcs(root, erDir, fresh, { source: "intake", ...(team ? { team } : {}) }) : { created: [], skipped: [] };
-  if (autoApprove && created.length) await autoApplyErcs(root, erDir, created);
-  return { created, skipped, tampered };
+): Promise<{ created: string[]; skipped: { name: string; reason: string }[] }> {
+  if (files.length === 0) return { created: [], skipped: [] };
+  const res = await numberNewErcs(dir, erDir, files, { source: "intake", ...(team ? { team } : {}) });
+  if (autoApprove && res.created.length) await autoApplyErcs(dir, erDir, res.created);
+  return res;
 }
 
 /** The change requests an implement agent wrote on its task branch (working tree first, then HEAD). */
@@ -415,11 +408,6 @@ export async function publishTaskErcs(root: string, erDir: string, files: readon
   const { created } = await numberNewErcs(root, erDir, files, { source: "implement", task, ...(team ? { team } : {}) });
   if (autoApprove && created.length) await autoApplyErcs(root, erDir, created);
   return created;
-}
-
-/** The task-id group key of a task / docs / question id (`TSK-000007-002` → `TSK-000007`; ADR-0536 adds `DOC-`). */
-export function erGroupOf(id: string): string {
-  return designGroupKey(id);
 }
 
 /**
@@ -443,68 +431,6 @@ export async function blockingErcCount(root: string, erDir: string): Promise<num
   return snap.changes.filter((c) => ercBlocks(snap.sidecar.changes[c.id]?.state ?? "pending")).length;
 }
 
-/** The open change requests, one line each — the intake agent's `erOpenNote`. */
-export async function openErcNote(root: string, erDir: string): Promise<string> {
-  const snap = await loadEr(dirSource(root), erDir);
-  const open = snap.changes.filter((c) => {
-    const st = snap.sidecar.changes[c.id]?.state ?? "pending";
-    return st === "pending" || st === "conflict" || st === "rejected";
-  });
-  if (open.length === 0) return "Open change requests: none.";
-  const master = erMasterOf(modelsOf(snap), snap.order).model;
-  const lines = open.map((c) => {
-    const doc = parseErcFile(c.content).doc;
-    const ents = doc ? erPatchEntities(ercPatch(master, doc)).join(", ") : "?";
-    return `- \`${c.path}\` (${snap.sidecar.changes[c.id]?.state ?? "pending"}) — ${doc?.meta.title ?? c.id}; touches: ${ents}`;
-  });
-  return `Open change requests (not applied yet — a request touching the same entities gets a USER_QA question or records the open one in \`depends\`, never a second conflicting change):\n${lines.join("\n")}`;
-}
-
-/** Strip a ``` fence around an agent-returned diagram. */
-function unfence(text: string): string {
-  return text.trim().replace(/^```+\s*mermaid\s*\n?/i, "").replace(/\n?```+\s*$/, "").trim();
-}
-
-/**
- * Write a sequence diagram an implement agent returned with its question (`<sequenceDir>/<QA-ID>.md`) into
- * the books checkout `root`; ignored when it is not a `sequenceDiagram`.
- */
-export async function writeQuestionSequence(root: string, sequenceDir: string, qaId: string, sequence: string | undefined): Promise<boolean> {
-  const body = unfence(sequence ?? "");
-  if (!/^sequenceDiagram\b/.test(body) || body.length > 50_000) return false;
-  await writeFileInRoot(root, join(root, `${sequenceDir}/${qaId}.md`), `# ${qaId}\n\n\`\`\`mermaid\n${body}\n\`\`\`\n`);
-  return true;
-}
-
-/**
- * The implement agent's design context (read from the books branch — the task branch does not carry it): the
- * task's sequence diagram and the group's applied change requests with the current form of the entities
- * they touch.
- */
-export async function implementErContext(root: string, base: string, cfg: Pick<AutonomousConfig, "erDir" | "sequenceDir">, taskId: string): Promise<{ sequenceNote: string; erNote: string }> {
-  const ref = await freshBooksRef(root, base);
-  const src = ref ? refSource(root, ref) : dirSource(root);
-  const seq = await src.read(`${cfg.sequenceDir}/${taskId}.md`);
-  const sequenceNote = seq?.trim()
-    ? `\nSEQUENCE DIAGRAM of this task (the intended flow — follow it; do not edit it):\n${seq.trim().slice(0, 20_000)}\n`
-    : "";
-  const group = erGroupOf(taskId);
-  const snap = await loadEr(src, cfg.erDir);
-  const master = erMasterOf(modelsOf(snap), snap.order).model;
-  const mine = snap.changes.filter((c) => parseErcFile(c.content).doc?.meta.group === group && snap.sidecar.changes[c.id]?.state === "applied");
-  const names = [...new Set(mine.flatMap((c) => {
-    const doc = parseErcFile(c.content).doc;
-    return doc ? [...doc.delta.entities.map((e) => e.name), ...doc.delta.relations.flatMap((r) => [r.a, r.b])] : [];
-  }))];
-  const where = ref ? `\`git show ${ref}:${cfg.erDir}/<module>.md\`` : `\`${cfg.erDir}/<module>.md\``;
-  const head = `\nDATA MODEL: the approved project ER (v${snap.sidecar.version}) is on the books branch — read a module with ${where}. Do NOT edit it; propose a change as described in the rules.\n`;
-  if (names.length === 0) return { sequenceNote, erNote: snap.modules.length ? head : "" };
-  const focus = erFocus(master, names).model;
-  return {
-    sequenceNote,
-    erNote: `${head}Entities this task's group changed (${mine.map((c) => c.id).join(", ")}), as they are now:\n\`\`\`mermaid\n${serializeErDiagram(focus)}\n\`\`\`\n`,
-  };
-}
 
 /**
  * The Evidences listing of `autonomous.read`: the sequence diagrams, the change requests (meta + state) and

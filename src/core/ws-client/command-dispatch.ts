@@ -38,15 +38,11 @@ import { aiProviderOf, estimateTokens } from "../ai/ai-stream";
 import {
   getPinnedCredential,
   getWorkingCredential,
-  getWorkingProfile,
   setWorkingCredential,
-  setWorkingProfile,
 } from "../ai/ai-profile-state";
 import {
   claudeCredentialKeys,
-  claudeHomeDirs,
   folderScopeGuard,
-  isUnifiedConfig,
   labelFromCredentialKey,
   planAiRun,
   profileDisplayLabel,
@@ -535,37 +531,20 @@ async function runAiPromptInner(
   } else {
     ctx.bus.log(t("session.noProjectDir"), "warn");
   }
-  // `||` (not `??`): a blank aiCli ("mixed"/none — ADR-0182) falls back to claude. In unified
-  // mode `cmd` is only used by the legacy-only branches below, so this is just a safe default.
-  const cmd = config.aiCli || "claude";
-  // Working-first memory: the unified mixed list (ADR-0182) remembers one
-  // cross-provider credential key; the legacy plan remembers the per-cmd profile dir. In
-  // "priority" mode (ADR-0182) the memory is ignored so every prompt starts at the list top.
-  const unified = isUnifiedConfig(config);
+  // Working-first memory (ADR-0182): one cross-provider credential key. In "priority" mode the memory
+  // is ignored so every prompt starts at the list top.
   const mode = config.aiFailoverMode ?? "remember";
-  const workingDir = unified ? null : getWorkingProfile(ctx.profileDir, cmd);
   // Operator manual pin (ADR-0250): when set it is the working-first hint on EVERY prompt,
   // overriding aiFailoverMode (remember/priority). Absent ⇒ the mode's own behaviour: "remember"
   // starts from the auto-remembered working credential, "priority" always from the list top.
-  const pinnedCred = unified ? getPinnedCredential(ctx.profileDir) : null;
-  const workingCred = unified
-    ? (pinnedCred ?? (mode === "remember" ? getWorkingCredential(ctx.profileDir) : null))
-    : null;
+  const pinnedCred = getPinnedCredential(ctx.profileDir);
+  const workingCred = pinnedCred ?? (mode === "remember" ? getWorkingCredential(ctx.profileDir) : null);
   // Rotate the Claude profile under session pressure (ADR-0081): when the project set
   // sessionSwitchPct and the current 5h session utilization is at/over it, prefer the
   // NEXT candidate profile for this run instead of the near-exhausted working one. Claude-only.
   // A manual pin (ADR-0250) is the operator's explicit choice, so it bypasses this pre-rotation —
   // a real auth/limit failure still falls through to the failover backups.
-  const startDir = unified ? null : profileUnderSessionPressure(ctx, config, cmd, workingDir);
-  const startCred =
-    unified && !pinnedCred ? credentialUnderSessionPressure(ctx, config, workingCred) : null;
-  if (startDir && startDir !== workingDir) {
-    ctx.bus.push({
-      source: origin,
-      kind: "log",
-      text: `session ${ctx.usageSnapshot?.session.utilizationPct ?? 0}% ≥ ${config.sessionSwitchPct}% — switching to Claude profile "${profileDisplayLabel(startDir)}"`,
-    });
-  }
+  const startCred = !pinnedCred ? credentialUnderSessionPressure(ctx, config, workingCred) : null;
   if (startCred && startCred !== workingCred) {
     ctx.bus.push({
       source: origin,
@@ -594,9 +573,7 @@ async function runAiPromptInner(
     ctx.restrictToFolder && ctx.physicRoot
       ? folderScopeGuard(ctx.physicRoot, aiBodyPrompt)
       : aiBodyPrompt;
-  const hint = unified
-    ? { credential: startCred ?? workingCred }
-    : { dir: startDir ?? workingDir };
+  const hint = { credential: startCred ?? workingCred };
   // Shared AI memory: resume the native session on the SAME profile when we have one
   // (it already carries the context — no re-inject), else seed a fresh session with the compacted
   // memory. Probe the plan once to learn the first attempt's credential/provider, then decide.
@@ -831,16 +808,11 @@ async function runAiPromptInner(
     ctx.bus.push({ source: origin, kind: "log", text, level: "warn" });
     ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: `${text}\n`, log: true });
   }
-  // Remember the working profile so the next prompt tries it first + show it in the
-  // header. Unified plans remember one cross-provider credential key (ADR-0182); the legacy plan
-  // remembers the per-cmd dir. (In "priority" mode the memory is written but ignored on read.)
+  // Remember the working credential so the next prompt tries it first + show it in the header
+  // (ADR-0182; in "priority" mode the memory is written but ignored on read).
   const profileLabel = result.workedDir ? profileDisplayLabel(result.workedDir) : null;
   if (result.workedDir) {
-    if (unified && result.workedKey) {
-      setWorkingCredential(ctx.profileDir, result.workedKey);
-    } else {
-      setWorkingProfile(ctx.profileDir, result.workedCmd ?? plan.cmd, result.workedDir);
-    }
+    if (result.workedKey) setWorkingCredential(ctx.profileDir, result.workedKey);
     ctx.bus.setActiveProfile(profileLabel ?? plan.cmd);
   }
   ctx.send(WsChannels.COMMAND_OUTPUT, {
@@ -1146,36 +1118,10 @@ export function resetMemorySession(ctx: WsHandlerCtx): void {
 }
 
 /**
- * Pick the Claude profile to try first when under session pressure. Returns
- * the next candidate dir (cyclically after the current working one) when the knob is set
- * and the live session utilization is at/over it AND there is more than one candidate;
- * otherwise null (keep the normal working-first ordering). Claude-only (session % is a
- * Claude subscription metric).
- * @adr 0081
- */
-function profileUnderSessionPressure(
-  ctx: WsHandlerCtx,
-  config: ReturnType<typeof readProfileConfig>,
-  cmd: string,
-  workingDir: string | null,
-): string | null {
-  const threshold = config.sessionSwitchPct ?? 0;
-  if (threshold <= 0 || cmd !== "claude") return null;
-  const util = ctx.usageSnapshot?.session.utilizationPct ?? 0;
-  if (util < threshold) return null;
-  const dirs = claudeHomeDirs(config);
-  if (dirs.length < 2) return null;
-  const currentIndex = workingDir ? dirs.indexOf(workingDir) : -1;
-  const next = dirs[(currentIndex + 1) % dirs.length];
-  return next ?? null;
-}
-
-/**
- * Unified-list equivalent of {@link profileUnderSessionPressure}: under session
- * pressure, return the next **claude** credential key (cyclically after the working one) so the
+ * Under session pressure, return the next **claude** credential key (cyclically after the working one) so the
  * failover starts on a fresher Claude account. Claude-only — %session is a Claude subscription
  * metric; codex/antigravity entries are unaffected. Null ⇒ keep the working-first order.
- * @adr 0182
+ * @adr 0182 @adr 0081
  */
 function credentialUnderSessionPressure(
   ctx: WsHandlerCtx,

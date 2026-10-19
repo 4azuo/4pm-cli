@@ -30,6 +30,8 @@ export default defineConfig({
       new URL("dist/project-sample", import.meta.url),
       { recursive: true },
     );
+    // The book templates the scaffold resets tracking files to (kept out of the projects — ADR-0563).
+    await cp(new URL("book-templates", import.meta.url), new URL("dist/book-templates", import.meta.url), { recursive: true });
   },
   // Force a single self-contained `dist/index.js` (ADR-0015). tsup defaults ESM
   // `splitting` to true, which emits a shared `chunk-*.js` that index.js STATICALLY

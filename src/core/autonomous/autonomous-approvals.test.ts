@@ -19,7 +19,7 @@ import {
   verifiedApprovedIds,
 } from "./autonomous-approvals";
 
-const AI_TODO = `| ID | Priority | Tag | Depends | Group | Task description | Notes |
+const AI_TODO = `| ID | Priority | Actions | Depends | Group | Task description | Notes |
 |---|---|---|---|---|---|---|
 | TSK-000001-001 | high | | | 0001 | Add the login page | |
 | TSK-000001-002 | low | | | 0001 | Write docs | |

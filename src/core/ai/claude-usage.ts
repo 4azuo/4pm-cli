@@ -2,7 +2,7 @@
  * Claude subscription usage — the same data as the built-in `/usage` screen
  * (5h + weekly utilization). Two sources, best-effort in order:
  *   1. Anthropic OAuth usage API (fast, gives reset times) using the profile's token read
- *      from `<claudeHome profile dir>/.credentials.json`.
+ *      from `<claude profile dir>/.credentials.json`.
  *   2. Fallback: run `<aiCli> /usage` (headless) and parse the printed percentages — this
  *      also rotates an expired OAuth token. Robust when the API is unreachable.
  * Only the derived snapshot (%, reset, plan, profile) leaves the machine — never the token.

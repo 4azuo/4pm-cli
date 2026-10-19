@@ -28,7 +28,7 @@ function removeLocal(dir: string, remove: (dir: string) => void): void {
 export async function runUnlink(profileDir: string, profileName: string): Promise<void> {
   // Localize per the worker config (ADR-0276).
   initI18n(readProfileConfig(profileDir).locale);
-  const cred = readCredential(profileDir, profileName);
+  const cred = readCredential(profileDir);
   if (!cred) {
     console.log(t("unlink.noLink", { profile: profileName }));
     return;

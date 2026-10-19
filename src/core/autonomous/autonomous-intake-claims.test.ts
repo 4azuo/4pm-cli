@@ -1,16 +1,16 @@
 /**
- * Intake claims in `AI_PROGRESS`: a task-claim write keeps the intake rows, a claim skips ids another worker
- * holds live (expired / own leftovers are dropped), release removes only its batch, the waiting counts, and a request
- * held back by an unfinished dependency.
- * @adr 0529 @adr 0561
+ * Intake claims in `AI_PROGRESS`: a task-claim write keeps the intake rows, a claim takes ONE id and skips ids another
+ * worker holds live (expired / own leftovers are dropped), `dropClaim` removes an intake row like a task row, the
+ * waiting counts, and a request held back by an unfinished dependency.
+ * @adr 0529 @adr 0561 @adr 0563
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as B from "./autonomous-books";
-import { applyIntakeClaim, intakeHeldByOthers, removeIntakeClaim, type IntakeClaim } from "./autonomous-intake-claims";
-import { requestWaiting, waitingCounts } from "./autonomous-tasks";
+import { applyIntakeClaim, intakeHeldByOthers, type IntakeClaimDraft } from "./autonomous-intake-claims";
+import { dropClaim, requestWaiting, waitingCounts, type LocalClaim } from "./autonomous-tasks";
 
 const HEADER = "| Started | ID | Team | Worker | Claim | Attempt | Task description |\n|---|---|---|---|---|---|---|\n";
 const USER_TODO = `# User Todo
@@ -57,34 +57,35 @@ describe("applyIntakeClaim", () => {
         `| 2020-01-01 00:00:00 | QA-000009-001 | | me | c-old | 1 | Intake — z |\n`,
     );
     const prog = await B.readBook(root, "AI_PROGRESS.md");
-    expect([...intakeHeldByOthers(prog, "me", 75).keys()]).toEqual(["REQ-000001-001"]);
+    expect([...intakeHeldByOthers(prog, "me", 6).keys()]).toEqual(["REQ-000001-001"]);
 
-    const mine: IntakeClaim = { claim: "c-new", worker: "me", started: now, ids: [] };
-    const ok = await applyIntakeClaim(root, ["REQ-000001-001", "REQ-000002-001"], mine, 75, () => "");
+    const mine: IntakeClaimDraft = { claim: "c-new", worker: "me", started: now, attempt: 1, id: "" };
+    const ok = await applyIntakeClaim(root, ["REQ-000001-001", "REQ-000002-001"], mine, 6, () => "", () => 3);
     expect(ok).toBe(true);
-    expect(mine.ids).toEqual(["REQ-000002-001"]);
+    expect(mine.id).toBe("REQ-000002-001");
+    expect(mine.attempt).toBe(3);
     const rows = B.parseClaims(await B.readBook(root, "AI_PROGRESS.md")).intake;
-    expect(rows.map((r) => `${r.id}:${r.claim}`)).toEqual(["REQ-000001-001:c-other", "REQ-000002-001:c-new"]);
+    expect(rows.map((r) => `${r.id}:${r.claim}:${r.attempt}`)).toEqual(["REQ-000001-001:c-other:1", "REQ-000002-001:c-new:3"]);
     expect(rows[1]!.desc).toBe("Intake — Add a menu");
 
-    expect(await removeIntakeClaim(root, "c-new")).toBe(true);
+    const claim = { id: "REQ-000002-001", claim: "c-new" } as LocalClaim;
+    expect(await dropClaim(root, claim)).toBe(true);
     expect(B.parseClaims(await B.readBook(root, "AI_PROGRESS.md")).intake.map((r) => r.id)).toEqual(["REQ-000001-001"]);
   });
 
-  it("picks the batch from the ids still free, so a lost race takes the next request", async () => {
-    // Another worker won REQ-000001-001; this worker's batch of one moves on to REQ-000002-001.
+  it("claims one id: a lost race takes the next free request", async () => {
     writeFileSync(join(root, "AI_PROGRESS.md"), `# AI Progress\n\n${HEADER}| ${B.stamp()} | REQ-000001-001 | | other | c | 1 | Intake |\n`);
-    const mine: IntakeClaim = { claim: "c-new", worker: "me", started: B.stamp(), ids: [] };
-    const ok = await applyIntakeClaim(root, ["REQ-000001-001", "REQ-000002-001"], mine, 75, () => "", (free) => free.slice(0, 1));
-    expect(ok).toBe(true);
-    expect(mine.ids).toEqual(["REQ-000002-001"]);
+    const mine: IntakeClaimDraft = { claim: "c-new", worker: "me", started: B.stamp(), attempt: 1, id: "" };
+    expect(await applyIntakeClaim(root, ["REQ-000001-001", "REQ-000002-001"], mine, 6, () => "", () => 1)).toBe(true);
+    expect(mine.id).toBe("REQ-000002-001");
+    expect(B.parseClaims(await B.readBook(root, "AI_PROGRESS.md")).intake).toHaveLength(2);
   });
 
   it("claims nothing when every id is held or gone", async () => {
     writeFileSync(join(root, "AI_PROGRESS.md"), `# AI Progress\n\n${HEADER}| ${B.stamp()} | REQ-000001-001 | | other | c | 1 | Intake |\n`);
-    const mine: IntakeClaim = { claim: "c-new", worker: "me", started: B.stamp(), ids: [] };
-    expect(await applyIntakeClaim(root, ["REQ-000001-001", "REQ-000404-001"], mine, 75, () => "")).toBe(false);
-    expect(mine.ids).toEqual([]);
+    const mine: IntakeClaimDraft = { claim: "c-new", worker: "me", started: B.stamp(), attempt: 1, id: "" };
+    expect(await applyIntakeClaim(root, ["REQ-000001-001", "REQ-000404-001"], mine, 6, () => "", () => 1)).toBe(false);
+    expect(mine.id).toBe("");
   });
 });
 
@@ -92,11 +93,11 @@ describe("waitingCounts", () => {
   it("counts unapproved rows and the blocking change requests it is given", async () => {
     writeFileSync(
       join(root, "AI_TODO.md"),
-      "# AI Todo\n\n| ID | Priority | Tag | Depends | Group | Task description | Notes |\n|---|---|---|---|---|---|---|\n| TSK-000003-001 | High | | | GRP-000003 | A | |\n| TSK-000003-002 | High | | TSK-000003-001 | GRP-000003 | B | |\n",
+      "# AI Todo\n\n| ID | Priority | Actions | Depends | Group | Task description | Notes |\n|---|---|---|---|---|---|---|\n| TSK-000003-001 | High | | | GRP-000003 | A | |\n| TSK-000003-002 | High | | TSK-000003-001 | GRP-000003 | B | |\n",
     );
     const w = await waitingCounts(root, undefined, 3);
     // No approvals sidecar: two requests + two tasks wait for approval.
-    expect(w).toEqual({ approval: 4, changeRequests: 3, answers: 0, dependencies: 0, blocked: 0 });
+    expect(w).toEqual({ approval: 4, changeRequests: 3, answers: 0, dependencies: 0, blocked: 0, merge: 0 });
   });
 });
 
@@ -111,8 +112,8 @@ describe("requestWaiting", () => {
       "# AI Todo\n\n| ID | Priority | Actions | Depends | Group | Task description | Notes |\n|---|---|---|---|---|---|---|\n| TSK-000015-002 | High | | | 000015 | B | |\n",
     );
     writeFileSync(join(root, "AI_DONE.md"), "# AI Done\n\n| Timestamp | ID | Task description | Files | Notes |\n|---|---|---|---|---|\n| 2026-10-19 | TSK-000015-001 | A | | |\n");
-    mkdirSync(join(root, ".claude"), { recursive: true });
-    writeFileSync(join(root, ".claude/.autonomous.lineage.json"), JSON.stringify({ "000015": { source: "REQ-000014-001", request: "Seed", at: "" } }));
+    mkdirSync(join(root, ".4pm"), { recursive: true });
+    writeFileSync(join(root, ".4pm/.autonomous.lineage.json"), JSON.stringify({ "000015": { source: "REQ-000014-001", request: "Seed", at: "" } }));
     let waiting = await requestWaiting(root);
     expect(waiting("REQ-000014-003")).toEqual([{ id: "TSK-000015-002", via: "REQ-000014-001" }]);
     expect(waiting("REQ-000014-004")).toEqual([{ id: "REQ-000014-003" }]);

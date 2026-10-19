@@ -6,8 +6,8 @@
  * @adr 0395
  */
 import { readProfileConfig, type ProfileConfig } from "../../config/profile";
-import { isAiAccountMaskOn, profileDisplayLabel, profileLabels, setAiAccountMask } from "../../utils/ai-cli";
-import { getWorkingProfile } from "./ai-profile-state";
+import { dirFromCredentialKey, isAiAccountMaskOn, profileDisplayLabel, profileLabels, setAiAccountMask } from "../../utils/ai-cli";
+import { getWorkingCredential } from "./ai-profile-state";
 
 /**
  * Turn masking on/off for this profile; returns true when the state changed (so the caller can
@@ -25,6 +25,6 @@ export function applyAiAccountMask(profileDir: string, on: boolean): boolean {
  * @adr 0057
  */
 export function activeProfileLabel(profileDir: string, config: ProfileConfig): string | null {
-  const workingDir = getWorkingProfile(profileDir, config.aiCli || "claude");
-  return workingDir ? profileDisplayLabel(workingDir) : (profileLabels(config)[0] ?? null);
+  const working = getWorkingCredential(profileDir);
+  return working ? profileDisplayLabel(dirFromCredentialKey(working)) : (profileLabels(config)[0] ?? null);
 }
