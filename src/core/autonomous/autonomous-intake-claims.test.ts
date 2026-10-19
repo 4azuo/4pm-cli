@@ -1,15 +1,16 @@
 /**
  * Intake claims in `AI_PROGRESS`: a task-claim write keeps the intake rows, a claim skips ids another worker
- * holds live (expired / own leftovers are dropped), release removes only its batch, and the waiting counts.
- * @adr 0529
+ * holds live (expired / own leftovers are dropped), release removes only its batch, the waiting counts, and a request
+ * held back by an unfinished dependency.
+ * @adr 0529 @adr 0561
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as B from "./autonomous-books";
 import { applyIntakeClaim, intakeHeldByOthers, removeIntakeClaim, type IntakeClaim } from "./autonomous-intake-claims";
-import { waitingCounts } from "./autonomous-tasks";
+import { requestWaiting, waitingCounts } from "./autonomous-tasks";
 
 const HEADER = "| Started | ID | Team | Worker | Claim | Attempt | Task description |\n|---|---|---|---|---|---|---|\n";
 const USER_TODO = `# User Todo
@@ -96,5 +97,27 @@ describe("waitingCounts", () => {
     const w = await waitingCounts(root, undefined, 3);
     // No approvals sidecar: two requests + two tasks wait for approval.
     expect(w).toEqual({ approval: 4, changeRequests: 3, answers: 0, dependencies: 0, blocked: 0 });
+  });
+});
+
+describe("requestWaiting", () => {
+  it("holds a request back until the request it depends on is taken in and all its rows are done", async () => {
+    writeFileSync(
+      join(root, "USER_TODO.md"),
+      "# User Todo\n\n| ID | Group | Depends | Request |\n|---|---|---|---|\n| REQ-000014-003 | | REQ-000014-001 | Login |\n| REQ-000014-004 | | REQ-000014-003 | Lockout |\n",
+    );
+    writeFileSync(
+      join(root, "AI_TODO.md"),
+      "# AI Todo\n\n| ID | Priority | Actions | Depends | Group | Task description | Notes |\n|---|---|---|---|---|---|---|\n| TSK-000015-002 | High | | | 000015 | B | |\n",
+    );
+    writeFileSync(join(root, "AI_DONE.md"), "# AI Done\n\n| Timestamp | ID | Task description | Files | Notes |\n|---|---|---|---|---|\n| 2026-10-19 | TSK-000015-001 | A | | |\n");
+    mkdirSync(join(root, ".claude"), { recursive: true });
+    writeFileSync(join(root, ".claude/.autonomous.lineage.json"), JSON.stringify({ "000015": { source: "REQ-000014-001", request: "Seed", at: "" } }));
+    let waiting = await requestWaiting(root);
+    expect(waiting("REQ-000014-003")).toEqual([{ id: "TSK-000015-002", via: "REQ-000014-001" }]);
+    expect(waiting("REQ-000014-004")).toEqual([{ id: "REQ-000014-003" }]);
+    writeFileSync(join(root, "AI_TODO.md"), "# AI Todo\n\n| ID | Priority | Actions | Depends | Group | Task description | Notes |\n|---|---|---|---|---|---|---|\n");
+    waiting = await requestWaiting(root);
+    expect(waiting("REQ-000014-003")).toEqual([]);
   });
 });

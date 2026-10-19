@@ -78,7 +78,9 @@ export async function applyIntakeClaim(
   const { claims, intake } = B.parseClaims(prog);
   const kept = intake.filter((r) => r.worker !== mine.worker && intakeClaimLive(r, ttlMinutes));
   const held = new Set(kept.map((r) => r.id));
-  const present = (id: string): boolean => (id.startsWith("REQ-") ? userTodo : userQa).includes(id);
+  // Still open in its book — a row with a `State` was already taken in (ADR-0562).
+  const open = new Set([...B.openRowIds(userTodo, "REQ-"), ...B.openRowIds(userQa, "QA-")]);
+  const present = (id: string): boolean => open.has(id);
   mine.ids = pick(wanted.filter((id) => !held.has(id) && present(id)), userQa);
   if (mine.ids.length === 0) return false;
   const rows: B.ClaimRow[] = mine.ids.map((id) => ({

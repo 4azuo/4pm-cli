@@ -13,10 +13,10 @@ import * as B from "./autonomous-books";
 import { isMerged, type RepoBase } from "./autonomous-git";
 import { evidenceCell, moveTaskEvidence, rehomeTaskLinks } from "./autonomous-evidence";
 import { readFileInRoot } from "../../utils/safe-path";
-import { approvalEntrySchema, bookRowTeam } from "@4pm/dto";
+import { BOOK_STATE, approvalEntrySchema, bookRowStates, bookRowTeam, buildDependsWaiting, type WaitingItem } from "@4pm/dto";
 import { verifiedApprovedIds } from "./autonomous-approvals";
 import { servesTeam } from "./autonomous-teams";
-import { docRunnable, readDocs } from "./autonomous-docs";
+import { docRunnable, readDocs, readLineage } from "./autonomous-docs";
 
 /** The approvals sidecar. */
 const APPROVALS_REL = ".claude/.autonomous.approvals.json";
@@ -183,12 +183,12 @@ export async function pickTask(
     if (!isDoc && opts.blockedGroups?.has(/^(TSK-\d{6})-/.exec(t.id)?.[1] ?? "")) continue;
     const a = attempts[t.id];
     if (a && (a.splitPending || a.blocked || a.count >= opts.maxAttempts)) continue;
-    // QA deps: answered + approved, or already folded (absent — QA ids are never reused).
+    // QA deps: answered + approved, or already folded (a `State` — ADR-0562 — or absent: QA ids are never reused).
     const qaOk = t.depends
       .filter((d) => d.startsWith("QA-"))
       .every((d) => {
         const q = qaRows.get(d);
-        return !q || (q.answer.trim().length > 0 && approved.has(d));
+        return !q || !B.qaOpen(q) || (q.answer.trim().length > 0 && approved.has(d));
       });
     if (!qaOk) continue;
     const docDeps = t.depends.filter((d) => d.startsWith("DOC-"));
@@ -433,15 +433,16 @@ export async function applyQuestion(root: string, mine: LocalClaim, question: st
 }
 
 /**
- * Fold task-question answers: each answered + approved `QA-…` that some task depends on is
- * appended to those tasks' Notes and removed from `USER_QA` (an absent QA counts as resolved). Returns true
- * when the books changed. Intake questions (no dependent task) are left for the intake agent.
+ * Fold task-question answers: each answered + approved open `QA-…` that some task depends on is
+ * appended to those tasks' Notes and kept in `USER_QA` with `State` = `Done` (a folded / absent QA counts as
+ * resolved). Returns true when the books changed. Intake questions (no dependent task) are left for the intake agent.
+ * @adr 0562
  */
 export async function foldTaskAnswers(root: string): Promise<boolean> {
   const [todo, qa, approved] = await Promise.all([B.readBook(root, "AI_TODO.md"), B.readBook(root, "USER_QA.md"), approvedIds(root)]);
   const { tasks } = B.parseTasks(todo);
   const { rows } = B.parseQa(qa);
-  const answered = rows.filter((q) => q.answer.trim() && approved.has(q.id) && tasks.some((t) => t.depends.includes(q.id)));
+  const answered = rows.filter((q) => B.qaOpen(q) && q.answer.trim() && approved.has(q.id) && tasks.some((t) => t.depends.includes(q.id)));
   if (answered.length === 0) return false;
   const byId = new Map(answered.map((q) => [q.id, q]));
   const next = tasks.map((t) => {
@@ -449,27 +450,100 @@ export async function foldTaskAnswers(root: string): Promise<boolean> {
     return add.length ? { ...t, notes: appendNote(t.notes, add.join("; ")) } : t;
   });
   await B.writeBook(root, "AI_TODO.md", B.writeTasks(todo, next));
-  await B.writeBook(root, "USER_QA.md", B.writeQa(qa, rows.filter((q) => !byId.has(q.id))));
+  await B.writeBook(root, "USER_QA.md", B.writeQa(qa, rows.map((q) => (byId.has(q.id) ? { ...q, state: BOOK_STATE.done } : q))));
   return true;
 }
 
 /**
- * The intake work this worker may take: approved `REQ-…` and answered + approved intake `QA-…` ids — of the
- * teams it serves. Empty = nothing to do.
- * @adr 0450
+ * `waitingOf(requestId)` — what a USER_TODO request's `Depends` still wait on (`buildDependsWaiting` over the working
+ * tree books + lineage): a request whose dependency is not finished is not taken in yet.
+ * @adr 0561
+ */
+export async function requestWaiting(root: string): Promise<(id: string) => WaitingItem[]> {
+  const [userTodo, todo, qa, done, prog, lineage] = await Promise.all([
+    B.readBook(root, "USER_TODO.md"),
+    B.readBook(root, "AI_TODO.md"),
+    B.readBook(root, "USER_QA.md"),
+    B.readBook(root, "AI_DONE.md"),
+    B.readBook(root, "AI_PROGRESS.md"),
+    readLineage(root),
+  ]);
+  const waitingOf = buildDependsWaiting({
+    pendingRequests: new Set(B.openRowIds(userTodo, "REQ-")),
+    openIds: [
+      ...B.parseTasks(todo).tasks.map((t) => t.id),
+      ...B.parseClaims(prog).claims.map((c) => c.id),
+      ...B.parseQa(qa).rows.filter(B.qaOpen).map((q) => q.id),
+    ],
+    doneIds: new Set(B.doneRows(done).keys()),
+    lineage,
+  });
+  const deps = B.requestDepends(userTodo);
+  return (id) => waitingOf(deps.get(id) ?? []);
+}
+
+/**
+ * Mark finished history: a `Taken in` request / question becomes `Done` once no row of the groups made from it
+ * (lineage) is open any more — every task / doc in AI_DONE, no claim, no open question. True when a book changed
+ * (run inside `publishBooks`).
+ * @adr 0562
+ */
+export async function markDoneRows(root: string): Promise<boolean> {
+  const [userTodo, todo, qa, done, prog, lineage] = await Promise.all([
+    B.readBook(root, "USER_TODO.md"),
+    B.readBook(root, "AI_TODO.md"),
+    B.readBook(root, "USER_QA.md"),
+    B.readBook(root, "AI_DONE.md"),
+    B.readBook(root, "AI_PROGRESS.md"),
+    readLineage(root),
+  ]);
+  const waitingOf = buildDependsWaiting({
+    pendingRequests: new Set(),
+    openIds: [
+      ...B.parseTasks(todo).tasks.map((t) => t.id),
+      ...B.parseClaims(prog).claims.map((c) => c.id),
+      ...B.parseQa(qa).rows.filter(B.qaOpen).map((q) => q.id),
+    ],
+    doneIds: new Set(B.doneRows(done).keys()),
+    lineage,
+  });
+  let changed = false;
+  for (const [rel, md] of [
+    ["USER_TODO.md", userTodo],
+    ["USER_QA.md", qa],
+  ] as const) {
+    const finished = new Map<string, string>();
+    for (const [id, state] of bookRowStates(md)) {
+      if (state === BOOK_STATE.takenIn && waitingOf([id]).length === 0) finished.set(id, BOOK_STATE.done);
+    }
+    const next = B.setRowStates(md, finished);
+    if (next !== md) {
+      await B.writeBook(root, rel, next);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+/**
+ * The intake work this worker may take: approved `REQ-…` whose `Depends` are finished and answered +
+ * approved intake `QA-…` ids — of the teams it serves. Empty = nothing to do.
+ * @adr 0450 @adr 0561
  */
 export async function intakeIds(root: string, profileDir?: string): Promise<string[]> {
-  const [userTodo, todo, qa, approved] = await Promise.all([
+  const [userTodo, todo, qa, approved, waiting] = await Promise.all([
     B.readBook(root, "USER_TODO.md"),
     B.readBook(root, "AI_TODO.md"),
     B.readBook(root, "USER_QA.md"),
     approvedIds(root),
+    requestWaiting(root),
   ]);
   const served = (md: string, id: string): boolean => (profileDir ? servesTeam(profileDir, bookRowTeam(md, id)) : true);
-  const reqs = [...approved].filter((id) => id.startsWith("REQ-") && userTodo.includes(id) && served(userTodo, id));
+  const open = new Set(B.openRowIds(userTodo, "REQ-"));
+  const reqs = [...approved].filter((id) => open.has(id) && served(userTodo, id) && waiting(id).length === 0);
   const taskDeps = new Set(B.parseTasks(todo).tasks.flatMap((t) => t.depends));
   const qas = B.parseQa(qa)
-    .rows.filter((q) => !taskDeps.has(q.id) && q.answer.trim() && approved.has(q.id) && served(qa, q.id))
+    .rows.filter((q) => B.qaOpen(q) && !taskDeps.has(q.id) && q.answer.trim() && approved.has(q.id) && served(qa, q.id))
     .map((q) => q.id);
   return [...reqs, ...qas].sort();
 }
@@ -502,7 +576,7 @@ export interface WaitingCounts {
   changeRequests: number;
   /** Tasks waiting on an unanswered question. */
   answers: number;
-  /** Approved tasks waiting on unfinished tasks. */
+  /** Approved tasks waiting on unfinished tasks, and approved requests waiting on unfinished dependencies. @adr 0561 */
   dependencies: number;
   /** Approved tasks blocked by a merge conflict with their base. @adr 0539 */
   blocked: number;
@@ -511,12 +585,13 @@ export interface WaitingCounts {
 /**
  * Count the served rows waiting on people — the same rules as `intakeIds` / `pickTask`: unapproved
  * `REQ-…` / `TSK-…` / `DOC-…` / answered `QA-…` and DOC rounds waiting for their review, tasks whose `QA-…`
- * dependency is unanswered (or unapproved), and approved tasks whose `TSK-…` / `DOC-…` dependency is not done.
+ * dependency is unanswered (or unapproved), approved tasks whose `TSK-…` / `DOC-…` dependency is not done, and approved
+ * requests whose `Depends` are not finished (`requestWaiting`).
  * `changeRequests` is the blocking ER change requests, counted by the caller.
- * @adr 0529 @adr 0453 @adr 0536
+ * @adr 0529 @adr 0453 @adr 0536 @adr 0561
  */
 export async function waitingCounts(root: string, profileDir: string | undefined, changeRequests: number): Promise<WaitingCounts> {
-  const [userTodo, todo, qa, done, approved, attempts, docs] = await Promise.all([
+  const [userTodo, todo, qa, done, approved, attempts, docs, waiting] = await Promise.all([
     B.readBook(root, "USER_TODO.md"),
     B.readBook(root, "AI_TODO.md"),
     B.readBook(root, "USER_QA.md"),
@@ -524,11 +599,12 @@ export async function waitingCounts(root: string, profileDir: string | undefined
     approvedIds(root),
     B.readAttempts(root),
     readDocs(root),
+    requestWaiting(root),
   ]);
   const served = (team: string | undefined): boolean => (profileDir ? servesTeam(profileDir, team) : true);
-  const reqIds = B.rowIds(userTodo, "REQ-").filter((id) => served(bookRowTeam(userTodo, id)));
+  const reqIds = B.openRowIds(userTodo, "REQ-").filter((id) => served(bookRowTeam(userTodo, id)));
   const tasks = B.parseTasks(todo).tasks.filter((t) => served(t.team));
-  const qaRows = B.parseQa(qa).rows.filter((q) => served(q.team));
+  const qaRows = B.parseQa(qa).rows.filter((q) => B.qaOpen(q) && served(q.team));
   const qaById = new Map(qaRows.map((q) => [q.id, q]));
   const doneMap = B.doneRows(done);
   let approval = reqIds.filter((id) => !approved.has(id)).length;
@@ -538,6 +614,8 @@ export async function waitingCounts(root: string, profileDir: string | undefined
   let answers = 0;
   let dependencies = 0;
   let blocked = 0;
+  // Approved requests held back from intake by an unfinished dependency (ADR-0561).
+  dependencies += reqIds.filter((id) => approved.has(id) && waiting(id).length > 0).length;
   for (const t of tasks) {
     if (!approved.has(t.id) || docs[t.id]?.state === "review") continue;
     if (attempts[t.id]?.blocked) {

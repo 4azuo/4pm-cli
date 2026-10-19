@@ -11,6 +11,7 @@ import type { DocsSidecar, LineageSidecar } from "./autonomous-docs";
 import { parseBookClaims } from "./book-guards";
 import { bookGroupOf } from "./book-ids";
 import { isValidDue, parseTagsCell } from "./book-meta";
+import { parseBookState } from "./book-state";
 import { formatIssueRef, parseIssueRef } from "./issue-sync";
 
 /** The books an index row comes from. */
@@ -158,8 +159,9 @@ export function buildBookIndex(input: BookIndexInput): { rows: BookIndexRow[]; t
     });
   };
 
+  // A request / question with a `State` is history (taken in / done — ADR-0562): indexed as before, when it was removed.
   for (const [id, r] of bookRowsById(books.userTodo)) {
-    if (!id.startsWith("REQ-")) continue;
+    if (!id.startsWith("REQ-") || parseBookState(r.cells.state)) continue;
     // A linked row carries its ref and the full request text for the issue sync (ADR-0546).
     const issue = parseIssueRef(r.cells.issue ?? "");
     push("userTodo", id, r.team, r.cells, {
@@ -168,7 +170,7 @@ export function buildBookIndex(input: BookIndexInput): { rows: BookIndexRow[]; t
     });
   }
   for (const [id, r] of bookRowsById(books.userQa)) {
-    if (id.startsWith("QA-")) {
+    if (id.startsWith("QA-") && !parseBookState(r.cells.state)) {
       push("userQa", id, r.team, r.cells, { state: intakeClaimed.has(id) ? "intake" : "open", answered: Boolean((r.cells.answer ?? "").trim()) });
     }
   }

@@ -8,9 +8,10 @@
  * row with a team is written. Likewise the metadata columns `Tags` / `Due`, added after `Team` (else `Title` / `ID`),
  * and the row `Title`, added right after `ID` and clamped to `BOOK_TITLE_MAX` on every write.
  * AI_TODO's approval-action column is `Actions`; a legacy `Tag` header is renamed in place on every rewrite.
- * @adr 0371 @adr 0450 @adr 0543 @adr 0549
+ * USER_TODO / USER_QA rows the cycle used keep a `State` (last column) instead of being removed.
+ * @adr 0371 @adr 0450 @adr 0543 @adr 0549 @adr 0562
  */
-import { clampBookTitle } from "@4pm/dto";
+import { BOOK_STATE_HEADER, clampBookTitle, parseBookState } from "@4pm/dto";
 import { readFileInRoot, writeFileInRoot } from "../../utils/safe-path";
 import { join } from "node:path";
 
@@ -345,6 +346,19 @@ export function rowIds(md: string, prefix: string): string[] {
   return out;
 }
 
+/** The `Depends` ids of each `USER_TODO` request (any prefix — a request may wait on another request). @adr 0561 */
+export function requestDepends(md: string): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const t of findTables(md)) {
+    if (col(t.header, "ID") < 0 || col(t.header, "Depends") < 0) continue;
+    for (const r of t.rows) {
+      const id = get(t, r, "ID");
+      if (id.startsWith("REQ-")) out.set(id, get(t, r, "Depends").split(/[,\s]+/).map((x) => x.trim()).filter(Boolean));
+    }
+  }
+  return out;
+}
+
 /** The `Request` text of a `USER_TODO` row ("" when absent). @adr 0529 */
 export function requestText(md: string, id: string): string {
   for (const t of findTables(md)) {
@@ -448,6 +462,8 @@ export interface QaRow {
   /** `Tags` / `Due` cells. */
   tags?: string;
   due?: string;
+  /** `State` cell — "" = open; `Taken in` / `Done` = history. @adr 0562 */
+  state?: string;
 }
 
 /** Parse the `USER_QA` table. */
@@ -466,6 +482,7 @@ export function parseQa(md: string): { table: MdTable | null; rows: QaRow[] } {
       title: get(table, r, "Title"),
       tags: get(table, r, "Tags"),
       due: get(table, r, "Due"),
+      state: get(table, r, BOOK_STATE_HEADER),
     }))
     .filter((q) => /^QA-/.test(q.id));
   return { table, rows };
@@ -475,9 +492,12 @@ export function parseQa(md: string): { table: MdTable | null; rows: QaRow[] } {
 export function writeQa(md: string, rows: QaRow[]): string {
   const found = parseQa(md).table;
   if (!found) return md;
-  const table = withMetaColumns(
-    withTeamColumn(withTitleColumn(found, rows.some((q) => Boolean(q.title))), rows.some((q) => Boolean(q.team))),
-    rows.some((q) => Boolean(q.tags || q.due)),
+  const table = withStateColumn(
+    withMetaColumns(
+      withTeamColumn(withTitleColumn(found, rows.some((q) => Boolean(q.title))), rows.some((q) => Boolean(q.team))),
+      rows.some((q) => Boolean(q.tags || q.due)),
+    ),
+    rows.some((q) => Boolean(q.state)),
   );
   return replaceRows(
     md,
@@ -494,9 +514,100 @@ export function writeQa(md: string, rows: QaRow[]): string {
         "original request": q.original,
         "question / options": q.question,
         answer: q.answer,
+        state: q.state ?? "",
       }),
     ),
   );
+}
+
+/** Is a USER_QA row still open (no `State`)? @adr 0562 */
+export function qaOpen(q: QaRow): boolean {
+  return !parseBookState(q.state);
+}
+
+// ── Row State (USER_TODO / USER_QA) ──────────────────────────────────────────────────────────────
+
+/** Add the `State` column (last) when `needed` and the table has none (old rows get ""). @adr 0562 */
+function withStateColumn(table: MdTable, needed: boolean): MdTable {
+  return needed ? insertColumns(table, "", [BOOK_STATE_HEADER]) : table;
+}
+
+/** The main table of a USER_TODO / USER_QA book: the first one with an `ID` column. */
+function mainTable(md: string): MdTable | null {
+  return findTables(md).find((t) => col(t.header, "ID") >= 0) ?? null;
+}
+
+/** The ids with `prefix` that carry no `State` (still open), in order. @adr 0562 */
+export function openRowIds(md: string, prefix: string): string[] {
+  const t = mainTable(md);
+  if (!t) return [];
+  return t.rows
+    .filter((r) => get(t, r, "ID").startsWith(prefix) && !parseBookState(get(t, r, BOOK_STATE_HEADER)))
+    .map((r) => get(t, r, "ID"));
+}
+
+/** Drop the rows that carry a `State` (the intake agent never sees history). @adr 0562 */
+export function stripStateRows(md: string): string {
+  const t = mainTable(md);
+  if (!t || col(t.header, BOOK_STATE_HEADER) < 0) return md;
+  const open = t.rows.filter((r) => !parseBookState(get(t, r, BOOK_STATE_HEADER)));
+  return open.length === t.rows.length ? md : replaceRows(md, t, open);
+}
+
+/**
+ * Put back, after the intake agent, the rows of `before` that are missing in `now`: the history rows (`State` kept)
+ * and the `takenIn` ids the agent removed (`State` = `Taken in`). Rows keep `before`'s order; rows the agent added
+ * follow. Cells are matched by header, so a column the agent's table lacks is added.
+ * @adr 0562
+ */
+export function restoreStateRows(before: string, now: string, takenIn: ReadonlySet<string>, takenInState: string): string {
+  const old = mainTable(before);
+  const cur = mainTable(now);
+  if (!old || !cur) return now;
+  const curIds = new Map(cur.rows.map((r) => [get(cur, r, "ID"), r] as const));
+  const back = old.rows.filter((r) => {
+    const id = get(old, r, "ID");
+    return !curIds.has(id) && (parseBookState(get(old, r, BOOK_STATE_HEADER)) !== null || takenIn.has(id));
+  });
+  if (back.length === 0) return now;
+  let header = [...cur.header];
+  for (const h of [...old.header, BOOK_STATE_HEADER]) if (col(header, h) < 0) header = [...header, h];
+  const toHeader = (t: MdTable, r: string[], state?: string): string[] =>
+    header.map((h) => (state !== undefined && h.toLowerCase() === BOOK_STATE_HEADER.toLowerCase() ? state : get(t, r, h)));
+  const backIds = new Set(back.map((r) => get(old, r, "ID")));
+  const rows: string[][] = [];
+  const used = new Set<string>();
+  for (const r of old.rows) {
+    const id = get(old, r, "ID");
+    if (backIds.has(id)) {
+      const own = get(old, r, BOOK_STATE_HEADER);
+      rows.push(toHeader(old, r, parseBookState(own) ? own : takenInState));
+    } else if (curIds.has(id)) {
+      rows.push(toHeader(cur, curIds.get(id)!));
+      used.add(id);
+    }
+  }
+  for (const r of cur.rows) if (!used.has(get(cur, r, "ID"))) rows.push(toHeader(cur, r));
+  return replaceRows(now, { ...cur, header }, rows);
+}
+
+/** Set the `State` of rows (id → value); the column is added when missing. Unchanged text when nothing changes. @adr 0562 */
+export function setRowStates(md: string, states: ReadonlyMap<string, string>): string {
+  const found = mainTable(md);
+  if (!found || states.size === 0) return md;
+  const hit = found.rows.some((r) => states.has(get(found, r, "ID")) && get(found, r, BOOK_STATE_HEADER) !== states.get(get(found, r, "ID")));
+  if (!hit) return md;
+  const table = withStateColumn(found, true);
+  const k = col(table.header, BOOK_STATE_HEADER);
+  const rows = table.rows.map((r) => {
+    const v = states.get(get(table, r, "ID"));
+    if (v === undefined) return r;
+    const next = [...r];
+    while (next.length < table.header.length) next.push("");
+    next[k] = v;
+    return next;
+  });
+  return replaceRows(md, table, rows);
 }
 
 // ── Attempts sidecar ─────────────────────────────────────────────────────────────────────────────

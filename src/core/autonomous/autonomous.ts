@@ -301,6 +301,7 @@ type WebWrite = {
     | "BOOK_STALE"
     | "BOOK_ROW_HAS_DEPENDENTS"
     | "BOOK_ROW_CLAIMED"
+    | "BOOK_ROW_HISTORY"
     | "DOC_REVIEW_STALE";
   failedId?: string;
   /** The dependent rows / the claiming worker of a row-guard refusal. @adr 0538 */

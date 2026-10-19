@@ -75,6 +75,7 @@ import {
   approvedIds,
   claimState,
   foldTaskAnswers,
+  markDoneRows,
   intakeBatch,
   intakeIds,
   isSplitChild,
@@ -138,7 +139,7 @@ import {
 } from "./autonomous-docs";
 import { buildDocsPrompt, captureDocEvidence, docsDesignNote } from "./autonomous-doc-round";
 import type { NewErcFile } from "./autonomous-er-store";
-import { bookRowTeam } from "@4pm/dto";
+import { BOOK_STATE, bookRowTeam } from "@4pm/dto";
 import { lifecycle } from "../session/lifecycle";
 import { work } from "../session/work-tracker";
 import { acquireRepo, type RepoLockHandle } from "../git/repo-lock";
@@ -634,6 +635,9 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       // --- Fold answered task questions into their tasks (cli) ------------------------------------
       const folded = await publishBooks(root, rootBase.base, "chore(auto): fold answered task questions", () => foldTaskAnswers(root));
       if (folded === "pushed") await log("[fold] task-question answers folded into their tasks");
+      // Requests / questions whose groups are all done move from `Taken in` to `Done` (ADR-0562).
+      const marked = await publishBooks(root, rootBase.base, "chore(auto): mark finished requests done", () => markDoneRows(root));
+      if (marked === "pushed") await log("[books] finished requests / questions marked Done");
 
       // --- Phase 3: intake (agent) --------------------------------------------------------------
       const usage = await readBookUsage(ctx);
@@ -1522,6 +1526,8 @@ async function runIntake(
   const evidenceGuide = await intakeEvidenceGuide(root, base).catch(() => "");
   // The agent fills an existing `Title` cell (ADR-0549); a discarded intake drops this with its edits.
   await B.addTitleColumns(root);
+  // The agent never sees the history rows (a `State` — ADR-0562); they come back, with the rows it took in, below.
+  const booksBefore = await hideStateRows(root);
   const out = await runAiPrompt(ctx, buildIntakePrompt(cfg, ids, erOpenNote, groups, diagramNote, evidenceGuide) + context, cycleRunId(), "local", false, undefined, undefined, false, true, runOverrides(cfg));
   if (stoppedFromOutside(out)) {
     // Stopped by a restart or the policy: drop the half intake, nothing counted (re-run later).
@@ -1534,6 +1540,7 @@ async function runIntake(
     await log("[skip] usage limit during intake");
     return { stop: "usage limit", produced: null };
   }
+  await restoreIntakeRows(root, booksBefore, ids);
   // New TSK / QA rows must use the allocated groups — anything else is discarded (re-run next cycle).
   const stray = await strayIntakeIds(root, before, groups);
   if (stray.length) {
@@ -1586,6 +1593,33 @@ async function runIntake(
   const after = await cappedBookIds(root);
   const added = (book: keyof typeof after): number => [...after[book]].filter((id) => !before[book].has(id)).length;
   return { produced: { tasks: added("AI_TODO"), questions: added("USER_QA"), changeRequests: ercs } };
+}
+
+/** Hide the USER_TODO / USER_QA rows that carry a `State` from the intake agent; returns both books as they were. @adr 0562 */
+async function hideStateRows(root: string): Promise<{ userTodo: string; userQa: string }> {
+  const [userTodo, userQa] = await Promise.all([B.readBook(root, "USER_TODO.md"), B.readBook(root, "USER_QA.md")]);
+  const strippedTodo = B.stripStateRows(userTodo);
+  const strippedQa = B.stripStateRows(userQa);
+  if (strippedTodo !== userTodo) await B.writeBook(root, "USER_TODO.md", strippedTodo);
+  if (strippedQa !== userQa) await B.writeBook(root, "USER_QA.md", strippedQa);
+  return { userTodo, userQa };
+}
+
+/**
+ * After the intake agent: put the hidden history rows back, and keep the requests / questions it took in (the rows it
+ * removed among `ids`) with `State` = `Taken in` instead of losing them.
+ * @adr 0562
+ */
+async function restoreIntakeRows(root: string, was: { userTodo: string; userQa: string }, ids: readonly string[]): Promise<void> {
+  const taken = new Set(ids);
+  for (const [rel, before] of [
+    ["USER_TODO.md", was.userTodo],
+    ["USER_QA.md", was.userQa],
+  ] as const) {
+    const now = await B.readBook(root, rel);
+    const next = B.restoreStateRows(before, now, taken, BOOK_STATE.takenIn);
+    if (next !== now) await B.writeBook(root, rel, next);
+  }
 }
 
 /** Report the rows the cycle added per capped book (ids present now, absent before). Best-effort. */
@@ -1694,12 +1728,15 @@ async function hasWork(root: string, profileDir: string): Promise<boolean> {
   });
   const anyApproved = (prefix: string, text: string): boolean =>
     approved.some((id) => id.startsWith(prefix) && text.includes(id));
+  // A request / question with a `State` is history, not work (ADR-0562).
+  const openAsks = new Set([...B.openRowIds(userTodo, "REQ-"), ...B.openRowIds(userQa, "QA-")]);
+  const anyOpenApproved = (prefix: string): boolean => approved.some((id) => id.startsWith(prefix) && openAsks.has(id));
   // A DOC row in review waits for a person, not for a cycle (ADR-0536).
   const docs = await readDocs(root);
   const docWork = approved.some((id) => id.startsWith("DOC-") && aiTodo.includes(id) && (docs[id]?.state ?? "pending") === "pending");
   return (
-    anyApproved("REQ-", userTodo) ||
-    anyApproved("QA-", userQa) ||
+    anyOpenApproved("REQ-") ||
+    anyOpenApproved("QA-") ||
     anyApproved("TSK-", aiTodo) ||
     docWork ||
     B.parseClaims(aiProgress).claims.length > 0

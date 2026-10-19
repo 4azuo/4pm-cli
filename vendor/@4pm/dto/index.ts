@@ -11,6 +11,8 @@ export * from "./book-ids";
 export * from "./book-index";
 export * from "./book-meta";
 export * from "./book-patch";
+export * from "./book-state";
+export * from "./book-waiting";
 export * from "./branch-cleanup";
 export * from "./command";
 export * from "./diagram-change";
