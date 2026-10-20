@@ -26,7 +26,7 @@ import type {
   AutonomousWriteReply,
   AutonomousWriteRequest,
 } from "@4pm/ws";
-import { APPROVALS_SIDECAR_REL, ARCHIVE_INDEX_REL, AUTHORS_SIDECAR_REL, parseArchiveIndex, DOCS_SIDECAR_REL, HISTORIES_REL, LINEAGE_SIDECAR_REL, isSafeRepoDir } from "@4pm/dto";
+import { APPROVALS_SIDECAR_REL, ARCHIVE_INDEX_REL, AUTHORS_SIDECAR_REL, parseArchiveIndex, DOCS_SIDECAR_REL, HISTORIES_REL, LINEAGE_SIDECAR_REL, TICK_LOG_DIR_REL, isSafeRepoDir } from "@4pm/dto";
 import {
   readAutonomousConfig,
   readAutonomousConfigSync,
@@ -65,7 +65,6 @@ const APPROVALS_REL = APPROVALS_SIDECAR_REL;
 // Authorship sidecar (ADR-0320): `{ "<id>": { by, at } }` — the last human who wrote (created/edited)
 // a row, server-stamped on a `bookSave`. Used to enforce separation of duties on approval.
 const AUTHORS_REL = AUTHORS_SIDECAR_REL;
-const LOG_DIR_REL = ".claude/logs";
 const BOOK_FILES: Record<keyof AutonomousBooks, string> = {
   userTodo: "USER_TODO.md",
   aiTodo: "AI_TODO.md",
@@ -368,7 +367,7 @@ export async function readAutonomousArchive(root: string, req: AutonomousArchive
 /** autonomous.logs — tail one day's tick log (default today). */
 export async function readAutonomousLogs(root: string, date?: string): Promise<AutonomousLogsReply> {
   const day = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : new Date().toISOString().slice(0, 10);
-  const text = await readText(root, join(root, LOG_DIR_REL, `autonomous-tick-${day}.log`));
+  const text = await readText(root, join(root, TICK_LOG_DIR_REL, `autonomous-tick-${day}.log`));
   const lines = text ? text.split("\n").filter((l) => l.length > 0).slice(-500) : [];
   return { date: day, lines };
 }

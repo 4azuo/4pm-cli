@@ -9,18 +9,21 @@
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { AUTONOMOUS_LOCK_REL, HISTORIES_REL } from "@4pm/dto";
+import { AUTONOMOUS_LOCK_REL, HISTORIES_REL, TICK_LOG_DIR_REL } from "@4pm/dto";
 import { readFileInRoot, writeFileInRoot } from "../../utils/safe-path";
 
 const MAX_RECORDS = 100;
 
-/** The local autonomous files a checkout must never commit. */
-const LOCAL_FILES = [HISTORIES_REL, AUTONOMOUS_LOCK_REL];
+/**
+ * The local autonomous files a checkout must never commit — the tick-log folder too, so no WIP autosave picks a log up
+ * even in a project whose `.gitignore` lacks it.
+ */
+const LOCAL_FILES = [HISTORIES_REL, AUTONOMOUS_LOCK_REL, `${TICK_LOG_DIR_REL}/`];
 
 /**
  * Keep the local autonomous files out of git in this checkout (`.git/info/exclude`, outside the books-overlay block).
  * Best-effort.
- * @adr 0563
+ * @adr 0563 @adr 0568
  */
 export async function ensureLocalAutonomousFiles(root: string): Promise<void> {
   try {

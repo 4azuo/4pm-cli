@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { SCAFFOLD_TRACKING_FILES } from "@4pm/dto";
 import type { RepoProbeReply, RepoProbeRequest } from "@4pm/ws";
-import { projectSampleDir } from "../project/scaffold";
+import { projectSampleDir, templateEntryName } from "../project/scaffold";
 import { branchProtection } from "./git-host";
 
 const run = promisify(execFile);
@@ -68,7 +68,8 @@ async function readSettingsModel(tmp: string, files: string[]): Promise<string |
 /** The template's top-level entries (what a scaffold copies without overwriting). */
 async function templateEntries(): Promise<Set<string>> {
   try {
-    return new Set((await readdir(projectSampleDir())).filter((n) => n !== ".git"));
+    // A packaged cli ships the template's `.gitignore` as `gitignore` (ADR-0568).
+    return new Set((await readdir(projectSampleDir())).filter((n) => n !== ".git").map(templateEntryName));
   } catch {
     return new Set();
   }

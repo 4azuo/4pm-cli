@@ -24,12 +24,16 @@ export default defineConfig({
   // — it then travels with `dist/` through every channel (npm-global, container image, the
   // ADR-0015 self-download tarball) and `sampleDir()` resolves it relative to `dist/`.
   onSuccess: async () => {
-    const { cp } = await import("node:fs/promises");
+    const { cp, rename } = await import("node:fs/promises");
     await cp(
       new URL("project-sample", import.meta.url),
       new URL("dist/project-sample", import.meta.url),
       { recursive: true },
     );
+    // `npm publish` and `pnpm deploy` (the container image) always drop a package's `.gitignore` files, so the
+    // template's ships as `gitignore`; the scaffold writes it back as `.gitignore` (scaffold.ts `PACKAGED_GITIGNORE`
+    // — ADR-0568).
+    await rename(new URL("dist/project-sample/.gitignore", import.meta.url), new URL("dist/project-sample/gitignore", import.meta.url));
     // The book templates the scaffold resets tracking files to (kept out of the projects — ADR-0563).
     await cp(new URL("book-templates", import.meta.url), new URL("dist/book-templates", import.meta.url), { recursive: true });
   },

@@ -1,6 +1,20 @@
 {
-  "version": "1.2.0",
+  "version": "1.2.1",
   "changelog": [
+    {
+      "version": "1.2.1",
+      "date": "2026-10-20",
+      "summary": "`project.settings.json` now holds the Knowledge Graph `docs` options; the empty `.claude/rag/` placeholder is removed.",
+      "notes": [
+        "`project.settings.json` drops the unused `folders` map and starts with an empty `docs` block (`kinds`, `ignore`) — the options the Knowledge Graph and the doc linter read.",
+        "`.claude/rag/.gitkeep` is removed: the cli creates `.claude/rag/` (with its own `.gitignore`) on the worker when RAG is installed."
+      ],
+      "files": [
+        "project.settings.json",
+        ".claude/rag/"
+      ],
+      "skippable": true
+    },
     {
       "version": "1.2.0",
       "date": "2026-10-19",

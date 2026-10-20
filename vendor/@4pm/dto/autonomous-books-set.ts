@@ -29,6 +29,8 @@ export const ATTEMPTS_SIDECAR_REL = `${SIDECAR_DIR}/.autonomous.attempts.json`;
 export const HISTORIES_REL = `${SIDECAR_DIR}/.autonomous.histories.json`;
 /** The cycle's lock file — local, git-ignored. */
 export const AUTONOMOUS_LOCK_REL = `${SIDECAR_DIR}/.autonomous.lock`;
+/** The per-day tick logs (`autonomous-tick-<day>.log`) — local, git-ignored. @adr 0568 */
+export const TICK_LOG_DIR_REL = `${SIDECAR_DIR}/logs`;
 
 /** Where archived book rows and sidecar entries go: `.4pm/archive/<YYYY-MM>/<same file names>`. */
 export const ARCHIVE_DIR = `${SIDECAR_DIR}/archive`;

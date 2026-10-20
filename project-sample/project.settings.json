@@ -1,8 +1,6 @@
 {
-  "folders": {
-    "docs": ".",
-    "tests": "tests",
-    "reports": "reports",
-    "src": "src"
+  "docs": {
+    "kinds": [],
+    "ignore": []
   }
 }

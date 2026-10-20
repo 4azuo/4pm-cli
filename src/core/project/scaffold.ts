@@ -8,7 +8,7 @@
  * submodules are attach-only (no scaffold); only the primary is scaffolded.
  * @adr 0117 @adr 0172 @adr 0080
  */
-import { cp, mkdtemp, readdir, rm } from "node:fs/promises";
+import { cp, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { existsSync, lstatSync, readdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -40,7 +40,7 @@ import { reapplyInstalledHooks } from "../agent/packages";
 function assertNoEscapingLinks(dir: string, sample: string): void {
   const walk = (rel: string): void => {
     for (const e of readdirSync(join(sample, rel), { withFileTypes: true })) {
-      const child = rel ? join(rel, e.name) : e.name;
+      const child = rel ? join(rel, e.name) : templateEntryName(e.name);
       const dest = lexicalInRoot(dir, child);
       if (!dest) throw new PathEscapeError(child);
       if (existsSync(dest) || isLinkSync(dest)) {
@@ -685,6 +685,30 @@ export async function scaffoldProject(
 }
 
 /**
+ * The template's `.gitignore` as shipped in a packaged cli: `npm publish` / `pnpm deploy` always drop a `.gitignore`,
+ * so the build renames it (tsup.config `onSuccess`) and the copy restores the dot name.
+ * @adr 0568
+ */
+export const PACKAGED_GITIGNORE = "gitignore";
+
+/** The top-level name a template entry gets in a project (`gitignore` → `.gitignore`). @adr 0568 */
+export function templateEntryName(name: string): string {
+  return name === PACKAGED_GITIGNORE ? ".gitignore" : name;
+}
+
+/**
+ * Copy the template into `dir` without clobbering what the clone already has (`force:false`); a packaged
+ * `gitignore` lands as `.gitignore` (only when the clone has none — symlink-safe write).
+ * @adr 0568
+ */
+export async function copyTemplate(sample: string, dir: string): Promise<void> {
+  const packaged = join(sample, PACKAGED_GITIGNORE);
+  await cp(sample, dir, { recursive: true, force: false, errorOnExist: false, filter: (src) => src !== packaged });
+  if (!existsSync(packaged) || lstatSync(join(dir, ".gitignore"), { throwIfNoEntry: false })) return;
+  await writeFileInRoot(dir, join(dir, ".gitignore"), await readFile(packaged, "utf8"));
+}
+
+/**
  * Scaffold the repo at the project root: copy the `project-sample` template **without
  * clobbering** files the clone already tracks (`force:false`), write `project.spec.json`, then run AI
  * init (README + the project's guide file + subagents). Best-effort AI init — a missing AI CLI must
@@ -709,7 +733,7 @@ async function scaffoldRepo(
   // is refused before anything is written.
   assertNoEscapingLinks(dir, sampleDir());
   // force:false ⇒ keep any files the clone already has instead of clobbering them.
-  await cp(sampleDir(), dir, { recursive: true, force: false, errorOnExist: false });
+  await copyTemplate(sampleDir(), dir);
   // The copy is the cli's (umask 077): share it with the agent (ADR-0487).
   shareTree(dir);
   // Installed marketplace hooks live in the settings file the reset just replaced (ADR-0461).

@@ -33,6 +33,7 @@ import {
   isDocRowId,
   parseDocsSidecar,
   parseLineage,
+  TICK_LOG_DIR_REL,
   type DeliveryRecord,
   type DeliveryState,
 } from "@4pm/dto";
@@ -1865,14 +1866,14 @@ async function reportNewBookRows(ctx: WsHandlerCtx, bdir: string, before: Awaite
   }
 }
 
-/** Append a line to the per-day tick log (`<root>/.claude/logs/autonomous-tick-<day>.log`). Best-effort. */
+/** Append a line to the per-day tick log (`<root>/.4pm/logs/autonomous-tick-<day>.log`, git-excluded). Best-effort. @adr 0568 */
 async function dayLog(root: string, line: string): Promise<void> {
   // Also a structured cli log record, so tick decisions leave the worker with the log upload (ADR-0509).
   logger.info("autonomous.tick", { project: basename(root), line: line.slice(0, 1000) });
   try {
     const ts = new Date().toISOString().slice(0, 19).replace("T", " ");
     // Symlink-safe + shared with the agent (ADR-0430 phase 0, ADR-0487).
-    await appendFileInRoot(root, join(root, ".claude", "logs", `autonomous-tick-${today()}.log`), `${ts} ${line}\n`);
+    await appendFileInRoot(root, join(root, TICK_LOG_DIR_REL, `autonomous-tick-${today()}.log`), `${ts} ${line}\n`);
   } catch {
     /* best-effort */
   }
@@ -1882,7 +1883,7 @@ async function dayLog(root: string, line: string): Promise<void> {
 async function pruneLogs(root: string, retentionDays: number): Promise<void> {
   if (!(retentionDays > 0)) return;
   try {
-    const dir = join(root, ".claude", "logs");
+    const dir = join(root, TICK_LOG_DIR_REL);
     const cutoff = Date.now() - retentionDays * 86_400_000;
     for (const f of await readdir(dir)) {
       if (!/^autonomous-tick-.*\.log$/.test(f)) continue;
