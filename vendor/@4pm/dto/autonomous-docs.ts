@@ -151,6 +151,15 @@ export interface DocEntry {
   overlaps?: Record<string, string[]>;
   /** The DOC branch's PR into `<base>`, opened once the row is accepted; its group's tasks wait for it. @adr 0563 */
   pr?: DeliveryRecord;
+  /** The round's branch + head per touched repo (`"."` = the root, else the submodule folder). @adr 0579 */
+  repos?: DocRepoHead[];
+}
+
+/** One repo a DOC round wrote to: its folder (`"."` = the root), branch and head. @adr 0579 */
+export interface DocRepoHead {
+  dir: string;
+  branch: string;
+  head: string;
 }
 
 /** The docs sidecar: DOC id → entry. */
@@ -174,6 +183,9 @@ export function parseDocsSidecar(text: string | null | undefined): DocsSidecar {
         history: Array.isArray(e.history) ? e.history.filter((h) => h && typeof h.round === "number") : [],
         ...(e.overlaps && typeof e.overlaps === "object" ? { overlaps: e.overlaps } : {}),
         ...(parseDelivery(e.pr) ? { pr: parseDelivery(e.pr)! } : {}),
+        ...(Array.isArray(e.repos)
+          ? { repos: e.repos.filter((r): r is DocRepoHead => !!r && typeof r.dir === "string" && typeof r.branch === "string" && typeof r.head === "string") }
+          : {}),
       };
     }
     return out;

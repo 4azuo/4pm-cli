@@ -1,8 +1,9 @@
 /**
  * Tests of the DOC phase book transitions: a DOC row per new task group (root tasks depend on it), the lineage of
  * an intake, a finished round parked in review, the review (revise ⇒ runnable again, proceed ⇒ AI Done; a stale
- * round refused), the overlaps, the implement note and the numbering of new numbered docs on a real repo.
- * @adr 0536 @adr 0537
+ * round refused), the overlaps, the implement note and the numbering of new numbered docs on a real repo — also when
+ * the docs folder is a git submodule (numbered, listed and read inside it; the root guard refuses an unpushed pointer).
+ * @adr 0536 @adr 0537 @adr 0579
  */
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -20,8 +21,10 @@ import {
   docRunnable,
   intakeSources,
   numberNewDocs,
+  readDocFile,
   recordIntakeLineage,
 } from "./autonomous-docs";
+import { ensureSubmoduleCommitsPushed } from "./autonomous-submodules";
 
 const TODO_HEAD = "| ID | Priority | Actions | Depends | Group | Task description | Notes |\n|---|---|---|---|---|---|---|\n";
 const DONE = "## Done\n\n| Timestamp | ID | Group | Depends | Task description | Files | Evidence | Notes |\n|---|---|---|---|---|---|---|---|\n\n## Incidents\n\n| Timestamp | Note |\n|---|---|\n";
@@ -159,8 +162,7 @@ describe("numbering new numbered docs", () => {
     sh(work, "fetch", "-q", "origin");
     const asked: { type: string; count: number; floor: number }[] = [];
     const renames = await numberNewDocs(
-      work,
-      "main",
+      [{ dir: "", cwd: work, base: "main" }],
       "DOC-000005-001",
       async (req) => {
         asked.push(...req);
@@ -172,10 +174,78 @@ describe("numbering new numbered docs", () => {
     expect(renames.map((r) => r.to).sort()).toEqual(["docs/adr/0008-login.md", "docs/api/0001-tokens.md"]);
     expect(readFileSync(join(work, "docs/adr/0008-login.md"), "utf8")).toContain("../api/0001-tokens.md");
     expect(readFileSync(join(work, "docs/api/0001-tokens.md"), "utf8")).toContain("../adr/0008-login.md");
-    const manifest = await docManifest(work, "main", []);
+    const manifest = await docManifest([{ dir: "", cwd: work, base: "main" }], []);
     expect(manifest).toEqual([
       { path: "docs/adr/0008-login.md", type: "adr", action: "created", number: 8 },
       { path: "docs/api/0001-tokens.md", type: "api", action: "created", number: 1 },
     ]);
+  });
+});
+
+describe("docs in a git submodule", () => {
+  /** Run git in a dir (identity set, quiet, local file submodules allowed). */
+  function sh(cwd: string, ...args: string[]): string {
+    return execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "protocol.file.allow=always", ...args], { cwd, encoding: "utf8" });
+  }
+
+  it("numbers, lists and reads the docs inside the submodule; the root guard refuses an unpushed pointer", async () => {
+    const docsOrigin = join(root, "docs.git");
+    const rootOrigin = join(root, "root.git");
+    const seed = join(root, "seed");
+    sh(root, "init", "-q", "--bare", "-b", "main", docsOrigin);
+    sh(root, "init", "-q", "--bare", "-b", "main", rootOrigin);
+    sh(root, "clone", "-q", docsOrigin, seed);
+    mkdirSync(join(seed, "adr"), { recursive: true });
+    writeFileSync(join(seed, "adr/0002-old.md"), "# old\n");
+    sh(seed, "add", "-A");
+    sh(seed, "commit", "-q", "-m", "base");
+    sh(seed, "push", "-q", "origin", "HEAD:main");
+    const work = join(root, "work");
+    sh(root, "clone", "-q", rootOrigin, work);
+    writeFileSync(join(work, "README.md"), "root\n");
+    sh(work, "submodule", "add", "-q", "-b", "main", docsOrigin, "docs");
+    sh(work, "add", "-A");
+    sh(work, "commit", "-q", "-m", "root base");
+    sh(work, "push", "-q", "origin", "HEAD:main");
+    const branch = "dev/main/GRP-000003/DOC-000003-001";
+    const sub = join(work, "docs");
+    sh(work, "checkout", "-q", "-b", branch);
+    sh(sub, "checkout", "-q", "-b", branch);
+    writeFileSync(join(sub, "adr/NEW-1-login.md"), "# Login\n");
+    writeFileSync(join(work, "CHANGELOG.md"), "# Changelog\n- login ([ADR](docs/adr/NEW-1-login.md))\n");
+    sh(sub, "add", "-A");
+    sh(sub, "commit", "-q", "-m", "docs");
+    sh(work, "add", "-A");
+    sh(work, "commit", "-q", "-m", "root docs");
+    sh(work, "fetch", "-q", "origin");
+    sh(sub, "fetch", "-q", "origin");
+    const repos = [
+      { dir: "", cwd: work, base: "main" },
+      { dir: "docs", cwd: sub, base: "main" },
+    ];
+    const asked: { type: string; count: number; floor: number }[] = [];
+    const renames = await numberNewDocs(repos, "DOC-000003-001", async (req) => (asked.push(...req), null), async () => undefined);
+    // The floor comes from the submodule's own base; no server numbers ⇒ the next local one.
+    expect(asked).toEqual([{ type: "adr", count: 1, floor: 2 }]);
+    expect(renames).toEqual([{ from: "docs/adr/NEW-1-login.md", to: "docs/adr/0003-login.md", type: "adr", number: 3 }]);
+    expect(readFileSync(join(sub, "adr/0003-login.md"), "utf8")).toBe("# Login\n");
+    expect(readFileSync(join(work, "CHANGELOG.md"), "utf8")).toContain("docs/adr/0003-login.md");
+    // The root records the submodule's new head.
+    expect(sh(work, "ls-tree", "HEAD", "docs").split(/\s+/)[2]).toBe(sh(sub, "rev-parse", "HEAD").trim());
+    expect(await docManifest(repos, [])).toEqual([
+      { path: "CHANGELOG.md", type: "changelog", action: "created" },
+      { path: "docs/adr/0003-login.md", type: "adr", action: "created", number: 3 },
+    ]);
+    // The root branch names a submodule commit its remote lacks: refused without the submodule's branch …
+    await expect(ensureSubmoduleCommitsPushed(work, "main", branch, [])).rejects.toThrow(/is not on its remote/);
+    // … pushed when the commit sits on the row's branch in the submodule.
+    await ensureSubmoduleCommitsPushed(work, "main", branch, [{ sub: { dir: "docs", url: docsOrigin, base: "main" }, branch }]);
+    expect(sh(sub, "ls-remote", "--heads", "origin", branch).trim()).not.toBe("");
+    // The review reads the file from the submodule's DOC branch; before = its base.
+    const subs = [{ dir: "docs", url: docsOrigin, base: "main" }];
+    const after = await readDocFile(work, "main", "docs/adr/0003-login.md", branch, subs);
+    expect(Buffer.from(after.contentBase64 ?? "", "base64").toString("utf8")).toBe("# Login\n");
+    expect((await readDocFile(work, "main", "docs/adr/0003-login.md", undefined, subs)).error).toBe("evidence not found");
+    expect(Buffer.from((await readDocFile(work, "main", "docs/adr/0002-old.md", undefined, subs)).contentBase64 ?? "", "base64").toString("utf8")).toBe("# old\n");
   });
 });

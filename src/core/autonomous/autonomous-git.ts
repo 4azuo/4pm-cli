@@ -454,9 +454,9 @@ export async function pushBranch(cwd: string, branch: string): Promise<void> {
   await git(cwd, ["push", "-q", "-u", "origin", `${branch}:refs/heads/${branch}`], 180_000);
 }
 
-/** Open (or find) the PR of `branch` into `base`. */
-export async function deliverPr(cwd: string, url: string, branch: string, base: string, title: string, body: string): Promise<{ url: string | null; error: string | null }> {
-  return openPullRequest({ url, cwd, base, head: branch, title, body });
+/** Open (or find) the PR of `branch` into `base` — a draft when `draft` (it waits for submodule PRs, ADR-0579). */
+export async function deliverPr(cwd: string, url: string, branch: string, base: string, title: string, body: string, draft = false): Promise<{ url: string | null; error: string | null }> {
+  return openPullRequest({ url, cwd, base, head: branch, title, body, draft });
 }
 
 /**

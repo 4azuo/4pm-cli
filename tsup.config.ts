@@ -59,7 +59,9 @@ export default defineConfig({
   // self-contained — the old code shelled out to the system `tar`, which is absent/inconsistent
   // (busybox) in minimal worker containers.
   // `jsonc-parser` edits `.vscode/tasks.json` / settings JSONC in place for package installs (ADR-0460).
-  noExternal: [/^@4pm\//, "ws", "zod", "ink", "react", "react/jsx-runtime", "tar", "jsonc-parser"],
+  // `mermaid` parses the sequence diagrams an intake writes before they are committed (ADR-0580); it is
+  // `await import`ed, so its module body runs only when a check first runs (its code still loads with the file).
+  noExternal: [/^@4pm\//, "ws", "zod", "ink", "react", "react/jsx-runtime", "tar", "jsonc-parser", "mermaid"],
   // ink's reconciler only `await import('./devtools.js')` when process.env['DEV'] ===
   // 'true' (ADR-0057), and that module top-level `import`s the optional `react-devtools-core`
   // we don't install. With splitting off esbuild inlines the dynamic-import target and would

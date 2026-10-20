@@ -259,6 +259,17 @@ const PROMPT_META: PromptMeta[] = [
     untrustedVars: { desc: "request", notes: "request", reasons: "data", diff: "data" },
   },
   {
+    key: "cli.autonomous.fixDiagram",
+    ownerApp: "cli",
+    phase: 1,
+    title: "Autonomous — fix a sequence diagram",
+    description:
+      "One-shot (no tools): given ONE sequence diagram Mermaid's parser rejected (written by an intake or returned with a question) and the parse error, returns the diagram with only its syntax fixed (ADR-0580). The cli parses the reply again before writing it. Keep the reply a single mermaid block.",
+    requiredVars: ["file", "diagram", "error"],
+    // `file` is a cli-built `<sequenceDir>/<ID>.md` path; the diagram and its parse error are AI-written text.
+    untrustedVars: { diagram: "data", error: "data" },
+  },
+  {
     key: "cli.git.prResolve",
     ownerApp: "cli",
     phase: 1,

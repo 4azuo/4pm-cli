@@ -92,7 +92,7 @@ import { lifecycle, type ShutdownReason } from "./session/lifecycle";
 import { configureRepoLock, failAllRepoWaiters, withRepoLock } from "./git/repo-lock";
 import { loadAutonomousPolicy, onAutonomousStep, recordLastCheck, setAutonomousPolicy, setAutonomousServedProject, templateMarkerOf } from "./autonomous/autonomous-policy";
 import { work } from "./session/work-tracker";
-import { onReconnectVerifyClaim, runAutonomousCycle } from "./autonomous/autonomous-cycle";
+import { onReconnectVerifyClaim, refreshPrStatesNow, runAutonomousCycle } from "./autonomous/autonomous-cycle";
 import { scheduleBookIndex } from "./autonomous/autonomous-book-index";
 import { startAutonomousScheduler } from "./autonomous/autonomous-scheduler";
 import { handleFsChannels } from "./ws-client/handlers/fs";
@@ -1042,6 +1042,8 @@ export class WsClient {
           profileDir: this.context.profileDir,
           servedRoot: () => this.physicRoot,
           submit: () => this.context.bus.submitAutonomous(),
+          // A paused / blocked tick still refreshes the PR states (ADR-0575).
+          refreshPrs: () => refreshPrStatesNow(this.hctx),
         });
         // Per-repo git state for the web Git › Repositories home (ADR-0369): now + periodically.
         const servedRoot = (): string | null => this.physicRoot; // read live on every report

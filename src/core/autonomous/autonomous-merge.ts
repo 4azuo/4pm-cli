@@ -91,7 +91,9 @@ export async function directMerge(
 ): Promise<{ ok: true; sha: string } | { ok: false; reason: DirectMergeFailure; detail: string }> {
   for (let attempt = 0; attempt < 3; attempt++) {
     await git(cwd, ["fetch", "-q", "origin", base]);
-    const dir = join(cwd, ".git", `4pm-merge-${process.pid}-${Date.now()}`);
+    // A submodule's `.git` is a file — the temporary worktree goes under its real git dir.
+    const gitDir = (await git(cwd, ["rev-parse", "--absolute-git-dir"])).trim();
+    const dir = join(gitDir, `4pm-merge-${process.pid}-${Date.now()}`);
     await git(cwd, ["worktree", "add", "-q", "--detach", dir, `origin/${base}`]);
     try {
       try {

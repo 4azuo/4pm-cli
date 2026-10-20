@@ -2,9 +2,10 @@
  * Git host helpers — the few host-side reads/writes the cli needs beyond plain git, through the
  * worker's authenticated `gh` (GitHub / GHE, incl. the GitHub-App shim) or `glab` (GitLab):
  * branch protection, the pull/merge-request state of a branch, opening a PR into an explicit base, and the
- * open PRs that conflict with their target.
+ * open PRs that conflict with their target, and the follow-up of a root PR that waits for submodule PRs (merge commit,
+ * draft → ready, merge / auto-merge).
  * Every call is best-effort: an unknown host or a failing CLI yields `null` / an error string, never a throw.
- * @adr 0371 @adr 0356 @adr 0539
+ * @adr 0371 @adr 0356 @adr 0539 @adr 0579
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -137,19 +138,103 @@ export async function openPullRequest(opts: {
   head: string;
   title: string;
   body: string;
+  /** Open as a draft; a host / repo without drafts gets a normal PR. */
+  draft?: boolean;
 }): Promise<{ url: string | null; error: string | null }> {
   const h = repoHost(opts.url);
   if (!h.provider) return { url: null, error: "Unknown git host — no pull request opened." };
-  const args =
-    h.provider === "gh"
-      ? ["pr", "create", "-R", h.host && h.host !== "github.com" ? `${h.host}/${h.slug}` : h.slug, "--base", opts.base, "--head", opts.head, "--title", opts.title, "--body", opts.body]
-      : ["mr", "create", "-R", h.slug, "--target-branch", opts.base, "--source-branch", opts.head, "--title", opts.title, "--description", opts.body, "--yes"];
+  const create = async (draft: boolean): Promise<{ url: string | null; error: string | null }> => {
+    const args =
+      h.provider === "gh"
+        ? ["pr", "create", "-R", ghRepo(h), "--base", opts.base, "--head", opts.head, "--title", opts.title, "--body", opts.body, ...(draft ? ["--draft"] : [])]
+        : ["mr", "create", "-R", h.slug, "--target-branch", opts.base, "--source-branch", opts.head, "--title", opts.title, "--description", opts.body, "--yes", ...(draft ? ["--draft"] : [])];
+    try {
+      const { stdout } = await run(h.provider!, args, { cwd: opts.cwd, timeout: 120_000 });
+      return { url: stdout.trim().split(/\s+/).find((x) => /^https?:\/\//.test(x)) ?? null, error: null };
+    } catch (err) {
+      const msg = errText(err);
+      const existing = /already exists/i.test(msg) ? (msg.match(/https?:\/\/\S+/)?.[0] ?? null) : null;
+      return existing ? { url: existing, error: null } : { url: null, error: msg };
+    }
+  };
+  const first = await create(opts.draft === true);
+  // Drafts are not available everywhere (e.g. private repos on some GitHub plans): open a normal PR instead.
+  return opts.draft && first.error && /draft/i.test(first.error) ? create(false) : first;
+}
+
+/** `gh -R` repo argument (host-qualified off github.com). */
+function ghRepo(h: RepoHost): string {
+  return h.host && h.host !== "github.com" ? `${h.host}/${h.slug}` : h.slug;
+}
+
+/** The number of a PR / MR link, or null. */
+function prNumber(prUrl: string): string | null {
+  return /\/(?:pull|pulls|merge_requests)\/(\d+)/.exec(prUrl)?.[1] ?? null;
+}
+
+/**
+ * The commit a merged PR / MR of `branch` produced on its base — the merge commit, the squash commit or the last
+ * rebased commit — or null (not merged / unknown).
+ * @adr 0579
+ */
+export async function prMergeCommitOf(url: string, branch: string): Promise<string | null> {
+  const h = repoHost(url);
+  if (!h.provider) return null;
   try {
-    const { stdout } = await run(h.provider, args, { cwd: opts.cwd, timeout: 120_000 });
-    return { url: stdout.trim().split(/\s+/).find((x) => /^https?:\/\//.test(x)) ?? null, error: null };
-  } catch (err) {
-    const msg = errText(err);
-    const existing = /already exists/i.test(msg) ? (msg.match(/https?:\/\/\S+/)?.[0] ?? null) : null;
-    return existing ? { url: existing, error: null } : { url: null, error: msg };
+    if (h.provider === "gh") {
+      const { stdout } = await run("gh", ["pr", "list", "-R", ghRepo(h), "--head", branch, "--state", "merged", "--json", "mergeCommit", "-L", "1"], { timeout: 30_000 });
+      const sha = (JSON.parse(stdout) as { mergeCommit?: { oid?: string } }[])[0]?.mergeCommit?.oid ?? "";
+      return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+    }
+    const { stdout } = await run("glab", ["mr", "list", "-R", h.slug, "--source-branch", branch, "--merged", "-F", "json", "-P", "1"], { timeout: 30_000 });
+    const m = (JSON.parse(stdout) as { merge_commit_sha?: string | null; squash_commit_sha?: string | null; sha?: string }[])[0];
+    const sha = m?.merge_commit_sha || m?.squash_commit_sha || "";
+    return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+  } catch {
+    return null;
   }
+}
+
+/** Turn a draft PR / MR ready for review. True when it is ready now (already ready counts). @adr 0579 */
+export async function markPrReady(url: string, prUrl: string): Promise<boolean> {
+  const h = repoHost(url);
+  const n = prNumber(prUrl);
+  if (!h.provider || !n) return false;
+  try {
+    if (h.provider === "gh") await run("gh", ["pr", "ready", n, "-R", ghRepo(h)], { timeout: 30_000 });
+    else await run("glab", ["mr", "update", n, "-R", h.slug, "--ready"], { timeout: 30_000 });
+    return true;
+  } catch (err) {
+    return /not a draft|already.*ready|is not in draft/i.test(errText(err));
+  }
+}
+
+/**
+ * Merge a PR / MR now, trying the merge styles the repo may allow (merge, squash, rebase); when the base needs
+ * approvals / checks, turn on auto-merge instead. `merged` / `auto`, or the last error.
+ * @adr 0579
+ */
+export async function mergePullRequest(url: string, prUrl: string): Promise<{ result: "merged" | "auto" } | { error: string }> {
+  const h = repoHost(url);
+  const n = prNumber(prUrl);
+  if (!h.provider || !n) return { error: "Unknown git host or PR link." };
+  let last = "";
+  const attempt = async (args: string[]): Promise<boolean> => {
+    try {
+      await run(h.provider!, args, { timeout: 120_000 });
+      return true;
+    } catch (err) {
+      last = errText(err);
+      return false;
+    }
+  };
+  if (h.provider === "gh") {
+    const styles = ["--merge", "--squash", "--rebase"];
+    for (const st of styles) if (await attempt(["pr", "merge", n, "-R", ghRepo(h), st])) return { result: "merged" };
+    for (const st of styles) if (await attempt(["pr", "merge", n, "-R", ghRepo(h), st, "--auto"])) return { result: "auto" };
+    return { error: last };
+  }
+  if (await attempt(["mr", "merge", n, "-R", h.slug, "--yes"])) return { result: "merged" };
+  for (const flag of ["--auto-merge", "--when-pipeline-succeeds"]) if (await attempt(["mr", "merge", n, "-R", h.slug, "--yes", flag])) return { result: "auto" };
+  return { error: last };
 }

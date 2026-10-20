@@ -5,8 +5,9 @@
  * then numbers the agent's `NEW-<n>-<slug>.md` files from the server's per-type counter, records the round's file
  * manifest and the overlaps with other open DOC rows, and parks the row in `review` until a person reviews it from
  * AI Todo (`bookSave.docReview`): `revise` runs another round, `proceed` moves the DOC to AI Done and releases the
- * group's tasks, which branch from the DOC branch.
- * @adr 0536 @adr 0537
+ * group's tasks, which branch from the DOC branch. A round may write in the root and in any submodule: paths stay
+ * root-relative and each file is numbered, listed and read in the repo that owns it.
+ * @adr 0536 @adr 0537 @adr 0579
  */
 import { join, posix } from "node:path";
 import {
@@ -27,15 +28,17 @@ import {
   parseLineage,
   readSpecDocs,
   roundDecision,
+  submoduleOf,
   type DocEntry,
   type DocManifestFile,
   type DocReview,
+  type DocRepoHead,
   type DocsSidecar,
   type LineageSidecar,
   type SpecDocs,
 } from "@4pm/dto";
 import * as B from "./autonomous-books";
-import { git, gitQuiet } from "./autonomous-git";
+import { git, gitQuiet, type RepoBase } from "./autonomous-git";
 import type { AutonomousEvidenceReply } from "@4pm/ws";
 import { readFileInRoot, writeFileInRoot } from "../../utils/safe-path";
 import { evidenceCell } from "./autonomous-evidence";
@@ -267,29 +270,66 @@ export async function addDocRows(root: string, before: ReadonlySet<string>, spec
 
 // ── A docs round: numbering, manifest, overlaps ──────────────────────────────────────────────────
 
+/**
+ * One repo a DOC round writes to: the root (`dir` "") or a submodule (`dir` = its folder), its checkout and base.
+ * Paths outside are root-relative; inside the repo they drop the `<dir>/` prefix.
+ * @adr 0579
+ */
+export interface DocRepo {
+  dir: string;
+  cwd: string;
+  base: string;
+}
+
+/** A root-relative path of a repo-relative one. */
+function rootPath(repo: DocRepo, rel: string): string {
+  return repo.dir ? `${repo.dir}/${rel}` : rel;
+}
+
+/** A repo-relative path of a root-relative one ("" for the repo's own folder). */
+function repoPath(repo: DocRepo, path: string): string {
+  if (!repo.dir) return path;
+  return path === repo.dir ? "" : path.slice(repo.dir.length + 1);
+}
+
+/** The repo of `repos` that owns a root-relative path (the longest submodule prefix, else the root). */
+function ownerRepo(repos: readonly DocRepo[], path: string): DocRepo | undefined {
+  return submoduleOf(repos, path) ?? repos.find((r) => !r.dir);
+}
+
 /** The fork point of `HEAD` with `origin/<base>` ("" when unknown). */
 async function forkPoint(cwd: string, base: string): Promise<string> {
   return (await gitQuiet(cwd, ["merge-base", "HEAD", `origin/${base}`])).trim();
 }
 
-/** The doc files the branch changed against its fork point: path + git status letter (A / M / R / D). */
-async function changedDocFiles(cwd: string, base: string): Promise<{ path: string; status: string }[]> {
-  const fork = await forkPoint(cwd, base);
-  if (!fork) return [];
-  const out = (await gitQuiet(cwd, ["diff", "--name-status", "--no-renames", fork, "HEAD"])).split("\n").filter(Boolean);
-  return out
-    .map((l) => {
-      const [status = "", path = ""] = l.split("\t");
-      return { path, status: status.slice(0, 1) };
-    })
-    .filter((f) => f.path && docTypeOfPath(f.path) !== null);
+/**
+ * The doc files the branch changed against its fork point, in every repo: root-relative path + git status letter
+ * (A / M / R / D). A submodule's gitlink line in the root is no doc file; the files changed inside it are listed.
+ */
+async function changedDocFiles(repos: readonly DocRepo[]): Promise<{ path: string; status: string; repo: DocRepo }[]> {
+  const all: { path: string; status: string; repo: DocRepo }[] = [];
+  const subDirs = new Set(repos.filter((r) => r.dir).map((r) => r.dir));
+  for (const repo of repos) {
+    const fork = await forkPoint(repo.cwd, repo.base);
+    if (!fork) continue;
+    const out = (await gitQuiet(repo.cwd, ["diff", "--name-status", "--no-renames", fork, "HEAD"])).split("\n").filter(Boolean);
+    for (const l of out) {
+      const [status = "", rel = ""] = l.split("\t");
+      if (!rel) continue;
+      const path = rootPath(repo, rel);
+      if (subDirs.has(path) || ownerRepo(repos, path) !== repo || docTypeOfPath(path) === null) continue;
+      all.push({ path, status: status.slice(0, 1), repo });
+    }
+  }
+  return all;
 }
 
-/** The highest `NNNN` of a numbered folder in `refs` (the base, the branch, every open DOC branch). */
-async function highestNumber(cwd: string, dir: string, refs: readonly string[]): Promise<number> {
+/** The highest `NNNN` of a numbered folder (root-relative `dir`) in `refs` of `repo` (base, branch, open DOC branches). */
+async function highestNumber(repo: DocRepo, dir: string, refs: readonly string[]): Promise<number> {
   let max = 0;
+  const rel = repoPath(repo, dir);
   for (const ref of refs) {
-    const names = (await gitQuiet(cwd, ["ls-tree", "--name-only", ref, "--", `${dir}/`])).split("\n").filter(Boolean);
+    const names = (await gitQuiet(repo.cwd, ["ls-tree", "--name-only", rel ? `${ref}:${rel}` : ref])).split("\n").filter(Boolean);
     for (const p of names) {
       const m = NUMBERED_DOC_FILE_RE.exec(posix.basename(p));
       if (m) max = Math.max(max, Number(m[1]));
@@ -315,14 +355,13 @@ export type DocNumberAllocator = (req: { type: string; count: number; floor: num
  * (logged). Returns the renames.
  */
 export async function numberNewDocs(
-  cwd: string,
-  base: string,
+  repos: readonly DocRepo[],
   docId: string,
   allocate: DocNumberAllocator,
   log: (line: string) => Promise<void>,
   numberedTypes: readonly string[] = DOC_NUMBERED_TYPES,
 ): Promise<{ from: string; to: string; type: string; number: number }[]> {
-  const changed = await changedDocFiles(cwd, base);
+  const changed = await changedDocFiles(repos);
   const fresh = changed.filter((f) => f.status !== "D" && NEW_DOC_FILE_RE.test(posix.basename(f.path)));
   const byType = new Map<string, string[]>();
   for (const f of fresh) {
@@ -331,9 +370,17 @@ export async function numberNewDocs(
     byType.set(type, [...(byType.get(type) ?? []), f.path]);
   }
   if (byType.size === 0) return [];
-  const refs = ["HEAD", `origin/${base}`, ...(await openDocBranches(cwd, base)).map((b) => `origin/${b}`)];
   const req: { type: string; count: number; floor: number }[] = [];
-  for (const [type, paths] of byType) req.push({ type, count: paths.length, floor: await highestNumber(cwd, docTypeDir(type), refs) });
+  for (const [type, paths] of byType) {
+    // The floor is taken in the repo that holds the type's folder (ADR-0579).
+    let floor = 0;
+    const holder = ownerRepo(repos, `${docTypeDir(type)}/`);
+    if (holder) {
+      const refs = ["HEAD", `origin/${holder.base}`, ...(await openDocBranches(holder.cwd, holder.base)).map((b) => `origin/${b}`)];
+      floor = await highestNumber(holder, docTypeDir(type), refs);
+    }
+    req.push({ type, count: paths.length, floor });
+  }
   const given = await allocate(req).catch(() => null);
   if (!given) await log(`[docs] ${docId}: the server gave no doc numbers — numbering above the highest found in the repo`);
   const renames: { from: string; to: string; type: string; number: number }[] = [];
@@ -347,23 +394,39 @@ export async function numberNewDocs(
       renames.push({ from, to: posix.join(posix.dirname(from), `${docNumberCode(n)}-${slug}.md`), type: r.type, number: n });
     });
   }
-  for (const r of renames) await git(cwd, ["mv", "-f", r.from, r.to]);
-  // Rewrite the links: every changed doc file (now at its final path) that names an old file.
+  const touched = new Set<DocRepo>();
+  for (const r of renames) {
+    const repo = ownerRepo(repos, r.from);
+    if (!repo) continue;
+    await git(repo.cwd, ["mv", "-f", repoPath(repo, r.from), repoPath(repo, r.to)]);
+    touched.add(repo);
+  }
+  // Rewrite the links: every changed doc file (now at its final path, in any repo) that names an old file.
   const moved = new Map(renames.map((r) => [r.from, r.to]));
-  const targets = (await changedDocFiles(cwd, base)).filter((f) => f.status !== "D" && f.path.endsWith(".md")).map((f) => moved.get(f.path) ?? f.path);
-  for (const p of targets) {
-    let text = await readFileInRoot(cwd, join(cwd, p), "utf8").catch(() => "");
+  const targets = (await changedDocFiles(repos)).filter((f) => f.status !== "D" && f.path.endsWith(".md")).map((f) => ({ ...f, path: moved.get(f.path) ?? f.path }));
+  for (const f of targets) {
+    const rel = repoPath(f.repo, f.path);
+    let text = await readFileInRoot(f.repo.cwd, join(f.repo.cwd, rel), "utf8").catch(() => "");
     if (!text) continue;
     let next = text;
     for (const r of renames) next = next.split(posix.basename(r.from)).join(posix.basename(r.to));
     if (next !== text) {
       text = next;
-      await writeFileInRoot(cwd, join(cwd, p), text);
-      await gitQuiet(cwd, ["add", "--", p]);
+      await writeFileInRoot(f.repo.cwd, join(f.repo.cwd, rel), text);
+      await gitQuiet(f.repo.cwd, ["add", "--", rel]);
+      touched.add(f.repo);
     }
   }
-  if (renames.length) {
-    await git(cwd, ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "commit", "-q", "-m", `docs(${docId}): number new docs (4PM)`]);
+  // Submodules first, so the root's commit records their new heads.
+  for (const repo of [...touched].sort((a, b) => (a.dir ? 0 : 1) - (b.dir ? 0 : 1))) {
+    await git(repo.cwd, ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "commit", "-q", "-m", `docs(${docId}): number new docs (4PM)`]);
+  }
+  const root = repos.find((r) => !r.dir);
+  if (root && repos.some((r) => r.dir && touched.has(r))) {
+    for (const r of repos) if (r.dir) await gitQuiet(root.cwd, ["add", "--", r.dir]);
+    if ((await gitQuiet(root.cwd, ["diff", "--cached", "--name-only"])).trim()) {
+      await git(root.cwd, ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "commit", "-q", "-m", `docs(${docId}): submodule pointers (4PM)`]);
+    }
   }
   return renames;
 }
@@ -372,9 +435,9 @@ export async function numberNewDocs(
  * The DOC's file manifest after a round: every doc file the branch changed against its fork point (a file created in
  * an earlier round stays `created`), with the number of a numbered file.
  */
-export async function docManifest(cwd: string, base: string, prev: readonly DocManifestFile[], numberedTypes: readonly string[] = DOC_NUMBERED_TYPES): Promise<DocManifestFile[]> {
+export async function docManifest(repos: readonly DocRepo[], prev: readonly DocManifestFile[], numberedTypes: readonly string[] = DOC_NUMBERED_TYPES): Promise<DocManifestFile[]> {
   const prevCreated = new Set(prev.filter((f) => f.action === "created").map((f) => f.path));
-  return (await changedDocFiles(cwd, base))
+  return (await changedDocFiles(repos))
     .filter((f) => f.status !== "D")
     .map((f) => {
       const type = docTypeOfPath(f.path) ?? "";
@@ -410,7 +473,7 @@ export function docOverlaps(docs: DocsSidecar, id: string, files: readonly DocMa
 export async function applyDocRoundDone(
   root: string,
   task: B.TaskRow,
-  round: { branch: string; head: string; files: DocManifestFile[] },
+  round: { branch: string; head: string; files: DocManifestFile[]; repos?: DocRepoHead[] },
 ): Promise<void> {
   const todo = await B.readBook(root, "AI_TODO.md");
   const { tasks } = B.parseTasks(todo);
@@ -424,6 +487,7 @@ export async function applyDocRoundDone(
     head: round.head,
     files: round.files,
     history: prev?.history ?? [],
+    ...(round.repos?.length ? { repos: round.repos } : {}),
   };
   const overlaps = docOverlaps(docs, task.id, round.files);
   if (Object.keys(overlaps).length) entry.overlaps = overlaps;
@@ -528,16 +592,24 @@ const DOC_FILE_MAX_BYTES = 2 * 1024 * 1024;
 
 /**
  * Read one doc file for the review modal: from `origin/<ref>` when `ref` is a DOC branch (the round's version), else as
- * on `origin/<base>` (the version before the DOC); `evidence not found` when absent.
+ * on `origin/<base>` (the version before the DOC); `evidence not found` when absent. A path inside a submodule is read
+ * from that submodule: its DOC branch (`dev/<sub-base>/GRP-…/<DOC id>`) or `origin/<sub-base>`.
+ * @adr 0579
  */
-export async function readDocFile(root: string, base: string | null, path: string, ref?: string): Promise<AutonomousEvidenceReply> {
+export async function readDocFile(root: string, base: string | null, path: string, ref?: string, subs: readonly RepoBase[] = []): Promise<AutonomousEvidenceReply> {
   if (ref && !DOC_BRANCH_RE.test(ref)) return { error: "invalid ref" };
-  const at = ref ? `origin/${ref}` : base ? `origin/${base}` : null;
+  const sub = submoduleOf(subs, path);
+  const cwd = sub ? join(root, sub.dir) : root;
+  const rel = sub ? path.slice(sub.dir.length + 1) : path;
+  // The same `GRP-…/DOC-…` tail on the submodule's base.
+  const branch = ref && sub ? `dev/${sub.base}/${ref.split("/").slice(-2).join("/")}` : ref;
+  const before = sub ? sub.base : base;
+  const at = branch ? `origin/${branch}` : before ? `origin/${before}` : null;
   if (!at) return { error: "evidence not found" };
-  if (ref) await gitQuiet(root, ["fetch", "-q", "origin", ref]);
-  const listed = (await gitQuiet(root, ["ls-tree", "--name-only", at, "--", path])).trim();
+  await gitQuiet(cwd, ["fetch", "-q", "origin", ...(branch ? [branch] : before ? [before] : [])]);
+  const listed = (await gitQuiet(cwd, ["ls-tree", "--name-only", at, "--", rel])).trim();
   if (!listed) return { error: "evidence not found" };
-  const text = await git(root, ["show", `${at}:${path}`]).catch(() => null);
+  const text = await git(cwd, ["show", `${at}:${rel}`]).catch(() => null);
   if (text === null) return { error: "evidence not found" };
   const bytes = Buffer.from(text, "utf8");
   if (bytes.length > DOC_FILE_MAX_BYTES) return { error: "evidence file too large" };

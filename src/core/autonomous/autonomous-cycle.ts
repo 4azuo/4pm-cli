@@ -25,6 +25,7 @@ import {
   APPROVALS_SIDECAR_REL,
   BOOK_GROUPS_PER_REQUEST,
   DOCS_SIDECAR_REL,
+  POINTERS_SIDECAR_REL,
   LINEAGE_SIDECAR_REL,
   bookGroupCode,
   bookGroupOf,
@@ -34,9 +35,12 @@ import {
   isDocRowId,
   parseDocsSidecar,
   parseLineage,
+  submoduleOf,
   TICK_LOG_DIR_REL,
   type DeliveryRecord,
-  type DeliveryState,
+  type DocRepoHead,
+  type PointerEntry,
+  type SubmodulePr,
 } from "@4pm/dto";
 import { wrapUntrusted } from "@4pm/constants";
 import { cappedBookIds } from "./autonomous";
@@ -116,17 +120,20 @@ import {
 } from "./autonomous-intake";
 import { archiveBooks } from "./autonomous-archive";
 import { syncBooksToBase } from "./autonomous-books-sync";
-import { branchProtection, prStateOf } from "../git/git-host";
+import { branchProtection } from "../git/git-host";
+import { alertClosedPrs, applyDeliveryStates, deliveryStates, pointerAdvance, prState, refreshPrStates } from "./autonomous-pr-states";
+import { applyPointerAdvance, pushRootBranch, recordPointerEntry, submoduleFiles, withoutGitlinks, type SubBranch } from "./autonomous-submodules";
 import { readProfileConfig } from "../../config/profile";
 import { activeProvider, claudeHomeDirs } from "../../utils/ai-cli";
 import { checkClaudeUsage } from "../ai/claude-usage";
 import { appendFileInRoot, readFileInRoot } from "../../utils/safe-path";
 import { withEgressRun } from "../network/egress-env";
+import { isSequenceFile, repairSequenceFiles, type SequenceFixer } from "./autonomous-mermaid";
 import { servesTeam } from "./autonomous-teams";
 import { blockedErGroups, blockingErcCount, captureAgentErcs, publishTaskErcs } from "./autonomous-er";
 import { blockedDiagramGroups, blockingSdcCount, captureAgentSdcs, publishTaskSdcs } from "./autonomous-diagram";
 import type { NewSdcFile } from "./autonomous-diagram-store";
-import { applyDocRoundDone, docManifest, numberNewDocs, readDocs, readLineage, readSpecDocsAt, writeDocs, writeLineage, type DocNumberAllocator } from "./autonomous-docs";
+import { applyDocRoundDone, docManifest, numberNewDocs, readDocs, readLineage, readSpecDocsAt, writeDocs, writeLineage, type DocNumberAllocator, type DocRepo } from "./autonomous-docs";
 import { buildDocsPrompt } from "./autonomous-doc-round";
 import type { NewErcFile } from "./autonomous-er-store";
 import { lifecycle } from "../session/lifecycle";
@@ -347,13 +354,44 @@ function emitEvent(ctx: WsHandlerCtx, type: string, task: string | undefined, fi
   alert(ctx, { kind: "event", ...(task ? { task } : {}), message: type, event: { type, fields } });
 }
 
-/** Branches per submodule for a task, and the source each starts from (the dependency's / parent's). */
+/** Branches per submodule for a row (any run kind — ADR-0579), and the source each starts from (the dependency's / parent's). */
 function subBranches(subs: RepoBase[], taskId: string, rootFrom: string | null): { sub: RepoBase; branch: string; from: string | null }[] {
   // The root's `from` is `dev/<base>/<GROUP>/<TSK-x>` — use the same TSK-x's branch in each submodule.
   const fromTask = rootFrom ? rootFrom.split("/").pop() ?? null : null;
   return subs
     .filter((s) => s.base)
     .map((s) => ({ sub: s, branch: taskBranch(s.base, taskId), from: fromTask ? taskBranch(s.base, fromTask) : null }));
+}
+
+/**
+ * The submodule lines added to an intake / docs prompt (the implement prompt has its own): each submodule's folder
+ * and branch; files under that folder are written in the submodule.
+ * @adr 0579
+ */
+function submoduleNote(subs: readonly SubBranch[], commits: boolean): string {
+  if (!subs.length) return "";
+  const lines = subs.map((s) => `- \`${s.sub.dir}/\` is the git submodule ${s.sub.url ? `${s.sub.url} ` : ""}on branch \`${s.branch}\``);
+  const rule = commits
+    ? "A file under one of these folders belongs to that submodule: write it there and commit it INSIDE that folder, on that branch (the cli commits what is left and pushes every repo)."
+    : "A file under one of these folders belongs to that submodule (the cli commits it there).";
+  return `\n\nSUBMODULES of this project:\n${lines.join("\n")}\n${rule}\n`;
+}
+
+/**
+ * Put a submodule back on the row's branch after the run. Commits the agent made on a detached HEAD or another
+ * branch are kept: when they build on the row's branch, the branch moves to them; otherwise the branch is checked
+ * out and the stray head is logged.
+ * @adr 0579
+ */
+async function reattachSubBranch(cwd: string, branch: string, log: (l: string) => Promise<void>): Promise<void> {
+  if ((await currentBranch(cwd)) === branch) return;
+  const head = (await gitQuiet(cwd, ["rev-parse", "HEAD"])).trim();
+  const onTop = head ? await gitQuiet(cwd, ["merge-base", "--is-ancestor", branch, head]).then(() => true, () => false) : false;
+  if (onTop) await gitQuiet(cwd, ["checkout", "-q", "-B", branch, head]);
+  else {
+    await gitQuiet(cwd, ["checkout", "-q", branch]);
+    if (head) await log(`[warn] submodule ${cwd}: the run left HEAD at ${head.slice(0, 10)} off ${branch} — not taken`);
+  }
 }
 
 /**
@@ -384,7 +422,7 @@ async function pushWip(ctx: WsHandlerCtx, root: string, mine: LocalClaim, subs: 
   if ((await currentBranch(root)) === mine.branch) {
     await wipCommit(root, `wip(${mine.id}): ${note}`);
     await reportSidecarTamper(ctx, root, await stripBooksSetFromBranch(root, mine.base, mine.id), mine.id);
-    await pushBranch(root, mine.branch).catch(() => undefined);
+    await pushRootBranch(root, mine.base, mine.branch, subs).catch((e) => dayLog(root, `[warn] ${mine.id}: WIP not pushed: ${String(e)}`));
   }
 }
 
@@ -459,6 +497,8 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     return;
   }
   if (running.has(root)) {
+    // A long run holds the cycle: the PR states still move on (ADR-0575).
+    refreshPrStatesNow(ctx);
     ctx.bus.autonomousDone(false, "a cycle is already running");
     return;
   }
@@ -494,12 +534,14 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     if (!ctx.isReady) {
       if (!offlineLogged) await log("[skip] cli offline (no WS connection)");
       offlineLogged = true;
+      refreshPrStatesNow(ctx);
       ctx.bus.autonomousDone(false, "cli offline");
       return;
     }
     offlineLogged = false;
     if (cfg.paused) {
       await log("[skip] paused");
+      refreshPrStatesNow(ctx);
       ctx.bus.autonomousDone(false, "paused");
       return;
     }
@@ -515,17 +557,20 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       );
       // A merged Update PR resumes autonomous: re-read the base marker now (ADR-0550).
       if (blocked === "templateUpdateRequired") await refreshBaseTemplateMarker(root);
+      refreshPrStatesNow(ctx);
       ctx.bus.autonomousDone(false, `policy: ${blocked}`);
       return;
     }
     if (isInQuietHours(cfg.quietHours)) {
       await log("[skip] within quiet hours");
+      refreshPrStatesNow(ctx);
       ctx.bus.autonomousDone(false, "quiet hours");
       return;
     }
     let hist = await readHistories(root);
     if (cfg.maxTicksPerDay > 0 && todayTickCount(hist, today()) >= cfg.maxTicksPerDay) {
       await log(`[skip] reached max ticks/day (${cfg.maxTicksPerDay})`);
+      refreshPrStatesNow(ctx);
       ctx.bus.autonomousDone(false, "max ticks reached");
       return;
     }
@@ -790,16 +835,21 @@ async function claimTask(rc: RunCtx): Promise<LocalClaim | null> {
 /**
  * Housekeeping on the books before any claim (no tokens): the PR of each accepted DOC row, the PR states of open
  * request / DOC / task deliveries (gh / glab), the fold of answered task questions, the
- * `Done` marks and the daily archive — one books commit when anything changed.
- * @adr 0563 @adr 0562 @adr 0543
+ * `Done` marks and the daily archive — one books commit when anything changed. Each PR state change is logged.
+ * @adr 0563 @adr 0562 @adr 0543 @adr 0575
  */
 async function housekeeping(rc: RunCtx): Promise<void> {
   const { bdir, rootBase, cfg, log, ctx } = rc;
   await openAcceptedDocPrs(rc);
   await reopenDeliveries(rc);
   const states = await deliveryStates(bdir, rootBase);
+  for (const line of states.notes) await log(line);
+  // Root PRs waiting for submodule PRs: pointer moves, draft → ready, pointer-only merge (ADR-0579).
+  const ptr = await pointerAdvance(ctx, rc.root, rootBase, await B.readBook(bdir, POINTERS_SIDECAR_REL));
+  for (const line of ptr.notes) await log(line);
   const res = await publishBooks(bdir, rootBase.base, "chore(auto): books housekeeping", async () => {
     let changed = await applyDeliveryStates(bdir, states);
+    changed = (await applyPointerAdvance(bdir, ptr)) || changed;
     changed = (await foldTaskAnswers(bdir)) || changed;
     changed = (await markDoneRows(bdir)) || changed;
     changed = (await archiveBooks(bdir, cfg.archiveAfterDays)) || changed;
@@ -809,108 +859,7 @@ async function housekeeping(rc: RunCtx): Promise<void> {
   });
   if (res === "pushed") await log("[books] housekeeping published (PR states / folds / done marks / archive)");
   // A request / DOC PR closed without merge blocks its group: tell the managers once (the state was open until now).
-  if (res === "pushed") {
-    for (const [id] of states.closed) alert(ctx, { kind: "pr-closed", task: id, message: `The PR of ${id} was closed without merge — its group waits until Retry.` });
-  }
-}
-
-/** PR states looked up for the housekeeping publish. */
-interface DeliveryStates {
-  /** lineage group → state of its request PR. */
-  lineage: Map<string, DeliveryState>;
-  /** DOC id → state of its PR. */
-  docs: Map<string, DeliveryState>;
-  /** AI Done id → its new Delivery cell. */
-  done: Map<string, string>;
-  /** Rows whose PR was closed without merge (id → url). */
-  closed: Map<string, string>;
-}
-
-/**
- * The newest state of a PR by its head branch: the host CLI first (gh / glab); when it cannot tell (unknown host, CLI
- * error) git decides — a branch whose tip is in `origin/<base>`, or that no longer exists, is merged; else open.
- * @adr 0563
- */
-async function prState(url: string, branch: string, cwd?: string, base?: string): Promise<DeliveryState | null> {
-  const s = await prStateOf(url, branch).catch(() => null);
-  if (s === "merged" || s === "closed" || s === "open") return s;
-  if (!cwd || !base) return null;
-  await gitQuiet(cwd, ["fetch", "-q", "origin", base, branch]);
-  if (!(await hasRemoteBranch(cwd, branch))) return "merged";
-  const merged = await git(cwd, ["merge-base", "--is-ancestor", `origin/${branch}`, `origin/${base}`]).then(
-    () => true,
-    () => false,
-  );
-  return merged ? "merged" : "open";
-}
-
-/** Look up the PR states of every open delivery (request PRs, DOC PRs, AI Done rows), at most 30 per cycle. */
-async function deliveryStates(bdir: string, rootBase: RepoBase): Promise<DeliveryStates> {
-  const out: DeliveryStates = { lineage: new Map(), docs: new Map(), done: new Map(), closed: new Map() };
-  let budget = 30;
-  const seen = new Map<string, DeliveryState | null>();
-  const stateOf = async (branch: string): Promise<DeliveryState | null> => {
-    if (seen.has(branch)) return seen.get(branch)!;
-    if (budget-- <= 0) return null;
-    const s = await prState(rootBase.url, branch, bdir, rootBase.base);
-    seen.set(branch, s);
-    return s;
-  };
-  for (const [g, e] of Object.entries(await readLineage(bdir))) {
-    if (e.delivery?.state !== "open") continue;
-    const s = await stateOf(e.delivery.branch);
-    if (s && s !== "open") {
-      out.lineage.set(g, s);
-      if (s === "closed") out.closed.set(e.source, e.delivery.url ?? "");
-    }
-  }
-  for (const [id, e] of Object.entries(await readDocs(bdir))) {
-    if (e.pr?.state !== "open") continue;
-    const s = await stateOf(e.pr.branch);
-    if (s && s !== "open") {
-      out.docs.set(id, s);
-      if (s === "closed") out.closed.set(id, e.pr.url ?? "");
-    }
-  }
-  for (const r of B.openDeliveries(await B.readBook(bdir, "AI_DONE.md"))) {
-    const branch = /branch:\s*([^\s;]+)/.exec(r.notes)?.[1];
-    if (!branch) continue;
-    const s = await stateOf(branch);
-    if (s && s !== "open") out.done.set(r.id, deliveryCell(s));
-  }
-  return out;
-}
-
-/** Write the looked-up PR states into the books checkout (inside the housekeeping publish). */
-async function applyDeliveryStates(bdir: string, s: DeliveryStates): Promise<boolean> {
-  let changed = false;
-  if (s.lineage.size) {
-    const lin = await readLineage(bdir);
-    for (const [g, st] of s.lineage) {
-      const e = lin[g];
-      if (e?.delivery) lin[g] = { ...e, delivery: { ...e.delivery, state: st } };
-    }
-    await writeLineage(bdir, lin);
-    changed = true;
-  }
-  if (s.docs.size) {
-    const docs = await readDocs(bdir);
-    for (const [id, st] of s.docs) {
-      const e = docs[id];
-      if (e?.pr) docs[id] = { ...e, pr: { ...e.pr, state: st } };
-    }
-    await writeDocs(bdir, docs);
-    changed = true;
-  }
-  if (s.done.size) {
-    const md = await B.readBook(bdir, "AI_DONE.md");
-    const next = B.setDoneDelivery(md, s.done);
-    if (next !== md) {
-      await B.writeBook(bdir, "AI_DONE.md", next);
-      changed = true;
-    }
-  }
-  return changed;
+  if (res === "pushed") alertClosedPrs(ctx, states);
 }
 
 /**
@@ -956,17 +905,51 @@ async function reopenDeliveries(rc: RunCtx): Promise<void> {
 
 /**
  * Give each accepted DOC row its PR into `<base>` (or merge it directly with `skipPullRequest`) and record it in the
- * docs sidecar — the group's tasks wait for it. A DOC branch already merged (an older project whose docs rode a task
- * PR) is recorded as merged.
- * @adr 0563 @adr 0536
+ * docs sidecar — the group's tasks wait for it. The DOC branches of its submodules go first: merged
+ * directly, or PRs the root PR (a draft) waits for. A DOC branch already merged (an older project whose docs rode a
+ * task PR) is recorded as merged.
+ * @adr 0563 @adr 0536 @adr 0579
  */
 async function openAcceptedDocPrs(rc: RunCtx): Promise<void> {
-  const { bdir, root, rootBase, cfg, log } = rc;
+  const { bdir, root, rootBase, cfg, log, allSubs } = rc;
   const docs = await readDocs(bdir);
   const todo = Object.entries(docs).filter(([, e]) => e.state === "accepted" && !e.pr && e.branch);
   if (todo.length === 0) return;
   const recorded = new Map<string, DeliveryRecord>();
+  const waits = new Map<string, PointerEntry>();
   for (const [id, e] of todo.slice(0, 5)) {
+    const subRepos = (e.repos ?? []).filter((r) => r.dir !== ".");
+    if (subRepos.length) {
+      const subs: SubBranch[] = subRepos.flatMap((r) => {
+        const sub = allSubs.find((x) => x.dir === r.dir);
+        return sub ? [{ sub, branch: r.branch }] : [];
+      });
+      let sd: SubsDelivery;
+      try {
+        sd = await deliverSubs(rc, subs, id, { title: `${id}: docs`, body: `The accepted docs of ${id} (4PM autonomous, ${e.round} review round(s)).`, message: `Merge ${id} docs (4PM autonomous)`, live: false });
+      } catch (err) {
+        await log(`[docs] ${id}: submodule delivery failed: ${String(err)}`);
+        continue;
+      }
+      await gitQuiet(root, ["fetch", "-q", "origin", e.branch]);
+      if (sd.direct) {
+        const merged = await directMerge(root, `origin/${e.branch}`, rootBase.base, `Merge ${id} docs (4PM autonomous)`, sd.pointers);
+        if (merged.ok) {
+          recorded.set(id, { branch: e.branch, state: "direct" });
+          await log(`[docs] ${id} merged into ${rootBase.base}: ${merged.sha.slice(0, 10)} (${sd.lines.join(", ")})`);
+          continue;
+        }
+      }
+      const pr = await deliverPr(root, rootBase.url, e.branch, rootBase.base, `${id}: docs`, `The accepted docs of ${id} (4PM autonomous, ${e.round} review round(s)).${subPrsBody(sd)}`, sd.open.length > 0);
+      if (pr.error) {
+        await log(`[docs] ${id}: PR failed: ${pr.error}`);
+        continue;
+      }
+      recorded.set(id, { branch: e.branch, state: "open", ...(pr.url ? { url: pr.url } : {}) });
+      if (sd.open.length) waits.set(e.branch, pointerEntry(id, rootBase.base, pr.url, sd.open));
+      await log(`[docs] ${id}: PR ${pr.url ?? "opened"}${sd.lines.length ? ` (${sd.lines.join(", ")})` : ""}`);
+      continue;
+    }
     await gitQuiet(root, ["fetch", "-q", "origin", e.branch]);
     if (!(await hasRemoteBranch(root, e.branch))) {
       recorded.set(id, { branch: e.branch, state: "merged" });
@@ -1001,6 +984,7 @@ async function openAcceptedDocPrs(rc: RunCtx): Promise<void> {
       if (e && !e.pr) now[id] = { ...e, pr: d };
     }
     await writeDocs(bdir, now);
+    for (const [branch, entry] of waits) await recordPointerEntry(bdir, branch, entry);
     return true;
   });
 }
@@ -1025,8 +1009,8 @@ async function runClaimed(rc: RunCtx, mine: LocalClaim, resumedClaim: boolean, c
   await checkoutTaskBranch(root, mine.branch, rootBase.base, from);
   const hadWork = (await aheadOf(root, mine.branch, rootBase.base)) > 0;
   await updateSubmodules(root);
-  // Intake and a DOC round work in the root only — no submodule branches (ADR-0536 / ADR-0563).
-  const subs = intake || isDoc ? [] : subBranches(rc.allSubs, mine.id, from);
+  // Every run kind works across submodules: the row's branch in each of them (ADR-0579).
+  const subs = subBranches(rc.allSubs, mine.id, from);
   for (const s of subs) await checkoutTaskBranch(join(root, s.sub.dir), s.branch, s.sub.base, s.from).catch((e) => log(`[warn] submodule ${s.sub.dir}: ${String(e)}`));
 
   // A resumed claim may have been unapproved while this worker was away (ADR-0538): stop before running.
@@ -1065,6 +1049,8 @@ async function runClaimed(rc: RunCtx, mine: LocalClaim, resumedClaim: boolean, c
   // The run's context manifest: one index of where this row's context is, written into the overlay (ADR-0565).
   if (bref) await writeContextManifest(root, mine, cfg).catch((e) => log(`[warn] context manifest of ${mine.id}: ${String(e)}`));
   const startHead = (await gitQuiet(root, ["rev-parse", "HEAD"])).trim();
+  const subStartHeads = new Map<string, string>();
+  for (const s of subs) subStartHeads.set(s.sub.dir, (await gitQuiet(join(root, s.sub.dir), ["rev-parse", "HEAD"])).trim());
   const approved = [...(await approvedIds(root))];
 
   // --- The agent — claim watched -----------------------------------------------------------------
@@ -1079,9 +1065,9 @@ async function runClaimed(rc: RunCtx, mine: LocalClaim, resumedClaim: boolean, c
   let out: AiPromptOutcome;
   try {
     const prompt = intake
-      ? buildIntakePrompt(cfg, approved, mine.groups ?? [], contextRel(mine.id))
+      ? buildIntakePrompt(cfg, approved, mine.groups ?? [], contextRel(mine.id)) + submoduleNote(subs, false)
       : isDoc
-        ? await docsRoundPrompt(root, rootBase.base, cfg, mine, conflicts, approved)
+        ? (await docsRoundPrompt(root, rootBase.base, cfg, mine, conflicts, approved)) + submoduleNote(subs, true)
         : buildImplementPrompt(
             mine,
             subs.map((s) => ({ dir: s.sub.dir, branch: s.branch })),
@@ -1110,6 +1096,7 @@ async function runClaimed(rc: RunCtx, mine: LocalClaim, resumedClaim: boolean, c
   await liftOverlay(root);
   // The agent must stay on the prepared branches — put them back if it wandered.
   if ((await currentBranch(root)) !== mine.branch) await gitQuiet(root, ["checkout", "-q", mine.branch]);
+  for (const s of subs) await reattachSubBranch(join(root, s.sub.dir), s.branch, log);
   // The resume merge (ADR-0539 §2): kept when the agent resolved it, else back to the pre-merge WIP.
   let unresolved = false;
   for (const c of conflicts) {
@@ -1128,8 +1115,13 @@ async function runClaimed(rc: RunCtx, mine: LocalClaim, resumedClaim: boolean, c
     return;
   }
   const kept = out.exhausted || stoppedFromOutside(out);
+  // The intake's sequence diagrams are parsed before the commit; a failing one gets one fix pass (ADR-0580).
+  if (intake && patch && !kept && !unapproved && !out.cancelled && out.exitCode === 0) {
+    const seqs = await changedSequenceFiles(root, startHead, cfg.sequenceDir);
+    await repairSequenceFiles(root, seqs, sequenceFixer(rc, mine.id), log).catch((e) => log(`[warn] sequence check of ${mine.id}: ${String(e)}`));
+  }
   // An intake keeps only its mockups / sequences on the branch (+ the WIP patch while unpublished).
-  if (intake) await commitIntakeOutput(root, mine, cfg, startHead, patch, kept || unapproved);
+  if (intake) await commitIntakeOutput(root, mine, cfg, startHead, patch, kept || unapproved, subs, subStartHeads);
   if (unapproved) {
     await stopUnapproved(rc, subs, mine);
     return;
@@ -1179,11 +1171,11 @@ async function runClaimed(rc: RunCtx, mine: LocalClaim, resumedClaim: boolean, c
     return;
   }
   if (intake && patch) {
-    await finishIntake(rc, mine, patch, capDetail);
+    await finishIntake(rc, mine, patch, subs, capDetail);
     return;
   }
   if (isDoc) {
-    await finishDocRound(rc, mine, reply?.summary ?? "", capDetail);
+    await finishDocRound(rc, mine, subs, reply?.summary ?? "", capDetail);
     return;
   }
   await deliverAndFinish(rc, subs, mine, reply?.summary ?? "", capDetail);
@@ -1196,13 +1188,42 @@ function today(): string {
 
 /**
  * Keep only an intake's work output on its branch: drop any commit the agent made (it is told not to), commit the
- * mockup + sequence folders (and the WIP patch while the intake is not published), discard everything else.
- * @adr 0563
+ * mockup + sequence folders (and the WIP patch while the intake is not published), discard everything else. A folder
+ * inside a submodule is committed in that submodule first; the root then records the moved pointer.
+ * @adr 0563 @adr 0579
  */
-async function commitIntakeOutput(root: string, mine: LocalClaim, cfg: AutonomousConfig, startHead: string, patch: IntakePatch | null, wip: boolean): Promise<void> {
+async function commitIntakeOutput(
+  root: string,
+  mine: LocalClaim,
+  cfg: AutonomousConfig,
+  startHead: string,
+  patch: IntakePatch | null,
+  wip: boolean,
+  subs: readonly SubBranch[] = [],
+  subStartHeads: ReadonlyMap<string, string> = new Map(),
+): Promise<void> {
+  const outDirs = [cfg.mockupDir, cfg.sequenceDir];
+  const message = wip ? `wip(${mine.id}): intake in progress` : `feat(${mine.id}): mockups and sequence diagrams`;
+  const touched: string[] = [];
+  for (const s of subs) {
+    const cwd = join(root, s.sub.dir);
+    const start = subStartHeads.get(s.sub.dir);
+    if (start) await gitQuiet(cwd, ["reset", "-q", "--soft", start]);
+    await gitQuiet(cwd, ["reset", "-q"]);
+    const prefix = `${s.sub.dir}/`;
+    const owned = outDirs.filter((d) => submoduleOf(subs.map((x) => x.sub), `${d}/`)?.dir === s.sub.dir);
+    for (const d of owned) await gitQuiet(cwd, ["add", "-A", "--", d === s.sub.dir ? "." : d.slice(prefix.length)]);
+    if ((await gitQuiet(cwd, ["diff", "--cached", "--name-only"])).trim()) {
+      await git(cwd, ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "commit", "-q", "-m", message]);
+    }
+    await gitQuiet(cwd, ["checkout", "-q", "--", "."]);
+    await gitQuiet(cwd, ["clean", "-fdq", "--", "."]);
+    if ((await gitQuiet(cwd, ["rev-parse", "HEAD"])).trim() !== (start ?? "")) touched.push(s.sub.dir);
+  }
   if (startHead) await gitQuiet(root, ["reset", "-q", "--soft", startHead]);
   await gitQuiet(root, ["reset", "-q"]);
-  for (const d of [cfg.mockupDir, cfg.sequenceDir]) await gitQuiet(root, ["add", "-A", "--", d]);
+  for (const d of outDirs) if (!submoduleOf(subs.map((x) => x.sub), `${d}/`)) await gitQuiet(root, ["add", "-A", "--", d]);
+  for (const dir of touched) await gitQuiet(root, ["add", "--", dir]);
   if (wip && patch) {
     await writeIntakeWip(root, patch);
     await gitQuiet(root, ["add", "--", intakeWipRel(mine.id)]);
@@ -1210,7 +1231,7 @@ async function commitIntakeOutput(root: string, mine: LocalClaim, cfg: Autonomou
     await gitQuiet(root, ["rm", "-q", "--", intakeWipRel(mine.id)]);
   }
   if ((await gitQuiet(root, ["diff", "--cached", "--name-only"])).trim()) {
-    await git(root, ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "commit", "-q", "-m", wip ? `wip(${mine.id}): intake in progress` : `feat(${mine.id}): mockups and sequence diagrams`]);
+    await git(root, ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "commit", "-q", "-m", message]);
   }
   await gitQuiet(root, ["checkout", "-q", "--", "."]);
   await gitQuiet(root, ["clean", "-fdq", "--", "."]);
@@ -1222,7 +1243,7 @@ async function commitIntakeOutput(root: string, mine: LocalClaim, cfg: Autonomou
  * dropping the claim. A request with no work output has no PR and its branch is deleted.
  * @adr 0563
  */
-async function finishIntake(rc: RunCtx, mine: LocalClaim, patch: IntakePatch, capDetail: CapDetail): Promise<void> {
+async function finishIntake(rc: RunCtx, mine: LocalClaim, patch: IntakePatch, subs: readonly SubBranch[], capDetail: CapDetail): Promise<void> {
   const { ctx, root, rootBase, log } = rc;
   if (await remoteClaimLost(root, mine)) {
     await log(`[lost] ${mine.id} was taken over before its intake was published — nothing pushed`);
@@ -1233,11 +1254,14 @@ async function finishIntake(rc: RunCtx, mine: LocalClaim, patch: IntakePatch, ca
   }
   setAutonomousStep("deliver", [mine.id]);
   let delivery: DeliveryRecord | undefined;
+  let pointers: { branch: string; entry: PointerEntry } | undefined;
   let notes = "";
   if ((await aheadOf(root, mine.branch, rootBase.base)) > 0) {
     await reportSidecarTamper(ctx, root, await stripBooksSetFromBranch(root, rootBase.base, mine.id), mine.id);
     try {
-      delivery = await deliverBranch(rc, mine, `${mine.id}: design (mockups / sequence diagrams)`, `The UI mockups and sequence diagrams of ${mine.id} (4PM autonomous intake). The group's docs and tasks start once this is merged.`);
+      const out = await deliverBranch(rc, mine, subs, `${mine.id}: design (mockups / sequence diagrams)`, `The UI mockups and sequence diagrams of ${mine.id} (4PM autonomous intake). The group's docs and tasks start once this is merged.`);
+      delivery = out.delivery;
+      pointers = out.pointers;
       notes = delivery.url ? `PR ${delivery.url}` : `merged into ${rootBase.base}`;
     } catch (err) {
       const reason = `request PR failed: ${err instanceof Error ? err.message : String(err)}`;
@@ -1250,7 +1274,7 @@ async function finishIntake(rc: RunCtx, mine: LocalClaim, patch: IntakePatch, ca
     await gitQuiet(root, ["branch", "-q", "-D", mine.branch]);
   }
   // The delivery is done once: a failed books publish below keeps the patch in the claim and only publishes again.
-  mine.publish = { patch, ...(delivery ? { delivery } : {}) };
+  mine.publish = { patch, ...(delivery ? { delivery } : {}), ...(pointers ? { pointers } : {}) };
   await writeLocalClaim(ctx.profileDir, mine);
   await log(`[intake] ${mine.id} delivered${notes ? `: ${notes}` : ""}`);
   await publishIntake(rc, mine, capDetail);
@@ -1266,12 +1290,17 @@ async function publishIntake(rc: RunCtx, mine: LocalClaim, capDetail: CapDetail)
   const { ctx, root, bdir, rootBase, cfg, log } = rc;
   const pending = mine.publish;
   if (!pending) return;
-  const { patch, delivery } = pending;
+  const { patch, delivery, pointers } = pending;
   setAutonomousStep("deliver", [mine.id]);
   const before = await cappedBookIds(bdir);
   const spec = await readSpecDocsAt(root, rootBase.base);
   const published: IntakePublished = { ercs: [], sdcs: [], docIds: [], skipped: [] };
-  const res = await publishBooks(bdir, rootBase.base, `chore(auto): intake ${mine.id} into tasks`, () => applyIntakePatch(bdir, patch, mine, cfg, spec, delivery, published));
+  const res = await publishBooks(bdir, rootBase.base, `chore(auto): intake ${mine.id} into tasks`, async () => {
+    if (!(await applyIntakePatch(bdir, patch, mine, cfg, spec, delivery, published))) return false;
+    // The request PR waits for its submodule PRs (ADR-0579).
+    if (pointers) await recordPointerEntry(bdir, pointers.branch, pointers.entry);
+    return true;
+  });
   await log(`[intake] ${mine.id}: ${patch.tasks.length} task(s), ${patch.questions.length} question(s) (${res})`);
   if (res === "failed") {
     await log(`[wait] ${mine.id}: books publish failed — claim + patch kept, the next cycle publishes again`);
@@ -1301,22 +1330,125 @@ async function publishIntake(rc: RunCtx, mine: LocalClaim, capDetail: CapDetail)
 
 /**
  * Push a REQ branch and open its PR into `<base>` — or, with `skipPullRequest`, merge it `--no-ff` straight into
- * `<base>` (a failed merge falls back to a PR). Returns the delivery record.
- * @adr 0563 @adr 0539
+ * `<base>` (a failed merge falls back to a PR). Touched submodules are delivered first: a root PR that waits
+ * for submodule PRs is a draft and comes back with its pointers entry. Returns the delivery record.
+ * @adr 0563 @adr 0539 @adr 0579
  */
-async function deliverBranch(rc: RunCtx, mine: LocalClaim, title: string, body: string): Promise<DeliveryRecord> {
-  const { ctx, root, rootBase, cfg } = rc;
+async function deliverBranch(
+  rc: RunCtx,
+  mine: LocalClaim,
+  subs: readonly SubBranch[],
+  title: string,
+  body: string,
+): Promise<{ delivery: DeliveryRecord; pointers?: { branch: string; entry: PointerEntry } }> {
+  const { ctx, root, rootBase } = rc;
+  const message = `Merge ${mine.id} (4PM autonomous)`;
+  const sd = await deliverSubs(rc, subs, mine.id, { title, body, message, live: true });
+  await commitPointerBumps(root, subs, `chore(${mine.id}): submodule pointers (4PM)`);
   await syncBeforeDelivery(root, rootBase.base, mine.id);
-  await pushBranch(root, mine.branch);
-  if (cfg.skipPullRequest) {
-    const merged = await directMerge(root, mine.branch, rootBase.base, `Merge ${mine.id} (4PM autonomous)`);
-    if (merged.ok) return { branch: mine.branch, state: "direct" };
-    alert(ctx, { kind: "direct-merge-failed", task: mine.id, message: `${mine.id} could not be merged directly (${merged.reason}) — a PR was opened instead.` });
+  await pushRootBranch(root, rootBase.base, mine.branch, subs);
+  if (sd.direct) {
+    const merged = await directMerge(root, mine.branch, rootBase.base, message, sd.pointers);
+    if (merged.ok) return { delivery: { branch: mine.branch, state: "direct" } };
+    sd.fallbacks.push(`root (${merged.reason})`);
   }
-  const pr = await deliverPr(root, rootBase.url, mine.branch, rootBase.base, title.slice(0, 100), body);
+  if (sd.fallbacks.length) {
+    alert(ctx, { kind: "direct-merge-failed", task: mine.id, message: `${mine.id} could not be merged directly (${sd.fallbacks.join(", ")}) — a PR was opened instead.` });
+  }
+  const pr = await deliverPr(root, rootBase.url, mine.branch, rootBase.base, title.slice(0, 100), body + subPrsBody(sd), sd.open.length > 0);
   if (pr.error) throw new Error(pr.error);
   emitEvent(ctx, "pr.opened", mine.id, { repo: "root", prUrl: pr.url ?? "", branch: mine.branch, taskId: mine.id });
-  return { branch: mine.branch, state: "open", ...(pr.url ? { url: pr.url } : {}) };
+  return {
+    delivery: { branch: mine.branch, state: "open", ...(pr.url ? { url: pr.url } : {}) },
+    ...(sd.open.length ? { pointers: { branch: mine.branch, entry: pointerEntry(mine.id, rootBase.base, pr.url, sd.open) } } : {}),
+  };
+}
+
+/** What delivering a row's submodules produced. */
+interface SubsDelivery {
+  /** One line per delivered submodule (`<dir>: <PR url>` / `<dir>: merged <sha>`). */
+  lines: string[];
+  /** Submodule links to move to their direct-merge commits (direct merge of the root). */
+  pointers: { dir: string; sha: string }[];
+  /** Submodule PRs left open — the root PR waits for them. */
+  open: SubmodulePr[];
+  /** The root may still be merged directly (every submodule merged directly). */
+  direct: boolean;
+  /** Direct merges that fell back to a PR. */
+  fallbacks: string[];
+  /** Repos that conflict with their base just before delivery (delivered as PRs). */
+  conflicted: string[];
+}
+
+/**
+ * Deliver the touched submodules of a row before its root: per submodule ahead of its base, merge the newest base
+ * (a conflict ⇒ PR), push the branch, then merge it directly (`skipPullRequest`) or open its PR. `live` = the branches
+ * are checked out here (leftovers committed first); otherwise (an accepted DOC delivered from housekeeping) the pushed
+ * `origin/<branch>` is used as it is.
+ * @adr 0371 @adr 0539 @adr 0579
+ */
+async function deliverSubs(
+  rc: RunCtx,
+  subs: readonly SubBranch[],
+  id: string,
+  opts: { title: string; body: string; message: string; live: boolean; commit?: string },
+): Promise<SubsDelivery> {
+  const { root, cfg } = rc;
+  const out: SubsDelivery = { lines: [], pointers: [], open: [], direct: cfg.skipPullRequest, fallbacks: [], conflicted: [] };
+  for (const s of subs) {
+    const abs = join(root, s.sub.dir);
+    let ref = s.branch;
+    if (opts.live) {
+      if ((await currentBranch(abs)) !== s.branch) continue;
+      if (opts.commit) await wipCommit(abs, opts.commit);
+      if ((await aheadOf(abs, s.branch, s.sub.base)) === 0) continue;
+      if (!(await syncBeforeDelivery(abs, s.sub.base, id))) out.conflicted.push(s.sub.dir);
+      await pushBranch(abs, s.branch);
+    } else {
+      await gitQuiet(abs, ["fetch", "-q", "origin", s.sub.base, s.branch]);
+      if (!(await hasRemoteBranch(abs, s.branch))) continue;
+      ref = `origin/${s.branch}`;
+      if (Number((await gitQuiet(abs, ["rev-list", "--count", `origin/${s.sub.base}..${ref}`])).trim() || 0) === 0) continue;
+      const st = await prState(s.sub.url, s.branch, abs, s.sub.base);
+      if (st === "merged") continue;
+    }
+    if (out.direct && !out.conflicted.includes(s.sub.dir)) {
+      const merged = await directMerge(abs, ref, s.sub.base, opts.message);
+      if (merged.ok) {
+        out.pointers.push({ dir: s.sub.dir, sha: merged.sha });
+        out.lines.push(`${s.sub.dir}: merged ${merged.sha.slice(0, 10)}`);
+        continue;
+      }
+      out.fallbacks.push(`${s.sub.dir} (${merged.reason})`);
+    }
+    // A submodule on a PR ⇒ the root goes out as a PR too (its pointer would not be on the submodule's base).
+    out.direct = false;
+    const pr = await deliverPr(abs, s.sub.url, s.branch, s.sub.base, opts.title.slice(0, 100), `${opts.body}\n\n${id} (4PM autonomous).`);
+    if (pr.error) throw new Error(`submodule ${s.sub.dir} PR: ${pr.error}`);
+    out.lines.push(`${s.sub.dir}: ${pr.url ?? s.branch}`);
+    out.open.push({ dir: s.sub.dir, url: s.sub.url, branch: s.branch, base: s.sub.base, state: "open", ...(pr.url ? { prUrl: pr.url } : {}) });
+  }
+  return out;
+}
+
+/** Record the submodules' current heads in the root (after their delivery merges moved them). */
+async function commitPointerBumps(root: string, subs: readonly SubBranch[], message: string): Promise<void> {
+  for (const s of subs) await gitQuiet(root, ["add", "--", s.sub.dir]);
+  if ((await gitQuiet(root, ["diff", "--cached", "--name-only"])).trim()) {
+    await git(root, ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "commit", "-q", "-m", message]);
+  }
+}
+
+/** The submodule part of a root PR body ("" without submodules). */
+function subPrsBody(sd: SubsDelivery): string {
+  if (!sd.lines.length) return "";
+  const wait = sd.open.length ? "\n\nThis PR waits for the submodule PRs above: once they merge, 4PM points the submodules at their merge commits and marks it ready." : "";
+  return `\n\nSubmodules:\n${sd.lines.map((l) => `- ${l}`).join("\n")}${wait}`;
+}
+
+/** The pointers entry of a root PR that waits for submodule PRs. */
+function pointerEntry(id: string, base: string, url: string | null, open: SubmodulePr[]): PointerEntry {
+  return { id, base, subs: open, ...(url ? { url } : {}) };
 }
 
 /**
@@ -1339,7 +1471,10 @@ async function parkOnQuestion(
     qaId = await applyQuestion(bdir, mine, question);
     return qaId !== null;
   });
-  if (qaId && reply.sequence) await writeQuestionSequenceFile(root, cfg.sequenceDir, qaId, reply.sequence);
+  if (qaId && reply.sequence && (await writeQuestionSequenceFile(root, cfg.sequenceDir, qaId, reply.sequence))) {
+    // Parsed before it rides the WIP; one fix pass when Mermaid rejects it (ADR-0580).
+    await repairSequenceFiles(root, [`${cfg.sequenceDir}/${qaId}.md`], sequenceFixer(rc, mine.id), log).catch((e) => log(`[warn] sequence check of ${qaId}: ${String(e)}`));
+  }
   await pushWip(ctx, root, mine, subs, `waiting for ${qaId ?? "an answer"}`);
   await writeLocalClaim(ctx.profileDir, null);
   await log(`[question] ${mine.id} parked on ${qaId ?? "?"} (${res})`);
@@ -1354,11 +1489,30 @@ function unfence(text: string): string {
   return text.trim().replace(/^```+\s*mermaid\s*\n?/i, "").replace(/\n?```+\s*$/, "").trim();
 }
 
-/** Write the sequence diagram returned with a question (`<sequenceDir>/<QA-ID>.md`) on the work branch. @adr 0453 */
-async function writeQuestionSequenceFile(root: string, sequenceDir: string, qaId: string, sequence: string): Promise<void> {
+/** Write the sequence diagram returned with a question (`<sequenceDir>/<QA-ID>.md`) on the work branch; false when not written. @adr 0453 */
+async function writeQuestionSequenceFile(root: string, sequenceDir: string, qaId: string, sequence: string): Promise<boolean> {
   const body = unfence(sequence);
-  if (!/^sequenceDiagram\b/.test(body) || body.length > 50_000) return;
+  if (!/^sequenceDiagram\b/.test(body) || body.length > 50_000) return false;
   await B.writeBook(root, `${sequenceDir}/${qaId}.md`, `# ${qaId}\n\n\`\`\`mermaid\n${body}\n\`\`\`\n`);
+  return true;
+}
+
+/** The sequence files an intake added or changed since `startHead` (committed, modified or new). @adr 0580 */
+async function changedSequenceFiles(root: string, startHead: string, sequenceDir: string): Promise<string[]> {
+  const changed = startHead ? await gitQuiet(root, ["diff", "--name-only", startHead, "--", sequenceDir]) : "";
+  const added = await gitQuiet(root, ["ls-files", "--others", "--exclude-standard", "--", sequenceDir]);
+  const rels = `${changed}\n${added}`.split("\n").map((l) => l.trim());
+  return [...new Set(rels.filter((r) => isSequenceFile(r, sequenceDir)))];
+}
+
+/** The one-shot `cli.autonomous.fixDiagram` run for a sequence diagram Mermaid rejected (no tools). @adr 0580 */
+function sequenceFixer(rc: RunCtx, taskId: string): SequenceFixer {
+  return async (file, diagram, error) => {
+    // The diagram and its parse error are AI-written text — wrapped by the registry (ADR-0421).
+    const prompt = resolveCliPrompt("cli.autonomous.fixDiagram", { file, diagram, error });
+    const out = await withEgressRun({ taskId }, () => runAiPrompt(rc.ctx, prompt, cycleRunId(), "local", true, undefined, undefined, false, false, runOverrides(rc.cfg)));
+    return out.exitCode === 0 && !out.cancelled ? out.output : null;
+  };
 }
 
 /** Is the claim gone from the REMOTE books (read without leaving the work branch)? Unknown ⇒ false. */
@@ -1397,6 +1551,8 @@ interface Delivered {
   sdcs: NewSdcFile[];
   prUrl?: string;
   delivery: string;
+  /** The root PR waits for these submodule PRs. */
+  pointers?: { branch: string; entry: PointerEntry };
 }
 
 /**
@@ -1437,6 +1593,7 @@ async function deliverAndFinish(rc: RunCtx, subs: { sub: RepoBase; branch: strin
   let taskSdcs: string[] = [];
   const fin = await publishBooks(bdir, rootBase.base, `chore(auto): finish ${mine.id}`, async () => {
     if (!(await applyFinish(bdir, mine, delivered, cfg.evidenceDir))) return false;
+    if (delivered.pointers) await recordPointerEntry(bdir, delivered.pointers.branch, delivered.pointers.entry);
     // The agent's change request goes to the books for approval (ADR-0453) — and its system-diagram change (ADR-0530).
     taskErcs = await publishTaskErcs(bdir, cfg.erDir, delivered.ercs, mine.id, mine.task.team, cfg.erAutoApprove);
     taskSdcs = await publishTaskSdcs(bdir, cfg, delivered.sdcs, mine.id, mine.task.team);
@@ -1466,35 +1623,15 @@ async function deliver(rc: RunCtx, subs: { sub: RepoBase; branch: string }[], mi
   const evRoot = cfg.evidenceDir;
   const title = `${mine.id}: ${mine.task.desc}`.replace(/\s+/g, " ").slice(0, 100);
   const mergeMessage = `Merge ${mine.id} (4PM autonomous): ${mine.task.desc}`.replace(/\s+/g, " ").slice(0, 200);
-  const subPrs: string[] = [];
-  const pointers: { dir: string; sha: string }[] = [];
+  // Submodules first (ADR-0579): merged directly, or PRs the root PR then waits for.
+  const sd = await deliverSubs(rc, subs, mine.id, { title, body: summary, message: mergeMessage, live: true, commit: `feat(${mine.id}): ${summary || mine.task.desc}`.slice(0, 200) });
+  const subPrs = sd.lines;
+  const pointers = sd.pointers;
   // Conflicts with the base found just before delivery (ADR-0539 §3) — those repos go out as PRs.
-  const conflicted: string[] = [];
+  const conflicted = sd.conflicted;
   // A direct merge that fell back to a PR (ADR-0539 §4).
-  const fallbacks: string[] = [];
-  let direct = cfg.skipPullRequest;
-  for (const s of subs) {
-    const abs = join(root, s.sub.dir);
-    if ((await currentBranch(abs)) !== s.branch) continue;
-    await wipCommit(abs, `feat(${mine.id}): ${summary || mine.task.desc}`.slice(0, 200));
-    if ((await aheadOf(abs, s.branch, s.sub.base)) === 0) continue;
-    if (!(await syncBeforeDelivery(abs, s.sub.base, mine.id))) conflicted.push(s.sub.dir);
-    await pushBranch(abs, s.branch);
-    if (direct && !conflicted.includes(s.sub.dir)) {
-      const merged = await directMerge(abs, s.branch, s.sub.base, mergeMessage);
-      if (merged.ok) {
-        pointers.push({ dir: s.sub.dir, sha: merged.sha });
-        subPrs.push(`${s.sub.dir}: merged ${merged.sha.slice(0, 10)}`);
-        continue;
-      }
-      fallbacks.push(`${s.sub.dir} (${merged.reason})`);
-    }
-    // A submodule on a PR ⇒ the root goes out as a PR too (its pointer would not be on the submodule's base).
-    direct = false;
-    const pr = await deliverPr(abs, s.sub.url, s.branch, s.sub.base, title, `${summary}\n\nTask ${mine.id} (4PM autonomous).`);
-    if (pr.error) throw new Error(`submodule ${s.sub.dir} PR: ${pr.error}`);
-    subPrs.push(`${s.sub.dir}: ${pr.url ?? s.branch}`);
-  }
+  const fallbacks = sd.fallbacks;
+  const direct = sd.direct;
   // Root: pointer bumps + any uncommitted leftovers, then push + PR / merge.
   await wipCommit(root, `feat(${mine.id}): ${summary || mine.task.desc}`.slice(0, 200));
   // The agent's change requests travel to the books, never to `<base>` (ADR-0453) — read them before the strip.
@@ -1513,9 +1650,11 @@ async function deliver(rc: RunCtx, subs: { sub: RepoBase; branch: string }[], mi
     return { files: "", notes: `no changes needed; branch: ${mine.branch}${subPrs.length ? `; submodules: ${subPrs.join(", ")}` : ""}`, evidence: [], ercs, sdcs, delivery: "" };
   }
   if (!(await syncBeforeDelivery(root, rootBase.base, mine.id))) conflicted.push(".");
-  const files = (await gitQuiet(root, ["diff", "--name-only", `origin/${rootBase.base}...${mine.branch}`])).split("\n").filter(Boolean);
+  // AI Done Files: the files changed inside submodules instead of their gitlink lines (ADR-0579).
+  const rootFiles = (await gitQuiet(root, ["diff", "--name-only", `origin/${rootBase.base}...${mine.branch}`])).split("\n").filter(Boolean);
+  const files = withoutGitlinks(rootFiles, await submoduleFiles(root, subs), subs);
   const filesCell = files.slice(0, 20).join(", ") + (files.length > 20 ? ` (+${files.length - 20})` : "");
-  await pushBranch(root, mine.branch);
+  await pushRootBranch(root, rootBase.base, mine.branch, subs);
   if (conflicted.length) {
     alert(ctx, { kind: "pr-conflict", task: mine.id, message: `${mine.id} conflicts with the base in ${conflicted.join(", ")} — delivered as a PR.` });
   }
@@ -1536,8 +1675,8 @@ async function deliver(rc: RunCtx, subs: { sub: RepoBase; branch: string }[], mi
   if (fallbacks.length) {
     alert(ctx, { kind: "direct-merge-failed", task: mine.id, message: `${mine.id} could not be merged directly (${fallbacks.join(", ")}) — a PR was opened instead.` });
   }
-  const body = `${summary}\n\nTask ${mine.id} (4PM autonomous).${subPrs.length ? `\n\nSubmodules:\n${subPrs.map((p) => `- ${p}`).join("\n")}` : ""}`;
-  const pr = await deliverPr(root, rootBase.url, mine.branch, rootBase.base, title, body);
+  const body = `${summary}\n\nTask ${mine.id} (4PM autonomous).${subPrsBody(sd)}`;
+  const pr = await deliverPr(root, rootBase.url, mine.branch, rootBase.base, title, body, sd.open.length > 0);
   if (pr.error) throw new Error(`PR: ${pr.error}`);
   const notes = [
     `branch: ${mine.branch}; PR: ${pr.url ?? "opened"}`,
@@ -1545,7 +1684,16 @@ async function deliver(rc: RunCtx, subs: { sub: RepoBase; branch: string }[], mi
     ...(conflicted.length ? [`PR conflicts with ${rootBase.base} (${conflicted.join(", ")})`] : []),
     ...(fallbacks.length ? [`direct merge failed: ${fallbacks.join(", ")}`] : []),
   ].join("; ");
-  return { files: filesCell, notes, evidence, ercs, sdcs, delivery: deliveryCell("open", pr.url ?? undefined), ...(pr.url ? { prUrl: pr.url } : {}) };
+  return {
+    files: filesCell,
+    notes,
+    evidence,
+    ercs,
+    sdcs,
+    delivery: deliveryCell("open", pr.url ?? undefined),
+    ...(pr.url ? { prUrl: pr.url } : {}),
+    ...(sd.open.length ? { pointers: { branch: mine.branch, entry: pointerEntry(mine.id, rootBase.base, pr.url, sd.open) } } : {}),
+  };
 }
 
 /** One repo whose resume merge stopped on conflicts: where, its pre-merge head, the conflicted paths. */
@@ -1634,17 +1782,26 @@ ${wrapUntrusted(conflicts.flatMap((c) => c.paths.map((p) => `- ${c.dir === "." ?
 }
 
 /**
- * End of a successful docs round: commit leftovers; drop any books-set path the agent committed (its new change
- * requests go to the books); number the new numbered docs; re-check the claim and the approval; push the DOC branch;
- * then on the books record the round (manifest, head, overlaps) and park the row in `review` — a person reviews it
- * from AI Todo. A round that produced no doc file is a failure. Mockups / sequences a review asked for stay on the DOC
- * branch and reach `<base>` with its PR.
- * @adr 0536 @adr 0563
+ * End of a successful docs round: commit leftovers (each submodule first, then the root with their pointers); drop any
+ * books-set path the agent committed (its new change requests go to the books); number the new numbered docs in the
+ * repo that holds them; re-check the claim and the approval; push the DOC branches (submodules, then the root through
+ * the pointer guard); then on the books record the round (manifest, head, repos, overlaps) and park the row in
+ * `review` — a person reviews it from AI Todo. A round that produced no doc file is a failure. Mockups / sequences a
+ * review asked for stay on the DOC branch and reach `<base>` with its PR.
+ * @adr 0536 @adr 0563 @adr 0579
  */
-async function finishDocRound(rc: RunCtx, mine: LocalClaim, summary: string, extra: CapDetail = {}): Promise<void> {
+async function finishDocRound(rc: RunCtx, mine: LocalClaim, subs: readonly SubBranch[], summary: string, extra: CapDetail = {}): Promise<void> {
   const { ctx, root, bdir, rootBase, cfg, log } = rc;
   const base = rootBase.base;
-  await wipCommit(root, `docs(${mine.id}): ${summary || "docs round"}`.replace(/\s+/g, " ").slice(0, 200));
+  const commitMsg = `docs(${mine.id}): ${summary || "docs round"}`.replace(/\s+/g, " ").slice(0, 200);
+  const live: SubBranch[] = [];
+  for (const s of subs) {
+    const abs = join(root, s.sub.dir);
+    if ((await currentBranch(abs)) !== s.branch) continue;
+    await wipCommit(abs, commitMsg);
+    live.push(s);
+  }
+  await wipCommit(root, commitMsg);
   const ercs = await captureAgentErcs(root, cfg.erDir);
   const sdcs = await captureAgentSdcs(root, cfg.diagramDir);
   const stripped = await stripBooksSetFromBranch(root, base, mine.id);
@@ -1654,11 +1811,12 @@ async function finishDocRound(rc: RunCtx, mine: LocalClaim, summary: string, ext
     stripped.filter((p) => !(ercs.length && p.startsWith(`${cfg.erDir}/changes/`)) && !(sdcs.length && p.startsWith(`${cfg.diagramDir}/changes/`))),
     mine.id,
   );
-  // Numbered types follow the spec + its mirrored doc templates (ADR-0564).
+  // Numbered types follow the spec + its mirrored doc templates (ADR-0564); every repo of the round (ADR-0579).
   const spec = await readSpecDocsAt(root, base);
-  await numberNewDocs(root, base, mine.id, docNumberAllocator(ctx), log, spec.numbered);
+  const repos: DocRepo[] = [{ dir: "", cwd: root, base }, ...live.map((s) => ({ dir: s.sub.dir, cwd: join(root, s.sub.dir), base: s.sub.base }))];
+  await numberNewDocs(repos, mine.id, docNumberAllocator(ctx), log, spec.numbered);
   const prev = parseDocsSidecar(await remoteBook(root, base, DOCS_SIDECAR_REL))[mine.id];
-  const files = await docManifest(root, base, prev?.files ?? [], spec.numbered);
+  const files = await docManifest(repos, prev?.files ?? [], spec.numbered);
   if (files.length === 0) {
     await releaseRow(rc, mine, "the docs round wrote no doc file");
     ctx.bus.autonomousDone(false, "docs round wrote nothing");
@@ -1675,14 +1833,23 @@ async function finishDocRound(rc: RunCtx, mine: LocalClaim, summary: string, ext
     await stopUnapproved(rc, [], mine);
     return;
   }
-  await pushBranch(root, mine.branch);
+  // Submodule DOC branches first (the review reads them), then the root through the pointer guard (ADR-0579).
+  const heads: DocRepoHead[] = [];
+  for (const s of live) {
+    const abs = join(root, s.sub.dir);
+    if ((await aheadOf(abs, s.branch, s.sub.base)) === 0) continue;
+    await pushBranch(abs, s.branch);
+    heads.push({ dir: s.sub.dir, branch: s.branch, head: (await gitQuiet(abs, ["rev-parse", "HEAD"])).trim() });
+  }
+  await pushRootBranch(root, base, mine.branch, live);
   const head = (await gitQuiet(root, ["rev-parse", "HEAD"])).trim();
+  if (heads.length) heads.unshift({ dir: ".", branch: mine.branch, head });
   const round = (prev?.round ?? 0) + 1;
   let taskErcs: string[] = [];
   let taskSdcs: string[] = [];
   const res = await publishBooks(bdir, base, `chore(auto): ${mine.id} docs round ${round} ready for review`, async () => {
     if (!(await dropClaim(bdir, mine))) return false;
-    await applyDocRoundDone(bdir, mine.task, { branch: mine.branch, head, files });
+    await applyDocRoundDone(bdir, mine.task, { branch: mine.branch, head, files, repos: heads });
     taskErcs = await publishTaskErcs(bdir, cfg.erDir, ercs, mine.id, mine.task.team, cfg.erAutoApprove);
     taskSdcs = await publishTaskSdcs(bdir, cfg, sdcs, mine.id, mine.task.team);
     return true;
@@ -1782,7 +1949,7 @@ async function applyIntakeRelease(bdir: string, mine: LocalClaim, reason: string
  */
 async function releaseRow(rc: RunCtx, mine: LocalClaim, reason: string, countAttempt = true): Promise<void> {
   const { ctx, root, bdir, rootBase, allSubs, cfg } = rc;
-  const subs = isIntakeClaim(mine) || isDocRowId(mine.id) ? [] : subBranches(allSubs, mine.id, null);
+  const subs = subBranches(allSubs, mine.id, null);
   await pushWip(ctx, root, mine, subs, reason.slice(0, 80));
   if (isIntakeClaim(mine)) {
     const res = countAttempt
@@ -1915,6 +2082,17 @@ async function reportNewBookRows(ctx: WsHandlerCtx, bdir: string, before: Awaite
   } catch {
     /* best-effort — an unreported tick only under-counts */
   }
+}
+
+/**
+ * The PR-only refresh of a tick the cycle does not reach (paused, blocked, quiet hours, max ticks, offline, another
+ * cycle running) — fire-and-forget, logged in the tick log.
+ * @adr 0575
+ */
+export function refreshPrStatesNow(ctx: WsHandlerCtx): void {
+  const root = ctx.physicRoot;
+  if (!root) return;
+  void refreshPrStates(ctx, (line) => dayLog(root, line));
 }
 
 /** Append a line to the per-day tick log (`<root>/.4pm/logs/autonomous-tick-<day>.log`, git-excluded). Best-effort. @adr 0568 */

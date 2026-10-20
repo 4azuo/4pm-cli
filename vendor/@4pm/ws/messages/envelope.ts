@@ -2467,6 +2467,10 @@ export type AutonomousAlertKind =
   | "book-cap"
   // A request / DOC PR was closed without merge — its group waits until Retry (ADR-0563).
   | "pr-closed"
+  // A submodule PR a root PR waits for was closed without merge — the root PR stays a draft (ADR-0579).
+  | "submodule-pr-closed"
+  // A root PR that only moves submodule pointers could not be merged by the worker — merge it by hand (ADR-0579).
+  | "pointer-pr-needs-merge"
   // An informational cycle event for automation rules (ADR-0458): no notification, `event` carries it.
   | "event";
 

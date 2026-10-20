@@ -72,6 +72,7 @@ export const SIDECAR_FILES = [
   ".autonomous.er.json",
   ".autonomous.diagram.json",
   ".autonomous.branch-deletions.json",
+  ".autonomous.pointers.json",
 ] as const;
 
 /** The committed sidecar paths (`.4pm/.autonomous.*.json`). */

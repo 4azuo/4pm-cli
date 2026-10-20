@@ -768,9 +768,11 @@ export async function writeAutonomous(
  */
 export async function readAutonomousEvidence(root: string, profileDir: string, req: AutonomousEvidenceRequest): Promise<AutonomousEvidenceReply> {
   try {
-    const base = (await resolveBases(root).catch(() => null))?.root.base ?? null;
-    // A doc file of a DOC round (ADR-0536): from the DOC branch, else as on `<base>` (the review's "before").
-    if (isDocFilePath(req.path)) return await readDocFile(root, base, req.path, req.ref);
+    const bases = await resolveBases(root).catch(() => null);
+    const base = bases?.root.base ?? null;
+    // A doc file of a DOC round (ADR-0536): from the DOC branch, else as on `<base>` (the review's "before"); a path
+    // inside a submodule is read from that submodule (ADR-0579).
+    if (isDocFilePath(req.path)) return await readDocFile(root, base, req.path, req.ref, bases?.subs ?? []);
     const { mockupDir, erDir, sequenceDir } = await readAutonomousConfig(profileDir);
     // A past version is read from the fetched books history (ADR-0515).
     if (req.rev && base) await freshBooksRef(root, base);

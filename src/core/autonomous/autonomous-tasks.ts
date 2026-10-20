@@ -14,7 +14,7 @@ import * as B from "./autonomous-books";
 import { isMerged, type RepoBase } from "./autonomous-git";
 import { evidenceCell, moveTaskEvidence, rehomeTaskLinks } from "./autonomous-evidence";
 import { readFileInRoot } from "../../utils/safe-path";
-import { APPROVALS_SIDECAR_REL, BOOK_STATE, mergeWait, approvalEntrySchema, bookRowStates, bookRowTeam, buildDependsWaiting, type DeliveryRecord, type WaitingItem } from "@4pm/dto";
+import { APPROVALS_SIDECAR_REL, BOOK_STATE, mergeWait, approvalEntrySchema, bookRowStates, bookRowTeam, buildDependsWaiting, type DeliveryRecord, type PointerEntry, type WaitingItem } from "@4pm/dto";
 import { verifiedApprovedIds } from "./autonomous-approvals";
 import { servesTeam } from "./autonomous-teams";
 import { docRunnable, readDocs, readLineage } from "./autonomous-docs";
@@ -47,7 +47,7 @@ export interface LocalClaim {
    * A finished intake whose books publish failed after its request PR / merge: the patch + delivery, so the next cycle
    * only publishes again (no second agent run, no second PR). @adr 0563
    */
-  publish?: { patch: IntakePatch; delivery?: DeliveryRecord };
+  publish?: { patch: IntakePatch; delivery?: DeliveryRecord; pointers?: { branch: string; entry: PointerEntry } };
   /** The served project the claim was taken in (dropped when the worker serves another one). @adr 0570 */
   projectId?: string | null;
 }

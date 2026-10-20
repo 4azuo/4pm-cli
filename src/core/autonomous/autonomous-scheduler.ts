@@ -23,6 +23,8 @@ export interface AutonomousSchedulerDeps {
   servedRoot: () => string | null;
   /** Trigger one cycle (the `bus.submitAutonomous` path). */
   submit: () => void;
+  /** The PR-only refresh of a tick that starts no cycle (paused / blocked). @adr 0575 */
+  refreshPrs?: () => void;
 }
 
 let deps: AutonomousSchedulerDeps | null = null;
@@ -52,10 +54,17 @@ export function isValidCronSchedule(expr: string): boolean {
   }
 }
 
-/** One scheduled fire: submit a cycle unless idle or paused (paused skips silently — no log noise). */
+/**
+ * One scheduled fire: submit a cycle unless idle or paused (paused skips silently — no log noise). A paused / blocked
+ * tick still refreshes the PR states, so a merged PR shows as merged without a running worker.
+ * @adr 0575
+ */
 function onTick(): void {
   if (!deps || !deps.servedRoot() || lifecycle.stopping) return;
-  if (readAutonomousConfigSync(deps.profileDir).paused) return;
+  if (readAutonomousConfigSync(deps.profileDir).paused) {
+    deps.refreshPrs?.();
+    return;
+  }
   // The project switch is off / the server does not allow this worker (ADR-0507): skip silently like
   // `paused`, but keep the reason for the worker snapshot.
   const blocked = policyBlockReason();
@@ -63,6 +72,7 @@ function onTick(): void {
     recordLastCheck("skip", `policy: ${blocked}`);
     // Paused for a required template update: re-read the base marker so a merged Update PR resumes it (ADR-0550).
     if (blocked === "templateUpdateRequired") void refreshBaseTemplateMarker(deps.servedRoot()!);
+    deps.refreshPrs?.();
     return;
   }
   deps.submit();
