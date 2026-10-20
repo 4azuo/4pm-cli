@@ -5,8 +5,8 @@
  * ADR-0256) — a switch to another project replaces the folder and the project-scoped state —,
  * and scaffold (PROJECT_CREATE) or register an existing (PROJECT_ADD, ADR-0117) project with streamed
  * progress. A folder delete / rename first drains the project's running work, and every provisioning job
- * holds the project's repo lock.
- * @adr 0064 @adr 0080 @adr 0505 @adr 0506 @adr 0569
+ * holds the project's repo lock. Before the server moves this worker away, `autonomous.leave` returns its held row.
+ * @adr 0064 @adr 0080 @adr 0505 @adr 0506 @adr 0569 @adr 0570
  */
 import { setServedTeams } from "../../autonomous/autonomous-teams";
 import { setApprovalProjectId } from "../../autonomous/autonomous-approvals";
@@ -25,14 +25,15 @@ import {
   type RepoProbeRequest,
   type GitPrResolveRequest,
   type GitBranchCleanupRequest,
+  type AutonomousLeaveReply,
 } from "@4pm/ws";
 import type { GitAuthMethod } from "@4pm/dto";
 import { configureGitAuth } from "../../git/git-auth";
 import { requestGitSnapshot } from "../../git/git-snapshot";
 import { probeRepo } from "../../git/repo-probe";
 import { pauseAutonomous } from "../../autonomous/autonomous-config";
-import { setAutonomousPolicy } from "../../autonomous/autonomous-policy";
-import { onReconnectVerifyClaim } from "../../autonomous/autonomous-cycle";
+import { clearAutonomousProjectState, setAutonomousPolicy, setAutonomousServedProject } from "../../autonomous/autonomous-policy";
+import { onReconnectVerifyClaim, releaseClaimOnLeave, setAutonomousLeaving } from "../../autonomous/autonomous-cycle";
 import { handlePrResolve } from "../../autonomous/autonomous-pr-resolve";
 import { handleBranchCleanup } from "../../autonomous/autonomous-branches";
 import { readAutonomousConfigSync } from "../../autonomous/autonomous-config";
@@ -52,6 +53,8 @@ import { work } from "../../session/work-tracker";
 
 /** How long a rename waits for the running work before cancelling it (ms). */
 const RENAME_WAIT_MS = 60_000;
+/** How long `autonomous.leave` works before replying (under the server's 60 s wait). @adr 0570 */
+const LEAVE_REPLY_MS = 55_000;
 
 /**
  * Drain the project's running work before its folder changes: optionally cancel the AI runs at once,
@@ -108,6 +111,11 @@ export function handleProjectChannels(
       // The project's autonomous policy changed (ADR-0507): persisted; a running cycle stops at its next
       // phase boundary when it turns blocking (the cycle listens).
       setAutonomousPolicy(payload);
+      return true;
+    }
+    case WsChannels.AUTONOMOUS_LEAVE: {
+      // The server is about to move this worker away (ADR-0570): return the held row while git access still works.
+      void leaveServedProject(ctx).then((reply) => ctx.send(WsChannels.AUTONOMOUS_LEAVE, reply, message.id));
       return true;
     }
     case WsChannels.GIT_BRANCH_CLEANUP: {
@@ -228,10 +236,6 @@ export function handleProjectChannels(
 }
 
 /**
- * Apply a git-auth method/host pushed by the server — same call the ws_token connect path makes.
- * @adr 0368
- */
-/**
  * Apply the served-project fields of a `project.tokens` push like the connect path applies `ws_token`: the
  * approval-signature project, outbound review and the declared repos (cloned by the following `physic.sync`).
  * When the project id changed, the old project's AI memory and remembered native sessions are replaced by the new
@@ -243,6 +247,8 @@ function applyServedProject(ctx: WsHandlerCtx, tokens: ProjectTokensPayload): bo
   if (tokens.repos !== undefined) ctx.setServingRepos(tokens.repos);
   if (tokens.projectId === undefined) return false;
   setApprovalProjectId(tokens.projectId, ctx.profileDir);
+  // Last check / held claim of another project must not be reported any more (ADR-0570).
+  setAutonomousServedProject(tokens.projectId);
   if (tokens.projectId === ctx.servedProjectId) return false;
   ctx.servedProjectId = tokens.projectId;
   ctx.aiMemory = tokens.memoryText ?? "";
@@ -251,10 +257,53 @@ function applyServedProject(ctx: WsHandlerCtx, tokens: ProjectTokensPayload): bo
   return true;
 }
 
+/**
+ * Apply a git-auth method/host pushed by the server — same call the ws_token connect path makes.
+ * @adr 0368
+ */
 function applyGitAuth(ctx: WsHandlerCtx, method: string | null, host: string | null): void {
   configureGitAuth((method ?? null) as GitAuthMethod | null, host, ctx.profileDir, (req) =>
     ctx.request<GitTokenReply>(WsChannels.GIT_TOKEN, req),
   );
+}
+
+/**
+ * `autonomous.leave` — the worker is about to leave its served project: pause the engine, drain the folder (the
+ * cancelled cycle run keeps its claim), then return the held row with its WIP pushed and no attempt counted, and clear
+ * the project-scoped autonomous state. Replies within `LEAVE_REPLY_MS`; work still running then finishes on its own
+ * (it holds the repo lock, so a following folder replace waits for it).
+ * @adr 0570
+ */
+async function leaveServedProject(ctx: WsHandlerCtx): Promise<AutonomousLeaveReply> {
+  await pauseAutonomous(ctx.profileDir).catch(() => undefined);
+  const root = ctx.physicRoot;
+  const leave = (async (): Promise<AutonomousLeaveReply> => {
+    if (!root || !existsSync(root)) return { released: null };
+    setAutonomousLeaving(true);
+    try {
+      const lock = await drainProject(ctx, root, "autonomous-leave", true);
+      if (!lock) return { released: null, error: "the running work did not stop in time" };
+      try {
+        return { released: await releaseClaimOnLeave(ctx, root) };
+      } finally {
+        lock.release();
+      }
+    } catch (err) {
+      return { released: null, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      setAutonomousLeaving(false);
+      clearAutonomousProjectState();
+    }
+  })();
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<AutonomousLeaveReply>((resolve) => {
+    timer = setTimeout(() => resolve({ released: null, error: "timed out" }), LEAVE_REPLY_MS);
+  });
+  const reply = await Promise.race([leave, timeout]);
+  clearTimeout(timer);
+  clearAutonomousProjectState();
+  logger.info("autonomous.leave", { released: reply.released, ...(reply.error ? { error: reply.error } : {}) });
+  return reply;
 }
 
 /**

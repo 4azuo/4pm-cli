@@ -71,6 +71,7 @@ import {
   applyRelease,
   applySplit,
   applyUnapprovedRelease,
+  applyLeaveRelease,
   applyBlockedRelease,
   applyUnblock,
   claimRowOf,
@@ -408,9 +409,21 @@ function cycleRunId(): string {
   return currentCycleRun;
 }
 
-/** True when a cancelled run was stopped by a restart drain or a blocking policy (keep the work). @adr 0505 @adr 0507 */
+/** Set while the worker leaves its served project: a run cancelled meanwhile keeps its claim for the leave. @adr 0570 */
+let leaving = false;
+
+/**
+ * Mark the worker as leaving its served project (or done leaving): a cycle run cancelled meanwhile is kept, not
+ * failed, so the leave returns the row without an attempt.
+ * @adr 0570
+ */
+export function setAutonomousLeaving(on: boolean): void {
+  leaving = on;
+}
+
+/** True when a cancelled run was stopped by a restart drain, a blocking policy or a leave (keep the work). @adr 0505 @adr 0507 @adr 0570 */
 function stoppedFromOutside(out: AiPromptOutcome): boolean {
-  return out.cancelled && (lifecycle.stopping || policyStopsRunningCycle());
+  return out.cancelled && (lifecycle.stopping || leaving || policyStopsRunningCycle());
 }
 
 /** What the run of a claimed row needs besides the claim. */
@@ -1120,7 +1133,7 @@ async function runClaimed(rc: RunCtx, mine: LocalClaim, resumedClaim: boolean, c
   if (kept) {
     // Stopped by the restart drain (ADR-0505), a blocking policy (ADR-0507) or out of tokens: keep the claim + save
     // the work; the next allowed cycle resumes it. Not a failure, no attempt counted.
-    const why = out.exhausted ? "out of tokens" : lifecycle.stopping ? "cli restart" : "autonomous paused";
+    const why = out.exhausted ? "out of tokens" : lifecycle.stopping ? "cli restart" : leaving ? "leaving the project" : "autonomous paused";
     for (const s of subs) await wipCommit(join(root, s.sub.dir), `wip(${mine.id}): ${why}`);
     await wipCommit(root, `wip(${mine.id}): ${why}`);
     await log(`[wait] ${mine.id}: ${why} — claim kept, resumes later`);
@@ -1805,6 +1818,36 @@ async function releaseRow(rc: RunCtx, mine: LocalClaim, reason: string, countAtt
   }
   await writeLocalClaim(ctx.profileDir, null);
   await dayLog(root, `[release] ${mine.id} attempt ${next}: ${reason}`);
+}
+
+/**
+ * The worker leaves its served project (`autonomous.leave`, the caller holds the repo lock — no cycle runs): when its
+ * local claim is still live on the books, push the WIP and return the row — a task / DOC row back to `AI_TODO`
+ * unchanged, an intake claim dropped — without counting an attempt. A lost / expired claim publishes nothing (the
+ * TTL take-over handles it). The local claim is cleared either way. Returns the released id, or null.
+ * @adr 0570
+ */
+export async function releaseClaimOnLeave(ctx: WsHandlerCtx, root: string): Promise<string | null> {
+  const mine = await readLocalClaim(ctx.profileDir);
+  if (!mine) return null;
+  try {
+    const bases = await resolveBases(root);
+    const rootBase = bases.root;
+    if (!rootBase.base || mine.base !== rootBase.base) return null;
+    const cfg = await readAutonomousConfig(ctx.profileDir);
+    const { dir: bdir } = await syncBooks(root, rootBase.base);
+    if ((await claimState(bdir, mine, cfg.claimTtlHours)) !== "live") return null;
+    const subs = isIntakeClaim(mine) || isDocRowId(mine.id) ? [] : subBranches(bases.subs, mine.id, null);
+    await checkoutTaskBranch(root, mine.branch, rootBase.base, null).catch(() => undefined);
+    await pushWip(ctx, root, mine, subs, "left the project");
+    const res = await publishBooks(bdir, rootBase.base, `chore(auto): ${mine.id} returned — ${mine.worker} left the project`, () =>
+      isIntakeClaim(mine) ? dropClaim(bdir, mine) : applyLeaveRelease(bdir, mine),
+    );
+    await dayLog(root, `[leave] ${mine.id} returned — this worker left the project (${res})`);
+    return res === "pushed" ? mine.id : null;
+  } finally {
+    await writeLocalClaim(ctx.profileDir, null);
+  }
 }
 
 /** The cycle's own run budget: `runTimeoutMinutes`, and no profile failover on a timeout. @adr 0452 */

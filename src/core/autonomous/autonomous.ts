@@ -34,7 +34,7 @@ import {
   writeAutonomousConfig,
 } from "./autonomous-config";
 import { readHistories } from "./autonomous-history";
-import { autonomousPolicy, autonomousStep, lastAutonomousCheck } from "./autonomous-policy";
+import { autonomousPolicy, autonomousStep, CLAIM_FILE, lastAutonomousCheck } from "./autonomous-policy";
 import { ATTEMPTS_REL, findTables, replaceRows } from "./autonomous-books";
 import { approvalStates, buildApprovalEntries, mergeApprovalWrite, unapproveIds, type ApprovalBooks } from "./autonomous-approvals";
 import { applyDiscussionBatch } from "./autonomous-discussions";
@@ -211,7 +211,7 @@ export function buildAutonomousSnapshot(root: string | null, profileDir: string)
   const enabled = !cfg.paused;
   let claim: AutonomousSnapshotPayload["claim"] = null;
   try {
-    const c = JSON.parse(readFileSync(join(profileDir, "autonomous-claim.json"), "utf8")) as { id?: string; started?: string };
+    const c = JSON.parse(readFileSync(join(profileDir, CLAIM_FILE), "utf8")) as { id?: string; started?: string };
     if (c.id) claim = { id: c.id, since: c.started ?? "" };
   } catch {
     /* no claim */

@@ -209,6 +209,10 @@ export const WsChannels = {
   // server → cli (one-way): re-verify the held claim now — sent after a task is unapproved, so the worker
   // running it stops at once instead of at its next claim check (ADR-0538). Payload `{ taskIds }`.
   AUTONOMOUS_VERIFY: "autonomous.verify",
+  // server → cli (with reply): the link is about to leave its served project — release the held claim (WIP pushed,
+  // row back to AI_TODO, no attempt) while the old project's git access still works, then clear the project-scoped
+  // autonomous state (ADR-0570). Reply `AutonomousLeaveReply`; the server waits ≤ 60 s, then switches anyway.
+  AUTONOMOUS_LEAVE: "autonomous.leave",
   // cli → server (one-way): a batch of aggregated network egress decisions of the cli's egress proxy
   // (ADR-0439) — stored as NetworkEgressEvent rows (the Networks log).
   NETWORK_EVENTS: "network.events",

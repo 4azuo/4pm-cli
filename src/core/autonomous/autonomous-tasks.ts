@@ -5,8 +5,8 @@
  * overrun), task question (`QA-…` into `Depends`), auto-split, and the fold of task-question answers. Every
  * mutator edits the book files of a books checkout and is meant to run inside `publishBooks` (which pushes them
  * as the lock). The worker's own live claim — a task, a DOC round or a request being taken in — is mirrored in
- * `<profileDir>/autonomous-claim.json` for resume / reconnect.
- * @adr 0371 @adr 0563
+ * `<profileDir>/autonomous-claim.json` for resume / reconnect, stamped with the served project.
+ * @adr 0371 @adr 0563 @adr 0570
  */
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -20,6 +20,7 @@ import { servesTeam } from "./autonomous-teams";
 import { docRunnable, readDocs, readLineage } from "./autonomous-docs";
 import { archivedIds } from "./autonomous-archive";
 import type { IntakePatch } from "./autonomous-intake";
+import { autonomousServedProject, CLAIM_FILE } from "./autonomous-policy";
 
 /** The approvals sidecar. */
 const APPROVALS_REL = APPROVALS_SIDECAR_REL;
@@ -47,6 +48,8 @@ export interface LocalClaim {
    * only publishes again (no second agent run, no second PR). @adr 0563
    */
   publish?: { patch: IntakePatch; delivery?: DeliveryRecord };
+  /** The served project the claim was taken in (dropped when the worker serves another one). @adr 0570 */
+  projectId?: string | null;
 }
 
 /** Is this claim an intake of a request / answered intake question? @adr 0563 */
@@ -56,7 +59,7 @@ export function isIntakeClaim(c: Pick<LocalClaim, "id" | "kind">): boolean {
 
 /** Local claim file path. */
 function claimPath(profileDir: string): string {
-  return join(profileDir, "autonomous-claim.json");
+  return join(profileDir, CLAIM_FILE);
 }
 
 /** Read this worker's local claim (null when none). */
@@ -68,9 +71,10 @@ export async function readLocalClaim(profileDir: string): Promise<LocalClaim | n
   }
 }
 
-/** Save / clear this worker's local claim. */
+/** Save / clear this worker's local claim (stamped with the served project when known). */
 export async function writeLocalClaim(profileDir: string, c: LocalClaim | null): Promise<void> {
-  if (c) await writeFile(claimPath(profileDir), `${JSON.stringify(c, null, 2)}\n`, "utf8");
+  const served = autonomousServedProject();
+  if (c) await writeFile(claimPath(profileDir), `${JSON.stringify(served !== undefined ? { ...c, projectId: served } : c, null, 2)}\n`, "utf8");
   else await rm(claimPath(profileDir), { force: true });
 }
 
@@ -302,15 +306,25 @@ export async function dropClaim(root: string, mine: LocalClaim): Promise<boolean
  * @adr 0538
  */
 export async function applyUnapprovedRelease(root: string, mine: LocalClaim): Promise<boolean> {
+  return returnUnchanged(root, mine, `${mine.id} was unapproved while ${mine.worker} ran it — stopped, returned to AI_TODO (WIP pushed on ${mine.branch}).`);
+}
+
+/**
+ * Release the task of a worker leaving the project: drop the claim and put the row back in `AI_TODO` unchanged.
+ * No attempt is counted — the task did not fail.
+ * @adr 0570
+ */
+export async function applyLeaveRelease(root: string, mine: LocalClaim): Promise<boolean> {
+  return returnUnchanged(root, mine, `${mine.worker} left the project while running ${mine.id} — returned to AI_TODO (WIP pushed on ${mine.branch}).`);
+}
+
+/** Drop the claim, put the task row back in `AI_TODO` as it was claimed and log `incident` in AI_DONE. */
+async function returnUnchanged(root: string, mine: LocalClaim, incident: string): Promise<boolean> {
   if (!(await dropClaim(root, mine))) return false;
   const todo = await B.readBook(root, "AI_TODO.md");
   const { tasks } = B.parseTasks(todo);
   await B.writeBook(root, "AI_TODO.md", B.writeTasks(todo, [...tasks.filter((t) => t.id !== mine.id), mine.task]));
-  await B.writeBook(
-    root,
-    "AI_DONE.md",
-    B.appendIncident(await B.readBook(root, "AI_DONE.md"), `${mine.id} was unapproved while ${mine.worker} ran it — stopped, returned to AI_TODO (WIP pushed on ${mine.branch}).`),
-  );
+  await B.writeBook(root, "AI_DONE.md", B.appendIncident(await B.readBook(root, "AI_DONE.md"), incident));
   return true;
 }
 

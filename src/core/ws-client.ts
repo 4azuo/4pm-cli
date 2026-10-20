@@ -90,7 +90,7 @@ import type { WsHandlerCtx } from "./ws-client/context";
 import { cancelAllActiveRuns, handleCommandChannels, resetMemorySession, runLocalCommand } from "./ws-client/command-dispatch";
 import { lifecycle, type ShutdownReason } from "./session/lifecycle";
 import { configureRepoLock, failAllRepoWaiters, withRepoLock } from "./git/repo-lock";
-import { loadAutonomousPolicy, onAutonomousStep, recordLastCheck, setAutonomousPolicy, templateMarkerOf } from "./autonomous/autonomous-policy";
+import { loadAutonomousPolicy, onAutonomousStep, recordLastCheck, setAutonomousPolicy, setAutonomousServedProject, templateMarkerOf } from "./autonomous/autonomous-policy";
 import { work } from "./session/work-tracker";
 import { onReconnectVerifyClaim, runAutonomousCycle } from "./autonomous/autonomous-cycle";
 import { scheduleBookIndex } from "./autonomous/autonomous-book-index";
@@ -854,6 +854,8 @@ export class WsClient {
           this.sessionMetaByKey.clear();
         }
         this.servedProjectId = tokenProjectId;
+        // The autonomous Last check / claim of another project are dropped — also after an offline move (ADR-0570).
+        setAutonomousServedProject(tokenProjectId);
         if (token.aiMemory && !this.aiMemory) this.aiMemory = token.aiMemory.text;
         // Whether inputs must pass outbound review before spawning AI (ADR-0082) — the cli
         // asks the server (it picks the outbound reviewer) on each prompt when enabled.

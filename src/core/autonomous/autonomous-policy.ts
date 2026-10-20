@@ -5,12 +5,13 @@
  * `0600`) so a cli restarted while offline never resumes a project that was paused meanwhile. Also keeps
  * the worker's last tick (`lastCheck`, skips included) and the running cycle's `step` for the
  * `machine.status.autonomous` snapshot, and the template marker last read on `origin/<base>` for
- * `machine.status.templateMarker`.
+ * `machine.status.templateMarker`. The last check and the claim mirror are stamped with the served project and
+ * dropped when the worker serves another one.
  * A leaf module (no autonomous imports) — the config reader merges the policy on top of the worker file.
  * Without a policy the worker runs no cycle (it serves no ready project).
- * @adr 0507 @adr 0511 @adr 0529 @adr 0550
+ * @adr 0507 @adr 0511 @adr 0529 @adr 0550 @adr 0570
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AutonomousCheckDetail, AutonomousLastCheck, AutonomousPolicy, AutonomousStep } from "@4pm/dto";
 import { readProjectAutonomousSettings } from "@4pm/dto";
@@ -20,11 +21,17 @@ import { logger } from "../../common/logger/logger";
 const POLICY_FILE = "autonomous.policy.json";
 /** The last-check file name (profile dir). */
 const LAST_CHECK_FILE = "autonomous.lastcheck.json";
+/** The claim mirror file name (profile dir) — written by `writeLocalClaim`. */
+export const CLAIM_FILE = "autonomous-claim.json";
 
 let profileDir: string | null = null;
 let policy: AutonomousPolicy | null = null;
 let lastCheck: AutonomousLastCheck | null = null;
 let step: AutonomousStep | null = null;
+/** The served project (ws_token / project.tokens); undefined = not known yet in this process. @adr 0570 */
+let servedProject: string | null | undefined = undefined;
+/** The project the in-memory last check belongs to (absent in a file written before ADR-0570). */
+let lastCheckProject: string | null | undefined = undefined;
 const listeners = new Set<(p: AutonomousPolicy | null) => void>();
 const stepListeners = new Set<() => void>();
 
@@ -37,11 +44,14 @@ export function loadAutonomousPolicy(dir: string): void {
     policy = null;
   }
   try {
-    lastCheck = JSON.parse(readFileSync(join(dir, LAST_CHECK_FILE), "utf8")) as AutonomousLastCheck;
+    const { projectId, ...check } = JSON.parse(readFileSync(join(dir, LAST_CHECK_FILE), "utf8")) as AutonomousLastCheck & { projectId?: string | null };
+    lastCheck = check;
+    lastCheckProject = projectId;
     // A cycle still marked running did not end before the restart: it no longer runs.
     if (lastCheck.outcome === "running") lastCheck = { at: lastCheck.at, outcome: "skip", reason: "cycle interrupted" };
   } catch {
     lastCheck = null;
+    lastCheckProject = undefined;
   }
 }
 
@@ -106,9 +116,11 @@ export function onAutonomousPolicy(fn: (p: AutonomousPolicy | null) => void): ()
 /** Record the outcome of one tick (run / skip / error) for the snapshot; persisted. */
 export function recordLastCheck(outcome: AutonomousLastCheck["outcome"], reason: string, detail?: AutonomousCheckDetail): void {
   lastCheck = { at: new Date().toISOString(), outcome, reason: reason.slice(0, 300), ...(detail ? { detail } : {}) };
+  lastCheckProject = servedProject;
   if (!profileDir) return;
   try {
-    writeFileSync(join(profileDir, LAST_CHECK_FILE), JSON.stringify(lastCheck) + "\n", { mode: 0o600 });
+    const stamp = servedProject !== undefined ? { projectId: servedProject } : {};
+    writeFileSync(join(profileDir, LAST_CHECK_FILE), JSON.stringify({ ...lastCheck, ...stamp }) + "\n", { mode: 0o600 });
   } catch {
     /* best-effort */
   }
@@ -167,6 +179,62 @@ export function templateMarkerOf(root: string): { version: string | null } | nul
   return marker?.root === root ? { version: marker.version } : null;
 }
 
+/**
+ * Apply the served project (connect: `ws_token`; live: a `project.tokens` switch). The last check and the claim
+ * mirror stamped with another project are dropped, so the snapshot never reports another project's Last check or
+ * Task — also after a move made while this worker was offline. A file written before the stamp existed is adopted
+ * as the served project's (an upgrade must not orphan a live claim). Returns whether anything was dropped.
+ * @adr 0570
+ */
+export function setAutonomousServedProject(projectId: string | null): boolean {
+  const changed = servedProject !== undefined && servedProject !== projectId;
+  servedProject = projectId;
+  let dropped = false;
+  if (lastCheck && (changed || (lastCheckProject !== undefined && lastCheckProject !== projectId))) {
+    lastCheck = null;
+    dropped = true;
+    if (profileDir) rmSync(join(profileDir, LAST_CHECK_FILE), { force: true });
+  }
+  lastCheckProject = lastCheck ? projectId : undefined;
+  if (changed && step) {
+    step = null;
+    dropped = true;
+  }
+  if (profileDir) {
+    try {
+      const claim = JSON.parse(readFileSync(join(profileDir, CLAIM_FILE), "utf8")) as { projectId?: string | null };
+      const stamp = Object.prototype.hasOwnProperty.call(claim, "projectId") ? claim.projectId : undefined;
+      if (changed || (stamp !== undefined && stamp !== projectId)) {
+        rmSync(join(profileDir, CLAIM_FILE), { force: true });
+        dropped = true;
+      }
+    } catch {
+      /* no claim */
+    }
+  }
+  if (dropped) logger.info("autonomous.projectStateCleared", { projectId });
+  return dropped;
+}
+
+/** The served project the autonomous state is stamped with (undefined = not known yet). @adr 0570 */
+export function autonomousServedProject(): string | null | undefined {
+  return servedProject;
+}
+
+/**
+ * Drop the project-scoped autonomous state now (the worker leaves its project): the last check, the step and the
+ * claim mirror.
+ * @adr 0570
+ */
+export function clearAutonomousProjectState(): void {
+  lastCheck = null;
+  lastCheckProject = undefined;
+  step = null;
+  if (!profileDir) return;
+  rmSync(join(profileDir, LAST_CHECK_FILE), { force: true });
+  rmSync(join(profileDir, CLAIM_FILE), { force: true });
+}
+
 /** The last tick, or null. */
 export function lastAutonomousCheck(): AutonomousLastCheck | null {
   return lastCheck;
@@ -189,6 +257,8 @@ export function resetAutonomousPolicyForTest(): void {
   profileDir = null;
   policy = null;
   lastCheck = null;
+  lastCheckProject = undefined;
+  servedProject = undefined;
   step = null;
   listeners.clear();
   stepListeners.clear();
