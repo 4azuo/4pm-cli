@@ -1,7 +1,8 @@
 /**
  * Tests for the cli's signed-approval verification: legacy rule before keys, valid / unsigned /
- * invalid / stale states, cross-project replay, persisted trust and the write-side stale check.
- * @adr 0438
+ * invalid / stale states, cross-project replay, persisted trust, the write-side stale check and a served-project
+ * switch.
+ * @adr 0438 @adr 0569
  */
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -15,6 +16,7 @@ import {
   loadApprovalTrust,
   replaceApprovalKeys,
   resetApprovalTrustForTest,
+  setApprovalProjectId,
   setApprovalTrust,
   verifiedApprovedIds,
 } from "./autonomous-approvals";
@@ -116,5 +118,24 @@ describe("live key push (ADR-0440)", () => {
     expect(approvalStates(map, books)).toEqual({ "TSK-000001-001": "approved" });
     replaceApprovalKeys([], dir);
     expect(approvalStates(map, books)).toEqual({ "TSK-000001-001": "approved" });
+  });
+});
+
+describe("served-project switch (ADR-0569)", () => {
+  it("verifies against the new project, keeps the keys and persists the switch", () => {
+    setApprovalTrust([{ kid: "k1", publicKey: pub }], "p1", dir);
+    const map = { "TSK-000001-001": signed("TSK-000001-001", AI_TODO, "p2") };
+    expect(approvalStates(map, books)).toEqual({ "TSK-000001-001": "invalid" });
+    setApprovalProjectId("p2", dir);
+    expect(approvalStates(map, books)).toEqual({ "TSK-000001-001": "approved" });
+    resetApprovalTrustForTest();
+    loadApprovalTrust(dir);
+    expect(approvalStates(map, books)).toEqual({ "TSK-000001-001": "approved" });
+  });
+
+  it("is a no-op before any key was received", () => {
+    setApprovalProjectId("p2", dir);
+    const map = { "TSK-000001-001": { approved: true, by: "u", at: "t" } };
+    expect([...verifiedApprovedIds(map, books)]).toEqual(["TSK-000001-001"]);
   });
 });

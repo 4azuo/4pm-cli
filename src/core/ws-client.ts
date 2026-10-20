@@ -250,6 +250,12 @@ export class WsClient {
    * @adr 0289
    */
   private servingRepos: WsTokenRepo[] = [];
+  /**
+   * The served project of the last applied config (ws_token / project.tokens); null = none, undefined = no token
+   * applied yet in this process.
+   * @adr 0569
+   */
+  private servedProjectId: string | null | undefined = undefined;
   /** Tail of the serialized clone-on-connect runs — two concurrent runs on one root race (a half-done
    *  clone's `.git` makes the other skip the clone and commit an empty index), so they queue here. */
   private cloneQueue: Promise<void> = Promise.resolve();
@@ -448,8 +454,20 @@ export class WsClient {
       set aiMemory(value: string) {
         self.aiMemory = value;
       },
+      get servedProjectId() {
+        return self.servedProjectId ?? null;
+      },
+      set servedProjectId(value: string | null) {
+        self.servedProjectId = value;
+      },
       setRestrictToFolder: (value) => {
         self.restrictToFolder = value;
+      },
+      setOutboundReviewEnabled: (value) => {
+        self.outboundReviewEnabled = value;
+      },
+      setServingRepos: (repos) => {
+        self.servingRepos = repos;
       },
       hasHandledCommand: (commandId) => self.handledCommands.has(commandId),
       markCommandHandled: (commandId) => self.markCommandHandled(commandId),
@@ -827,6 +845,15 @@ export class WsClient {
         // Seed the shared-AI-memory cache (ADR-0245) from the server's stored copy — only when the
         // cli holds none yet (a fresh process / reconnect), so a periodic ws_token refresh never
         // clobbers a newer value this cli itself wrote (it is the sole writer for its link).
+        // A link moved to another project while offline (ADR-0569): the old project's memory and native sessions
+        // must not follow it — take the new project's stored memory instead.
+        const tokenProjectId = token.network?.projectId ?? null;
+        if (this.servedProjectId !== undefined && this.servedProjectId !== tokenProjectId) {
+          this.aiMemory = token.aiMemory?.text ?? "";
+          this.sessionIdByKey.clear();
+          this.sessionMetaByKey.clear();
+        }
+        this.servedProjectId = tokenProjectId;
         if (token.aiMemory && !this.aiMemory) this.aiMemory = token.aiMemory.text;
         // Whether inputs must pass outbound review before spawning AI (ADR-0082) — the cli
         // asks the server (it picks the outbound reviewer) on each prompt when enabled.

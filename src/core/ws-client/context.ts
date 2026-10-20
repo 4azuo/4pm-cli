@@ -10,6 +10,7 @@ import type { SessionBus } from "../session/session-bus";
 import type {
   ImageFetchReply,
   MachineUsagePayload,
+  RepoPush,
   ToolRestoreFailureItem,
   ToolsReportPayload,
   UsageReportPayload,
@@ -49,9 +50,18 @@ export interface WsHandlerCtx {
   physicRoot: string | null;
   /** Rolling compacted shared-AI-memory text for the served project. @adr 0245 */
   aiMemory: string;
+  /**
+   * The served project the last applied config belongs to (seeded from `ws_token.network.projectId`, then each
+   * `project.tokens`); null = none. A change means the link switched project. @adr 0569
+   */
+  servedProjectId: string | null;
 
   /** Update the folder-scope flag live (a PROJECT_TOKENS push). @adr 0256 */
   setRestrictToFolder(value: boolean): void;
+  /** Update the outbound-review flag live (a PROJECT_TOKENS push). @adr 0569 */
+  setOutboundReviewEnabled(value: boolean): void;
+  /** Replace the served project's declared repos (a PROJECT_TOKENS push) — used by the next clone. @adr 0569 */
+  setServingRepos(repos: RepoPush[]): void;
   /** Whether a commandId was already accepted (WS at-least-once dedup). */
   hasHandledCommand(commandId: string): boolean;
   /** Mark a commandId accepted for dedup (bounded set). */

@@ -2147,6 +2147,13 @@ export interface PhysicSyncPayload {
   oldName: string | null;
   /** New folder name (= new project name) to create. */
   newName: string;
+  /**
+   * The link switched to ANOTHER project: delete the old folder (even when it has the same name) instead
+   * of moving it, pause the engine, scrub the ssh key, then create the new folder and clone. Absent = a
+   * rename of the same project (moved in place).
+   * @adr 0569
+   */
+  replace?: boolean;
 }
 
 /** physic.delete — server → cli: the project was deleted ⇒ delete the physic folder
@@ -2205,6 +2212,39 @@ export interface ProjectTokensPayload {
    * @adr 0450
    */
   servedTeams?: string[] | null;
+  /**
+   * The served project — also the project bound into approval signatures (mirrors `ws_token.approvalProjectId`);
+   * `null` = the link serves nothing. `undefined` (an older server) ⇒ the cli keeps its current value.
+   * @adr 0569
+   */
+  projectId?: string | null;
+  /** Outbound-review policy of this link (mirrors `ws_token.outboundReview`). @adr 0569 */
+  outboundReview?: OutboundReviewPush | null;
+  /** Declared repos of the served project (mirrors `ws_token.repos`), cloned by the following `physic.sync`. @adr 0569 */
+  repos?: RepoPush[];
+  /**
+   * The AI memory stored for this link in the served project — sent only by a served-project switch push; the cli
+   * replaces its memory with it when `projectId` changed (absent ⇒ empty).
+   * @adr 0569
+   */
+  memoryText?: string;
+}
+
+/** One declared repo — structurally mirrors `@4pm/dto` `WsTokenRepo`. @adr 0569 */
+export interface RepoPush {
+  primary: boolean;
+  url?: string;
+  subdir?: string;
+  branch?: string;
+}
+
+/** Outbound-review policy — structurally mirrors `@4pm/dto` `OutboundReviewCliPolicy`. @adr 0569 */
+export interface OutboundReviewPush {
+  enabled: boolean;
+  ruleCheck: boolean;
+  aiReview: boolean;
+  isOutbound: boolean;
+  allowedRepos: string[];
 }
 
 /**

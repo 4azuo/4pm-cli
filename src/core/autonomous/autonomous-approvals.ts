@@ -76,6 +76,23 @@ export function replaceApprovalKeys(keys: ApprovalPublicKey[], profileDir: strin
   setApprovalTrust(keys, trust?.projectId ?? null, profileDir);
 }
 
+/**
+ * Follow a switch of the served project (a `project.tokens` push): the project bound into every signature changes,
+ * the keys stay. No-op before any keys were received (unsigned rule) or when unchanged; persisted next to the keys.
+ * @adr 0569
+ */
+export function setApprovalProjectId(projectId: string | null, profileDir: string): void {
+  if (!trust || trust.projectId === projectId) return;
+  trust = { ...trust, projectId };
+  try {
+    const file = join(profileDir, TRUST_FILE);
+    const raw = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    writeFileSync(file, JSON.stringify({ ...raw, projectId }, null, 2), { mode: 0o600 });
+  } catch {
+    // in-memory trust still applies for this process; the next ws_token re-persists it
+  }
+}
+
 /** True once server keys are known — approvals must then be signed. */
 export function approvalTrustActive(): boolean {
   return trust !== null;

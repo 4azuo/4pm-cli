@@ -1,13 +1,15 @@
 /**
  * Project-lifecycle channel handlers: keep the served physic project folder in sync with the
  * server — rename (PHYSIC_SYNC) / delete (PHYSIC_DELETE) the folder inside the profile (folder =
- * project name), apply a live push of the project's token knobs (PROJECT_TOKENS,
- * ADR-0256), and scaffold (PROJECT_CREATE) or register an existing (PROJECT_ADD,
- * ADR-0117) project with streamed progress. A folder delete / rename first drains the project's
- * running work, and every provisioning job holds the project's repo lock.
- * @adr 0064 @adr 0080 @adr 0505 @adr 0506
+ * project name), apply a live push of the served-project config (PROJECT_TOKENS,
+ * ADR-0256) — a switch to another project replaces the folder and the project-scoped state —,
+ * and scaffold (PROJECT_CREATE) or register an existing (PROJECT_ADD, ADR-0117) project with streamed
+ * progress. A folder delete / rename first drains the project's running work, and every provisioning job
+ * holds the project's repo lock.
+ * @adr 0064 @adr 0080 @adr 0505 @adr 0506 @adr 0569
  */
 import { setServedTeams } from "../../autonomous/autonomous-teams";
+import { setApprovalProjectId } from "../../autonomous/autonomous-approvals";
 import { existsSync, renameSync, rmSync } from "node:fs";
 import {
   WsChannels,
@@ -152,9 +154,12 @@ export function handleProjectChannels(
       setNetworkPolicy(tokens.network);
       // Served teams (ADR-0450): `undefined` = an older server ⇒ keep the last value.
       setServedTeams(tokens.servedTeams, ctx.profileDir);
+      // The served project itself (ADR-0569) — `undefined` = an older server ⇒ keep what ws_token set.
+      const switched = applyServedProject(ctx, tokens);
       logger.info("project.tokens.applied", {
         aiRunTimeoutSec: tokens.aiRunTimeoutSec ?? 0,
         autoClearIdleMinutes: tokens.autoClearIdleMinutes ?? 0,
+        ...(switched ? { switchedTo: tokens.projectId ?? null } : {}),
       });
       return true;
     }
@@ -226,6 +231,26 @@ export function handleProjectChannels(
  * Apply a git-auth method/host pushed by the server — same call the ws_token connect path makes.
  * @adr 0368
  */
+/**
+ * Apply the served-project fields of a `project.tokens` push like the connect path applies `ws_token`: the
+ * approval-signature project, outbound review and the declared repos (cloned by the following `physic.sync`).
+ * When the project id changed, the old project's AI memory and remembered native sessions are replaced by the new
+ * project's stored memory. Returns whether the project changed.
+ * @adr 0569
+ */
+function applyServedProject(ctx: WsHandlerCtx, tokens: ProjectTokensPayload): boolean {
+  if (tokens.outboundReview !== undefined) ctx.setOutboundReviewEnabled(tokens.outboundReview?.enabled === true);
+  if (tokens.repos !== undefined) ctx.setServingRepos(tokens.repos);
+  if (tokens.projectId === undefined) return false;
+  setApprovalProjectId(tokens.projectId, ctx.profileDir);
+  if (tokens.projectId === ctx.servedProjectId) return false;
+  ctx.servedProjectId = tokens.projectId;
+  ctx.aiMemory = tokens.memoryText ?? "";
+  ctx.sessionIdByKey.clear();
+  ctx.sessionMetaByKey.clear();
+  return true;
+}
+
 function applyGitAuth(ctx: WsHandlerCtx, method: string | null, host: string | null): void {
   configureGitAuth((method ?? null) as GitAuthMethod | null, host, ctx.profileDir, (req) =>
     ctx.request<GitTokenReply>(WsChannels.GIT_TOKEN, req),
@@ -235,14 +260,30 @@ function applyGitAuth(ctx: WsHandlerCtx, method: string | null, host: string | n
 /**
  * PHYSIC_SYNC — attach / rename ⇒ (re)create the physic folder in the profile's workspace (folder =
  * project name — ADR-0064, outside the profile dir — ADR-0430). A rename PRESERVES the folder's cloned
- * repos by moving it, after the running work of the old folder drained.
- * @adr 0288 @adr 0505
+ * repos by moving it, after the running work of the old folder drained; a switch to another project
+ * (`replace`) deletes the old folder instead. Then the missing declared repos are cloned.
+ * @adr 0288 @adr 0505 @adr 0569
  */
 async function syncPhysicFolder(ctx: WsHandlerCtx, sync: PhysicSyncPayload): Promise<void> {
   const oldName = sync.oldName;
   const oldPath = oldName ? projectFolder(ctx.profileDir, oldName) : null;
   const newPath = projectFolder(ctx.profileDir, sync.newName);
   if (!newPath) return;
+  if (sync.replace) {
+    await replacePhysicFolder(ctx, oldPath, newPath);
+  } else {
+    await movePhysicFolder(ctx, oldPath, newPath);
+  }
+  ctx.physicRoot = ctx.physicFolderPath(sync.newName); // browse root follows the rename
+  requestGitSnapshot("physic-sync");
+  ctx.bus.setProject(sync.newName); // header updates live — now serving this project
+  ctx.bus.log(t("project.folderSynced", { name: sync.newName }));
+  // A fresh/renamed folder may be empty — clone any missing declared repo into it (ADR-0289).
+  void ctx.cloneServingRepos().catch(() => undefined);
+}
+
+/** Rename of the same project: move the folder in place (keeps the clone + local work), else create it. @adr 0288 */
+async function movePhysicFolder(ctx: WsHandlerCtx, oldPath: string | null, newPath: string): Promise<void> {
   const moving = !!oldPath && oldPath !== newPath && existsSync(oldPath);
   const lock = moving ? await drainProject(ctx, oldPath, "physic-rename", false) : null;
   try {
@@ -258,12 +299,26 @@ async function syncPhysicFolder(ctx: WsHandlerCtx, sync: PhysicSyncPayload): Pro
   } finally {
     lock?.release();
   }
-  ctx.physicRoot = ctx.physicFolderPath(sync.newName); // browse root follows the rename
-  requestGitSnapshot("physic-sync");
-  ctx.bus.setProject(sync.newName); // header updates live — now serving this project
-  ctx.bus.log(t("project.folderSynced", { name: sync.newName }));
-  // A fresh/renamed folder may be empty — clone any missing declared repo into it (ADR-0289).
-  void ctx.cloneServingRepos().catch(() => undefined);
+}
+
+/**
+ * The link switched to another project: pause the engine (the per-profile autonomous config must not run the new
+ * project unasked), drain and delete the old folder — even under the same name — so no clone of the old project is
+ * reused, scrub the ssh deploy key, then create the new, empty folder (the caller clones the new repos).
+ * @adr 0569 @adr 0173
+ */
+async function replacePhysicFolder(ctx: WsHandlerCtx, oldPath: string | null, newPath: string): Promise<void> {
+  await pauseAutonomous(ctx.profileDir).catch(() => undefined);
+  if (oldPath && existsSync(oldPath)) {
+    const lock = await drainProject(ctx, oldPath, "physic-replace", true);
+    try {
+      rmSync(oldPath, { recursive: true, force: true });
+    } finally {
+      lock?.release();
+    }
+  }
+  await manageSshKey("delete", ctx.profileDir).catch(() => undefined);
+  mkdirShared(newPath); // shared with the agent (ADR-0487)
 }
 
 /**
