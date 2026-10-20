@@ -38,6 +38,8 @@ export function loadAutonomousPolicy(dir: string): void {
   }
   try {
     lastCheck = JSON.parse(readFileSync(join(dir, LAST_CHECK_FILE), "utf8")) as AutonomousLastCheck;
+    // A cycle still marked running did not end before the restart: it no longer runs.
+    if (lastCheck.outcome === "running") lastCheck = { at: lastCheck.at, outcome: "skip", reason: "cycle interrupted" };
   } catch {
     lastCheck = null;
   }

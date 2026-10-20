@@ -370,7 +370,11 @@ export class WsClient {
     // Multi-worker autonomous (ADR-0507): the last policy received (an offline restart keeps honouring it)
     // and every tick's outcome for the worker snapshot.
     loadAutonomousPolicy(context.profileDir);
-    context.bus.onAutonomousDone((ok, note, detail) => recordLastCheck(ok ? "run" : checkOutcome(note), note ?? (ok ? "cycle ran" : ""), detail));
+    // A tick refused by the cycle already running keeps that cycle's `running` entry.
+    context.bus.onAutonomousDone((ok, note, detail) => {
+      if (note === "a cycle is already running") return;
+      recordLastCheck(ok ? "run" : checkOutcome(note), note ?? (ok ? "cycle ran" : ""), detail);
+    });
     // The running cycle's step reaches the web at once, not on the next heartbeat (ADR-0529).
     onAutonomousStep(() => {
       if (this.sessionKey) this.sendMachineStatus();

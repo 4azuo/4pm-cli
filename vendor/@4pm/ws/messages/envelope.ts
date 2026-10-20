@@ -153,7 +153,7 @@ export interface AutonomousSnapshotPayload {
   pausedReason?: string;
   pausedAt?: string;
   /** The last tick, skips included; `detail` names what the cycle did / waits for. @adr 0529 */
-  lastCheck?: { at: string; outcome: "run" | "skip" | "error"; reason: string; detail?: AutonomousCheckDetailPayload } | null;
+  lastCheck?: { at: string; outcome: "run" | "skip" | "error" | "running"; reason: string; detail?: AutonomousCheckDetailPayload } | null;
   /** The task this worker holds. */
   claim?: { id: string; since: string } | null;
   /** What the running cycle does right now (absent / null = no cycle running). @adr 0529 */

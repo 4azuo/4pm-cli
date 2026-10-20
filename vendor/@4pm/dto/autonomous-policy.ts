@@ -223,10 +223,10 @@ export interface AutonomousCheckDetail {
   capReached?: ("USER_TODO" | "USER_QA" | "AI_TODO")[];
 }
 
-/** The last tick of a worker (skips included). */
+/** The last tick of a worker (skips included); `running` = a cycle started at `at` and has not ended yet. */
 export interface AutonomousLastCheck {
   at: string;
-  outcome: "run" | "skip" | "error";
+  outcome: "run" | "skip" | "error" | "running";
   reason: string;
   /** @adr 0529 */
   detail?: AutonomousCheckDetail;

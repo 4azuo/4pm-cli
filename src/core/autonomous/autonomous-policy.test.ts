@@ -10,8 +10,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   autonomousPolicy,
+  lastAutonomousCheck,
   loadAutonomousPolicy,
   policyBlockReason,
+  recordLastCheck,
   resetAutonomousPolicyForTest,
   setAutonomousPolicy,
 } from "./autonomous-policy";
@@ -34,6 +36,15 @@ describe("autonomous policy", () => {
   afterEach(() => {
     resetAutonomousPolicyForTest();
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("a running cycle's last check is persisted and turns into an interrupted skip after a restart", () => {
+    recordLastCheck("running", "cycle started");
+    expect(lastAutonomousCheck()?.outcome).toBe("running");
+    const at = lastAutonomousCheck()?.at;
+    resetAutonomousPolicyForTest();
+    loadAutonomousPolicy(dir);
+    expect(lastAutonomousCheck()).toEqual({ at, outcome: "skip", reason: "cycle interrupted" });
   });
 
   it("no policy ⇒ blocked (not assigned) and the worker file's knobs apply", async () => {

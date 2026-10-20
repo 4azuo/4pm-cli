@@ -15,10 +15,12 @@ export const APPROVAL_PAYLOAD_VERSION = "4pm-approval:v1";
  * (`Group`, `Depends`, `Notes`, `Priority`, `Tag`, files) are left out on purpose — a question adds a
  * `Depends`, folding an answer appends to `Notes`, and neither may void the approval.
  */
-export const APPROVAL_CONTENT_COLUMNS: Readonly<Record<"REQ-" | "QA-" | "TSK-", readonly string[]>> = {
+export const APPROVAL_CONTENT_COLUMNS: Readonly<Record<"REQ-" | "QA-" | "TSK-" | "DOC-", readonly string[]>> = {
   "REQ-": ["Request"],
   "QA-": ["Original request", "Question / options", "Answer"],
   "TSK-": ["Task description"],
+  // A DOC row is an AI_TODO row approved once before its first docs round (ADR-0536).
+  "DOC-": ["Task description"],
 };
 
 /** The content columns for a row id, or null when the id is not an approvable book row. */

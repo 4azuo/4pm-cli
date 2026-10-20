@@ -129,7 +129,7 @@ import type { NewErcFile } from "./autonomous-er-store";
 import { lifecycle } from "../session/lifecycle";
 import { work } from "../session/work-tracker";
 import { acquireRepo, type RepoLockHandle } from "../git/repo-lock";
-import { onAutonomousPolicy, policyBlockReason, policyStopsRunningCycle, setAutonomousStep } from "./autonomous-policy";
+import { onAutonomousPolicy, policyBlockReason, policyStopsRunningCycle, recordLastCheck, setAutonomousStep } from "./autonomous-policy";
 import { readBaseTemplateMarker, refreshBaseTemplateMarker } from "./template-marker";
 import { contextRel, ensureBooksIndex, writeContextManifest } from "./autonomous-context";
 
@@ -613,6 +613,8 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     hist.ticks = { day: today(), count: todayTickCount(hist, today()) + 1 };
     await writeHistories(root, hist);
     await log(`[run] cycle (tick ${hist.ticks.count}/${today()})`);
+    // Before the first step, so the immediate `machine.status` already carries it (no stale skip in Last check).
+    recordLastCheck("running", "cycle started");
     setAutonomousStep("cycle");
 
     // The books whose subscription limit holds back an intake this cycle — named in every Last check (ADR-0541).
