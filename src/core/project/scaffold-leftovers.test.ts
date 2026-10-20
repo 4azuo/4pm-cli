@@ -1,7 +1,7 @@
 /**
- * Repo provisioning heals a folder where autonomous ticks ran before any clone: a `.git` without `HEAD` and the
- * cli-owned `.4pm` leftovers are removed so the clone can run; other content is left alone.
- * @adr 0572
+ * Repo provisioning heals a folder an older cli wrote into before any clone: a `.git` without `HEAD` is removed, and
+ * when only cli leftovers (`.4pm`, `.claude/rag`) remain they are removed too; other content is left alone.
+ * @adr 0572 @adr 0573
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -36,11 +36,21 @@ describe("ensureReposCloned over repo-less leftovers", () => {
   });
   afterEach(() => rmSync(base, { recursive: true, force: true }));
 
-  it("removes the stray .git and .4pm, then clones", async () => {
+  it("removes the stray .git and the leftovers, then clones", async () => {
+    mkdirSync(join(root, ".claude", "rag"), { recursive: true });
+    writeFileSync(join(root, ".claude", "rag", "settings.json"), "{}\n");
     await ensureReposCloned(root, [{ primary: true, url: remote, branch: "main" }]);
     expect(existsSync(join(root, ".git", "HEAD"))).toBe(true);
     expect(existsSync(join(root, "README.md"))).toBe(true);
     expect(existsSync(join(root, ".4pm", "logs", "autonomous-tick.log"))).toBe(false);
+    expect(existsSync(join(root, ".claude", "rag"))).toBe(false);
+  });
+
+  it("clones over leftovers without any .git", async () => {
+    rmSync(join(root, ".git"), { recursive: true, force: true });
+    await ensureReposCloned(root, [{ primary: true, url: remote, branch: "main" }]);
+    expect(existsSync(join(root, "README.md"))).toBe(true);
+    expect(existsSync(join(root, ".4pm"))).toBe(false);
   });
 
   it("keeps other content (the clone then fails)", async () => {

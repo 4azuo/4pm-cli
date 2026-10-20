@@ -78,6 +78,8 @@ export function setAutonomousPolicy(raw: unknown): void {
       /* a listener must not break the policy update */
     }
   }
+  // `effective` / `allowed` changed — report the snapshot now (ADR-0574).
+  notifyAutonomousChanged();
 }
 
 /** The current policy (null = none received yet ⇒ cycles are blocked). */
@@ -134,11 +136,20 @@ export function setAutonomousStep(kind: AutonomousStep["kind"] | null, ids: stri
   const next = kind ? { kind, ids, since: new Date().toISOString() } : null;
   if (step?.kind === next?.kind && (step?.ids ?? []).join(",") === (next?.ids ?? []).join(",")) return;
   step = next;
+  notifyAutonomousChanged();
+}
+
+/**
+ * The worker's autonomous snapshot changed (a step, the policy, its own switch): listeners re-send
+ * `machine.status` at once, so the web sees it without waiting for the heartbeat.
+ * @adr 0529 @adr 0574
+ */
+export function notifyAutonomousChanged(): void {
   for (const fn of [...stepListeners]) {
     try {
       fn();
     } catch {
-      /* a listener must not break the cycle */
+      /* a listener must not break the caller */
     }
   }
 }
@@ -148,7 +159,7 @@ export function autonomousStep(): AutonomousStep | null {
   return step;
 }
 
-/** Subscribe to step changes (the ws client re-sends its status). @adr 0529 */
+/** Subscribe to snapshot changes — steps, policy, the worker switch (the ws client re-sends its status). @adr 0529 */
 export function onAutonomousStep(fn: () => void): () => void {
   stepListeners.add(fn);
   return () => stepListeners.delete(fn);

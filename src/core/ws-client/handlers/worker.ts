@@ -62,6 +62,7 @@ import { listAiModels } from "../../ai/ai-models";
 import { readProfileConfig } from "../../../config/profile";
 import { enabledAiProviders } from "../../../utils/ai-cli";
 import { scheduleBookIndex } from "../../autonomous/autonomous-book-index";
+import { notifyAutonomousChanged } from "../../autonomous/autonomous-policy";
 import type { WsHandlerCtx } from "../context";
 
 /** Route the worker-config channels; returns true when the message was handled. */
@@ -188,6 +189,8 @@ export function handleWorkerChannels(
           .track("bookWrite", `autonomous.write:${req.kind}`, () => writeAutonomous(root, ctx.profileDir, req, req.by ?? "unknown"))
           .then((reply) => {
             ctx.send(WsChannels.AUTONOMOUS_WRITE, reply, message.id);
+            // The worker switch (`paused`) shows at once, not on the next heartbeat (ADR-0574).
+            if (reply.ok && req.kind === "settings") notifyAutonomousChanged();
             // A web write moved the books — refresh the server's book index (ADR-0545).
             if (reply.ok) scheduleBookIndex(ctx);
           });

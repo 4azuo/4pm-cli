@@ -1509,7 +1509,8 @@ export interface RagMachine {
 
 /** One prerequisite check, in display order. @adr 0489 */
 export interface RagPrereq {
-  key: "node" | "npm" | "sqliteExt" | "disk" | "access" | "network";
+  /** `repo` — the project repo is cloned on this worker (RAG writes nothing before). @adr 0573. */
+  key: "repo" | "node" | "npm" | "sqliteExt" | "disk" | "access" | "network";
   ok: boolean;
   /** Short detail (version, size); shown under the label. */
   detail?: string;
@@ -1540,7 +1541,7 @@ export interface RagStatusReply {
   settings: RagSettings;
 }
 
-/** Per-machine-user RAG search settings (`.claude/rag/settings.json`). @adr 0496 */
+/** Per-machine-user RAG search settings (`.4pm/rag/settings.json`). @adr 0496 @adr 0573 */
 export interface RagSettings {
   /** Chunks scoring below this (0–1) are dropped; 0 = keep all. */
   minScore: number;

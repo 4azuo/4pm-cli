@@ -1,21 +1,22 @@
 /**
  * RAG on the worker — capability probe, install, reindex and query (rag.* channels), Node engine: a
- * pinned npm runtime (`@huggingface/transformers` + `sqlite-vec` + `undici`) in `.claude/rag/runtime`,
- * ONNX models cached in `.claude/rag/models`, the index in `.claude/rag/index.db` — all in the workspace
- * volume, so it survives container restarts. No Python.
+ * pinned npm runtime (`@huggingface/transformers` + `sqlite-vec` + `undici`) in `.4pm/rag/runtime`,
+ * ONNX models cached in `.4pm/rag/models`, the index in `.4pm/rag/index.db` — all in the workspace
+ * volume, so it survives container restarts. No Python. Nothing is written before the project's repo is cloned
+ * (an early folder would block the clone); a pre-ADR-0573 `.claude/rag/` is moved to `.4pm/rag/` on first use.
  *
  * Privilege boundary (agent uid separation): install / reindex / query run **as the agent** in the
- * project (`projectSpawnArgs` / `execInProject`), under the `rag` egress grant. `.claude/rag/` is
+ * project (`projectSpawnArgs` / `execInProject`), under the `rag` egress grant. `.4pm/rag/` is
  * agent-writable, so the cli never loads anything from it in its own process — it only spawns
  * `node engine.mjs` as the agent — and treats every file it reads back (markers, logs, `.index.json`,
  * the query reply) as untrusted: symlink-safe reads, size caps, schema checks, clamped values.
- * Search settings (`minScore`, `topK`) live per machine user in `.claude/rag/settings.json`; hits come
+ * Search settings (`minScore`, `topK`) live per machine user in `.4pm/rag/settings.json`; hits come
  * back grouped per file.
  * Never throws — errors map to a reply.
- * @adr 0156 @adr 0157 @adr 0489 @adr 0496
+ * @adr 0156 @adr 0157 @adr 0489 @adr 0496 @adr 0573
  */
 import { statfs } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync, renameSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { totalmem, cpus } from "node:os";
 import { join } from "node:path";
@@ -33,13 +34,19 @@ import type {
   RagSettingsReply,
   RagStatusReply,
 } from "@4pm/ws";
-import { mkdirInRoot, PathEscapeError, readFileInRoot, writeFileInRoot } from "../../utils/safe-path";
+import { mkdirInRoot, PathEscapeError, readFileInRoot, resolveEntry, writeFileInRoot } from "../../utils/safe-path";
+import { removeSharedTree } from "../../utils/agent-user";
+import { logger } from "../../common/logger/logger";
 import { execInProject, projectSpawnArgs } from "../agent/agent-spawn";
 import { withEgressRun } from "../network/egress-env";
 import { RAG_ENGINE_MJS, RAG_ENGINE_VERSION } from "./rag-engine-script";
 import runtimeLock from "./rag-runtime.lock.json";
 
-const RAG_REL = ".claude/rag";
+const RAG_REL = ".4pm/rag";
+/** Where RAG lived before ADR-0573 — moved to `RAG_REL` on first use. */
+const LEGACY_RAG_REL = ".claude/rag";
+/** The reply error while the project's repo is not cloned on this worker. */
+const NO_REPO = "the project repository is not cloned on this worker yet";
 const RUNTIME_REL = `${RAG_REL}/runtime`;
 /** The pinned runtime manifest (bumped with cli releases; the lockfile carries the integrity hashes). */
 const RUNTIME_PACKAGE = {
@@ -65,7 +72,35 @@ async function tryRun(cmd: string, args: string[], cwd?: string): Promise<{ ok: 
   }
 }
 
-/** Read a small agent-written file under `.claude/rag/` (symlink-safe, capped), or null. */
+/** Whether the project's repo is cloned — before that, RAG writes nothing into the folder. @adr 0573 */
+function repoCloned(root: string): boolean {
+  return existsSync(join(root, ".git"));
+}
+
+/**
+ * Move a pre-ADR-0573 `.claude/rag/` to `.4pm/rag/` (keeps the runtime, models and index); when both exist the
+ * legacy copy is dropped. Best-effort: a failed move leaves the old folder and RAG starts afresh in the new one.
+ * @adr 0573
+ */
+async function migrateLegacyRag(root: string): Promise<void> {
+  const legacy = resolveEntry(root, LEGACY_RAG_REL);
+  const target = resolveEntry(root, RAG_REL);
+  if (!legacy || !target || !existsSync(legacy)) return;
+  try {
+    if (!lstatSync(legacy).isDirectory()) return; // a link is never followed
+    if (existsSync(target)) {
+      removeSharedTree(legacy);
+      return;
+    }
+    await mkdirInRoot(root, join(root, ".4pm"));
+    renameSync(legacy, target);
+    logger.info("rag.migrated", { from: LEGACY_RAG_REL, to: RAG_REL });
+  } catch (err) {
+    logger.warn("rag.migrate.failed", { error: String(err) });
+  }
+}
+
+/** Read a small agent-written file under `.4pm/rag/` (symlink-safe, capped), or null. */
 async function readSmall(root: string, rel: string, cap = 256 * 1024): Promise<string | null> {
   try {
     const text = await readFileInRoot(root, join(root, RAG_REL, rel), "utf8");
@@ -154,7 +189,7 @@ function clampSettings(s: Partial<RagSettings>): RagSettings {
   return { minScore: Math.round(minScore * 1000) / 1000, topK };
 }
 
-/** Read `.claude/rag/settings.json` (agent-writable ⇒ validated + clamped; defaults when missing/bad). */
+/** Read `.4pm/rag/settings.json` (agent-writable ⇒ validated + clamped; defaults when missing/bad). */
 async function readSettings(root: string): Promise<RagSettings> {
   const raw = await readSmall(root, "settings.json", 4 * 1024);
   if (raw === null) return { ...DEFAULT_SETTINGS };
@@ -169,6 +204,8 @@ async function readSettings(root: string): Promise<RagSettings> {
 /** rag.settings — clamp + save this machine user's search settings. */
 export async function ragSettings(root: string, input: Partial<RagSettings>): Promise<RagSettingsReply> {
   const settings = clampSettings(input ?? {});
+  if (!repoCloned(root)) return { ok: false, settings: { ...DEFAULT_SETTINGS }, error: NO_REPO };
+  await migrateLegacyRag(root);
   try {
     await mkdirInRoot(root, join(root, RAG_REL));
     await writeFileInRoot(root, join(root, RAG_REL, "settings.json"), `${JSON.stringify(settings)}\n`);
@@ -189,6 +226,8 @@ function blockedHost(log: string[]): string | null {
 
 /** rag.status — probe capability, prerequisites, install + index state. */
 export async function ragStatus(root: string): Promise<RagStatusReply> {
+  const cloned = repoCloned(root);
+  if (cloned) await migrateLegacyRag(root);
   const node = process.version;
   const okNode = nodeOk(node);
   const npm = await tryRun("npm", ["--version"], root);
@@ -206,24 +245,29 @@ export async function ragStatus(root: string): Promise<RagStatusReply> {
   const sqliteVec = existsSync(join(modules, "sqlite-vec", "package.json"));
   const modelName = ((await readSmall(root, ".installed", 512)) ?? "").trim();
   const model = /^[A-Za-z0-9._/-]{1,200}$/.test(modelName) ? modelName : "";
-  const installed = transformers && sqliteVec && model !== "" && okNode;
+  const installed = cloned && transformers && sqliteVec && model !== "" && okNode;
   const installing = existsSync(join(root, RAG_REL, ".installing"));
   const failed = existsSync(join(root, RAG_REL, ".install-failed"));
   const log = await installLog(root);
-  // Can the agent write `.claude/rag/`? (folder made by the cli with the shared mode, then probed as the agent)
-  let access: boolean;
-  try {
-    await mkdirInRoot(root, join(root, RAG_REL));
-    access = (await tryRun("sh", ["-c", `touch "${RAG_REL}/.probe" && rm -f "${RAG_REL}/.probe"`], root)).ok;
-  } catch {
-    access = false;
+  // Can the agent write `.4pm/rag/`? (folder made by the cli with the shared mode, then probed as the agent)
+  // Not probed before the clone: creating the folder would block it (ADR-0573).
+  let access = false;
+  if (cloned) {
+    try {
+      await mkdirInRoot(root, join(root, RAG_REL));
+      access = (await tryRun("sh", ["-c", `touch "${RAG_REL}/.probe" && rm -f "${RAG_REL}/.probe"`], root)).ok;
+    } catch {
+      access = false;
+    }
   }
   const host = failed && !installing ? blockedHost(log) : null;
   const prereqs: RagPrereq[] = [
+    { key: "repo", ok: cloned, ...(cloned ? {} : { hint: "The project repository is not cloned on this worker yet." }) },
     { key: "node", ok: okNode, detail: node, ...(okNode ? {} : { hint: "Node 22.13+ is needed — update the worker image / cli." }) },
     { key: "npm", ok: npm.ok, ...(npm.ok ? { detail: npm.out.slice(0, 20) } : { hint: "npm is not available to the agent user." }) },
     { key: "disk", ok: diskFreeGB >= NEED_DISK_GB, detail: `${diskFreeGB} GB` },
-    { key: "access", ok: access, ...(access ? {} : { hint: "The agent user cannot write .claude/rag/ (see cli-fs 0002 §7)." }) },
+    // Folder access is only probed once the repo is cloned — before, `repo` is the one blocker to show.
+    ...(cloned ? [{ key: "access" as const, ok: access, ...(access ? {} : { hint: "The agent user cannot write .4pm/rag/ (see cli-fs 0002 §7)." }) }] : []),
     { key: "network", ok: host === null, ...(host ? { detail: host, hint: `The egress proxy refused ${host}.` } : {}) },
   ];
   return {
@@ -253,7 +297,7 @@ async function installLog(root: string): Promise<string[]> {
 
 /** Write the engine, the runtime manifest + lockfile and the folder's own `.gitignore` (self-healing). */
 async function ensureFiles(root: string): Promise<void> {
-  // Symlink-safe + shared mode (ADR-0430/0487): a linked `.claude/rag` cannot redirect these outside.
+  // Symlink-safe + shared mode (ADR-0430/0487): a linked `.4pm/rag` cannot redirect these outside.
   await writeFileInRoot(root, join(root, RAG_REL, ".gitignore"), "*\n");
   await writeFileInRoot(root, join(root, RAG_REL, "engine.mjs"), RAG_ENGINE_MJS);
   await writeFileInRoot(root, join(root, RUNTIME_REL, "package.json"), `${JSON.stringify(RUNTIME_PACKAGE, null, 2)}\n`);
@@ -284,6 +328,8 @@ export async function ragInstall(root: string, model: string): Promise<RagInstal
   // The model id reaches a shell as an env var and transformers.js as a repo id: plain HF ids only.
   if (!/^[A-Za-z0-9._-]{1,80}\/[A-Za-z0-9._-]{1,120}$/.test(model)) return { ok: false, started: false, error: "invalid model name" };
   if (!nodeOk(process.version)) return { ok: false, started: false, error: `Node ${process.version} is too old (22.13+ needed)` };
+  if (!repoCloned(root)) return { ok: false, started: false, error: NO_REPO };
+  await migrateLegacyRag(root);
   if (existsSync(join(root, RAG_REL, ".installing"))) return { ok: true, started: true };
   try {
     await mkdirInRoot(root, join(root, RAG_REL));
@@ -333,6 +379,7 @@ rm -f "$R/.installing"
 
 /** rag.reindex — (re)build the vector index in the background. Returns started. */
 export async function ragReindex(root: string): Promise<RagReindexReply> {
+  if (!repoCloned(root)) return { ok: false, started: false, error: NO_REPO };
   const status = await ragStatus(root);
   if (!status.installed) return { ok: false, started: false, error: "RAG is not installed" };
   if (status.index.indexing) return { ok: true, started: true };
@@ -377,6 +424,8 @@ export async function ragQuery(root: string, queryText: string, k?: number, kind
   const settings = await readSettings(root);
   const kk = Math.min(Math.max(Math.floor(k ?? settings.topK) || settings.topK, 1), 20);
   const kindList = (kinds ?? []).filter((x) => /^[a-z][a-z0-9-]{0,31}$/.test(x)).slice(0, 24);
+  if (!repoCloned(root)) return { results: [], error: NO_REPO };
+  await migrateLegacyRag(root);
   if (!existsSync(join(root, RAG_REL, "index.db"))) return { results: [], error: "no index — reindex first" };
   try {
     await ensureFiles(root);

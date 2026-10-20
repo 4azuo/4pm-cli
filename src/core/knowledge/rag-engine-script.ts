@@ -1,12 +1,12 @@
 /**
- * The RAG engine script the cli writes to `.claude/rag/engine.mjs` (self-healed before each run) and
+ * The RAG engine script the cli writes to `.4pm/rag/engine.mjs` (self-healed before each run) and
  * runs **as the agent** with the worker's `node` — never loaded into the cli process (the folder is
  * agent-writable). Node engine: transformers.js embeddings (q8 ONNX, mean-pooled, normalized) +
- * sqlite-vec on the built-in `node:sqlite`, packages from the pinned runtime in `.claude/rag/runtime`.
+ * sqlite-vec on the built-in `node:sqlite`, packages from the pinned runtime in `.4pm/rag/runtime`.
  * Downloads go through the egress proxy (undici `EnvHttpProxyAgent` + `NODE_USE_ENV_PROXY`).
  * Commands: `warm <model>` (download), `reindex`, `query <k> <kinds-csv> <minScore>` (text in `RAG_QUERY`;
  * hits grouped per file).
- * @adr 0489 @adr 0157 @adr 0496
+ * @adr 0489 @adr 0157 @adr 0496 @adr 0573
  */
 
 /** Bumped when the index format changes — an index from another engine is reported `stale`. */
@@ -20,7 +20,7 @@ import { join, relative, sep } from "node:path";
 
 const ENGINE = "${RAG_ENGINE_VERSION}";
 const ROOT = await realpath(".");
-const BASE = join(ROOT, ".claude", "rag");
+const BASE = join(ROOT, ".4pm", "rag");
 const RUNTIME = join(BASE, "runtime");
 const MODELS = join(BASE, "models");
 const DB = join(BASE, "index.db");

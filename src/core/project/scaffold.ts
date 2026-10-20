@@ -483,24 +483,44 @@ async function agentSeesRepo(target: string): Promise<boolean> {
   }
 }
 
-/** Cli-owned entries an autonomous tick could leave in a folder that held no repo. @adr 0572 */
-const REPO_LEFTOVERS = new Set([".git", ".4pm"]);
+/**
+ * What an older cli may have written into a project folder before its repo was cloned: a top-level entry ⇒ the
+ * sub-entries it may hold (`null` = anything) — tick logs (`.4pm`) and the RAG folder of a status probe
+ * (`.claude/rag`). The current cli writes nothing there until the clone exists.
+ * @adr 0572 @adr 0573
+ */
+const CLI_LEFTOVERS: Readonly<Record<string, readonly string[] | null>> = { ".4pm": null, ".claude": ["rag"] };
+
+/** Whether every entry of a repo-less folder is a cli leftover (`CLI_LEFTOVERS`). */
+function onlyCliLeftovers(target: string): boolean {
+  for (const name of readdirSync(target)) {
+    const allowed = CLI_LEFTOVERS[name];
+    if (allowed === undefined) return false;
+    if (allowed === null) continue;
+    const full = join(target, name);
+    if (!lstatSync(full).isDirectory() || !readdirSync(full).every((sub) => allowed.includes(sub))) return false;
+  }
+  return true;
+}
 
 /**
- * Remove the leftovers of ticks that ran in a repo-less folder: a `.git` directory without `HEAD` is never a
- * repo, and when only cli-owned leftovers remain they go too, so the clone gets an empty target. Any other
- * content is left alone (the clone then fails as before).
- * @adr 0572
+ * Heal a folder the cli wrote into before its repo existed: a `.git` directory without `HEAD` is never a repo
+ * (an early tick wrote `.git/info/exclude`) and is removed; then, when only cli leftovers remain, they are
+ * removed too so `git clone` gets an empty target. Any other content is left alone (the clone then fails).
+ * @adr 0572 @adr 0573
  */
 function clearRepoLeftovers(target: string, emit: (step: string, message: string) => void): void {
+  if (!existsSync(target)) return;
   const dotGit = join(target, ".git");
-  if (!existsSync(dotGit) || !lstatSync(dotGit).isDirectory() || existsSync(join(dotGit, "HEAD"))) return;
-  emit("git", "Removing a leftover .git folder that holds no repository…");
-  removeSharedTree(dotGit);
-  const rest = readdirSync(target);
-  if (rest.length > 0 && rest.every((name) => REPO_LEFTOVERS.has(name))) {
-    for (const name of rest) removeSharedTree(join(target, name));
+  if (existsSync(dotGit)) {
+    if (!lstatSync(dotGit).isDirectory() || existsSync(join(dotGit, "HEAD"))) return; // a real repo / worktree
+    emit("git", "Removing a leftover .git folder that holds no repository…");
+    removeSharedTree(dotGit);
   }
+  const rest = readdirSync(target);
+  if (rest.length === 0 || !onlyCliLeftovers(target)) return;
+  emit("git", `Removing what the worker wrote before the clone (${rest.join(", ")})…`);
+  for (const name of rest) removeSharedTree(join(target, name));
 }
 
 /**
@@ -568,16 +588,32 @@ async function provisionRepo(
     }
     return;
   }
+  await cloneInto(target, repo, emit, opts.createMissingBranch === true, cloneCwd);
+}
+
+/**
+ * Clone `repo` into the (empty or missing) `target`, creating the declared base branch when asked.
+ * @adr 0326 @adr 0370
+ */
+async function cloneInto(
+  target: string,
+  repo: RepoDecl,
+  emit: (step: string, message: string) => void,
+  createMissingBranch: boolean,
+  cloneCwd: string,
+): Promise<void> {
+  const url = repo.url;
+  if (!url) return;
   const b = (repo.branch ?? "").trim();
   // Create the declared base branch when creating a project and the remote lacks it (ADR-0326/0370),
   // from the chosen source: the default branch, another branch, or nothing (an orphan branch whose first
   // commit is the scaffold — pushed by the publish step).
-  if (b && opts.createMissingBranch && !(await remoteHasBranch(repo.url, b))) {
+  if (b && createMissingBranch && !(await remoteHasBranch(url, b))) {
     const kind = repo.base?.kind ?? "default";
     const from = kind === "branch" ? (repo.base?.branch ?? "").trim() : "";
     if (kind === "empty") {
-      emit("git", `Creating "${b}" as an empty branch (no history) in ${repo.url}…`);
-      await run("git", ["clone", "--no-checkout", repo.url, target], { cwd: cloneCwd, timeout: 120_000 });
+      emit("git", `Creating "${b}" as an empty branch (no history) in ${url}…`);
+      await run("git", ["clone", "--no-checkout", url, target], { cwd: cloneCwd, timeout: 120_000 });
       await markSharedRepo(target);
       await run("git", ["checkout", "--orphan", b], { cwd: target, timeout: 30_000 });
       await run("git", ["rm", "-r", "-q", "--cached", "--ignore-unmatch", "."], { cwd: target, timeout: 30_000 });
@@ -585,8 +621,8 @@ async function provisionRepo(
       await run("git", ["clean", "-fdxq"], { cwd: target, timeout: 60_000 });
       return;
     }
-    emit("git", `Cloning ${repo.url} (${from || "default branch"}) to create "${b}"…`);
-    await run("git", cloneArgs(repo.url, target, from || undefined), { cwd: cloneCwd, timeout: 120_000 });
+    emit("git", `Cloning ${url} (${from || "default branch"}) to create "${b}"…`);
+    await run("git", cloneArgs(url, target, from || undefined), { cwd: cloneCwd, timeout: 120_000 });
     await markSharedRepo(target);
     await run("git", ["checkout", "-b", b], { cwd: target, timeout: 30_000 });
     try {
@@ -597,8 +633,8 @@ async function provisionRepo(
     }
     return;
   }
-  emit("git", `Cloning ${repo.url}…`);
-  await run("git", cloneArgs(repo.url, target, repo.branch), { cwd: cloneCwd, timeout: 120_000 });
+  emit("git", `Cloning ${url}…`);
+  await run("git", cloneArgs(url, target, repo.branch), { cwd: cloneCwd, timeout: 120_000 });
   await markSharedRepo(target);
 }
 
