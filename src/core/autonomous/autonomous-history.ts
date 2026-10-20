@@ -7,6 +7,7 @@
  * skeleton.
  * @adr 0321 @adr 0563
  */
+import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { AUTONOMOUS_LOCK_REL, HISTORIES_REL, TICK_LOG_DIR_REL } from "@4pm/dto";
@@ -22,11 +23,13 @@ const LOCAL_FILES = [HISTORIES_REL, AUTONOMOUS_LOCK_REL, `${TICK_LOG_DIR_REL}/`]
 
 /**
  * Keep the local autonomous files out of git in this checkout (`.git/info/exclude`, outside the books-overlay block).
- * Best-effort.
- * @adr 0563 @adr 0568
+ * Best-effort; a no-op when the folder holds no repo.
+ * @adr 0563 @adr 0568 @adr 0572
  */
 export async function ensureLocalAutonomousFiles(root: string): Promise<void> {
   try {
+    // Never create `.git` in a folder that holds no repo — it would pass for a clone (ADR-0572).
+    if (!existsSync(join(root, ".git"))) return;
     const file = join(root, ".git", "info", "exclude");
     const cur = await readFile(file, "utf8").catch(() => "");
     const missing = LOCAL_FILES.filter((p) => !cur.split("\n").includes(`/${p}`));

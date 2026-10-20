@@ -239,17 +239,22 @@ export function handleProjectChannels(
  * Apply the served-project fields of a `project.tokens` push like the connect path applies `ws_token`: the
  * approval-signature project, outbound review and the declared repos (cloned by the following `physic.sync`).
  * When the project id changed, the old project's AI memory and remembered native sessions are replaced by the new
- * project's stored memory. Returns whether the project changed.
- * @adr 0569
+ * project's stored memory. Changed repos of the same project are cloned at once. Returns whether the project changed.
+ * @adr 0569 @adr 0572
  */
 function applyServedProject(ctx: WsHandlerCtx, tokens: ProjectTokensPayload): boolean {
   if (tokens.outboundReview !== undefined) ctx.setOutboundReviewEnabled(tokens.outboundReview?.enabled === true);
-  if (tokens.repos !== undefined) ctx.setServingRepos(tokens.repos);
+  const reposChanged = tokens.repos !== undefined && ctx.setServingRepos(tokens.repos);
   if (tokens.projectId === undefined) return false;
   setApprovalProjectId(tokens.projectId, ctx.profileDir);
   // Last check / held claim of another project must not be reported any more (ADR-0570).
   setAutonomousServedProject(tokens.projectId);
-  if (tokens.projectId === ctx.servedProjectId) return false;
+  if (tokens.projectId === ctx.servedProjectId) {
+    // Same project, new repos (e.g. attached while it was a draft): clone them now — a switch clones from its
+    // following `physic.sync` instead, into the new folder (ADR-0572).
+    if (reposChanged && tokens.projectId) void ctx.cloneServingRepos().catch(() => undefined);
+    return false;
+  }
   ctx.servedProjectId = tokens.projectId;
   ctx.aiMemory = tokens.memoryText ?? "";
   ctx.sessionIdByKey.clear();

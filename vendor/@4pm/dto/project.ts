@@ -106,6 +106,8 @@ export interface ProjectResponse {
    * @adr 0041
    */
   machineCount: number;
+  /** The project autonomous switch (`settings.autonomous.enabled`) — the Projects list row toggle. @api project-0001 @adr 0571 */
+  autonomousEnabled: boolean;
   createdAt: string;
   updatedAt: string;
 }

@@ -13,6 +13,7 @@
  * @adr 0448 @adr 0452 @adr 0453 @adr 0505 @adr 0563
  */
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { readdir, rm, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { logger } from "../../common/logger/logger";
@@ -477,6 +478,13 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     if (policyStopsRunningCycle() && currentCycleRun) cancelActiveRun(currentCycleRun);
   });
   try {
+    // No checkout yet (e.g. attached before the project had repos): write nothing into the folder — a stray
+    // `.git/` or tick log there would block the clone that is still to come (ADR-0572).
+    if (!existsSync(join(root, ".git"))) {
+      logger.info("autonomous.tick", { project: basename(root), line: "[skip] project repo not cloned yet" });
+      ctx.bus.autonomousDone(false, "repo not cloned");
+      return;
+    }
     const cfg = await readAutonomousConfig(profileDir);
     await pruneLogs(root, cfg.logRetentionDays);
     await ensureLocalAutonomousFiles(root);

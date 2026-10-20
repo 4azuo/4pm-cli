@@ -517,6 +517,25 @@ export interface CliUpdateAllResponse {
   skipped: CliUpdateAllSkip[];
 }
 
+/** Body of POST /machines/autonomous-all — `true` stops every armed worker, `false` starts every self-paused one. @api machine-0097 @adr 0571 */
+export const autonomousAllRequestSchema = z.object({ paused: z.boolean() });
+export type AutonomousAllBody = z.infer<typeof autonomousAllRequestSchema>;
+
+/** One worker a bulk Stop / Start autonomous could not switch. @adr 0571 */
+export interface AutonomousAllSkip extends CliUpdateAllTarget {
+  reason: "failed";
+}
+
+/**
+ * Result of a bulk Stop / Start autonomous: the workers whose own switch was written, plus
+ * the ones the write failed for. Empty `done` = no worker needed the change.
+ * @api machine-0097 @adr 0571
+ */
+export interface AutonomousAllResponse {
+  done: CliUpdateAllTarget[];
+  skipped: AutonomousAllSkip[];
+}
+
 /**
  * Project the last cli self-update FAILURE from a machine link's `usageSnapshot` JSON.
  * Returns null when there is none. Callers gate on `cliOutdated` so a stale failure disappears once

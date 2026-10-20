@@ -60,8 +60,12 @@ export interface WsHandlerCtx {
   setRestrictToFolder(value: boolean): void;
   /** Update the outbound-review flag live (a PROJECT_TOKENS push). @adr 0569 */
   setOutboundReviewEnabled(value: boolean): void;
-  /** Replace the served project's declared repos (a PROJECT_TOKENS push) — used by the next clone. @adr 0569 */
-  setServingRepos(repos: RepoPush[]): void;
+  /**
+   * Replace the served project's declared repos (a PROJECT_TOKENS push) — used by the next clone. Returns whether
+   * the list changed.
+   * @adr 0569 @adr 0572
+   */
+  setServingRepos(repos: RepoPush[]): boolean;
   /** Whether a commandId was already accepted (WS at-least-once dedup). */
   hasHandledCommand(commandId: string): boolean;
   /** Mark a commandId accepted for dedup (bounded set). */

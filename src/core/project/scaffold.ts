@@ -483,6 +483,26 @@ async function agentSeesRepo(target: string): Promise<boolean> {
   }
 }
 
+/** Cli-owned entries an autonomous tick could leave in a folder that held no repo. @adr 0572 */
+const REPO_LEFTOVERS = new Set([".git", ".4pm"]);
+
+/**
+ * Remove the leftovers of ticks that ran in a repo-less folder: a `.git` directory without `HEAD` is never a
+ * repo, and when only cli-owned leftovers remain they go too, so the clone gets an empty target. Any other
+ * content is left alone (the clone then fails as before).
+ * @adr 0572
+ */
+function clearRepoLeftovers(target: string, emit: (step: string, message: string) => void): void {
+  const dotGit = join(target, ".git");
+  if (!existsSync(dotGit) || !lstatSync(dotGit).isDirectory() || existsSync(join(dotGit, "HEAD"))) return;
+  emit("git", "Removing a leftover .git folder that holds no repository…");
+  removeSharedTree(dotGit);
+  const rest = readdirSync(target);
+  if (rest.length > 0 && rest.every((name) => REPO_LEFTOVERS.has(name))) {
+    for (const name of rest) removeSharedTree(join(target, name));
+  }
+}
+
 /**
  * Whether `target` already holds the project's clone. Under the agent uid separation the check runs as the
  * agent: a `.git` it cannot open (a folder created while separation was off) is repaired once; still unusable
@@ -531,6 +551,7 @@ async function provisionRepo(
     }
     return;
   }
+  clearRepoLeftovers(target, emit);
   // The root already holds a clone — apply the requested mode (ADR-0288/0292).
   if (await repoPresent(target, emit)) {
     await markSharedRepo(target);

@@ -467,7 +467,9 @@ export class WsClient {
         self.outboundReviewEnabled = value;
       },
       setServingRepos: (repos) => {
+        const changed = JSON.stringify(repos) !== JSON.stringify(self.servingRepos);
         self.servingRepos = repos;
+        return changed;
       },
       hasHandledCommand: (commandId) => self.handledCommands.has(commandId),
       markCommandHandled: (commandId) => self.markCommandHandled(commandId),

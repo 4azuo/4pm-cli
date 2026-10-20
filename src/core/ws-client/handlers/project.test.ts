@@ -23,7 +23,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 /** A minimal handler context recording what the push applied. */
 function makeCtx(projectId: string | null) {
-  const state = { outbound: false, repos: [] as RepoPush[] };
+  const state = { outbound: false, repos: [] as RepoPush[], clones: 0 };
   const ctx = {
     profileDir: dir,
     servedProjectId: projectId,
@@ -32,7 +32,12 @@ function makeCtx(projectId: string | null) {
     sessionMetaByKey: new Map([["k", { at: 1, contextTokens: 1 }]]),
     setRestrictToFolder: () => undefined,
     setOutboundReviewEnabled: (v: boolean) => void (state.outbound = v),
-    setServingRepos: (r: RepoPush[]) => void (state.repos = r),
+    setServingRepos: (r: RepoPush[]) => {
+      const changed = JSON.stringify(r) !== JSON.stringify(state.repos);
+      state.repos = r;
+      return changed;
+    },
+    cloneServingRepos: async () => void state.clones++,
     request: async () => ({}),
   } as unknown as WsHandlerCtx;
   return { ctx, state };
@@ -55,7 +60,7 @@ describe("project.tokens served-project fields", () => {
     expect(ctx.aiMemory).toBe("new project memory");
     expect(ctx.sessionIdByKey.size).toBe(0);
     expect(ctx.sessionMetaByKey.size).toBe(0);
-    expect(state).toEqual({ outbound: true, repos });
+    expect(state).toEqual({ outbound: true, repos, clones: 0 });
   });
 
   it("a push for the same project keeps memory and sessions", () => {
@@ -63,6 +68,15 @@ describe("project.tokens served-project fields", () => {
     push(ctx, { projectId: "p1" });
     expect(ctx.aiMemory).toBe("old project memory");
     expect(ctx.sessionIdByKey.size).toBe(1);
+  });
+
+  it("a push for the same project with changed repos clones them; unchanged repos do not", () => {
+    const { ctx, state } = makeCtx("p1");
+    const repos = [{ primary: true, url: "https://x/r.git", branch: "b1" }];
+    push(ctx, { projectId: "p1", repos });
+    expect(state.clones).toBe(1);
+    push(ctx, { projectId: "p1", repos });
+    expect(state.clones).toBe(1);
   });
 
   it("an older server (no projectId) changes nothing project-scoped", () => {
