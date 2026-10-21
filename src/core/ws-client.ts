@@ -167,7 +167,7 @@ const CONSOLE_WATCH_LEASE_MS = 45_000;
  * an unwatched cli samples nothing.
  * @adr 0214
  */
-const METRICS_SAMPLE_INTERVAL_MS = 5_000;
+const METRICS_SAMPLE_INTERVAL_MS = 3_000;
 const METRICS_WATCH_LEASE_MS = 45_000;
 
 /** WsClient run context — credential + machine identity + profile + session bus. */
