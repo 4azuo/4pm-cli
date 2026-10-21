@@ -282,10 +282,12 @@ export type PostDiscussionMessageRequest = z.infer<typeof postDiscussionMessageS
 export const editDiscussionMessageSchema = z.object({
   body: z.string().trim().min(1).max(20_000).optional(),
   deleted: z.boolean().optional(),
+  /** The people @mentioned in the edited body; those not mentioned before are added and told (ADR-0585). */
+  mentionUserIds: z.array(z.string().guid()).max(20).optional(),
 });
 export type EditDiscussionMessageRequest = z.infer<typeof editDiscussionMessageSchema>;
 
-/** Body PATCH /projects/:id/discussions/:discussionId — title / team / links / tags / due / status. @api project-0113 */
+/** Body PATCH /projects/:id/discussions/:discussionId — title / team / links / tags / due / addressees / status. @api project-0113 */
 export const updateDiscussionSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   team: z.string().max(16).optional(),
@@ -293,6 +295,8 @@ export const updateDiscussionSchema = z.object({
   tags: discussionTags.optional(),
   due: discussionDue.optional(),
   issues: discussionIssues.optional(),
+  /** The full addressee list (replaces the current one — ADR-0585). */
+  addresseeUserIds: z.array(z.string().guid()).max(50).optional(),
   status: z.enum(["open", "resolved"]).optional(),
 });
 export type UpdateDiscussionRequest = z.infer<typeof updateDiscussionSchema>;

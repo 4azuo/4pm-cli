@@ -115,9 +115,10 @@ export interface IntakeSource {
   id: string;
   request: string;
   team: string;
-  /** The source row's `Tags` / `Due` cells — copied onto the rows made from it. */
+  /** The source row's `Tags` / `Due` / `Assignees` cells — copied onto the rows made from it. */
   tags: string;
   due: string;
+  assignees: string;
   /** The source row's `Title` ("" when it has none — ADR-0549). */
   title: string;
 }
@@ -133,11 +134,12 @@ export function intakeSources(ids: readonly string[], userTodo: string, userQa: 
         team: cellOf(userTodo, id, "team"),
         tags: cellOf(userTodo, id, "tags"),
         due: cellOf(userTodo, id, "due"),
+        assignees: cellOf(userTodo, id, "assignees"),
         title: cellOf(userTodo, id, "title"),
       };
     }
     const q = qa.get(id);
-    return { id, request: q ? `${q.original}\nQ: ${q.question}\nA: ${q.answer}` : "", team: q?.team ?? "", tags: q?.tags ?? "", due: q?.due ?? "", title: q?.title ?? "" };
+    return { id, request: q ? `${q.original}\nQ: ${q.question}\nA: ${q.answer}` : "", team: q?.team ?? "", tags: q?.tags ?? "", due: q?.due ?? "", assignees: q?.assignees ?? "", title: q?.title ?? "" };
   });
 }
 
@@ -154,9 +156,9 @@ function cellOf(md: string, id: string, column: string): string {
 }
 
 /**
- * Copy each intake source's `Tags` / `Due` onto the new AI_TODO / USER_QA rows of the group it was given (group `i`
- * for source `i`). A row the agent already tagged / dated keeps its own value.
- * @adr 0543
+ * Copy each intake source's `Tags` / `Due` / `Assignees` onto the new AI_TODO / USER_QA rows of the group it was given
+ * (group `i` for source `i`). A row the agent already tagged / dated / assigned keeps its own value.
+ * @adr 0543 @adr 0585
  */
 export async function fillIntakeMeta(
   root: string,
@@ -167,16 +169,16 @@ export async function fillIntakeMeta(
   const byGroup = new Map<string, IntakeSource>();
   sources.forEach((src, i) => {
     const g = groups[i];
-    if (g !== undefined && (src.tags || src.due)) byGroup.set(bookGroupCode(g), src);
+    if (g !== undefined && (src.tags || src.due || src.assignees)) byGroup.set(bookGroupCode(g), src);
   });
   if (!byGroup.size) return;
   const metaOf = (id: string): IntakeSource | undefined => byGroup.get(bookGroupOf(id) ?? "");
   const todo = await B.readBook(root, "AI_TODO.md");
   const { tasks } = B.parseTasks(todo);
-  const fill = <T extends { id: string; tags?: string; due?: string }>(row: T, isNew: boolean): T => {
+  const fill = <T extends { id: string; tags?: string; due?: string; assignees?: string }>(row: T, isNew: boolean): T => {
     const src = isNew ? metaOf(row.id) : undefined;
     if (!src) return row;
-    return { ...row, tags: row.tags || src.tags, due: row.due || src.due };
+    return { ...row, tags: row.tags || src.tags, due: row.due || src.due, assignees: row.assignees || src.assignees };
   };
   const nextTasks = tasks.map((t) => fill(t, !before.AI_TODO.has(t.id)));
   if (nextTasks.some((t, i) => t !== tasks[i])) await B.writeBook(root, "AI_TODO.md", B.writeTasks(todo, nextTasks));
@@ -258,6 +260,7 @@ export async function addDocRows(root: string, before: ReadonlySet<string>, spec
       team: rows[0]?.team ?? "",
       tags: rows[0]?.tags ?? "",
       due: rows[0]?.due ?? "",
+      assignees: rows[0]?.assignees ?? "",
     };
     next = next.map((t) => (rows.includes(t) && !t.depends.some((d) => /^(?:TSK|DOC)-/.test(d)) ? { ...t, depends: [docId, ...t.depends] } : t));
     const first = next.findIndex((t) => rows.some((r) => r.id === t.id));
@@ -537,6 +540,7 @@ export async function applyDocReview(dir: string, review: DocReview, final: bool
           team: row.team ?? "",
           tags: row.tags ?? "",
           due: row.due ?? "",
+          assignees: row.assignees ?? "",
           group: row.group,
           depends: row.depends,
           desc: row.desc,

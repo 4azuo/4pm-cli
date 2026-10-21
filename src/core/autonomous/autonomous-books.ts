@@ -11,7 +11,7 @@
  * USER_TODO / USER_QA rows the cycle used keep a `State` (last column) instead of being removed.
  * @adr 0371 @adr 0450 @adr 0543 @adr 0549 @adr 0562
  */
-import { ATTEMPTS_SIDECAR_REL, BOOK_STATE_HEADER, clampBookTitle, parseBookState } from "@4pm/dto";
+import { ATTEMPTS_SIDECAR_REL, BOOK_ASSIGNEES_HEADER, BOOK_STATE_HEADER, clampBookTitle, parseBookState } from "@4pm/dto";
 import { readFileInRoot, writeFileInRoot } from "../../utils/safe-path";
 import { join } from "node:path";
 
@@ -95,10 +95,14 @@ function withTeamColumn(table: MdTable, needed: boolean): MdTable {
   };
 }
 
-/** Add the `Tags` / `Due` columns after `Team` (else `Title`, else `ID`) when `needed` and the table lacks them. @adr 0543 */
-function withMetaColumns(table: MdTable, needed: boolean): MdTable {
-  if (!needed) return table;
-  return insertColumns(table, metaAnchor(table), ["Tags", "Due"]);
+/**
+ * Add the `Tags` / `Due` columns after `Team` (else `Title`, else `ID`) when `needed`, and the `Assignees` column after
+ * `Due` (else where `Due` would go) when `assignees`, for a table that lacks them.
+ * @adr 0543 @adr 0585
+ */
+function withMetaColumns(table: MdTable, needed: boolean, assignees = false): MdTable {
+  const dated = needed ? insertColumns(table, metaAnchor(table), ["Tags", "Due"]) : table;
+  return assignees ? insertColumns(dated, col(dated.header, "Due") >= 0 ? "Due" : metaAnchor(dated), [BOOK_ASSIGNEES_HEADER]) : dated;
 }
 
 /** The column the `Tags` / `Due` columns follow: `Team`, else `Title`, else `ID`. */
@@ -181,6 +185,8 @@ export interface TaskRow {
   tags?: string;
   /** `Due` cell — `YYYY-MM-DD`. */
   due?: string;
+  /** `Assignees` cell — user ids. @adr 0585 */
+  assignees?: string;
 }
 
 /** Split a Depends cell into ids. */
@@ -208,6 +214,7 @@ export function parseTasks(md: string): { table: MdTable | null; tasks: TaskRow[
       title: get(table, r, "Title"),
       tags: get(table, r, "Tags"),
       due: get(table, r, "Due"),
+      assignees: get(table, r, BOOK_ASSIGNEES_HEADER),
     }))
     .filter((t) => /^(?:TSK|DOC)-/.test(t.id));
   return { table, tasks };
@@ -220,6 +227,7 @@ export function writeTasks(md: string, tasks: TaskRow[]): string {
   const table = withMetaColumns(
     withTeamColumn(withTitleColumn(found, tasks.some((t) => Boolean(t.title))), tasks.some((t) => Boolean(t.team))),
     tasks.some((t) => Boolean(t.tags || t.due)),
+    tasks.some((t) => Boolean(t.assignees)),
   );
   return replaceRows(
     md,
@@ -232,6 +240,7 @@ export function writeTasks(md: string, tasks: TaskRow[]): string {
         actions: t.tag,
         tags: t.tags ?? "",
         due: t.due ?? "",
+        assignees: t.assignees ?? "",
         depends: t.depends.join(", "),
         group: t.group,
         "task description": t.desc,
@@ -357,11 +366,14 @@ function insertColumns(table: MdTable, after: string, names: string[]): MdTable 
  * `Evidence`, keeping every other column (e.g. the web's `AI verify`).
  * @adr 0400 @adr 0404 @adr 0563
  */
-function withDoneColumns(table: MdTable, team = false, meta = false, title = false, delivery = false): MdTable {
+function withDoneColumns(table: MdTable, team = false, meta = false, title = false, delivery = false, assignees = false): MdTable {
   const ev = insertColumns(insertColumns(table, "ID", ["Group", "Depends"]), "Files", ["Evidence"]);
   const base = withTitleColumn(delivery ? insertColumns(ev, "Evidence", ["Delivery"]) : ev, title);
   const teamed = team ? insertColumns(base, "Group", ["Team"]) : base;
-  return meta ? insertColumns(teamed, col(teamed.header, "Team") >= 0 ? "Team" : "Group", ["Tags", "Due"]) : teamed;
+  const dated = meta ? insertColumns(teamed, col(teamed.header, "Team") >= 0 ? "Team" : "Group", ["Tags", "Due"]) : teamed;
+  if (!assignees) return dated;
+  const after = col(dated.header, "Due") >= 0 ? "Due" : col(dated.header, "Team") >= 0 ? "Team" : "Group";
+  return insertColumns(dated, after, [BOOK_ASSIGNEES_HEADER]);
 }
 
 /** Append a Done row (`Timestamp | ID | Title | Group | Depends | Task description | Files | Evidence | Delivery | Notes`). */
@@ -378,6 +390,8 @@ export function appendDone(
     team?: string;
     tags?: string;
     due?: string;
+    /** `Assignees` cell — user ids. @adr 0585 */
+    assignees?: string;
     title?: string;
     /** The `Delivery` cell (`PR open #12` / `direct` …) — ADR-0563. */
     delivery?: string;
@@ -385,7 +399,7 @@ export function appendDone(
 ): string {
   const found = findTables(md).find((t) => col(t.header, "ID") >= 0 && col(t.header, "Timestamp") >= 0);
   if (!found) return md;
-  const table = withDoneColumns(found, Boolean(row.team), Boolean(row.tags || row.due), Boolean(row.title), Boolean(row.delivery));
+  const table = withDoneColumns(found, Boolean(row.team), Boolean(row.tags || row.due), Boolean(row.title), Boolean(row.delivery), Boolean(row.assignees));
   const values = {
     timestamp: stamp(),
     id: row.id,
@@ -393,6 +407,7 @@ export function appendDone(
     team: row.team ?? "",
     tags: row.tags ?? "",
     due: row.due ?? "",
+    assignees: row.assignees ?? "",
     group: row.group,
     depends: row.depends.join(", "),
     "task description": row.desc,
@@ -470,6 +485,8 @@ export interface QaRow {
   /** `Tags` / `Due` cells. */
   tags?: string;
   due?: string;
+  /** `Assignees` cell — user ids. @adr 0585 */
+  assignees?: string;
   /** `State` cell — "" = open; `Taken in` / `Done` = history. @adr 0562 */
   state?: string;
 }
@@ -490,6 +507,7 @@ export function parseQa(md: string): { table: MdTable | null; rows: QaRow[] } {
       title: get(table, r, "Title"),
       tags: get(table, r, "Tags"),
       due: get(table, r, "Due"),
+      assignees: get(table, r, BOOK_ASSIGNEES_HEADER),
       state: get(table, r, BOOK_STATE_HEADER),
     }))
     .filter((q) => /^QA-/.test(q.id));
@@ -504,6 +522,7 @@ export function writeQa(md: string, rows: QaRow[]): string {
     withMetaColumns(
       withTeamColumn(withTitleColumn(found, rows.some((q) => Boolean(q.title))), rows.some((q) => Boolean(q.team))),
       rows.some((q) => Boolean(q.tags || q.due)),
+      rows.some((q) => Boolean(q.assignees)),
     ),
     rows.some((q) => Boolean(q.state)),
   );
@@ -517,6 +536,7 @@ export function writeQa(md: string, rows: QaRow[]): string {
         team: q.team ?? "",
         tags: q.tags ?? "",
         due: q.due ?? "",
+        assignees: q.assignees ?? "",
         group: q.group,
         depends: q.depends,
         "original request": q.original,

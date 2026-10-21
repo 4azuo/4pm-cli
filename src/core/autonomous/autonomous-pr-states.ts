@@ -4,8 +4,8 @@
  * branch by the cycle's housekeeping, and by a PR-only refresh on every tick the cycle itself does not reach (paused,
  * blocked, quiet hours, max ticks, offline, another cycle running) — in a temporary books worktree, no repo lock, no
  * tokens. The same refresh advances root PRs that wait for submodule PRs (pointer moves, draft → ready, pointer-only
- * merge).
- * @adr 0575 @adr 0563 @adr 0579
+ * merge). The AI Done delivery records (root + submodule PRs, mergeability, merge commits) are refreshed with them.
+ * @adr 0575 @adr 0563 @adr 0579 @adr 0582
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -19,6 +19,8 @@ import * as B from "./autonomous-books";
 import { readDocs, readLineage, writeDocs, writeLineage } from "./autonomous-docs";
 import { git, gitQuiet, mutateBooks, readBooksFile, resolveBases, type RepoBase } from "./autonomous-git";
 import { advancePointers, applyPointerAdvance, type PointerAdvance } from "./autonomous-submodules";
+import { deliveryRecordStates, recordDeliveries, type DeliveryRefreshCtx } from "./autonomous-delivery";
+import type { DoneDelivery } from "@4pm/dto";
 
 /** A tick-log line writer. */
 export type PrLog = (line: string) => Promise<void> | void;
@@ -71,6 +73,8 @@ export interface DeliveryStates {
   done: Map<string, string>;
   /** Rows whose PR was closed without merge (id → url). */
   closed: Map<string, string>;
+  /** AI Done delivery records that changed or were seeded (id → record). @adr 0582 */
+  records: Map<string, DoneDelivery>;
   /** Tick-log lines: each state change and each host CLI that gave no answer. */
   notes: string[];
 }
@@ -84,9 +88,13 @@ function prLabel(url: string | undefined, branch: string): string {
   return n ? `PR #${n}` : branch;
 }
 
-/** Look up the PR states of every open delivery (request PRs, DOC PRs, AI Done rows) in `bdir`, at most 30 per call. */
-export async function deliveryStates(bdir: string, rootBase: RepoBase, cache: PrStateCache = new Map()): Promise<DeliveryStates> {
-  const out: DeliveryStates = { lineage: new Map(), docs: new Map(), done: new Map(), closed: new Map(), notes: [] };
+/**
+ * Look up the PR states of every open delivery (request PRs, DOC PRs, AI Done rows) in `bdir`, at most 30 per call.
+ * With `repos` (the project root + submodules) the AI Done delivery records are refreshed too, from the same budget;
+ * a row with a record takes its `Delivery` from the record's root entry.
+ */
+export async function deliveryStates(bdir: string, rootBase: RepoBase, cache: PrStateCache = new Map(), repos?: DeliveryRefreshCtx): Promise<DeliveryStates> {
+  const out: DeliveryStates = { lineage: new Map(), docs: new Map(), done: new Map(), closed: new Map(), records: new Map(), notes: [] };
   let budget = 30;
   const stateOf = async (id: string, branch: string): Promise<DeliveryState | null> => {
     if (cache.has(branch)) return cache.get(branch)!;
@@ -113,7 +121,17 @@ export async function deliveryStates(bdir: string, rootBase: RepoBase, cache: Pr
       if (s === "closed") out.closed.set(id, e.pr.url ?? "");
     }
   }
+  const rec = repos ? await deliveryRecordStates(bdir, repos, () => budget-- > 0, gitPrState) : null;
+  if (rec) {
+    out.records = rec.updates;
+    out.notes.push(...rec.notes);
+  }
   for (const r of B.openDeliveries(await B.readBook(bdir, "AI_DONE.md"))) {
+    const recorded = rec?.rootStates.get(r.id);
+    if (recorded) {
+      if (recorded !== "open") out.done.set(r.id, deliveryCell(recorded));
+      continue;
+    }
     const branch = /branch:\s*([^\s;]+)/.exec(r.notes)?.[1];
     if (!branch) continue;
     const s = await stateOf(r.id, branch);
@@ -144,6 +162,10 @@ export async function applyDeliveryStates(bdir: string, s: DeliveryStates): Prom
       if (e?.pr) docs[id] = { ...e, pr: { ...e.pr, state: st } };
     }
     await writeDocs(bdir, docs);
+    changed = true;
+  }
+  if (s.records.size) {
+    await recordDeliveries(bdir, s.records);
     changed = true;
   }
   if (s.done.size) {
@@ -200,14 +222,15 @@ export async function refreshPrStates(ctx: WsHandlerCtx, log: PrLog): Promise<vo
   refreshing = true;
   const lease = work.begin("gitOp", "autonomous-pr-refresh");
   try {
-    const rootBase = (await resolveBases(root)).root;
+    const bases = await resolveBases(root);
+    const rootBase = bases.root;
     if (!rootBase.base) return;
     const cache: PrStateCache = new Map();
     let states: DeliveryStates | null = null;
     const ptr = await pointerAdvance(ctx, root, rootBase, await readBooksFile(root, rootBase.base, POINTERS_SIDECAR_REL));
     for (const line of ptr.notes) await log(line);
     const res = await mutateBooks(root, rootBase.base, "chore(auto): PR states", async (dir) => {
-      states = await deliveryStates(dir, rootBase, cache);
+      states = await deliveryStates(dir, rootBase, cache, { root, rootBase, subs: bases.subs });
       const a = await applyDeliveryStates(dir, states);
       const b = await applyPointerAdvance(dir, ptr);
       return a || b;

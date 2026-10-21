@@ -288,6 +288,12 @@ export interface WsTokenResponse {
    * @adr 0381
    */
   promptOverrides?: Record<string, Record<string, string>>;
+  /**
+   * The served project's output language (English name from spec `output_lang`); `null` = no rule, absent on an
+   * older server (the cli then reads `project.spec.json`).
+   * @adr 0581
+   */
+  outputLang?: string | null;
 }
 
 /** One declared repo pushed to the cli via ws_token for clone-on-connect. @adr 0289 */
@@ -1455,6 +1461,45 @@ export const evidenceHistoryQuerySchema = z.object({
   path: z.string().max(400).regex(SAFE_REPO_PATH_RE),
 });
 export type EvidenceHistoryQuery = z.infer<typeof evidenceHistoryQuerySchema>;
+
+/** An AI Done row id in a machine-0098 / machine-0099 path (`TSK-…` / `DOC-…`). @adr 0582 */
+export const DONE_ROW_ID_RE = /^(TSK|DOC)-\d{6}-\d{3}$/;
+
+/** Query of machine-0099 — one file of an AI Done row (`side=before` = at its base sha; `list` = a folder's children). @adr 0582 */
+export const doneFileQuerySchema = z.object({
+  path: z.string().min(1).max(400).regex(SAFE_REPO_PATH_RE),
+  side: z.enum(["after", "before"]).optional(),
+  list: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((v) => v === "true"),
+});
+export type DoneFileQuery = z.infer<typeof doneFileQuerySchema>;
+
+/** Where a repo's AI Done content is read from. @adr 0582 §3 */
+export type DoneFileSourceKind = "merge" | "branch" | "head" | "pr-ref" | "deleted-tip" | "base";
+
+/** Data of machine-0098 — an AI Done row's files per repo. @api machine-0098 @adr 0582 */
+export interface DoneFilesResponse {
+  repos: { dir: string; source: DoneFileSourceKind; ref: string; sha: string; baseSha?: string; warning?: "base-fallback" }[];
+  /** `dir` = a folder / submodule entry of a legacy row (list its children with machine-0099 `list`). */
+  files: { path: string; repo: string; status: "A" | "M" | "D" | "R" | "?"; dir?: boolean }[];
+  /** No delivery record: the list comes from the row's `Files` cell (maybe cut at 20). */
+  legacy: boolean;
+}
+
+/** Data of machine-0099 — one file (base64) or a folder's children. @api machine-0099 @adr 0582 */
+export interface DoneFileResponse {
+  contentBase64?: string;
+  contentType?: string;
+  name?: string;
+  size?: number;
+  source?: DoneFileSourceKind;
+  sha?: string;
+  entries?: { path: string; type: "file" | "dir" }[];
+  /** Not on that side (an added file's before / a deleted file's after). */
+  missing?: boolean;
+}
 
 /** Body of machine-0086 — restore `path` to its content at commit `rev`. @adr 0515 */
 export const evidenceRestoreSchema = z.object({

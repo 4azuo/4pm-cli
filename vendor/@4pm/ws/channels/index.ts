@@ -69,6 +69,10 @@ export const WsChannels = {
   AUTONOMOUS_EVIDENCE: "autonomous.evidence",
   // the versions (commits) of one mockup / sequence file (ADR-0515)
   AUTONOMOUS_EVIDENCE_HISTORY: "autonomous.evidenceHistory",
+  /** The files of one AI Done row per repo + the ref each is read from. @api machine-0098 @adr 0582 */
+  AUTONOMOUS_DONE_FILES: "autonomous.doneFiles",
+  /** One file of an AI Done row at its resolved ref, or a folder's children. @api machine-0099 @adr 0582 */
+  AUTONOMOUS_DONE_FILE: "autonomous.doneFile",
   // Project ER on the books branch (ADR-0453): read modules / change requests / history (optionally at a
   // version); save / withdraw / approve-and-apply / reject a change request.
   ER_READ: "er.read",

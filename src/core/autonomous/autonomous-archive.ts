@@ -19,6 +19,7 @@ import {
   AUTHORS_SIDECAR_REL,
   BOOK_STATE,
   BRANCH_DELETIONS_REL,
+  DELIVERY_SIDECAR_REL,
   DIAGRAM_SIDECAR_REL,
   DOCS_SIDECAR_REL,
   ER_SIDECAR_REL,
@@ -245,7 +246,8 @@ async function archiveUnits(dir: string, units: readonly ArchiveUnit[], books: {
     }
   }
   // Sidecar entries keyed by row id, and the lineage keyed by group.
-  for (const rel of [APPROVALS_SIDECAR_REL, AUTHORS_SIDECAR_REL, DOCS_SIDECAR_REL]) {
+  // The AI Done delivery records ride with their rows (ADR-0582).
+  for (const rel of [APPROVALS_SIDECAR_REL, AUTHORS_SIDECAR_REL, DOCS_SIDECAR_REL, DELIVERY_SIDECAR_REL]) {
     const live = await readJson(dir, rel);
     const byMonth = new Map<string, Record<string, unknown>>();
     for (const [id, v] of Object.entries(live)) {

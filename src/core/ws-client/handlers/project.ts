@@ -39,6 +39,7 @@ import { handleBranchCleanup } from "../../autonomous/autonomous-branches";
 import { readAutonomousConfigSync } from "../../autonomous/autonomous-config";
 import { manageSshKey } from "../../git/git-ssh-key";
 import { createAiTaskRunner } from "../../ai/ai-task";
+import { setOutputLanguage } from "../../ai/prompt-overrides";
 import { addProject, publishScaffold, scaffoldProject } from "../../project/scaffold";
 import { drainTimeoutMs, projectFolder, writeProfileConfig } from "../../../config/profile";
 import { setMcpServers } from "../../../utils/agent-mcp";
@@ -162,6 +163,8 @@ export function handleProjectChannels(
       setNetworkPolicy(tokens.network);
       // Served teams (ADR-0450): `undefined` = an older server ⇒ keep the last value.
       setServedTeams(tokens.servedTeams, ctx.profileDir);
+      // The output language (ADR-0581): `undefined` = an older server ⇒ the spec-file fallback.
+      setOutputLanguage(tokens.outputLang);
       // The served project itself (ADR-0569) — `undefined` = an older server ⇒ keep what ws_token set.
       const switched = applyServedProject(ctx, tokens);
       logger.info("project.tokens.applied", {

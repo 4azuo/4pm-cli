@@ -71,7 +71,7 @@ import { aiAccountKeys } from "./ai/ai-account-lease";
 import { buildAutonomousSnapshot } from "./autonomous/autonomous";
 import { probeNetwork } from "./worker/network-probe";
 import { configureGitAuth, flushPendingRevoked } from "./git/git-auth";
-import { setPromptOverrides } from "./ai/prompt-overrides";
+import { setOutputLanguage, setOutputLanguageRoot, setPromptOverrides } from "./ai/prompt-overrides";
 import { setMcpServers } from "../utils/agent-mcp";
 import { loadApprovalTrust, setApprovalTrust } from "./autonomous/autonomous-approvals";
 import { setServedTeams } from "./autonomous/autonomous-teams";
@@ -244,7 +244,15 @@ export class WsClient {
   private readonly credential: Credential;
   /** The physic project folder root this cli serves (null = no project) — fs.list is
    *  scoped to it so the web FsPicker can only browse inward, never out. */
-  private physicRoot: string | null = null;
+  private physicRootValue: string | null = null;
+  /** The served root; setting it also points the output-language spec-file fallback at it. @adr 0581 */
+  private get physicRoot(): string | null {
+    return this.physicRootValue;
+  }
+  private set physicRoot(value: string | null) {
+    this.physicRootValue = value;
+    setOutputLanguageRoot(value);
+  }
   /** Declared repos of the served project, from each ws_token — cloned into the physic
    *  root on connect (and after a PHYSIC_SYNC creates the folder) when any is missing its `.git`.
    * @adr 0289
@@ -882,6 +890,8 @@ export class WsClient {
         // Admin-edited overrides for cli-built prompts (ADR-0381): apply override-or-built-in on each
         // prompt build. Platform-wide; refreshed every ws_token, cleared when the server sends none.
         setPromptOverrides(token.promptOverrides ?? null);
+        // The served project's output language for the repo-output prompts (ADR-0581); absent ⇒ spec-file fallback.
+        setOutputLanguage(token.outputLang);
         // Git-auth (ADR-0356): for a server-managed project, scope the credential helper + gh/glab shim to
         // its host (process env only) and pull per-job tokens over git.token; `self` serves the worker's own
         // gh/glab login through the same helper/shims (ADR-0467).

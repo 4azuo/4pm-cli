@@ -906,6 +906,8 @@ export interface AutonomousReadReply {
   docs?: string;
   /** `.autonomous.lineage.json` text — which request each book group came from. @adr 0537 */
   lineage?: string;
+  /** `.autonomous.delivery.json` text — the delivery record of the AI Done rows on this page (absent from an older cli). @adr 0582 */
+  delivery?: string;
   /** AI Done rows in the live book (`books.aiDone` holds one page of them). @adr 0563 */
   doneTotal?: number;
   /** Mockups / sequences that exist only on an open request / DOC branch: path → branch (pass it as machine-0073 `ref`). @adr 0563 */
@@ -1142,6 +1144,58 @@ export interface AutonomousEvidenceHistoryReply {
   /** Newest first, at most 50. */
   commits?: EvidenceCommit[];
   error?: string;
+}
+
+/** Where a repo's AI Done content is read from (the first that exists — ADR-0582 §3). */
+export type DoneFileSource = "merge" | "branch" | "head" | "pr-ref" | "deleted-tip" | "base";
+
+/** One repo of an AI Done row and the commit its content is read from. @adr 0582 */
+export interface DoneFilesRepo {
+  /** `"."` = the root, else the submodule folder. */
+  dir: string;
+  source: DoneFileSource;
+  /** The branch / ref name read. */
+  ref: string;
+  /** The commit read. */
+  sha: string;
+  /** The repo's "before" (its base sha at delivery, else the current base). */
+  baseSha?: string;
+  /** Set when only the current base was left (the task's own commits are gone). */
+  warning?: "base-fallback";
+}
+
+/** autonomous.doneFiles — the files of one AI Done row. @api machine-0098 @adr 0582 */
+export interface AutonomousDoneFilesRequest {
+  rowId: string;
+}
+export interface AutonomousDoneFilesReply {
+  repos?: DoneFilesRepo[];
+  /** Root-relative paths; `repo` = the owning repo's `dir`; `?` = from a legacy `Files` cell. */
+  files?: { path: string; repo: string; status: "A" | "M" | "D" | "R" | "?"; dir?: boolean }[];
+  /** No delivery record: the list comes from the `Files` cell (maybe cut at 20). */
+  legacy?: boolean;
+  /** `not-found` = no such AI Done row. */
+  code?: "not-found";
+  error?: string;
+}
+
+/** autonomous.doneFile — one file of an AI Done row (or a folder's children with `list`). @api machine-0099 @adr 0582 */
+export interface AutonomousDoneFileRequest {
+  rowId: string;
+  path: string;
+  /** `before` = at the repo's base sha; default `after` (the resolved ref). */
+  side?: "after" | "before";
+  /** Return the folder's children instead of content. */
+  list?: boolean;
+}
+export interface AutonomousDoneFileReply extends FsDownloadReply {
+  source?: DoneFileSource;
+  sha?: string;
+  /** With `list`: the folder's children (root-relative). */
+  entries?: { path: string; type: "file" | "dir" }[];
+  /** The file does not exist on that side (an added file's before / a deleted file's after). */
+  missing?: boolean;
+  code?: "not-found";
 }
 
 /**
@@ -2175,6 +2229,12 @@ export interface PhysicDeletePayload {
  * @adr 0256
  */
 export interface ProjectTokensPayload {
+  /**
+   * The served project's output language (English name from spec `output_lang`) for the repo-output prompts; `null` =
+   * no rule. `undefined` (an older server) ⇒ the cli falls back to `project.spec.json`.
+   * @adr 0581
+   */
+  outputLang?: string | null;
   /** Project AI-run wall-clock override (seconds); `0` = inherit the machine-user default. @adr 0243 */
   aiRunTimeoutSec: number;
   /** Project idle auto-clear override (minutes); `0` = inherit the machine-user default. @adr 0244 */

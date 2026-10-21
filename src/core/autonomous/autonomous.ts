@@ -26,7 +26,7 @@ import type {
   AutonomousWriteReply,
   AutonomousWriteRequest,
 } from "@4pm/ws";
-import { APPROVALS_SIDECAR_REL, ARCHIVE_INDEX_REL, AUTHORS_SIDECAR_REL, parseArchiveIndex, DOCS_SIDECAR_REL, HISTORIES_REL, LINEAGE_SIDECAR_REL, TICK_LOG_DIR_REL, isSafeRepoDir } from "@4pm/dto";
+import { APPROVALS_SIDECAR_REL, ARCHIVE_INDEX_REL, AUTHORS_SIDECAR_REL, parseArchiveIndex, DELIVERY_SIDECAR_REL, DOCS_SIDECAR_REL, HISTORIES_REL, LINEAGE_SIDECAR_REL, TICK_LOG_DIR_REL, isSafeRepoDir } from "@4pm/dto";
 import {
   readAutonomousConfig,
   readAutonomousConfigSync,
@@ -287,7 +287,7 @@ export async function readAutonomous(root: string, profileDir: string, req: Auto
     listWorkOutput(root, base || null, cfg.sequenceDir, keepSeq, askers).catch(() => ({ paths: [] as string[], refs: {} as Record<string, string> })),
   ]);
   design.sequences = seqList.paths;
-  const [settings, approvalsAll, authorsAll, attempts, docsAll, lineageAll, status, ...books] = await Promise.all([
+  const [settings, approvalsAll, authorsAll, attempts, docsAll, lineageAll, deliveryAll, status, ...books] = await Promise.all([
     readAutonomousConfigText(profileDir),
     read(APPROVALS_REL, "{}"),
     read(AUTHORS_REL, "{}"),
@@ -295,6 +295,8 @@ export async function readAutonomous(root: string, profileDir: string, req: Auto
     // The DOC rounds + the request lineage (ADR-0536/0537).
     read(DOCS_SIDECAR_REL, "{}"),
     read(LINEAGE_SIDECAR_REL, "{}"),
+    // The AI Done delivery records (ADR-0582).
+    read(DELIVERY_SIDECAR_REL, "{}"),
     getAutonomousStatus(root, profileDir),
     ...Object.values(BOOK_FILES).map((f) => read(f)),
   ]);
@@ -309,6 +311,7 @@ export async function readAutonomous(root: string, profileDir: string, req: Auto
   const authors = filterJsonMap(authorsAll, (k) => liveIds.has(k));
   const docs = filterJsonMap(docsAll, (k) => liveIds.has(k));
   const lineage = filterJsonMap(lineageAll, (k) => liveGroups.has(k));
+  const delivery = filterJsonMap(deliveryAll, (k) => liveIds.has(k));
   // AI Done one page at a time when asked (the AI Done grid — ADR-0563); other readers get every live row (the
   // archive keeps the live book small).
   const done = req.donePage
@@ -342,6 +345,7 @@ export async function readAutonomous(root: string, profileDir: string, req: Auto
     attempts,
     docs,
     lineage,
+    delivery,
     mockups: mockList.paths,
     approvalStates: approvalStatesById,
     ...design,

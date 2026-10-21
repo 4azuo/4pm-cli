@@ -17,6 +17,7 @@
  */
 import defaultTemplates from "./ai-prompt-defaults.json";
 import { wrapUntrusted, type UntrustedKind } from "./untrusted-content";
+import { withOutputLanguage, type RepoOutputKind } from "./output-language";
 
 /** The seed/fallback template per prompt key (from `ai-prompt-defaults.json`). */
 const DEFAULTS = defaultTemplates as Record<string, string>;
@@ -48,6 +49,12 @@ export interface PromptDef {
    * @adr 0421
    */
   untrustedVars: Readonly<Record<string, UntrustedKind>>;
+  /**
+   * The prompt's output lands in the project repo (docs, code, commits, book rows): a set project output language
+   * appends its directive ({@link renderCatalogPrompt}); `"guide"` also asks for the guide-file line.
+   * @adr 0581
+   */
+  repoOutput?: RepoOutputKind;
   /** The built-in base-locale (English) template: seed default + forward-safe fallback. */
   defaultTemplate: string;
 }
@@ -65,6 +72,12 @@ export function renderPrompt(template: string, vars: Record<string, string | num
   );
 }
 
+/** Per-render options of {@link renderCatalogPrompt}. */
+export interface RenderCatalogOptions {
+  /** The project's output language (spec `output_lang`); unset ⇒ no directive. @adr 0581 */
+  outputLang?: string | null;
+}
+
 /**
  * Render a catalog prompt: wrap each non-empty value the entry's `untrustedVars` names with
  * {@link wrapUntrusted} (source `<key>.<var>`), then substitute with {@link renderPrompt}. Every
@@ -72,7 +85,12 @@ export function renderPrompt(template: string, vars: Record<string, string | num
  * An unknown key renders as plain {@link renderPrompt}.
  * @adr 0421
  */
-export function renderCatalogPrompt(key: string, template: string, vars: Record<string, string | number>): string {
+export function renderCatalogPrompt(
+  key: string,
+  template: string,
+  vars: Record<string, string | number>,
+  opts: RenderCatalogOptions = {},
+): string {
   const untrusted = AI_PROMPTS[key]?.untrustedVars ?? {};
   const wrapped: Record<string, string | number> = { ...vars };
   for (const [name, kind] of Object.entries(untrusted)) {
@@ -81,7 +99,10 @@ export function renderCatalogPrompt(key: string, template: string, vars: Record<
       wrapped[name] = wrapUntrusted(value, { kind, source: `${key}.${name}` });
     }
   }
-  return renderPrompt(template, wrapped);
+  const rendered = renderPrompt(template, wrapped);
+  // The project output language rides after the (possibly admin-overridden) template (ADR-0581).
+  const repoOutput = AI_PROMPTS[key]?.repoOutput;
+  return repoOutput ? withOutputLanguage(rendered, opts.outputLang, repoOutput) : rendered;
 }
 
 /** Collect the `{{var}}` placeholder names used in a template (deduplicated, in first-seen order). */
@@ -612,12 +633,51 @@ const PROMPT_META: PromptMeta[] = [
   },
 ];
 
+/** Prompts whose output lands in the project repo — they carry the output-language directive. @adr 0581 */
+const REPO_OUTPUT: Readonly<Record<string, RepoOutputKind>> = {
+  "cli.scaffold.readme": true,
+  "cli.scaffold.guide": "guide",
+  "cli.scaffold.security": true,
+  "cli.scaffold.evidenceGuide": true,
+  "cli.autonomous.intake": true,
+  "cli.autonomous.implement": true,
+  "cli.autonomous.docs": true,
+  "cli.autonomous.split": true,
+  "cli.git.prResolve": true,
+  "server.generators": true,
+  "web.guide": "guide",
+  "web.guideAdapt": "guide",
+  "web.evidenceGuide": true,
+  "web.evidenceGuideSection": true,
+  "web.draft_tasks": true,
+  "web.spec.compose": true,
+  "web.spec.suggest": true,
+  "web.spec.group_suggest": true,
+  "web.spec.subagents_suggest": true,
+  "web.spec.subagent_desc": true,
+  "web.template.update": true,
+  "web.verify": true,
+  "web.verifyDone": true,
+  "web.bookGenerate.aiTodo": true,
+  "web.bookGenerate.userTodo": true,
+  "web.bookGenerate.userQa": true,
+  "web.bookEdit.aiTodo": true,
+  "web.bookEdit.userTodo": true,
+  "web.bookEdit.userQa": true,
+  "web.git.resolve": true,
+  "web.er.draft": true,
+  "web.diagram.draft": true,
+};
+
 /**
  * The server-managed prompt catalog, keyed by `key` — metadata + its default template. The DB is
  * seeded fill-only from these defaults.
  */
 export const AI_PROMPTS: Readonly<Record<string, PromptDef>> = Object.fromEntries(
-  PROMPT_META.map((m) => [m.key, { ...m, defaultTemplate: DEFAULTS[m.key] ?? "" }]),
+  PROMPT_META.map((m) => [
+    m.key,
+    { ...m, ...(REPO_OUTPUT[m.key] ? { repoOutput: REPO_OUTPUT[m.key] } : {}), defaultTemplate: DEFAULTS[m.key] ?? "" },
+  ]),
 );
 
 /** All catalog keys (stable order). */

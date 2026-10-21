@@ -337,6 +337,9 @@ export const ErrorCode = {
   TAG_CODE_TAKEN: "TAG_CODE_TAKEN",
   TAG_UNKNOWN: "TAG_UNKNOWN",
   DUE_INVALID: "DUE_INVALID",
+  // A book save gives a row to someone who is not a person of the project, or a malformed / too long
+  // `Assignees` cell (meta.ids — ADR-0585).
+  ASSIGNEE_UNKNOWN: "ASSIGNEE_UNKNOWN",
   // A book row `Title` longer than BOOK_TITLE_MAX (meta.ids — ADR-0549).
   BOOK_TITLE_TOO_LONG: "BOOK_TITLE_TOO_LONG",
   // Issue links (ADR-0546): a malformed issue ref (meta.ids); the issue is linked to another live row (meta.ref,

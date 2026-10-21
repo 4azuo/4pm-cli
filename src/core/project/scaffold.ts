@@ -20,7 +20,7 @@ import type {
   ProjectProgressPayload,
   ScaffoldPublishResult,
 } from "@4pm/ws";
-import { PROJECT_TEMPLATE, type AiGuideFile } from "@4pm/constants";
+import { PROJECT_TEMPLATE, specOutputLanguage, type AiGuideFile } from "@4pm/constants";
 import { SCAFFOLD_TRACKING_FILES } from "@4pm/dto";
 import type { AiTaskRunner } from "../ai/ai-task";
 import { resolveCliPrompt } from "../ai/prompt-overrides";
@@ -959,6 +959,8 @@ async function aiInit(
   // standard AI path and share ONE org run slot (ADR-0362): wait in the queue if the org is at its
   // parallel-run limit; after the max wait, skip AI and write the fallbacks so the create still completes.
   const specJson = JSON.stringify(spec);
+  // The language the project's docs are written in comes from the spec being scaffolded (ADR-0581).
+  const lang = { outputLang: specOutputLanguage(spec) };
   let generate: ((prompt: string, label: string) => Promise<string | null>) | null = null;
   let releaseSlot = (): void => undefined;
   if (ai) {
@@ -979,7 +981,7 @@ async function aiInit(
       join(target, "README.md"),
       "README.md",
       // Admin override (ADR-0381) for `cli.scaffold.readme`, else the shared registry default.
-      resolveCliPrompt("cli.scaffold.readme", { specJson }),
+      resolveCliPrompt("cli.scaffold.readme", { specJson }, lang),
     );
   // The project's single guide file — CLAUDE.md or AGENT.md, never both. Other AI CLIs
   // read AGENT.md; Claude Code reads CLAUDE.md. The choice comes from the spec (`ai_guide_file`).
@@ -996,7 +998,7 @@ async function aiInit(
         guideInstructionsBlock: guideInstructions
           ? `\nAlso incorporate these additional instructions/content:\n${guideInstructions}\n`
           : "",
-      }),
+      }, lang),
       guideInstructions,
     );
     // AI_SECURITY.md: rewrite the copied sample into a spec-tailored security policy so it
@@ -1008,7 +1010,7 @@ async function aiInit(
       join(target, "AI_SECURITY.md"),
       "AI_SECURITY.md",
       // Admin override (ADR-0381) for `cli.scaffold.security`, else the shared registry default.
-      resolveCliPrompt("cli.scaffold.security", { specJson }),
+      resolveCliPrompt("cli.scaffold.security", { specJson }, lang),
     );
     // EVIDENCE_GUIDE.md (ADR-0532): the project's rules for mockups / diagrams / task evidence. Fallback: the
     // copied baseline, with the user's typed instructions put under `## General` so they are never lost.
@@ -1020,7 +1022,7 @@ async function aiInit(
       resolveCliPrompt("cli.scaffold.evidenceGuide", {
         specJson,
         instructionsBlock: evidenceInstructions ? `\nAlso follow what the user asked for:\n${evidenceInstructions}\n` : "",
-      }),
+      }, lang),
       evidenceInstructions ? withGeneralNote(await readFileInRoot(target, join(target, EVIDENCE_GUIDE_FILE), "utf8").catch(() => ""), evidenceInstructions) : undefined,
     );
   } finally {

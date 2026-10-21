@@ -50,7 +50,7 @@ describe("DOC rows after an intake", () => {
       join(root, "AI_TODO.md"),
       `${TODO_HEAD}| TSK-000001-001 | Medium | | | g | Old task | |\n| TSK-000007-001 | High | | | Login | Add API | size: S |\n| TSK-000007-002 | Medium | | TSK-000007-001 | Login | Add UI | size: M |\n`,
     );
-    const added = await addDocRows(root, new Set(["TSK-000001-001"]), SPEC, () => ({ id: "REQ-000005-001", request: "Users can log in", team: "", tags: "", due: "", title: "Login" }));
+    const added = await addDocRows(root, new Set(["TSK-000001-001"]), SPEC, () => ({ id: "REQ-000005-001", request: "Users can log in", team: "", tags: "", due: "", assignees: "", title: "Login" }));
     expect(added).toEqual(["DOC-000007-001"]);
     const { tasks } = B.parseTasks(read("AI_TODO.md"));
     expect(tasks.map((t) => t.id)).toEqual(["TSK-000001-001", "DOC-000007-001", "TSK-000007-001", "TSK-000007-002"]);

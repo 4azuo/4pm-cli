@@ -3,14 +3,14 @@
  * branch, built by the cli (`buildBookIndex`, pure) and pushed on `autonomous.bookIndex` so the server can list what
  * waits on each person (Home ▸ My work) without reading the repo. Derived and disposable: the repo stays the source
  * of truth.
- * @adr 0545
+ * @adr 0545 @adr 0585
  */
 import { z } from "zod";
 import { bookRowsById, type ApprovalState } from "./autonomous-approval";
 import type { DocsSidecar, LineageSidecar } from "./autonomous-docs";
 import { parseBookClaims } from "./book-guards";
 import { bookGroupOf } from "./book-ids";
-import { isValidDue, parseTagsCell } from "./book-meta";
+import { BOOK_ASSIGNEES_MAX, isValidDue, parseAssigneesCell, parseTagsCell } from "./book-meta";
 import { parseBookState } from "./book-state";
 import { formatIssueRef, parseIssueRef } from "./issue-sync";
 
@@ -46,6 +46,8 @@ export const bookIndexRowSchema = z.object({
   snippet: z.string().max(BOOK_INDEX_SNIPPET_MAX),
   tags: z.array(z.string().max(32)).max(20),
   due: z.string().nullable(),
+  /** The people the row is given to (`Assignees` cell — ADR-0585); absent from older clis. */
+  assigneeIds: z.array(z.string().max(64)).max(BOOK_ASSIGNEES_MAX).optional(),
   /** Last content writer (authors sidecar). */
   authorId: z.string().max(64).nullable(),
   authorAt: z.string().max(40).nullable(),
@@ -87,7 +89,7 @@ export interface BookIndexInput {
   /** `.autonomous.authors.json` (row id → `{by, at}`). */
   authors: Readonly<Record<string, { by?: string; at?: string } | undefined>>;
   /** Claimed tasks' copies from the attempts sidecar (task id → row fields). */
-  claimedTasks: Readonly<Record<string, { desc?: string; team?: string; group?: string; tags?: string; due?: string } | undefined>>;
+  claimedTasks: Readonly<Record<string, { desc?: string; team?: string; group?: string; tags?: string; due?: string; assignees?: string } | undefined>>;
   docs: DocsSidecar;
   lineage: LineageSidecar;
 }
@@ -148,6 +150,7 @@ export function buildBookIndex(input: BookIndexInput): { rows: BookIndexRow[]; t
       snippet: clip([main, ...rest].join(" "), BOOK_INDEX_SNIPPET_MAX),
       tags: parseTagsCell(text("tags")).slice(0, 20),
       due: isValidDue(due) ? due : null,
+      assigneeIds: parseAssigneesCell(text("assignees")).slice(0, BOOK_ASSIGNEES_MAX),
       authorId: authors[id]?.by ?? null,
       authorAt: authors[id]?.at ?? null,
       requesterId: requestId ? (authors[requestId]?.by ?? null) : null,
@@ -192,7 +195,7 @@ export function buildBookIndex(input: BookIndexInput): { rows: BookIndexRow[]; t
       "aiTodo",
       c.id,
       copy?.team ?? "",
-      { "task description": copy?.desc ?? "", tags: copy?.tags ?? "", due: copy?.due ?? "" },
+      { "task description": copy?.desc ?? "", tags: copy?.tags ?? "", due: copy?.due ?? "", assignees: copy?.assignees ?? "" },
       { state: "running" },
     );
   }

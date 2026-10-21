@@ -195,6 +195,66 @@ export async function prMergeCommitOf(url: string, branch: string): Promise<stri
   }
 }
 
+/** A PR / MR's state as the host sees it: state, conflicts with its base, and the commit its merge produced. */
+export interface PrStatus {
+  state: "open" | "merged" | "closed";
+  /** Conflicts with its base (open PRs; undefined while the host is still computing it). */
+  conflict?: boolean;
+  /** The merge / squash commit on the base (merged PRs). */
+  mergeSha?: string;
+}
+
+/**
+ * The host's status of a PR / MR — by its link when known, else by head `branch` — or null when the host CLI cannot
+ * tell (no provider, no login, error).
+ * @adr 0582
+ */
+export async function prStatusOf(url: string, branch: string, prUrl?: string): Promise<PrStatus | null> {
+  const h = repoHost(url);
+  if (!h.provider) return null;
+  const n = prUrl ? prNumber(prUrl) : null;
+  const sha40 = (v: unknown): string | undefined => (typeof v === "string" && /^[0-9a-f]{40}$/.test(v) ? v : undefined);
+  try {
+    if (h.provider === "gh") {
+      const fields = "state,mergeable,mergeCommit";
+      const args = n
+        ? ["pr", "view", n, "-R", ghRepo(h), "--json", fields]
+        : ["pr", "list", "-R", ghRepo(h), "--head", branch, "--state", "all", "--json", fields, "-L", "1"];
+      const { stdout } = await run("gh", args, { timeout: 30_000 });
+      const parsed = JSON.parse(stdout) as unknown;
+      const o = (Array.isArray(parsed) ? parsed[0] : parsed) as { state?: string; mergeable?: string; mergeCommit?: { oid?: string } } | undefined;
+      const st = o?.state?.toLowerCase();
+      if (st !== "open" && st !== "merged" && st !== "closed") return null;
+      const mergeSha = st === "merged" ? sha40(o?.mergeCommit?.oid) : undefined;
+      const conflict = st === "open" && o?.mergeable && o.mergeable !== "UNKNOWN" ? o.mergeable === "CONFLICTING" : undefined;
+      return { state: st, ...(conflict !== undefined ? { conflict } : {}), ...(mergeSha ? { mergeSha } : {}) };
+    }
+    const args = n
+      ? ["mr", "view", n, "-R", h.slug, "-F", "json"]
+      : ["mr", "list", "-R", h.slug, "--source-branch", branch, "--all", "-F", "json", "-P", "1"];
+    const { stdout } = await run("glab", args, { timeout: 30_000 });
+    const parsed = JSON.parse(stdout) as unknown;
+    const o = (Array.isArray(parsed) ? parsed[0] : parsed) as
+      | { state?: string; has_conflicts?: boolean; merge_commit_sha?: string | null; squash_commit_sha?: string | null }
+      | undefined;
+    const raw = o?.state?.toLowerCase();
+    const st = raw === "opened" ? "open" : raw === "merged" ? "merged" : raw === "closed" ? "closed" : null;
+    if (!st) return null;
+    const mergeSha = st === "merged" ? (sha40(o?.merge_commit_sha) ?? sha40(o?.squash_commit_sha)) : undefined;
+    return { state: st, ...(st === "open" && typeof o?.has_conflicts === "boolean" ? { conflict: o.has_conflicts } : {}), ...(mergeSha ? { mergeSha } : {}) };
+  } catch {
+    return null;
+  }
+}
+
+/** The host's ref that keeps a PR / MR head after its branch is deleted (`refs/pull/<n>/head`), or null. @adr 0582 */
+export function prHeadRef(url: string, prUrl: string | undefined): string | null {
+  const h = repoHost(url);
+  const n = prUrl ? prNumber(prUrl) : null;
+  if (!h.provider || !n) return null;
+  return h.provider === "gh" ? `refs/pull/${n}/head` : `refs/merge-requests/${n}/head`;
+}
+
 /** Turn a draft PR / MR ready for review. True when it is ready now (already ready counts). @adr 0579 */
 export async function markPrReady(url: string, prUrl: string): Promise<boolean> {
   const h = repoHost(url);

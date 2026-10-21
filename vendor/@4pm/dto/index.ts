@@ -4,6 +4,7 @@
 export * from "./attachment";
 export * from "./autonomous-approval";
 export * from "./autonomous-books-set";
+export * from "./autonomous-delivery";
 export * from "./autonomous-docs";
 export * from "./autonomous-pointers";
 export * from "./autonomous-policy";

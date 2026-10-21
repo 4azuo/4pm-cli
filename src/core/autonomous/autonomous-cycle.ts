@@ -38,7 +38,9 @@ import {
   submoduleOf,
   TICK_LOG_DIR_REL,
   type DeliveryRecord,
+  type DeliveryRepo,
   type DocRepoHead,
+  type DoneDelivery,
   type PointerEntry,
   type SubmodulePr,
 } from "@4pm/dto";
@@ -123,6 +125,7 @@ import { syncBooksToBase } from "./autonomous-books-sync";
 import { branchProtection } from "../git/git-host";
 import { alertClosedPrs, applyDeliveryStates, deliveryStates, pointerAdvance, prState, refreshPrStates } from "./autonomous-pr-states";
 import { applyPointerAdvance, pushRootBranch, recordPointerEntry, submoduleFiles, withoutGitlinks, type SubBranch } from "./autonomous-submodules";
+import { captureRepo, recordDeliveries } from "./autonomous-delivery";
 import { readProfileConfig } from "../../config/profile";
 import { activeProvider, claudeHomeDirs } from "../../utils/ai-cli";
 import { checkClaudeUsage } from "../ai/claude-usage";
@@ -842,7 +845,7 @@ async function housekeeping(rc: RunCtx): Promise<void> {
   const { bdir, rootBase, cfg, log, ctx } = rc;
   await openAcceptedDocPrs(rc);
   await reopenDeliveries(rc);
-  const states = await deliveryStates(bdir, rootBase);
+  const states = await deliveryStates(bdir, rootBase, new Map(), { root: rc.root, rootBase, subs: rc.allSubs });
   for (const line of states.notes) await log(line);
   // Root PRs waiting for submodule PRs: pointer moves, draft → ready, pointer-only merge (ADR-0579).
   const ptr = await pointerAdvance(ctx, rc.root, rootBase, await B.readBook(bdir, POINTERS_SIDECAR_REL));
@@ -917,6 +920,18 @@ async function openAcceptedDocPrs(rc: RunCtx): Promise<void> {
   if (todo.length === 0) return;
   const recorded = new Map<string, DeliveryRecord>();
   const waits = new Map<string, PointerEntry>();
+  // The AI Done delivery record of each DOC row delivered here (ADR-0582).
+  const records = new Map<string, DoneDelivery>();
+  const rootCapture = (branch: string): Promise<DeliveryRepo> =>
+    captureRepo(root, {
+      dir: ".",
+      url: rootBase.url,
+      branch,
+      base: rootBase.base,
+      ref: `origin/${branch}`,
+      state: "open",
+      exclude: new Set(allSubs.map((s) => s.dir)),
+    });
   for (const [id, e] of todo.slice(0, 5)) {
     const subRepos = (e.repos ?? []).filter((r) => r.dir !== ".");
     if (subRepos.length) {
@@ -932,10 +947,12 @@ async function openAcceptedDocPrs(rc: RunCtx): Promise<void> {
         continue;
       }
       await gitQuiet(root, ["fetch", "-q", "origin", e.branch]);
+      const rootCap = await rootCapture(e.branch);
       if (sd.direct) {
         const merged = await directMerge(root, `origin/${e.branch}`, rootBase.base, `Merge ${id} docs (4PM autonomous)`, sd.pointers);
         if (merged.ok) {
           recorded.set(id, { branch: e.branch, state: "direct" });
+          records.set(id, { repos: [{ ...rootCap, state: "direct", mergeSha: merged.sha }, ...sd.repos] });
           await log(`[docs] ${id} merged into ${rootBase.base}: ${merged.sha.slice(0, 10)} (${sd.lines.join(", ")})`);
           continue;
         }
@@ -946,6 +963,7 @@ async function openAcceptedDocPrs(rc: RunCtx): Promise<void> {
         continue;
       }
       recorded.set(id, { branch: e.branch, state: "open", ...(pr.url ? { url: pr.url } : {}) });
+      records.set(id, { repos: [{ ...rootCap, ...(pr.url ? { pr: pr.url } : {}) }, ...sd.repos] });
       if (sd.open.length) waits.set(e.branch, pointerEntry(id, rootBase.base, pr.url, sd.open));
       await log(`[docs] ${id}: PR ${pr.url ?? "opened"}${sd.lines.length ? ` (${sd.lines.join(", ")})` : ""}`);
       continue;
@@ -960,10 +978,12 @@ async function openAcceptedDocPrs(rc: RunCtx): Promise<void> {
       recorded.set(id, { branch: e.branch, state });
       continue;
     }
+    const rootCap = await rootCapture(e.branch);
     if (cfg.skipPullRequest) {
       const merged = await directMerge(root, `origin/${e.branch}`, rootBase.base, `Merge ${id} docs (4PM autonomous)`);
       if (merged.ok) {
         recorded.set(id, { branch: e.branch, state: "direct" });
+        records.set(id, { repos: [{ ...rootCap, state: "direct", mergeSha: merged.sha }] });
         await log(`[docs] ${id} merged into ${rootBase.base}: ${merged.sha.slice(0, 10)}`);
         continue;
       }
@@ -974,6 +994,7 @@ async function openAcceptedDocPrs(rc: RunCtx): Promise<void> {
       continue;
     }
     recorded.set(id, { branch: e.branch, state: "open", ...(pr.url ? { url: pr.url } : {}) });
+    records.set(id, { repos: [{ ...rootCap, ...(pr.url ? { pr: pr.url } : {}) }] });
     await log(`[docs] ${id}: PR ${pr.url ?? "opened"}`);
   }
   if (recorded.size === 0) return;
@@ -985,6 +1006,7 @@ async function openAcceptedDocPrs(rc: RunCtx): Promise<void> {
     }
     await writeDocs(bdir, now);
     for (const [branch, entry] of waits) await recordPointerEntry(bdir, branch, entry);
+    await recordDeliveries(bdir, records);
     return true;
   });
 }
@@ -1378,6 +1400,8 @@ interface SubsDelivery {
   fallbacks: string[];
   /** Repos that conflict with their base just before delivery (delivered as PRs). */
   conflicted: string[];
+  /** The delivery record entry of each delivered submodule. @adr 0582 */
+  repos: DeliveryRepo[];
 }
 
 /**
@@ -1394,7 +1418,7 @@ async function deliverSubs(
   opts: { title: string; body: string; message: string; live: boolean; commit?: string },
 ): Promise<SubsDelivery> {
   const { root, cfg } = rc;
-  const out: SubsDelivery = { lines: [], pointers: [], open: [], direct: cfg.skipPullRequest, fallbacks: [], conflicted: [] };
+  const out: SubsDelivery = { lines: [], pointers: [], open: [], direct: cfg.skipPullRequest, fallbacks: [], conflicted: [], repos: [] };
   for (const s of subs) {
     const abs = join(root, s.sub.dir);
     let ref = s.branch;
@@ -1412,11 +1436,22 @@ async function deliverSubs(
       const st = await prState(s.sub.url, s.branch, abs, s.sub.base);
       if (st === "merged") continue;
     }
+    // Captured before any merge moves the base (the file list is the diff against it) — ADR-0582.
+    const cap = await captureRepo(abs, {
+      dir: s.sub.dir,
+      url: s.sub.url,
+      branch: s.branch,
+      base: s.sub.base,
+      ref,
+      state: "open",
+      conflict: out.conflicted.includes(s.sub.dir),
+    });
     if (out.direct && !out.conflicted.includes(s.sub.dir)) {
       const merged = await directMerge(abs, ref, s.sub.base, opts.message);
       if (merged.ok) {
         out.pointers.push({ dir: s.sub.dir, sha: merged.sha });
         out.lines.push(`${s.sub.dir}: merged ${merged.sha.slice(0, 10)}`);
+        out.repos.push({ ...cap, state: "direct", mergeSha: merged.sha });
         continue;
       }
       out.fallbacks.push(`${s.sub.dir} (${merged.reason})`);
@@ -1426,6 +1461,7 @@ async function deliverSubs(
     const pr = await deliverPr(abs, s.sub.url, s.branch, s.sub.base, opts.title.slice(0, 100), `${opts.body}\n\n${id} (4PM autonomous).`);
     if (pr.error) throw new Error(`submodule ${s.sub.dir} PR: ${pr.error}`);
     out.lines.push(`${s.sub.dir}: ${pr.url ?? s.branch}`);
+    out.repos.push({ ...cap, ...(pr.url ? { pr: pr.url } : {}) });
     out.open.push({ dir: s.sub.dir, url: s.sub.url, branch: s.branch, base: s.sub.base, state: "open", ...(pr.url ? { prUrl: pr.url } : {}) });
   }
   return out;
@@ -1553,6 +1589,8 @@ interface Delivered {
   delivery: string;
   /** The root PR waits for these submodule PRs. */
   pointers?: { branch: string; entry: PointerEntry };
+  /** The AI Done delivery record (root + submodules) — ADR-0582. */
+  record?: DoneDelivery;
 }
 
 /**
@@ -1594,6 +1632,8 @@ async function deliverAndFinish(rc: RunCtx, subs: { sub: RepoBase; branch: strin
   const fin = await publishBooks(bdir, rootBase.base, `chore(auto): finish ${mine.id}`, async () => {
     if (!(await applyFinish(bdir, mine, delivered, cfg.evidenceDir))) return false;
     if (delivered.pointers) await recordPointerEntry(bdir, delivered.pointers.branch, delivered.pointers.entry);
+    // Every PR of the row, its shas and full file list — the AI Done Files modal / Notes (ADR-0582).
+    if (delivered.record) await recordDeliveries(bdir, new Map([[mine.id, delivered.record]]));
     // The agent's change request goes to the books for approval (ADR-0453) — and its system-diagram change (ADR-0530).
     taskErcs = await publishTaskErcs(bdir, cfg.erDir, delivered.ercs, mine.id, mine.task.team, cfg.erAutoApprove);
     taskSdcs = await publishTaskSdcs(bdir, cfg, delivered.sdcs, mine.id, mine.task.team);
@@ -1655,6 +1695,21 @@ async function deliver(rc: RunCtx, subs: { sub: RepoBase; branch: string }[], mi
   const files = withoutGitlinks(rootFiles, await submoduleFiles(root, subs), subs);
   const filesCell = files.slice(0, 20).join(", ") + (files.length > 20 ? ` (+${files.length - 20})` : "");
   await pushRootBranch(root, rootBase.base, mine.branch, subs);
+  // The root's entry of the delivery record, before a direct merge moves `<base>` (ADR-0582).
+  const rootCap = await captureRepo(root, {
+    dir: ".",
+    url: rootBase.url,
+    branch: mine.branch,
+    base: rootBase.base,
+    ref: mine.branch,
+    state: "open",
+    conflict: conflicted.includes("."),
+    exclude: new Set(rc.allSubs.map((s) => s.dir)),
+  });
+  const recordOf = (repo: DeliveryRepo, remarks: string[]): DoneDelivery => ({
+    repos: [repo, ...sd.repos],
+    ...(remarks.length ? { remarks } : {}),
+  });
   if (conflicted.length) {
     alert(ctx, { kind: "pr-conflict", task: mine.id, message: `${mine.id} conflicts with the base in ${conflicted.join(", ")} — delivered as a PR.` });
   }
@@ -1668,6 +1723,7 @@ async function deliver(rc: RunCtx, subs: { sub: RepoBase; branch: string }[], mi
         ercs,
         sdcs,
         delivery: deliveryCell("direct"),
+        record: recordOf({ ...rootCap, state: "direct", mergeSha: merged.sha }, []),
       };
     }
     fallbacks.push(`root (${merged.reason})`);
@@ -1691,6 +1747,7 @@ async function deliver(rc: RunCtx, subs: { sub: RepoBase; branch: string }[], mi
     ercs,
     sdcs,
     delivery: deliveryCell("open", pr.url ?? undefined),
+    record: recordOf({ ...rootCap, ...(pr.url ? { pr: pr.url } : {}) }, fallbacks.length ? [`direct merge failed: ${fallbacks.join(", ")}`] : []),
     ...(pr.url ? { prUrl: pr.url } : {}),
     ...(sd.open.length ? { pointers: { branch: mine.branch, entry: pointerEntry(mine.id, rootBase.base, pr.url, sd.open) } } : {}),
   };

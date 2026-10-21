@@ -23,6 +23,8 @@ import {
   type AutonomousArchiveRequest,
   type AutonomousEvidenceRequest,
   type AutonomousEvidenceHistoryRequest,
+  type AutonomousDoneFileRequest,
+  type AutonomousDoneFilesRequest,
   type AutonomousLogsRequest,
   type AutonomousReadRequest,
   type AutonomousWriteRequest,
@@ -48,6 +50,7 @@ import {
 import { readAutonomous,
   readAutonomousArchive, readAutonomousEvidence, readAutonomousEvidenceHistory, readAutonomousLogs, writeAutonomous } from "../../autonomous/autonomous";
 import { readDiscussions } from "../../autonomous/autonomous-discussions";
+import { readDoneFile, readDoneFiles } from "../../autonomous/autonomous-delivery";
 import { readEr, writeEr } from "../../autonomous/autonomous-er";
 import { readDiagram, writeDiagram } from "../../autonomous/autonomous-diagram";
 import { listAgents, readAgent, writeAgent } from "../../agent/agents";
@@ -122,6 +125,22 @@ export function handleWorkerChannels(
         void readAutonomousEvidenceHistory(ctx.physicRoot, ctx.profileDir, req).then((reply) =>
           ctx.send(WsChannels.AUTONOMOUS_EVIDENCE_HISTORY, reply, message.id),
         );
+      }
+      return true;
+    }
+    case WsChannels.AUTONOMOUS_DONE_FILES: {
+      // Request/reply (machine-0098, ADR-0582): an AI Done row's files per repo + where each is read from.
+      const req = payload as unknown as AutonomousDoneFilesRequest;
+      if (ctx.physicRoot) {
+        void readDoneFiles(ctx.physicRoot, req).then((reply) => ctx.send(WsChannels.AUTONOMOUS_DONE_FILES, reply, message.id));
+      }
+      return true;
+    }
+    case WsChannels.AUTONOMOUS_DONE_FILE: {
+      // Request/reply (machine-0099, ADR-0582): one file of an AI Done row at its resolved ref, or a folder's children.
+      const req = payload as unknown as AutonomousDoneFileRequest;
+      if (ctx.physicRoot) {
+        void readDoneFile(ctx.physicRoot, req).then((reply) => ctx.send(WsChannels.AUTONOMOUS_DONE_FILE, reply, message.id));
       }
       return true;
     }
