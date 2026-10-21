@@ -282,7 +282,7 @@ export type PostDiscussionMessageRequest = z.infer<typeof postDiscussionMessageS
 export const editDiscussionMessageSchema = z.object({
   body: z.string().trim().min(1).max(20_000).optional(),
   deleted: z.boolean().optional(),
-  /** The people @mentioned in the edited body; those not mentioned before are added and told (ADR-0585). */
+  /** The people @mentioned in the edited body; those not mentioned before are added and told. @adr 0585 */
   mentionUserIds: z.array(z.string().guid()).max(20).optional(),
 });
 export type EditDiscussionMessageRequest = z.infer<typeof editDiscussionMessageSchema>;
@@ -295,7 +295,7 @@ export const updateDiscussionSchema = z.object({
   tags: discussionTags.optional(),
   due: discussionDue.optional(),
   issues: discussionIssues.optional(),
-  /** The full addressee list (replaces the current one — ADR-0585). */
+  /** The full addressee list (replaces the current one). @adr 0585 */
   addresseeUserIds: z.array(z.string().guid()).max(50).optional(),
   status: z.enum(["open", "resolved"]).optional(),
 });
