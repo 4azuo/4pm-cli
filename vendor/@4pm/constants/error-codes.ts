@@ -350,6 +350,13 @@ export const ErrorCode = {
   // Admin cli version policy rejected (ADR-0363) — meta.reason: minAboveLatest | latestNotBlockable |
   // deadlinePast | invalidVersion.
   CLI_VERSION_POLICY_INVALID: "CLI_VERSION_POLICY_INVALID",
+  // Batch monitor operator actions (ADR-0599): unknown job / incident, a worker can't be run on demand, the job is
+  // disabled, or no batch app of the job's service is deployed to consume the command.
+  BATCH_JOB_NOT_FOUND: "BATCH_JOB_NOT_FOUND",
+  BATCH_INCIDENT_NOT_FOUND: "BATCH_INCIDENT_NOT_FOUND",
+  BATCH_JOB_NOT_RUNNABLE: "BATCH_JOB_NOT_RUNNABLE",
+  BATCH_JOB_DISABLED: "BATCH_JOB_DISABLED",
+  BATCH_SERVICE_NOT_DEPLOYED: "BATCH_SERVICE_NOT_DEPLOYED",
   ORCHESTRATOR_OFFLINE: "ORCHESTRATOR_OFFLINE",
   WS_TOKEN_INVALID: "WS_TOKEN_INVALID",
   // A newer cli session for the same link took over ⇒ the older one stops (ADR-0047).
@@ -460,6 +467,13 @@ export const ErrorCode = {
   NO_PROVIDER_SUBSCRIPTION: "NO_PROVIDER_SUBSCRIPTION",
   ENTERPRISE_PLAN_NOT_ASSIGNABLE: "ENTERPRISE_PLAN_NOT_ASSIGNABLE",
   PAYMENT_FAILED: "PAYMENT_FAILED",
+  // TCC payment attempts (ADR-0600): a live attempt for the same thing exists (409); a card outcome is still
+  // being confirmed by the provider (202-style, resolved by the reconciler); checkout on an active paid plan (409);
+  // the subscription moved between the quote and the payment — nothing charged (409).
+  PAYMENT_IN_PROGRESS: "PAYMENT_IN_PROGRESS",
+  PAYMENT_PENDING: "PAYMENT_PENDING",
+  SUBSCRIPTION_ALREADY_ACTIVE: "SUBSCRIPTION_ALREADY_ACTIVE",
+  SUBSCRIPTION_CHANGED: "SUBSCRIPTION_CHANGED",
   // support tickets (ADR-0167) + AI help agent (ADR-0170)
   SUPPORT_TICKET_NOT_FOUND: "SUPPORT_TICKET_NOT_FOUND",
   // managed legal documents (ADR-0350): unknown/disabled document; accepting a version that is not current
