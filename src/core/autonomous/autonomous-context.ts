@@ -157,7 +157,7 @@ function rowText(mine: LocalClaim, books: BooksNow): string {
 export async function buildContextManifest(root: string, mine: LocalClaim, dirs: ContextDirs): Promise<string> {
   const books = await readBooksNow(root);
   const [lineage, docs] = await Promise.all([readLineage(root), readDocs(root)]);
-  const kind = mine.id.startsWith("REQ-") || mine.id.startsWith("QA-") ? "intake" : mine.id.startsWith("DOC-") ? "docs" : "task";
+  const kind = mine.id.startsWith("REQ-") || mine.id.startsWith("QA-") ? "intake" : mine.id.startsWith("DOC-") ? "docs" : mine.id.startsWith("AST-") ? "assets" : "task";
   const g = bookGroupOf(mine.id);
   // The groups of this run: its own; for an intake also the ones its request already produced.
   const groups = new Set<string>(g ? [g] : []);

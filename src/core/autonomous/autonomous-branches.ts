@@ -149,7 +149,7 @@ async function listCandidates(root: string, rootBase: RepoBase, ref: RepoRef): P
     );
     if (merged) reasons.push("merged");
     if (pr) reasons.push("pr-closed"); // an open PR was excluded above
-    if (is4pm && /^(?:TSK|DOC)-/.test(task) && !(await bookMentions(root, rootBase.base, task))) reasons.push("task-gone");
+    if (is4pm && /^(?:TSK|DOC|AST)-/.test(task) && !(await bookMentions(root, rootBase.base, task))) reasons.push("task-gone");
     if (Date.parse(date) < staleBefore) reasons.push("stale");
     if (reasons.length) out.push({ name, sha, kind: is4pm ? "4pm" : "other", reasons, lastCommitAt: date, author, pr });
   }

@@ -26,6 +26,7 @@ import {
   docTypeOfPath,
   parseDocsSidecar,
   parseLineage,
+  type AssetItem,
   readSpecDocs,
   roundDecision,
   submoduleOf,
@@ -262,7 +263,7 @@ export async function addDocRows(root: string, before: ReadonlySet<string>, spec
       due: rows[0]?.due ?? "",
       assignees: rows[0]?.assignees ?? "",
     };
-    next = next.map((t) => (rows.includes(t) && !t.depends.some((d) => /^(?:TSK|DOC)-/.test(d)) ? { ...t, depends: [docId, ...t.depends] } : t));
+    next = next.map((t) => (rows.includes(t) && !t.depends.some((d) => /^(?:TSK|DOC|AST)-/.test(d)) ? { ...t, depends: [docId, ...t.depends] } : t));
     const first = next.findIndex((t) => rows.some((r) => r.id === t.id));
     next.splice(first < 0 ? next.length : first, 0, doc);
     added.push(docId);
@@ -298,6 +299,51 @@ export async function addScopeDocRow(root: string, group: string, src: IntakeSou
   };
   await B.writeBook(root, "AI_TODO.md", B.writeTasks(todo, [...tasks, doc]));
   return docId;
+}
+
+/**
+ * The `AST-<group>-001` row of an intake's asset plan: added to AI_TODO (before the group's first task), its plan in
+ * the docs sidecar (round 0, pending), and put into the Depends of the tasks that use the assets — the ones the plan
+ * names, else every new task of the group. Returns its id, or null when it is already there.
+ * @adr 0615
+ */
+export async function addAssetRow(
+  root: string,
+  group: string,
+  src: IntakeSource,
+  items: AssetItem[],
+  usedBy: readonly string[],
+  newTasks: ReadonlySet<string>,
+): Promise<string | null> {
+  const todo = await B.readBook(root, "AI_TODO.md");
+  const { tasks } = B.parseTasks(todo);
+  const astId = `AST-${group}-001`;
+  if (tasks.some((t) => t.id === astId)) return null;
+  const users = new Set(usedBy.filter((id) => newTasks.has(id)));
+  const groupTasks = tasks.filter((t) => newTasks.has(t.id) && bookGroupOf(t.id) === group);
+  const dependents = users.size ? tasks.filter((t) => users.has(t.id)) : groupTasks;
+  const row: B.TaskRow = {
+    id: astId,
+    priority: dependents.some((r) => /^high$/i.test(r.priority)) ? "High" : "Medium",
+    tag: "assets",
+    depends: [],
+    group: groupTasks[0]?.group ?? "",
+    desc: `Assets for ${src.id}: ${items.map((a) => a.key).join(", ")}`.slice(0, 500),
+    title: `Assets: ${src.title || src.id}`,
+    notes: `${items.length} asset(s) — generated through the project's generator, reviewed in rounds`,
+    team: src.team,
+    tags: src.tags,
+    due: src.due,
+    assignees: src.assignees,
+  };
+  let next = tasks.map((t) => (dependents.includes(t) && !t.depends.includes(astId) ? { ...t, depends: [astId, ...t.depends] } : t));
+  const first = next.findIndex((t) => groupTasks.some((g) => g.id === t.id));
+  next = [...next.slice(0, first < 0 ? next.length : first), row, ...next.slice(first < 0 ? next.length : first)];
+  await B.writeBook(root, "AI_TODO.md", B.writeTasks(todo, next));
+  const docs = await readDocs(root);
+  docs[astId] = { round: 0, state: "pending", branch: "", files: [], history: [], assets: items };
+  await writeDocs(root, docs);
+  return astId;
 }
 
 // ── A docs round: numbering, manifest, overlaps ──────────────────────────────────────────────────
@@ -505,7 +551,7 @@ export function docOverlaps(docs: DocsSidecar, id: string, files: readonly DocMa
 export async function applyDocRoundDone(
   root: string,
   task: B.TaskRow,
-  round: { branch: string; head: string; files: DocManifestFile[]; repos?: DocRepoHead[] },
+  round: { branch: string; head: string; files: DocManifestFile[]; repos?: DocRepoHead[]; assets?: AssetItem[] },
 ): Promise<void> {
   const todo = await B.readBook(root, "AI_TODO.md");
   const { tasks } = B.parseTasks(todo);
@@ -520,6 +566,8 @@ export async function applyDocRoundDone(
     files: round.files,
     history: prev?.history ?? [],
     ...(round.repos?.length ? { repos: round.repos } : {}),
+    // An AST row keeps its asset plan with what this round generated (ADR-0615).
+    ...(round.assets ? { assets: round.assets } : prev?.assets ? { assets: prev.assets } : {}),
   };
   const overlaps = docOverlaps(docs, task.id, round.files);
   if (Object.keys(overlaps).length) entry.overlaps = overlaps;
@@ -552,6 +600,14 @@ export async function applyDocReview(dir: string, review: DocReview, final: bool
   ];
   const decided = final ? roundDecision(entry, review.round) : null;
   if (decided === "revise") entry.state = "pending";
+  // An AST revise (ADR-0615): the named assets (else every asset, with the round's opinion) are generated again.
+  if (decided === "revise" && entry.assets) {
+    const asked = new Map((review.regenerate ?? []).map((r) => [r.key, r.opinion]));
+    entry.assets = entry.assets.map((a) => {
+      const why = asked.size ? asked.get(a.key) : review.opinion.trim();
+      return why ? { ...a, regenerate: why } : { ...a, regenerate: undefined };
+    });
+  }
   if (decided === "proceed") {
     entry.state = "accepted";
     const todo = await B.readBook(dir, "AI_TODO.md");
@@ -575,7 +631,7 @@ export async function applyDocReview(dir: string, review: DocReview, final: bool
           desc: row.desc,
           files: files.slice(0, 20).join(", ") + (files.length > 20 ? ` (+${files.length - 20})` : ""),
           evidence: evidenceCell([]),
-          notes: `docs accepted after ${entry.round} round(s); branch: ${entry.branch}`,
+          notes: `${entry.assets ? "assets" : "docs"} accepted after ${entry.round} round(s); branch: ${entry.branch}`,
         }),
       );
     }

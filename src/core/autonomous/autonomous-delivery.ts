@@ -418,7 +418,7 @@ function repoView(r: Resolved): DoneFilesRepo {
 /** machine-0098: the files of one AI Done row per repo + where each repo's content is read from. */
 export async function readDoneFiles(root: string, req: AutonomousDoneFilesRequest): Promise<AutonomousDoneFilesReply> {
   try {
-    if (!/^(TSK|DOC)-\d{6}-\d{3}$/.test(req.rowId)) return { code: "not-found", error: "invalid row id" };
+    if (!/^(TSK|DOC|AST)-\d{6}-\d{3}$/.test(req.rowId)) return { code: "not-found", error: "invalid row id" };
     const loaded = await loadDoneRow(root, req.rowId);
     if (!loaded) return { code: "not-found", error: "no such AI Done row" };
     const repos = await resolveAll(root, req.rowId, loaded.row, loaded.deletions);
@@ -450,7 +450,7 @@ async function showBytes(cwd: string, sha: string, rel: string): Promise<Buffer 
 /** machine-0099: one file of an AI Done row at its resolved ref (or its base sha), or a folder's children. */
 export async function readDoneFile(root: string, req: AutonomousDoneFileRequest): Promise<AutonomousDoneFileReply> {
   try {
-    if (!/^(TSK|DOC)-\d{6}-\d{3}$/.test(req.rowId)) return { code: "not-found", error: "invalid row id" };
+    if (!/^(TSK|DOC|AST)-\d{6}-\d{3}$/.test(req.rowId)) return { code: "not-found", error: "invalid row id" };
     const path = req.path.replace(/\/+$/, "");
     if (!path || !isSafeRepoDir(path)) return { error: "invalid path" };
     const loaded = await loadDoneRow(root, req.rowId);

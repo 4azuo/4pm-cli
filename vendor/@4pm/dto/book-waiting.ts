@@ -9,7 +9,7 @@
  * it depends on, to merge into `<base>` (`mergeWait`).
  * @adr 0561 @adr 0563
  */
-import { bookGroupOf } from "./book-ids";
+import { bookGroupOf, isRoundRowId } from "./book-ids";
 import { deliveryLanded } from "./autonomous-books-set";
 import type { DocsSidecar, LineageSidecar } from "./autonomous-docs";
 
@@ -49,7 +49,7 @@ export function buildDependsWaiting(books: WaitingBooks): (depends: readonly str
 
   /** The items one dependency waits on. */
   const waitingOn = (dep: string): WaitingItem[] => {
-    if (/^(?:TSK|DOC)-/.test(dep)) return books.doneIds.has(dep) ? [] : [{ id: dep }];
+    if (/^(?:TSK|DOC|AST)-/.test(dep)) return books.doneIds.has(dep) ? [] : [{ id: dep }];
     if (dep.startsWith("REQ-")) return books.pendingRequests.has(dep) ? [{ id: dep }] : openRowsOf(dep);
     if (dep.startsWith("QA-")) return open.has(dep) ? [{ id: dep }] : openRowsOf(dep);
     return [];
@@ -85,13 +85,14 @@ export interface MergeWait {
  * @adr 0563
  */
 export function mergeWait(row: { id: string; depends: readonly string[] }, lineage: LineageSidecar, docs: DocsSidecar): MergeWait | null {
-  const g = /^(?:TSK|DOC)-(\d{6})-/.exec(row.id)?.[1];
+  const g = /^(?:TSK|DOC|AST)-(\d{6})-/.exec(row.id)?.[1];
   const lin = g ? lineage[g] : undefined;
   if (lin?.delivery && !deliveryLanded(lin.delivery)) {
     return { id: lin.source, ...(lin.delivery.url ? { url: lin.delivery.url } : {}), state: lin.delivery.state === "closed" ? "closed" : "open" };
   }
-  if (row.id.startsWith("DOC-")) return null;
-  for (const d of row.depends.filter((x) => x.startsWith("DOC-"))) {
+  // A DOC / AST row waits only for its request PR; a task also for each accepted DOC / AST dependency's PR (ADR-0615).
+  if (isRoundRowId(row.id)) return null;
+  for (const d of row.depends.filter((x) => isRoundRowId(x))) {
     const e = docs[d];
     if (!e || e.state !== "accepted") continue; // not accepted yet — the AI Done dependency rule waits for it
     if (!deliveryLanded(e.pr)) return { id: d, ...(e.pr?.url ? { url: e.pr.url } : {}), state: e.pr?.state === "closed" ? "closed" : "open" };

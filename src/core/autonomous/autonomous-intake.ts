@@ -8,6 +8,7 @@
  * published yet rides the WIP branch as `.4pm/wip/<ID>.books.json`, re-applied by whichever worker resumes.
  * @adr 0563 @adr 0455 @adr 0562
  */
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
   BOOK_STATE,
@@ -17,11 +18,13 @@ import {
   bookRowTeam,
   type DeliveryRecord,
   type SpecDocs,
+  parseAssetItems,
+  type AssetItem,
 } from "@4pm/dto";
 import * as B from "./autonomous-books";
 import { cappedBookIds } from "./autonomous";
 import type { AutonomousConfig } from "./autonomous-config";
-import { addDocRows, addScopeDocRow, fillIntakeMeta, intakeSources, readLineage, recordIntakeLineage, writeLineage, type IntakeSource } from "./autonomous-docs";
+import { addAssetRow, addDocRows, addScopeDocRow, fillIntakeMeta, intakeSources, readLineage, recordIntakeLineage, writeLineage, type IntakeSource } from "./autonomous-docs";
 import { captureAgentErcs, publishIntakeErcs } from "./autonomous-er";
 import { captureAgentSdcs, publishIntakeSdcs } from "./autonomous-diagram";
 import type { NewErcFile } from "./autonomous-er-store";
@@ -53,6 +56,26 @@ export interface IntakePatch {
   sources: IntakeSource[];
   ercs: NewErcFile[];
   sdcs: NewSdcFile[];
+  /** The asset plan the agent wrote (`.4pm/assets-plan.json`) — becomes the group's `AST-…` row. @adr 0615 */
+  assets?: { items: AssetItem[]; usedBy: string[] };
+}
+
+/** Where the intake agent writes its asset plan (read, then removed, before anything is committed). @adr 0615 */
+export const ASSET_PLAN_REL = ".4pm/assets-plan.json";
+
+/** Read and remove the agent's asset plan. */
+async function captureAssetPlan(root: string): Promise<IntakePatch["assets"]> {
+  const text = await readFileInRoot(root, join(root, ASSET_PLAN_REL), "utf8").catch(() => "");
+  if (!text) return undefined;
+  await rm(join(root, ASSET_PLAN_REL), { force: true }).catch(() => undefined);
+  try {
+    const o = JSON.parse(text) as { items?: unknown; usedBy?: unknown };
+    const items = parseAssetItems(o.items);
+    const usedBy = Array.isArray(o.usedBy) ? o.usedBy.filter((x): x is string => typeof x === "string") : [];
+    return items.length ? { items, usedBy } : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The WIP file of an intake patch on its branch. */
@@ -139,8 +162,12 @@ export async function captureIntakePatch(
   ]);
   const tasks = B.parseTasks(todo).tasks.filter((t) => !before.ids.AI_TODO.has(t.id) && t.id.startsWith("TSK-"));
   const questions = B.parseQa(qa).rows.filter((q) => !before.ids.USER_QA.has(q.id));
-  // A `docs-only` request (ADR-0613) gets no tasks: a run that wrote some is discarded and re-done.
-  if (tasks.length && before.sources.some((s) => requestScopeTags(s.tags).includes("docs-only"))) return { outOfScope: tasks.map((t) => t.id) };
+  const assets = await captureAssetPlan(root);
+  // A `docs-only` / `asset-only` request (ADR-0613, ADR-0615) gets no tasks: a run that wrote some is discarded and re-done.
+  const scoped = before.sources.some((s) => requestScopeTags(s.tags).length > 0);
+  if (tasks.length && scoped) return { outOfScope: tasks.map((t) => t.id) };
+  // An `asset-only` request that produced no asset plan did nothing it was asked for.
+  if (!assets && before.sources.some((s) => requestScopeTags(s.tags).includes("asset-only"))) return { outOfScope: ["(no asset plan)"] };
   // The agent removes each row it analysed (ADR-0562 keeps them, with a State, on the books branch).
   const still = new Set([...B.openRowIds(userTodoNow, "REQ-"), ...B.openRowIds(userQaNow, "QA-")]);
   const taken = [mine.id].filter((id) => !still.has(id));
@@ -154,6 +181,7 @@ export async function captureIntakePatch(
       sources: before.sources,
       ercs: await captureAgentErcs(root, cfg.erDir),
       sdcs: await captureAgentSdcs(root, cfg.diagramDir),
+      ...(assets ? { assets } : {}),
     },
   };
 }
@@ -251,6 +279,19 @@ export async function applyIntakePatch(
   out.docIds = [];
   if (cfg.docsPhase && spec.types.length) {
     out.docIds = await addDocRows(dir, beforeTodo, spec, (g) => patch.sources[patch.groups.findIndex((x) => bookGroupCode(x) === g)]);
+  }
+  // The asset plan (ADR-0615): the group's AST row, waited for by the tasks that use the assets.
+  if (patch.assets?.items.length) {
+    const taskGroup = patch.tasks.map((t) => bookGroupOf(t.id) ?? "").find(Boolean);
+    const group = taskGroup || (patch.groups[0] !== undefined ? bookGroupCode(patch.groups[0]) : "");
+    const src = patch.sources[0];
+    if (group && src) {
+      const astId = await addAssetRow(dir, group, src, patch.assets.items, patch.assets.usedBy, new Set(patch.tasks.map((t) => t.id)));
+      if (astId) {
+        out.docIds.push(astId);
+        await recordIntakeLineage(dir, patch.sources, patch.groups, new Set([group]));
+      }
+    }
   }
   // A `docs-only` request (ADR-0613): its DOC row in the first given group, whatever the DOC-phase switch says.
   const docsOnly = patch.sources.find((s) => requestScopeTags(s.tags).includes("docs-only"));

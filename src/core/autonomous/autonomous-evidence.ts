@@ -159,7 +159,7 @@ export async function openDesignBranches(root: string, base: string, alsoIds: re
 export function questionAskers(userQa: string): string[] {
   const ids = new Set<string>();
   for (const q of parseQa(userQa).rows) {
-    const m = /^((?:TSK|DOC)-\d{6}-\d{3})\b/.exec(q.original.trim());
+    const m = /^((?:TSK|DOC|AST)-\d{6}-\d{3})\b/.exec(q.original.trim());
     if (m) ids.add(m[1]!);
   }
   return [...ids];
@@ -323,11 +323,14 @@ export async function readEvidenceFile(
   mockupDir: string,
   designDirs: readonly string[] = [],
   rev?: string,
+  /** The asset folder (`asset_dir`): its `.png` images are readable too. @adr 0615 */
+  assetDir?: string,
 ): Promise<AutonomousEvidenceReply> {
   const mockup = isSafeRepoDir(path) && path.startsWith(`${mockupDir}/`) && path.toLowerCase().endsWith(".html");
   // A sequence diagram / ER file (`.md` under `sequenceDir` / `erDir` — ADR-0453).
   const design = isSafeRepoDir(path) && path.toLowerCase().endsWith(".md") && designDirs.some((d) => path.startsWith(`${d}/`));
-  if (!isEvidencePath(path) && !mockup && !design) return { error: "invalid evidence path" };
+  const asset = Boolean(assetDir) && isSafeRepoDir(path) && path.startsWith(`${assetDir}/`) && path.toLowerCase().endsWith(".png");
+  if (!isEvidencePath(path) && !mockup && !design && !asset) return { error: "invalid evidence path" };
   if (ref && !/^[A-Za-z0-9._/-]{1,200}$/.test(ref)) return { error: "invalid ref" };
   if (rev !== undefined && !EVIDENCE_REV_RE.test(rev)) return { error: "invalid version" };
   let bytes: Buffer | null = null;

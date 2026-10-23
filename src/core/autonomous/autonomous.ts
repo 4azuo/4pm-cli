@@ -39,6 +39,7 @@ import { ATTEMPTS_REL, findTables, replaceRows } from "./autonomous-books";
 import { approvalStates, buildApprovalEntries, mergeApprovalWrite, unapproveIds, type ApprovalBooks } from "./autonomous-approvals";
 import { applyDiscussionBatch } from "./autonomous-discussions";
 import { checkRowGuards } from "./autonomous-row-guards";
+import { specAssetDirAt } from "./autonomous-assets";
 import { applyUnblock } from "./autonomous-tasks";
 import { applyDocReview, copyLineage, isDocFilePath, readDocFile, readDocs, readLineage, writeDocs, writeLineage } from "./autonomous-docs";
 import { applyBookPatch, bookCellsContentEqual, bookContentHash, bookRowsById, isBookRowId, withoutMetaCells, type BookConflict } from "@4pm/dto";
@@ -384,7 +385,7 @@ export async function readAutonomousLogs(root: string, date?: string): Promise<A
  */
 async function applyDeliveryRetry(dir: string, id: string): Promise<boolean> {
   let changed = false;
-  if (id.startsWith("DOC-")) {
+  if (id.startsWith("DOC-") || id.startsWith("AST-")) {
     const docs = await readDocs(dir);
     const e = docs[id];
     if (e?.pr?.state === "closed") {
@@ -781,7 +782,7 @@ export async function readAutonomousEvidence(root: string, profileDir: string, r
     const { mockupDir, erDir, sequenceDir } = await readAutonomousConfig(profileDir);
     // A past version is read from the fetched books history (ADR-0515).
     if (req.rev && base) await freshBooksRef(root, base);
-    return await readEvidenceFile(root, base, req.path, req.ref, mockupDir, [erDir, sequenceDir], req.rev);
+    return await readEvidenceFile(root, base, req.path, req.ref, mockupDir, [erDir, sequenceDir], req.rev, await specAssetDirAt(root, base));
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };
   }

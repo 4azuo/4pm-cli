@@ -14,7 +14,7 @@ import * as B from "./autonomous-books";
 import { isMerged, type RepoBase } from "./autonomous-git";
 import { evidenceCell, moveTaskEvidence, rehomeTaskLinks } from "./autonomous-evidence";
 import { readFileInRoot } from "../../utils/safe-path";
-import { APPROVALS_SIDECAR_REL, BOOK_STATE, mergeWait, approvalEntrySchema, bookGroupOf, bookRowStates, bookRowTeam, buildDependsWaiting, type DeliveryRecord, type PointerEntry, type WaitingItem } from "@4pm/dto";
+import { APPROVALS_SIDECAR_REL, BOOK_STATE, mergeWait, approvalEntrySchema, bookGroupOf, bookRowStates, isRoundRowId, bookRowTeam, buildDependsWaiting, type DeliveryRecord, type PointerEntry, type WaitingItem } from "@4pm/dto";
 import { verifiedApprovedIds } from "./autonomous-approvals";
 import { servesTeam } from "./autonomous-teams";
 import { docRunnable, readDocs, readLineage } from "./autonomous-docs";
@@ -84,7 +84,7 @@ export async function writeLocalClaim(profileDir: string, c: LocalClaim | null):
  * @adr 0536 @adr 0563
  */
 export function groupOf(taskId: string): string {
-  const m = /^(?:TSK|DOC|REQ|QA)-(\d+)-\d+/.exec(taskId);
+  const m = /^(?:TSK|DOC|AST|REQ|QA)-(\d+)-\d+/.exec(taskId);
   return m ? `GRP-${m[1]}` : "GRP-000000";
 }
 
@@ -212,13 +212,14 @@ export async function pickTask(
     doneIds: new Set(doneMap.keys()),
     lineage,
   });
-  const groupNum = (id: string): number => Number(/^(?:TSK|DOC)-(\d+)/.exec(id)?.[1] ?? 9999);
+  const groupNum = (id: string): number => Number(/^(?:TSK|DOC|AST)-(\d+)/.exec(id)?.[1] ?? 9999);
   const tasks = B.parseTasks(todo)
     .tasks.map((t, i) => ({ t, i }))
     .sort((a, b) => groupNum(a.t.id) - groupNum(b.t.id) || rank(a.t.priority) - rank(b.t.priority) || a.i - b.i);
   for (const { t } of tasks) {
     if (skip.has(t.id) || claimed.has(t.id) || !approved.has(t.id) || !served(t.team)) continue;
-    const isDoc = t.id.startsWith("DOC-");
+    // A DOC or AST row runs in rounds while its entry is pending (ADR-0536, ADR-0615).
+    const isDoc = isRoundRowId(t.id);
     if (isDoc && !docRunnable(docs, t.id)) continue;
     if (!isDoc && opts.blockedGroups?.has(/^(TSK-\d{6})-/.exec(t.id)?.[1] ?? "")) continue;
     const a = attempts[t.id];
@@ -236,7 +237,7 @@ export async function pickTask(
     if (requestWaitingOf(reqDeps).length > 0) continue;
     // The group's request PR / DOC PR must be in <base> first: the branch starts from it (ADR-0563).
     if (mergeWait(t, lineage, docs)) continue;
-    const docDeps = t.depends.filter((d) => d.startsWith("DOC-"));
+    const docDeps = t.depends.filter((d) => isRoundRowId(d));
     if (docDeps.some((d) => !doneMap.has(d))) continue;
     const deps = t.depends.filter((d) => d.startsWith("TSK-"));
     if (deps.some((d) => !doneMap.has(d))) continue;
@@ -481,7 +482,7 @@ export async function applyQuestion(root: string, mine: LocalClaim, question: st
     B.readBook(root, "AI_DONE.md"),
     B.readBook(root, B.ATTEMPTS_REL),
   ]);
-  const g = /^(?:TSK|DOC)-(\d+)/.exec(mine.id)?.[1] ?? "000000";
+  const g = /^(?:TSK|DOC|AST)-(\d+)/.exec(mine.id)?.[1] ?? "000000";
   const qaId = nextId("QA", g, [qa, todo, done, attemptsText]);
   const { rows } = B.parseQa(qa);
   const qaDeps = mine.task.depends.filter((d) => d.startsWith("QA-")).join(", ");
@@ -680,7 +681,7 @@ export async function waitingCounts(root: string, profileDir: string | undefined
       return !!q && !(q.answer.trim() && approved.has(d));
     });
     if (qaWait) answers++;
-    else if (t.depends.some((d) => /^(?:TSK|DOC)-/.test(d) && !doneMap.has(d))) dependencies++;
+    else if (t.depends.some((d) => /^(?:TSK|DOC|AST)-/.test(d) && !doneMap.has(d))) dependencies++;
   }
   return { approval, changeRequests, answers, dependencies, blocked, merge };
 }
@@ -703,7 +704,7 @@ export async function applySplit(
 ): Promise<string[] | null> {
   if (!(await dropClaim(root, mine))) return null;
   const [todo, done, prog] = await Promise.all([B.readBook(root, "AI_TODO.md"), B.readBook(root, "AI_DONE.md"), B.readBook(root, "AI_PROGRESS.md")]);
-  const g = /^(?:TSK|DOC)-(\d+)/.exec(mine.id)?.[1] ?? "000000";
+  const g = /^(?:TSK|DOC|AST)-(\d+)/.exec(mine.id)?.[1] ?? "000000";
   const texts = [todo, done, prog, mine.id];
   const ids: string[] = [];
   const rows: B.TaskRow[] = children.map((c, i) => {

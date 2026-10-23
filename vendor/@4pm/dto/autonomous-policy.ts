@@ -199,6 +199,8 @@ export interface AutonomousPolicy {
   /** Why the worker may not run (the first failing condition, project switch included). */
   reason?: AutonomousPolicyReason;
   settings: ProjectAutonomousSettings;
+  /** Generator providers the project may use for its assets (org-connected and project-enabled). @adr 0615 */
+  assetProviders?: string[];
 }
 
 /** Who / what paused a worker. */

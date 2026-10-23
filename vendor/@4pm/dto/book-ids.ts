@@ -17,12 +17,12 @@ export const BOOK_GROUP_MAX = 10 ** BOOK_GROUP_DIGITS - 1;
 export const BOOK_ROW_MAX = 10 ** BOOK_ROW_DIGITS - 1;
 
 /** The id prefixes of the books. */
-export type BookIdPrefix = "REQ" | "TSK" | "QA" | "DOC";
+export type BookIdPrefix = "REQ" | "TSK" | "QA" | "DOC" | "AST";
 
-/** The `AI_TODO` row prefixes the cycle claims and runs: tasks and docs rows. @adr 0536 */
-export const TASK_ROW_PREFIXES = ["TSK", "DOC"] as const;
-/** A `TSK-…` or `DOC-…` row id (no anchors / groups) — for embedding in larger patterns. @adr 0536 */
-export const TASK_ROW_ID_SOURCE = `(?:TSK|DOC)-\\d{6}-\\d{3}`;
+/** The `AI_TODO` row prefixes the cycle claims and runs: tasks, docs and assets rows. @adr 0536 @adr 0615 */
+export const TASK_ROW_PREFIXES = ["TSK", "DOC", "AST"] as const;
+/** A `TSK-…`, `DOC-…` or `AST-…` row id (no anchors / groups) — for embedding in larger patterns. @adr 0536 @adr 0615 */
+export const TASK_ROW_ID_SOURCE = `(?:TSK|DOC|AST)-\\d{6}-\\d{3}`;
 
 /** Regex source of any row id (no anchors / groups) — for embedding in larger patterns. */
 export const BOOK_ID_SOURCE = `[A-Z]+-\\d{${BOOK_GROUP_DIGITS}}-\\d{${BOOK_ROW_DIGITS}}`;
@@ -61,9 +61,19 @@ export function bookGroupKey(id: string): string | null {
   return m ? `${m[1]}-${m[2]}` : null;
 }
 
-/** True for a `TSK-…` or `DOC-…` id — an `AI_TODO` row the cycle claims. @adr 0536 */
+/** True for a `TSK-…`, `DOC-…` or `AST-…` id — an `AI_TODO` row the cycle claims. @adr 0536 @adr 0615 */
 export function isTaskRowId(id: string): boolean {
-  return /^(?:TSK|DOC)-\d{6}-\d{3}$/.test(id);
+  return /^(?:TSK|DOC|AST)-\d{6}-\d{3}$/.test(id);
+}
+
+/** True for an `AST-…` id (an assets row). @adr 0615 */
+export function isAssetRowId(id: string): boolean {
+  return /^AST-\d{6}-\d{3}$/.test(id);
+}
+
+/** True for a row reviewed in rounds before it is accepted: a `DOC-…` or an `AST-…`. @adr 0615 */
+export function isRoundRowId(id: string): boolean {
+  return /^(?:DOC|AST)-\d{6}-\d{3}$/.test(id);
 }
 
 /** True for a `DOC-…` id. @adr 0536 */

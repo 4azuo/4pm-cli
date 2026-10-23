@@ -14,7 +14,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readdir, rm, stat } from "node:fs/promises";
+import { readFile, readdir, rm, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { logger } from "../../common/logger/logger";
 import type { WsHandlerCtx } from "../ws-client/context";
@@ -24,7 +24,10 @@ import { WsChannels, type AutonomousAlertPayload, type AutonomousBookGroupsReply
 import {
   APPROVALS_SIDECAR_REL,
   BOOK_GROUPS_PER_REQUEST,
+  DEFAULT_ASSET_DIR,
   DOCS_SIDECAR_REL,
+  assetGuideSection,
+  readSpecAssetDir,
   POINTERS_SIDECAR_REL,
   LINEAGE_SIDECAR_REL,
   bookGroupCode,
@@ -32,7 +35,9 @@ import {
   bookRowTeam,
   deliveryCell,
   designGroupKey,
+  isAssetRowId,
   isDocRowId,
+  isRoundRowId,
   parseDocsSidecar,
   parseLineage,
   submoduleOf,
@@ -108,6 +113,7 @@ import { autoCleanupBranches, pruneDeletedLocals } from "./autonomous-branches";
 import { concludeMerge, conflictResolved, directMerge, mergeRefs, mergesCleanly, resetToHead } from "./autonomous-merge";
 import { applyIntakeClaim, intakeHeldByOthers, type IntakeClaimDraft } from "./autonomous-intake-claims";
 import {
+  ASSET_PLAN_REL,
   applyIntakePatch,
   captureIntakePatch,
   intakeTeamOf,
@@ -125,6 +131,8 @@ import { syncBooksToBase } from "./autonomous-books-sync";
 import { branchProtection } from "../git/git-host";
 import { alertClosedPrs, applyDeliveryStates, deliveryStates, pointerAdvance, prState, refreshPrStates } from "./autonomous-pr-states";
 import { applyPointerAdvance, pushRootBranch, recordPointerEntry, submoduleFiles, withoutGitlinks, type SubBranch } from "./autonomous-submodules";
+import { assetFilePaths, assetParams, assetsToGenerate, planFromNotes, writeAssetFiles } from "./autonomous-assets";
+import { GeneratorError, generateImages } from "./autonomous-generator";
 import { captureRepo, recordDeliveries } from "./autonomous-delivery";
 import { readProfileConfig } from "../../config/profile";
 import { activeProvider, claudeHomeDirs } from "../../utils/ai-cli";
@@ -142,7 +150,7 @@ import type { NewErcFile } from "./autonomous-er-store";
 import { lifecycle } from "../session/lifecycle";
 import { work } from "../session/work-tracker";
 import { acquireRepo, type RepoLockHandle } from "../git/repo-lock";
-import { onAutonomousPolicy, policyBlockReason, policyStopsRunningCycle, recordLastCheck, setAutonomousStep } from "./autonomous-policy";
+import { autonomousPolicy, onAutonomousPolicy, policyBlockReason, policyStopsRunningCycle, recordLastCheck, setAutonomousStep } from "./autonomous-policy";
 import { readBaseTemplateMarker, refreshBaseTemplateMarker } from "./template-marker";
 import { contextRel, ensureBooksIndex, writeContextManifest } from "./autonomous-context";
 
@@ -175,9 +183,23 @@ or question you create from it (add the \`Team\` column after \`ID\` when the ta
  * @adr 0613
  */
 export function intakeScopeNote(sources: readonly IntakeSource[]): string {
+  const assetOnly = sources.filter((s) => requestScopeTags(s.tags).includes("asset-only")).map((s) => s.id);
+  const assetLine = assetOnly.length
+    ? `\n\nREQUEST SCOPE: ${assetOnly.join(", ")} ${assetOnly.length > 1 ? "are" : "is"} tagged \`asset-only\` — the person wants generated assets only. Write NO task (\`TSK-…\`) rows for it; write the asset plan (see ASSETS) instead.`
+    : "";
   const docsOnly = sources.filter((s) => requestScopeTags(s.tags).includes("docs-only")).map((s) => s.id);
-  if (!docsOnly.length) return "";
-  return `\n\nREQUEST SCOPE: ${docsOnly.join(", ")} ${docsOnly.length > 1 ? "are" : "is"} tagged \`docs-only\` — the person wants documentation only. Write NO task (\`TSK-…\`) rows for it; ask a \`USER_QA\` question only when the docs cannot be written without an answer. 4PM adds the request's \`DOC-…\` row itself.`;
+  if (!docsOnly.length) return assetLine;
+  return assetLine + `\n\nREQUEST SCOPE: ${docsOnly.join(", ")} ${docsOnly.length > 1 ? "are" : "is"} tagged \`docs-only\` — the person wants documentation only. Write NO task (\`TSK-…\`) rows for it; ask a \`USER_QA\` question only when the docs cannot be written without an answer. 4PM adds the request's \`DOC-…\` row itself.`;
+}
+
+/**
+ * The ASSETS line of an intake prompt when the project can generate assets: the agent writes its asset plan to
+ * `.4pm/assets-plan.json`; 4PM turns it into the group's `AST-…` row.
+ * @adr 0615
+ */
+export function intakeAssetNote(providers: readonly string[]): string {
+  if (!providers.length) return "";
+  return `\n\nASSETS: this project can generate pixel-art assets (${providers.join(", ")}). When the request needs images (sprites, characters, animations, tiles, icons…), write ONE file \`${ASSET_PLAN_REL}\` (JSON, not committed by you): {"items": [{"key": "hero", "capability": "image.pixel" | "character.directions" | "animation.frames" | "tileset", "description": "what to draw", "width": 64, "height": 64, "path": "characters/hero" (under the project asset folder), "directions": 4 | 8, "frames": 4–16, "from": "<key of the item to animate>", "view": "side" | "low top-down" | "high top-down", "lower": "…", "upper": "…" (tileset terrains)}], "usedBy": ["TSK-… ids of your new tasks that use them"]}. Sizes 16–768 px (tiles 16 / 32 / 64). Do not draw the images yourself. 4PM adds the group's \`AST-…\` row, generates the images and the tasks that use them wait for it.`;
 }
 
 /**
@@ -916,6 +938,11 @@ async function reopenDeliveries(rc: RunCtx): Promise<void> {
   });
 }
 
+/** What an accepted round row delivers: "assets" for an `AST-…`, else "docs". @adr 0615 */
+function roundWhat(id: string): "assets" | "docs" {
+  return isAssetRowId(id) ? "assets" : "docs";
+}
+
 /**
  * Give each accepted DOC row its PR into `<base>` (or merge it directly with `skipPullRequest`) and record it in the
  * docs sidecar — the group's tasks wait for it. The DOC branches of its submodules go first: merged
@@ -951,31 +978,31 @@ async function openAcceptedDocPrs(rc: RunCtx): Promise<void> {
       });
       let sd: SubsDelivery;
       try {
-        sd = await deliverSubs(rc, subs, id, { title: `${id}: docs`, body: `The accepted docs of ${id} (4PM autonomous, ${e.round} review round(s)).`, message: `Merge ${id} docs (4PM autonomous)`, live: false });
+        sd = await deliverSubs(rc, subs, id, { title: `${id}: ${roundWhat(id)}`, body: `The accepted ${roundWhat(id)} of ${id} (4PM autonomous, ${e.round} review round(s)).`, message: `Merge ${id} ${roundWhat(id)} (4PM autonomous)`, live: false });
       } catch (err) {
-        await log(`[docs] ${id}: submodule delivery failed: ${String(err)}`);
+        await log(`[${roundWhat(id)}] ${id}: submodule delivery failed: ${String(err)}`);
         continue;
       }
       await gitQuiet(root, ["fetch", "-q", "origin", e.branch]);
       const rootCap = await rootCapture(e.branch);
       if (sd.direct) {
-        const merged = await directMerge(root, `origin/${e.branch}`, rootBase.base, `Merge ${id} docs (4PM autonomous)`, sd.pointers);
+        const merged = await directMerge(root, `origin/${e.branch}`, rootBase.base, `Merge ${id} ${roundWhat(id)} (4PM autonomous)`, sd.pointers);
         if (merged.ok) {
           recorded.set(id, { branch: e.branch, state: "direct" });
           records.set(id, { repos: [{ ...rootCap, state: "direct", mergeSha: merged.sha }, ...sd.repos] });
-          await log(`[docs] ${id} merged into ${rootBase.base}: ${merged.sha.slice(0, 10)} (${sd.lines.join(", ")})`);
+          await log(`[${roundWhat(id)}] ${id} merged into ${rootBase.base}: ${merged.sha.slice(0, 10)} (${sd.lines.join(", ")})`);
           continue;
         }
       }
-      const pr = await deliverPr(root, rootBase.url, e.branch, rootBase.base, `${id}: docs`, `The accepted docs of ${id} (4PM autonomous, ${e.round} review round(s)).${subPrsBody(sd)}`, sd.open.length > 0);
+      const pr = await deliverPr(root, rootBase.url, e.branch, rootBase.base, `${id}: ${roundWhat(id)}`, `The accepted ${roundWhat(id)} of ${id} (4PM autonomous, ${e.round} review round(s)).${subPrsBody(sd)}`, sd.open.length > 0);
       if (pr.error) {
-        await log(`[docs] ${id}: PR failed: ${pr.error}`);
+        await log(`[${roundWhat(id)}] ${id}: PR failed: ${pr.error}`);
         continue;
       }
       recorded.set(id, { branch: e.branch, state: "open", ...(pr.url ? { url: pr.url } : {}) });
       records.set(id, { repos: [{ ...rootCap, ...(pr.url ? { pr: pr.url } : {}) }, ...sd.repos] });
       if (sd.open.length) waits.set(e.branch, pointerEntry(id, rootBase.base, pr.url, sd.open));
-      await log(`[docs] ${id}: PR ${pr.url ?? "opened"}${sd.lines.length ? ` (${sd.lines.join(", ")})` : ""}`);
+      await log(`[${roundWhat(id)}] ${id}: PR ${pr.url ?? "opened"}${sd.lines.length ? ` (${sd.lines.join(", ")})` : ""}`);
       continue;
     }
     await gitQuiet(root, ["fetch", "-q", "origin", e.branch]);
@@ -990,22 +1017,22 @@ async function openAcceptedDocPrs(rc: RunCtx): Promise<void> {
     }
     const rootCap = await rootCapture(e.branch);
     if (cfg.skipPullRequest) {
-      const merged = await directMerge(root, `origin/${e.branch}`, rootBase.base, `Merge ${id} docs (4PM autonomous)`);
+      const merged = await directMerge(root, `origin/${e.branch}`, rootBase.base, `Merge ${id} ${roundWhat(id)} (4PM autonomous)`);
       if (merged.ok) {
         recorded.set(id, { branch: e.branch, state: "direct" });
         records.set(id, { repos: [{ ...rootCap, state: "direct", mergeSha: merged.sha }] });
-        await log(`[docs] ${id} merged into ${rootBase.base}: ${merged.sha.slice(0, 10)}`);
+        await log(`[${roundWhat(id)}] ${id} merged into ${rootBase.base}: ${merged.sha.slice(0, 10)}`);
         continue;
       }
     }
-    const pr = await deliverPr(root, rootBase.url, e.branch, rootBase.base, `${id}: docs`, `The accepted docs of ${id} (4PM autonomous, ${e.round} review round(s)).`);
+    const pr = await deliverPr(root, rootBase.url, e.branch, rootBase.base, `${id}: ${roundWhat(id)}`, `The accepted ${roundWhat(id)} of ${id} (4PM autonomous, ${e.round} review round(s)).`);
     if (pr.error) {
-      await log(`[docs] ${id}: PR failed: ${pr.error}`);
+      await log(`[${roundWhat(id)}] ${id}: PR failed: ${pr.error}`);
       continue;
     }
     recorded.set(id, { branch: e.branch, state: "open", ...(pr.url ? { url: pr.url } : {}) });
     records.set(id, { repos: [{ ...rootCap, ...(pr.url ? { pr: pr.url } : {}) }] });
-    await log(`[docs] ${id}: PR ${pr.url ?? "opened"}`);
+    await log(`[${roundWhat(id)}] ${id}: PR ${pr.url ?? "opened"}`);
   }
   if (recorded.size === 0) return;
   await publishBooks(bdir, rootBase.base, `chore(auto): docs PRs ${[...recorded.keys()].join(", ")}`, async () => {
@@ -1048,6 +1075,11 @@ async function runClaimed(rc: RunCtx, mine: LocalClaim, resumedClaim: boolean, c
   // A resumed claim may have been unapproved while this worker was away (ADR-0538): stop before running.
   if (await remoteApprovalLost(root, mine)) {
     await stopUnapproved(rc, subs, mine);
+    return;
+  }
+  // An assets row (ADR-0615) runs no agent: the cli generates its images through the server.
+  if (isAssetRowId(mine.id)) {
+    await runAssetRound(rc, mine);
     return;
   }
 
@@ -1097,7 +1129,10 @@ async function runClaimed(rc: RunCtx, mine: LocalClaim, resumedClaim: boolean, c
   let out: AiPromptOutcome;
   try {
     const prompt = intake
-      ? buildIntakePrompt(cfg, approved, mine.groups ?? [], contextRel(mine.id)) + intakeScopeNote(intakeBefore?.sources ?? []) + submoduleNote(subs, false)
+      ? buildIntakePrompt(cfg, approved, mine.groups ?? [], contextRel(mine.id)) +
+        intakeAssetNote(autonomousPolicy()?.assetProviders ?? []) +
+        intakeScopeNote(intakeBefore?.sources ?? []) +
+        submoduleNote(subs, false)
       : isDoc
         ? (await docsRoundPrompt(root, rootBase.base, cfg, mine, conflicts, approved)) + submoduleNote(subs, true)
         : buildImplementPrompt(
@@ -1124,7 +1159,7 @@ async function runClaimed(rc: RunCtx, mine: LocalClaim, resumedClaim: boolean, c
     const cap = await captureIntakePatch(root, ctx.profileDir, cfg, mine, intakeBefore).catch(() => null);
     if (cap && "patch" in cap) patch = cap.patch;
     else if (cap && "stray" in cap) await log(`[intake] ${mine.id} used group ids it was not given (${cap.stray.slice(0, 5).join(", ")}) — discarded`);
-    else if (cap && "outOfScope" in cap) await log(`[intake] ${mine.id} is docs-only but the run wrote tasks (${cap.outOfScope.slice(0, 5).join(", ")}) — discarded`);
+    else if (cap && "outOfScope" in cap) await log(`[intake] ${mine.id} is docs-only / asset-only but the run broke its scope (${cap.outOfScope.slice(0, 5).join(", ")}) — discarded`);
   }
   await liftOverlay(root);
   // The agent must stay on the prepared branches — put them back if it wandered.
@@ -1934,6 +1969,98 @@ async function finishDocRound(rc: RunCtx, mine: LocalClaim, subs: readonly SubBr
 }
 
 /**
+ * One round of an `AST-…` row: generate the assets of the round (every asset first, then the ones a reviewer marked)
+ * through the project's generator provider, write them under the spec's `asset_dir` on the AST branch, push it, and
+ * put the row in review with what each asset produced. Provider refusals (no credits, refused token, not enabled)
+ * release the row without counting an attempt and alert the managers.
+ * @adr 0615 @adr 0614
+ */
+async function runAssetRound(rc: RunCtx, mine: LocalClaim): Promise<void> {
+  const { ctx, root, bdir, rootBase, cfg, log } = rc;
+  const base = rootBase.base;
+  setAutonomousStep("docs", [mine.id]);
+  const provider = autonomousPolicy()?.assetProviders?.[0];
+  if (!provider) {
+    await log(`[assets] ${mine.id}: no generator is enabled for the project — waiting`);
+    await releaseRow(rc, mine, "no generator enabled for the project", false);
+    ctx.bus.autonomousDone(false, "no generator");
+    return;
+  }
+  const prev = parseDocsSidecar(await remoteBook(root, base, DOCS_SIDECAR_REL))[mine.id];
+  let items = prev?.assets?.length ? prev.assets : planFromNotes(`${mine.task.notes}\n${mine.task.desc}`);
+  if (items.length === 0) {
+    await releaseRow(rc, mine, "the assets row has no asset plan (a JSON list in its Notes)");
+    ctx.bus.autonomousDone(false, "no asset plan");
+    return;
+  }
+  const round = (prev?.round ?? 0) + 1;
+  const specText = await gitQuiet(root, ["show", `origin/${base}:project.spec.json`]).catch(() => "");
+  let assetDir = DEFAULT_ASSET_DIR;
+  try {
+    assetDir = readSpecAssetDir(JSON.parse(specText || "{}"));
+  } catch {
+    // keep the default folder
+  }
+  const style = assetGuideSection(await gitQuiet(root, ["show", `origin/${base}:EVIDENCE_GUIDE.md`]).catch(() => ""));
+  const deadlineMs = Date.now() + cfg.runTimeoutMinutes * 60_000;
+  const firstOf = new Map<string, string>();
+  try {
+    for (const item of assetsToGenerate(items, round)) {
+      let first: string | undefined;
+      if (item.capability === "animation.frames" && item.from) {
+        first = firstOf.get(item.from);
+        const src = items.find((a) => a.key === item.from)?.files[0];
+        if (!first && src) first = (await readFile(join(root, src)).catch(() => null))?.toString("base64");
+      }
+      await log(`[assets] ${mine.id}: generating ${item.key} (${item.capability})`);
+      const images = await generateImages(ctx, provider, item.capability, assetParams(item, style, first), { deadlineMs });
+      if (images.length === 0) throw new GeneratorError("GENERATOR_PROVIDER_ERROR", `no image for ${item.key}`);
+      const paths = assetFilePaths(assetDir, item, images);
+      await writeAssetFiles(root, paths, images);
+      firstOf.set(item.key, images[0]!.base64);
+      items = items.map((a) => (a.key === item.key ? { ...a, files: paths, round, regenerate: undefined } : a));
+    }
+  } catch (err) {
+    const code = err instanceof GeneratorError ? err.code : "";
+    const message = err instanceof Error ? err.message : String(err);
+    // The org's account, not this row, is the problem: wait without spending an attempt.
+    const blocking = ["GENERATOR_NO_CREDITS", "GENERATOR_INVALID_TOKEN", "GENERATOR_NOT_ENABLED", "GENERATOR_NOT_CONNECTED"].includes(code);
+    await log(`[assets] ${mine.id}: ${code || "error"} — ${message}`);
+    if (blocking) alert(ctx, { kind: "asset-generator", task: mine.id, message: `${mine.id}: the asset generator refused (${code}) — ${message}` });
+    await releaseRow(rc, mine, `asset generation failed: ${message}`.slice(0, 200), !blocking);
+    ctx.bus.autonomousDone(false, "asset generation failed");
+    return;
+  }
+  await wipCommit(root, `assets(${mine.id}): round ${round}`);
+  if (await remoteClaimLost(root, mine)) {
+    await log(`[lost] ${mine.id} was taken over before its assets were published — nothing pushed`);
+    await writeLocalClaim(ctx.profileDir, null);
+    ctx.bus.autonomousDone(false, "claim lost");
+    return;
+  }
+  if (await remoteApprovalLost(root, mine)) {
+    await stopUnapproved(rc, [], mine);
+    return;
+  }
+  await pushRootBranch(root, base, mine.branch, []);
+  const head = (await gitQuiet(root, ["rev-parse", "HEAD"])).trim();
+  const before = new Set((prev?.files ?? []).map((f) => f.path));
+  const files = items.flatMap((a) => a.files.map((path) => ({ path, type: "asset", action: before.has(path) ? ("updated" as const) : ("created" as const) })));
+  const res = await publishBooks(bdir, base, `chore(auto): ${mine.id} assets round ${round} ready for review`, async () => {
+    if (!(await dropClaim(bdir, mine))) return false;
+    await applyDocRoundDone(bdir, mine.task, { branch: mine.branch, head, files, assets: items });
+    return true;
+  });
+  await writeLocalClaim(ctx.profileDir, null);
+  await log(`[assets] ${mine.id} round ${round}: ${files.length} file(s) on ${mine.branch} — waiting for review (${res})`);
+  alert(ctx, { kind: "docs-review", task: mine.id, message: `${mine.id} round ${round}: ${files.length} asset file(s) ready for review.` });
+  const hist = await readHistories(root);
+  hist.consecutiveFails = 0;
+  await recordRun(root, hist, "success", `${mine.id} assets round ${round}`, today());
+  ctx.bus.autonomousDone(true, "assets round", { taskId: mine.id });
+}
+
+/**
  * The resume merge could not be resolved: push the pre-merge WIP, return the task to `AI_TODO` blocked
  * (`merge-conflict`, no attempt counted) and alert the managers; a person resolves and presses Retry.
  * @adr 0539 §2
@@ -2034,9 +2161,9 @@ async function releaseRow(rc: RunCtx, mine: LocalClaim, reason: string, countAtt
   const reasons = `${attempts[mine.id]?.last ?? ""}; ${reason}`;
   if (next >= cfg.maxTaskAttempts) {
     // A docs row is never split: at the limit a person decides (ADR-0536).
-    if (isSplitChild(mine.task) || isDocRowId(mine.id)) {
-      const q = isDocRowId(mine.id)
-        ? `The docs round of ${mine.id} failed ${next} times — last: ${reason}. How should the docs be handled (narrow what they cover, change the approach, or skip them)?`
+    if (isSplitChild(mine.task) || isRoundRowId(mine.id)) {
+      const q = isRoundRowId(mine.id)
+        ? `The ${isAssetRowId(mine.id) ? "assets" : "docs"} round of ${mine.id} failed ${next} times — last: ${reason}. How should the docs be handled (narrow what they cover, change the approach, or skip them)?`
         : `${mine.id} (a task already split from a bigger one) failed ${next} times — last: ${reason}. How should it be handled (narrow the scope, change the approach, or drop it)?`;
       await publishBooks(bdir, rootBase.base, `chore(auto): ${mine.id} needs a decision`, async () => (await applyQuestion(bdir, mine, q, true)) !== null);
       alert(ctx, { kind: "task-failed-limit", task: mine.id, message: `${mine.id} failed ${next} times; a decision was requested in USER_QA.` });
@@ -2080,7 +2207,7 @@ export async function releaseClaimOnLeave(ctx: WsHandlerCtx, root: string): Prom
     const cfg = await readAutonomousConfig(ctx.profileDir);
     const { dir: bdir } = await syncBooks(root, rootBase.base);
     if ((await claimState(bdir, mine, cfg.claimTtlHours)) !== "live") return null;
-    const subs = isIntakeClaim(mine) || isDocRowId(mine.id) ? [] : subBranches(bases.subs, mine.id, null);
+    const subs = isIntakeClaim(mine) || isRoundRowId(mine.id) ? [] : subBranches(bases.subs, mine.id, null);
     await checkoutTaskBranch(root, mine.branch, rootBase.base, null).catch(() => undefined);
     await pushWip(ctx, root, mine, subs, "left the project");
     const res = await publishBooks(bdir, rootBase.base, `chore(auto): ${mine.id} returned — ${mine.worker} left the project`, () =>
@@ -2242,7 +2369,7 @@ async function hasWork(bdir: string, profileDir: string): Promise<boolean> {
   const anyOpenApproved = (prefix: string): boolean => approved.some((id) => id.startsWith(prefix) && openAsks.has(id));
   // A DOC row in review waits for a person, not for a cycle (ADR-0536).
   const docs = await readDocs(bdir);
-  const docWork = approved.some((id) => id.startsWith("DOC-") && aiTodo.includes(id) && (docs[id]?.state ?? "pending") === "pending");
+  const docWork = approved.some((id) => isRoundRowId(id) && aiTodo.includes(id) && (docs[id]?.state ?? "pending") === "pending");
   const progress = B.parseClaims(aiProgress);
   return anyOpenApproved("REQ-") || anyOpenApproved("QA-") || anyApproved("TSK-", aiTodo) || docWork || progress.claims.length > 0 || progress.intake.length > 0;
 }

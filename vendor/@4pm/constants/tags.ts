@@ -39,10 +39,10 @@ export const TAGS_PER_ITEM_MAX = 10;
 
 /**
  * System request tags (not part of any tag catalog): put on a USER_TODO row, they limit what intake makes from it —
- * `docs-only` ⇒ only the DOC row of its group, no task. (`asset-only` joins with the asset phase.)
- * @adr 0613
+ * `docs-only` ⇒ only the DOC row of its group, no task; `asset-only` ⇒ only the AST row (generated assets), no task.
+ * @adr 0613 @adr 0615
  */
-export const REQUEST_SCOPE_TAGS = ["docs-only"] as const;
+export const REQUEST_SCOPE_TAGS = ["docs-only", "asset-only"] as const;
 export type RequestScopeTag = (typeof REQUEST_SCOPE_TAGS)[number];
 
 /** The scope tags present in a `Tags` cell. */

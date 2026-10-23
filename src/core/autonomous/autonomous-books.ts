@@ -194,7 +194,7 @@ export function splitIds(v: string): string[] {
   return v
     .split(/[,\s]+/)
     .map((x) => x.trim())
-    .filter((x) => /^(TSK|DOC|QA)-/.test(x));
+    .filter((x) => /^(TSK|DOC|AST|QA)-/.test(x));
 }
 
 /** Parse the `AI_TODO` task table (task + docs rows). */
@@ -216,7 +216,7 @@ export function parseTasks(md: string): { table: MdTable | null; tasks: TaskRow[
       due: get(table, r, "Due"),
       assignees: get(table, r, BOOK_ASSIGNEES_HEADER),
     }))
-    .filter((t) => /^(?:TSK|DOC)-/.test(t.id));
+    .filter((t) => /^(?:TSK|DOC|AST)-/.test(t.id));
   return { table, tasks };
 }
 
@@ -290,7 +290,7 @@ export function parseClaims(md: string): { table: MdTable | null; claims: ClaimR
     attempt: Number(get(table, r, "Attempt")) || 1,
     desc: get(table, r, "Task description"),
   }));
-  return { table, claims: rows.filter((c) => /^(?:TSK|DOC)-/.test(c.id)), intake: rows.filter((c) => isIntakeClaimId(c.id)) };
+  return { table, claims: rows.filter((c) => /^(?:TSK|DOC|AST)-/.test(c.id)), intake: rows.filter((c) => isIntakeClaimId(c.id)) };
 }
 
 /**

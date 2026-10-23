@@ -2523,6 +2523,8 @@ export type AutonomousAlertKind =
   | "pr-resolve-failed"
   // A DOC round finished — its docs wait for a person's review (ADR-0536).
   | "docs-review"
+  // The asset generator refused an AST round (no credits, refused token, not enabled) — the row waits (ADR-0615).
+  | "asset-generator"
   // Intake skipped: a book reached the subscription's monthly new-row limit (ADR-0541).
   | "book-cap"
   // A request / DOC PR was closed without merge — its group waits until Retry (ADR-0563).
