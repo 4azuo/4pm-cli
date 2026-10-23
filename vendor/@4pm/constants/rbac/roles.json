@@ -121,7 +121,10 @@
         "integration.connect",
         "integration.workitem_write",
         "integration.message_write",
-        "integration.page_write"
+        "integration.page_write",
+        "project.ci_read",
+        "project.ci_run",
+        "project.ci_edit"
       ]
     },
     "SA_SE": {
@@ -154,7 +157,9 @@
         "request.create",
         "research.use",
         "research.read",
-        "integration.read"
+        "integration.read",
+        "project.ci_read",
+        "project.ci_run"
       ]
     },
     "QA": {
@@ -176,7 +181,9 @@
         "request.create",
         "research.use",
         "research.read",
-        "integration.read"
+        "integration.read",
+        "project.ci_read",
+        "project.ci_run"
       ]
     },
     "BA": {
@@ -202,7 +209,8 @@
         "request.create",
         "research.use",
         "research.read",
-        "integration.read"
+        "integration.read",
+        "project.ci_read"
       ]
     },
     "MACHINE": {

@@ -4,6 +4,7 @@
 export * from "./ai-prompts";
 export * from "./auth";
 export * from "./billing";
+export * from "./ci-paths";
 export * from "./egress";
 export * from "./error-codes";
 export * from "./machine";

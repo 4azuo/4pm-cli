@@ -81,6 +81,8 @@ export const WsChannels = {
   // save / withdraw / approve-and-apply / reject a change request.
   DIAGRAM_READ: "diagram.read",
   DIAGRAM_WRITE: "diagram.write",
+  /** CI workflow files proposed as a PR / MR from the worker. @api machine-0101 @adr 0606 */
+  CI_PROPOSE: "ci.propose",
   // subagents & skills management (ADR-0153): list/read/write .claude/agents + .claude/skills
   AGENTS_LIST: "agents.list",
   AGENTS_READ: "agents.read",

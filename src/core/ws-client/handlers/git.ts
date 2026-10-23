@@ -1,10 +1,12 @@
 /**
  * Git channel handlers (machine-0008/0021-0024): read-only history/diff over the
- * served project's repos for the dashboard Git tab, plus the rented worker's ssh deploy-key ops.
- * @adr 0089 @adr 0173
+ * served project's repos for the dashboard Git tab, plus the rented worker's ssh deploy-key ops, and a CI workflow
+ * proposal (`ci.propose` — a new branch + PR / MR).
+ * @adr 0089 @adr 0173 @adr 0606
  */
 import {
   WsChannels,
+  type CiProposeRequest,
   type GitCommitDiffRequest,
   type GitCommitRequest,
   type GitDiffRequest,
@@ -18,6 +20,8 @@ import { clientHidden } from "../../fs/client-visibility";
 import { checkGitEnv } from "../../git/git-env";
 import { manageSshKey } from "../../git/git-ssh-key";
 import { gitCommit, gitCommitDiff, gitLog, gitRepos } from "../../git/git-history";
+import { proposeCi } from "../../git/ci-propose";
+import { work } from "../../session/work-tracker";
 import type { WsHandlerCtx } from "../context";
 
 /** Route the git.* channels; returns true when the message was handled. */
@@ -27,6 +31,18 @@ export function handleGitChannels(
   payload: Record<string, unknown>,
 ): boolean {
   switch (message.channel) {
+    case WsChannels.CI_PROPOSE: {
+      // Request/reply (machine-0101): commit workflow files on a new branch and open the PR / MR.
+      const req = payload as unknown as CiProposeRequest;
+      const root = ctx.physicRoot;
+      if (root) {
+        void work
+          .track("bookWrite", "ci.propose", () => proposeCi(root, req))
+          .catch((err: unknown) => ({ ok: false, code: "CI_PROPOSE_FAILED", step: "push" as const, error: err instanceof Error ? err.message : String(err) }))
+          .then((reply) => ctx.send(WsChannels.CI_PROPOSE, reply, message.id));
+      }
+      return true;
+    }
     case WsChannels.GIT_DIFF:
       // Request/reply — HEAD vs working-tree content for Monaco diff. Clamped to the physic
       // root (ADR-0281): the path is project-root-relative, never out of the served root.

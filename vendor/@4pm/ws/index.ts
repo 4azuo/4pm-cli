@@ -10,6 +10,7 @@ export * from "./messages/autonomous-book-groups";
 export * from "./messages/autonomous-book-usage";
 export * from "./messages/autonomous-leave";
 export * from "./messages/checklist-author";
+export * from "./messages/ci";
 export * from "./messages/diagram";
 export * from "./messages/envelope";
 export * from "./messages/er";

@@ -294,6 +294,42 @@ export async function commitToBase(
   }
 }
 
+/**
+ * Commit `edits` onto `origin/<base>` (the repo of `loc`) and push the commit to a **new** branch `branch` — never
+ * `<base>`, never the working tree (a CI proposal, ADR-0606). `env` is added to the push (the git-token scope).
+ * Returns the commit, or `undefined` when the tree did not change. Throws `BaseEditError("no remote base")`, or an
+ * `Error` with git's message (the push refused).
+ * @adr 0606
+ */
+export async function commitToBranch(
+  loc: BaseLocation,
+  branch: string,
+  edits: BaseEdit[],
+  opts: { message: string; machineUsername?: string; env?: NodeJS.ProcessEnv },
+): Promise<string | undefined> {
+  const gitDir = (await g(loc.repoDir, ["rev-parse", "--absolute-git-dir"])).trim();
+  const scratch = await mkdtemp(join(tmpdir(), "4pm-ci-propose-"));
+  await chmod(scratch, 0o755);
+  const index = join(gitDir, `4pm-ci-index-${process.pid}-${Date.now()}`);
+  const name = opts.machineUsername || (await gq(loc.repoDir, ["config", "user.name"])).trim() || "4PM";
+  const email = (await gq(loc.repoDir, ["config", "user.email"])).trim() || `${name.replace(/[^a-zA-Z0-9._-]/g, "") || "4pm"}@users.noreply.4pm`;
+  const env: NodeJS.ProcessEnv = { GIT_INDEX_FILE: index, GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: email, GIT_COMMITTER_NAME: name, GIT_COMMITTER_EMAIL: email };
+  try {
+    const parent = await baseRef(loc, true);
+    if (!parent) throw new BaseEditError("no remote base");
+    await g(loc.repoDir, ["read-tree", parent], env);
+    await applyEdits(loc.repoDir, env, edits, scratch);
+    const tree = (await g(loc.repoDir, ["write-tree"], env)).trim();
+    if (tree === (await g(loc.repoDir, ["rev-parse", `${parent}^{tree}`])).trim()) return undefined;
+    const commit = (await g(loc.repoDir, ["commit-tree", tree, "-p", parent, "-m", opts.message], env)).trim();
+    await g(loc.repoDir, ["push", "-q", "origin", `${commit}:refs/heads/${branch}`], opts.env, 180_000);
+    return commit;
+  } finally {
+    await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
+    await execInProject("rm", ["-f", index], { cwd: loc.repoDir, timeout: 10_000 }).catch(() => undefined);
+  }
+}
+
 /** Fast-forward the root working tree to `origin/<base>` when it is on `<base>`, clean and not held. */
 async function fastForwardRoot(root: string, base: string): Promise<void> {
   const handle = tryAcquireRepo(root, "git", "web edit fast-forward");

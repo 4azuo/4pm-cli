@@ -202,6 +202,12 @@ export const dispatchCommandRequestSchema = z
      */
     aiBypass: z.boolean().optional(),
     /**
+     * Only with `job: "ci-generate"`: the kind of workflow the AI writes — `security` needs the `ciSecurity` plan
+     * feature. The run must be `aiReadOnly` (the YAML comes back for review; the user saves it as a PR).
+     * @adr 0606 @adr 0607
+     */
+    ciKind: z.enum(["ci", "security"]).optional(),
+    /**
      * Per-run AI execution overrides: model/thinking/temperature chosen in the web
      * "AI settings" modal (per-user localStorage), layered over the profile default by the cli.
      * Only meaningful with `ai:true`.

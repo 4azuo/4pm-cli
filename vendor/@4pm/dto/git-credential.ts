@@ -166,6 +166,8 @@ export interface GitCredentialTestStep {
 export interface GitCredentialTestResponse {
   steps: GitCredentialTestStep[];
   repos: GitCredentialRepo[];
+  /** GitHub App permissions CI/CD needs but the installation lacks (`actions:write`, …) — informational. @adr 0606 */
+  ciMissing?: string[];
 }
 
 /** Parsed pieces of a git remote URL (https or scp-like ssh). */

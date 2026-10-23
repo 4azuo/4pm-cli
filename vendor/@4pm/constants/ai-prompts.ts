@@ -347,6 +347,16 @@ const PROMPT_META: PromptMeta[] = [
     untrustedVars: { baseBlock: "request", extraBlock: "request", specContext: "data" },
   },
   {
+    key: "web.ciWorkflowGenerate",
+    ownerApp: "web",
+    phase: 2,
+    title: "CI/CD workflow generate (GitHub Actions / GitLab CI)",
+    description:
+      "Read-only agent: reads the repo, writes the workflow YAML for the request, lints it (actionlint / glab ci lint) and returns it in a <ci-workflows> JSON block for the user to review and save as a PR (ADR-0606/0607). It never edits or pushes.",
+    requiredVars: ["provider", "kind", "request", "existing"],
+    untrustedVars: { request: "request", existing: "data" },
+  },
+  {
     key: "web.evidenceGuideSection",
     ownerApp: "web",
     phase: 2,
