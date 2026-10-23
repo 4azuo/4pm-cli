@@ -573,6 +573,16 @@ const PROMPT_META: PromptMeta[] = [
     untrustedVars: { entries: "data", focus: "request" },
   },
   {
+    key: "web.bookDependsSuggest",
+    ownerApp: "web",
+    phase: 2,
+    title: "AI suggest dependencies (draft)",
+    description:
+      "Read-only: proposes the Depends of the target rows from every book (USER_TODO, AI_TODO, USER_QA, recent AI_DONE) — written into the grid draft for review, never saved (ADR-0613). Keep the JSON array output shape ({id, depends[], reason}).",
+    requiredVars: ["targets", "books"],
+    untrustedVars: { targets: "data", books: "data" },
+  },
+  {
     key: "web.bookVerifyLogic.userTodo",
     ownerApp: "web",
     phase: 2,

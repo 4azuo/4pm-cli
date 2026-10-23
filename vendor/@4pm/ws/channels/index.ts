@@ -203,6 +203,11 @@ export const WsChannels = {
   // cli → server (reply): allocate fresh book group numbers for an intake run — the AI may use only those for
   // its new TSK / QA groups (ADR-0455)
   AUTONOMOUS_BOOK_GROUPS: "autonomous.bookGroups",
+  // cli → server (reply): generate project assets through the org's generator provider — start a generation, poll its
+  // job, fetch one finished image (ADR-0614). The provider token stays on the server.
+  GENERATOR_RUN: "generator.run",
+  GENERATOR_POLL: "generator.poll",
+  GENERATOR_IMAGE: "generator.image",
   // cli → server (one-way): an autonomous condition the project's managers must see (ADR-0371) —
   // protected base, lost claim, attempt limit, task split, task question. The server notifies them.
   AUTONOMOUS_ALERT: "autonomous.alert",

@@ -15,6 +15,7 @@ export * from "./messages/diagram";
 export * from "./messages/envelope";
 export * from "./messages/er";
 export * from "./messages/faq-compose";
+export * from "./messages/generator";
 export * from "./messages/git-token";
 export * from "./messages/memory";
 export * from "./messages/research-ask";

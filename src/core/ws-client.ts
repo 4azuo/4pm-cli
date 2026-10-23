@@ -482,8 +482,8 @@ export class WsClient {
       hasHandledCommand: (commandId) => self.handledCommands.has(commandId),
       markCommandHandled: (commandId) => self.markCommandHandled(commandId),
       send: (channel, data, replyTo) => self.send(channel, data, replyTo ?? null),
-      request<T>(channel: WsChannelName, data: unknown): Promise<T> {
-        return self.request<T>(channel, data);
+      request<T>(channel: WsChannelName, data: unknown, timeoutMs?: number): Promise<T> {
+        return self.request<T>(channel, data, timeoutMs);
       },
       imageFetch: (commandId, imageId) => self.imageFetch(commandId, imageId),
       reportUsage: (events, profile) => self.reportUsage(events, profile),
@@ -1170,11 +1170,12 @@ export class WsClient {
   }
 
   /**
-   * Send a cli → server request and await the reply by envelope id (15s timeout).
+   * Send a cli → server request and await the reply by envelope id (15s timeout unless `timeoutMs` — a generator
+   * call waits for the provider).
    * Used for quota.check before spawning an AI cli.
-   * @adr 0020
+   * @adr 0020 @adr 0614
    */
-  request<T>(channel: WsChannelName, data: unknown): Promise<T> {
+  request<T>(channel: WsChannelName, data: unknown, timeoutMs = 15_000): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       if (!this.socket || !this.sessionKey) {
         reject(new Error("Not connected to the server."));
@@ -1192,7 +1193,7 @@ export class WsClient {
       const timer = setTimeout(() => {
         this.pending.delete(envelope.id);
         reject(new Error("Server did not respond (timeout)."));
-      }, 15_000);
+      }, timeoutMs);
       timer.unref?.();
       this.pending.set(envelope.id, {
         resolve: (value) => resolve(value as T),

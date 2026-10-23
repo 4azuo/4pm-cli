@@ -74,7 +74,8 @@ export interface WsHandlerCtx {
   /** Send one envelope (encrypted payload + per-message wsToken). @arch 0004 */
   send(channel: WsChannelName, data: unknown, replyTo?: string | null): void;
   /** Send a cli → server request and await the reply by envelope id (15s timeout). */
-  request<T>(channel: WsChannelName, data: unknown): Promise<T>;
+  /** cli → server request; `timeoutMs` (default 15 s) for a slow call such as a generator run. */
+  request<T>(channel: WsChannelName, data: unknown, timeoutMs?: number): Promise<T>;
   /** Fetch a Console prompt image blob from the server to materialize on the worker. @adr 0257 */
   imageFetch(commandId: string, imageId: string): Promise<ImageFetchReply>;
   /** usage.report batched to the server; tags each event with the AI profile. @adr 0020 */
