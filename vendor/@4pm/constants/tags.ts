@@ -36,3 +36,17 @@ export const TAG_NAME_MAX = 40;
 export const TAG_DESCRIPTION_MAX = 200;
 /** At most this many tags on one row / discussion. */
 export const TAGS_PER_ITEM_MAX = 10;
+
+/**
+ * System request tags (not part of any tag catalog): put on a USER_TODO row, they limit what intake makes from it —
+ * `docs-only` ⇒ only the DOC row of its group, no task. (`asset-only` joins with the asset phase.)
+ * @adr 0613
+ */
+export const REQUEST_SCOPE_TAGS = ["docs-only"] as const;
+export type RequestScopeTag = (typeof REQUEST_SCOPE_TAGS)[number];
+
+/** The scope tags present in a `Tags` cell. */
+export function requestScopeTags(tagsCell: string): RequestScopeTag[] {
+  const codes = tagsCell.split(/[,\s]+/).map((c) => c.trim());
+  return REQUEST_SCOPE_TAGS.filter((t) => codes.includes(t));
+}

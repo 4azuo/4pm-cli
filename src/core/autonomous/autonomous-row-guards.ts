@@ -2,16 +2,17 @@
  * Row guards of a web book save, checked on the books branch before anything is written: a deleted row
  * must have no dependents left in any book's `Depends`, and a row under a live `AI_PROGRESS` claim (the AI
  * is working on it) may not be added, edited or deleted. A request / question kept as history (a `State`) may not
- * be edited or deleted, and no save may set or change a `State` (the cli is its only writer).
- * @adr 0538 @adr 0543 @adr 0562
+ * be edited or deleted, and no save may set or change a `State` (the cli is its only writer). A changed `Depends` may not
+ * close a dependency cycle across the books.
+ * @adr 0538 @adr 0543 @adr 0562 @adr 0613
  */
-import { bookCellsContentEqual, bookDependents, bookRowsById, liveClaimedIds, parseBookState } from "@4pm/dto";
+import { bookCellsContentEqual, bookDependents, bookDependsGraph, bookRowsById, findDependsCycle, liveClaimedIds, parseBookState } from "@4pm/dto";
 
 /** A guard refusal: the code, the first offending row and what blocks it. */
 export interface RowGuardRefusal {
-  code: "BOOK_ROW_HAS_DEPENDENTS" | "BOOK_ROW_CLAIMED" | "BOOK_ROW_HISTORY";
+  code: "BOOK_ROW_HAS_DEPENDENTS" | "BOOK_ROW_CLAIMED" | "BOOK_ROW_HISTORY" | "BOOK_DEPENDS_CYCLE";
   failedId: string;
-  /** The dependent rows, or the worker holding the claim. */
+  /** The dependent rows, the worker holding the claim, or the cycle path. */
   blockers: string[];
 }
 
@@ -52,6 +53,12 @@ export function checkRowGuards(
     const deps = bookDependents(booksAfter, removed);
     const first = [...deps.entries()][0];
     if (first) return { code: "BOOK_ROW_HAS_DEPENDENTS", failedId: first[0], blockers: first[1] };
+  }
+  // A row added, or whose Depends changed, must not close a cycle (it would wait on itself forever).
+  const dependsChanged = [...next.keys()].filter((id) => !prev.has(id) || (prev.get(id)!.cells.depends ?? "") !== (next.get(id)!.cells.depends ?? ""));
+  if (dependsChanged.length) {
+    const cycle = findDependsCycle(bookDependsGraph(booksAfter), dependsChanged);
+    if (cycle) return { code: "BOOK_DEPENDS_CYCLE", failedId: cycle[0]!, blockers: cycle };
   }
   return null;
 }

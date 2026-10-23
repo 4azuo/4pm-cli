@@ -271,6 +271,35 @@ export async function addDocRows(root: string, before: ReadonlySet<string>, spec
   return added;
 }
 
+/**
+ * The DOC row of a `docs-only` request: `DOC-<group>-001` at the end of AI_TODO, named after the request,
+ * with no task depending on it. Returns its id, or null when it is already there.
+ * @adr 0613 @adr 0536
+ */
+export async function addScopeDocRow(root: string, group: string, src: IntakeSource, spec: SpecDocs): Promise<string | null> {
+  const todo = await B.readBook(root, "AI_TODO.md");
+  const { tasks } = B.parseTasks(todo);
+  const docId = `DOC-${group}-001`;
+  if (tasks.some((t) => t.id === docId)) return null;
+  const what = src.request.replace(/\s+/g, " ").trim().slice(0, 300);
+  const doc: B.TaskRow = {
+    id: docId,
+    priority: "Medium",
+    tag: "docs",
+    depends: [],
+    group: "",
+    desc: `Docs for ${src.id}: ${what}`,
+    title: `Docs: ${src.title || src.id}`,
+    notes: spec.types.length ? `doc types: ${spec.types.join(", ")}` : "docs-only request",
+    team: src.team,
+    tags: src.tags,
+    due: src.due,
+    assignees: src.assignees,
+  };
+  await B.writeBook(root, "AI_TODO.md", B.writeTasks(todo, [...tasks, doc]));
+  return docId;
+}
+
 // ── A docs round: numbering, manifest, overlaps ──────────────────────────────────────────────────
 
 /**

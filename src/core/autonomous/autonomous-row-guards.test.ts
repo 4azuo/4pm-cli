@@ -26,6 +26,16 @@ describe("checkRowGuards", () => {
     expect(checkRowGuards(prev, head, [head], "", TTL)).toBeNull();
   });
 
+  it("refuses a Depends edit that closes a cycle across the books", () => {
+    const prev = head + T1 + T2;
+    const next = head + T1.replace("| High | |", "| High | TSK-000001-002 |") + T2;
+    expect(checkRowGuards(prev, next, [next], "", TTL)).toEqual({
+      code: "BOOK_DEPENDS_CYCLE",
+      failedId: "TSK-000001-001",
+      blockers: ["TSK-000001-001", "TSK-000001-002", "TSK-000001-001"],
+    });
+  });
+
   it("refuses editing a row under a live intake claim", () => {
     const req = "| ID | Group | Depends | Request |\n|---|---|---|---|\n| REQ-000002-001 | | | do x |\n";
     const edited = req.replace("do x", "do y");

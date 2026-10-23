@@ -21,7 +21,7 @@ import {
 import * as B from "./autonomous-books";
 import { cappedBookIds } from "./autonomous";
 import type { AutonomousConfig } from "./autonomous-config";
-import { addDocRows, fillIntakeMeta, intakeSources, readLineage, recordIntakeLineage, writeLineage, type IntakeSource } from "./autonomous-docs";
+import { addDocRows, addScopeDocRow, fillIntakeMeta, intakeSources, readLineage, recordIntakeLineage, writeLineage, type IntakeSource } from "./autonomous-docs";
 import { captureAgentErcs, publishIntakeErcs } from "./autonomous-er";
 import { captureAgentSdcs, publishIntakeSdcs } from "./autonomous-diagram";
 import type { NewErcFile } from "./autonomous-er-store";
@@ -29,6 +29,7 @@ import type { NewSdcFile } from "./autonomous-diagram-store";
 import { dropClaim, type LocalClaim } from "./autonomous-tasks";
 import { servedTeams } from "./autonomous-teams";
 import { readFileInRoot, writeFileInRoot } from "../../utils/safe-path";
+import { requestScopeTags } from "@4pm/constants";
 
 /** The books state of an overlay before the intake agent ran. */
 export interface IntakeBefore {
@@ -123,7 +124,7 @@ export async function captureIntakePatch(
   cfg: Pick<AutonomousConfig, "erDir" | "diagramDir">,
   mine: LocalClaim,
   before: IntakeBefore,
-): Promise<{ patch: IntakePatch } | { stray: string[] }> {
+): Promise<{ patch: IntakePatch } | { stray: string[] } | { outOfScope: string[] }> {
   const groups = mine.groups ?? [];
   const stray = await strayIds(root, before.ids, groups);
   if (stray.length) return { stray };
@@ -138,6 +139,8 @@ export async function captureIntakePatch(
   ]);
   const tasks = B.parseTasks(todo).tasks.filter((t) => !before.ids.AI_TODO.has(t.id) && t.id.startsWith("TSK-"));
   const questions = B.parseQa(qa).rows.filter((q) => !before.ids.USER_QA.has(q.id));
+  // A `docs-only` request (ADR-0613) gets no tasks: a run that wrote some is discarded and re-done.
+  if (tasks.length && before.sources.some((s) => requestScopeTags(s.tags).includes("docs-only"))) return { outOfScope: tasks.map((t) => t.id) };
   // The agent removes each row it analysed (ADR-0562 keeps them, with a State, on the books branch).
   const still = new Set([...B.openRowIds(userTodoNow, "REQ-"), ...B.openRowIds(userQaNow, "QA-")]);
   const taken = [mine.id].filter((id) => !still.has(id));
@@ -248,6 +251,16 @@ export async function applyIntakePatch(
   out.docIds = [];
   if (cfg.docsPhase && spec.types.length) {
     out.docIds = await addDocRows(dir, beforeTodo, spec, (g) => patch.sources[patch.groups.findIndex((x) => bookGroupCode(x) === g)]);
+  }
+  // A `docs-only` request (ADR-0613): its DOC row in the first given group, whatever the DOC-phase switch says.
+  const docsOnly = patch.sources.find((s) => requestScopeTags(s.tags).includes("docs-only"));
+  const docGroup = patch.groups[0] !== undefined ? bookGroupCode(patch.groups[0]) : "";
+  if (docsOnly && docGroup) {
+    const docId = await addScopeDocRow(dir, docGroup, docsOnly, spec);
+    if (docId) {
+      out.docIds.push(docId);
+      await recordIntakeLineage(dir, patch.sources, patch.groups, new Set([docGroup]));
+    }
   }
   const attempts = await B.readAttempts(dir);
   if (attempts[mine.id]) {

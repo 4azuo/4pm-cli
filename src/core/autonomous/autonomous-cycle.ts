@@ -44,7 +44,7 @@ import {
   type PointerEntry,
   type SubmodulePr,
 } from "@4pm/dto";
-import { wrapUntrusted } from "@4pm/constants";
+import { requestScopeTags, wrapUntrusted } from "@4pm/constants";
 import { cappedBookIds } from "./autonomous";
 import { isInQuietHours, readAutonomousConfig, pauseAutonomous, type AutonomousConfig } from "./autonomous-config";
 import { ensureLocalAutonomousFiles, pushRecord, readHistories, todayTickCount, writeHistories, type Histories } from "./autonomous-history";
@@ -136,7 +136,7 @@ import { servesTeam } from "./autonomous-teams";
 import { blockedErGroups, blockingErcCount, captureAgentErcs, publishTaskErcs } from "./autonomous-er";
 import { blockedDiagramGroups, blockingSdcCount, captureAgentSdcs, publishTaskSdcs } from "./autonomous-diagram";
 import type { NewSdcFile } from "./autonomous-diagram-store";
-import { applyDocRoundDone, docManifest, numberNewDocs, readDocs, readLineage, readSpecDocsAt, writeDocs, writeLineage, type DocNumberAllocator, type DocRepo } from "./autonomous-docs";
+import { applyDocRoundDone, docManifest, numberNewDocs, readDocs, readLineage, readSpecDocsAt, writeDocs, writeLineage, type DocNumberAllocator, type DocRepo, type IntakeSource } from "./autonomous-docs";
 import { buildDocsPrompt } from "./autonomous-doc-round";
 import type { NewErcFile } from "./autonomous-er-store";
 import { lifecycle } from "../session/lifecycle";
@@ -168,6 +168,16 @@ such edits are dropped and reported to the project managers.
 TEAMS: a book table may have a \`Team\` column (a team code such as \`FE\`). Copy a request's \`Team\` onto every task
 or question you create from it (add the \`Team\` column after \`ID\` when the table has none); never change the
 \`Team\` of an existing row.`;
+}
+
+/**
+ * The request-scope line of an intake prompt: a `docs-only` request gets no tasks — 4PM adds its DOC row itself.
+ * @adr 0613
+ */
+export function intakeScopeNote(sources: readonly IntakeSource[]): string {
+  const docsOnly = sources.filter((s) => requestScopeTags(s.tags).includes("docs-only")).map((s) => s.id);
+  if (!docsOnly.length) return "";
+  return `\n\nREQUEST SCOPE: ${docsOnly.join(", ")} ${docsOnly.length > 1 ? "are" : "is"} tagged \`docs-only\` — the person wants documentation only. Write NO task (\`TSK-…\`) rows for it; ask a \`USER_QA\` question only when the docs cannot be written without an answer. 4PM adds the request's \`DOC-…\` row itself.`;
 }
 
 /**
@@ -1087,7 +1097,7 @@ async function runClaimed(rc: RunCtx, mine: LocalClaim, resumedClaim: boolean, c
   let out: AiPromptOutcome;
   try {
     const prompt = intake
-      ? buildIntakePrompt(cfg, approved, mine.groups ?? [], contextRel(mine.id)) + submoduleNote(subs, false)
+      ? buildIntakePrompt(cfg, approved, mine.groups ?? [], contextRel(mine.id)) + intakeScopeNote(intakeBefore?.sources ?? []) + submoduleNote(subs, false)
       : isDoc
         ? (await docsRoundPrompt(root, rootBase.base, cfg, mine, conflicts, approved)) + submoduleNote(subs, true)
         : buildImplementPrompt(
@@ -1114,6 +1124,7 @@ async function runClaimed(rc: RunCtx, mine: LocalClaim, resumedClaim: boolean, c
     const cap = await captureIntakePatch(root, ctx.profileDir, cfg, mine, intakeBefore).catch(() => null);
     if (cap && "patch" in cap) patch = cap.patch;
     else if (cap && "stray" in cap) await log(`[intake] ${mine.id} used group ids it was not given (${cap.stray.slice(0, 5).join(", ")}) — discarded`);
+    else if (cap && "outOfScope" in cap) await log(`[intake] ${mine.id} is docs-only but the run wrote tasks (${cap.outOfScope.slice(0, 5).join(", ")}) — discarded`);
   }
   await liftOverlay(root);
   // The agent must stay on the prepared branches — put them back if it wandered.

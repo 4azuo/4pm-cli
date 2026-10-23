@@ -1,6 +1,9 @@
 /**
  * DTO for the user domain (21-api/user-0001…0006).
  */
+import type { OrgOnboarding, UserOnboarding } from "./onboarding";
+import type { ResolvedOverviewLayout } from "./overview-layout";
+import type { UserTutorial } from "./tutorial";
 import { z } from "zod";
 import { ALL_ROLES, isValidRoleSet, type ProjectStatus, type Role, type UserStatus } from "@4pm/constants";
 import {
@@ -61,6 +64,14 @@ export interface UserResponse {
    * @adr 0525
    */
   orgTimezone?: string;
+  /** The caller's onboarding answers; no `completedAt` ⇒ the web opens the wizard. Only on me(). @adr 0610 */
+  onboarding?: UserOnboarding;
+  /** The org onboarding answers (for any member's create wizard). Only on me(). @adr 0610 */
+  orgOnboarding?: OrgOnboarding;
+  /** The resolved Home Overview layout (user → org default → built-in, locks forced visible). Only on me(). @adr 0610 */
+  overview?: ResolvedOverviewLayout;
+  /** Guided tours: on / off + the version of each tour seen. Only on me(). @adr 0612 */
+  tutorial?: UserTutorial;
   /**
    * Whether **this session** is currently idle-locked server-side. Fresh (not cached) on
    * the `me()` response so a reload while locked re-shows the lock overlay. Only on `me()`.

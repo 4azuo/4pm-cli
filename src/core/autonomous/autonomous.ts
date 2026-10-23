@@ -417,6 +417,7 @@ type WebWrite = {
     | "BOOK_CONFLICT"
     | "BOOK_STALE"
     | "BOOK_ROW_HAS_DEPENDENTS"
+    | "BOOK_DEPENDS_CYCLE"
     | "BOOK_ROW_CLAIMED"
     | "BOOK_ROW_HISTORY"
     | "DOC_REVIEW_STALE";

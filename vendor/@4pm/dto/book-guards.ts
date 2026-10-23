@@ -1,8 +1,8 @@
 /**
  * Book row guards shared by the web (warn before a save) and the cli (refuse the save): a row another row
  * still lists in its `Depends` cannot be deleted, and a row under a live `AI_PROGRESS` claim cannot be edited
- * or deleted. Pure functions over the book markdown.
- * @adr 0538
+ * or deleted, and no `Depends` may close a cycle. Pure functions over the book markdown.
+ * @adr 0538 @adr 0613
  */
 import { bookRowsById } from "./autonomous-approval";
 
@@ -34,6 +34,43 @@ export function bookDependents(books: readonly string[], ids: readonly string[])
     }
   }
   return out;
+}
+
+/** Every row's `Depends` across `books`, by row id. */
+export function bookDependsGraph(books: readonly string[]): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const md of books) for (const [id, row] of bookRowsById(md)) out.set(id, dependsIds(row.cells.depends ?? ""));
+  return out;
+}
+
+/**
+ * A dependency cycle through one of `from` (default: every id), as the id path `[a, b, …, a]`, or null. Edges go
+ * from a row to the ids in its `Depends`; ids without an entry have no edges.
+ */
+export function findDependsCycle(edges: ReadonlyMap<string, readonly string[]>, from?: readonly string[]): string[] | null {
+  const done = new Set<string>();
+  const path: string[] = [];
+  const onPath = new Set<string>();
+  /** Depth-first walk; returns the cycle once a back edge closes one. */
+  const visit = (id: string): string[] | null => {
+    if (onPath.has(id)) return [...path.slice(path.indexOf(id)), id];
+    if (done.has(id)) return null;
+    onPath.add(id);
+    path.push(id);
+    for (const next of edges.get(id) ?? []) {
+      const c = visit(next);
+      if (c) return c;
+    }
+    path.pop();
+    onPath.delete(id);
+    done.add(id);
+    return null;
+  };
+  for (const id of from ?? [...edges.keys()]) {
+    const c = visit(id);
+    if (c) return c;
+  }
+  return null;
 }
 
 /** One row of `AI_PROGRESS.md`: a task claim (`TSK-…`) or an intake claim (`REQ-…` / `QA-…`). */

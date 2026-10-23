@@ -312,6 +312,8 @@ export const ErrorCode = {
   BOOK_STALE: "BOOK_STALE",
   // A book save deletes a row other rows still list in `Depends` (ADR-0538). meta.id, meta.dependents.
   BOOK_ROW_HAS_DEPENDENTS: "BOOK_ROW_HAS_DEPENDENTS",
+  /** A `Depends` edit closes a dependency cycle (`meta.cycle`). @adr 0613 */
+  BOOK_DEPENDS_CYCLE: "BOOK_DEPENDS_CYCLE",
   // A book save edits / deletes a row the AI is working on (live AI_PROGRESS claim — ADR-0538). meta.id, meta.worker.
   BOOK_ROW_CLAIMED: "BOOK_ROW_CLAIMED",
   // A book save edits / deletes a request or question kept as history (a `State` — taken in / done, ADR-0562). meta.id.
@@ -602,6 +604,7 @@ export const CLI_ERROR_CODE_MAP: Record<string, { code: ErrorCode; status: numbe
   BOOK_CONFLICT: { code: ErrorCode.BOOK_CONFLICT, status: 409 },
   BOOK_STALE: { code: ErrorCode.BOOK_STALE, status: 409 },
   BOOK_ROW_HAS_DEPENDENTS: { code: ErrorCode.BOOK_ROW_HAS_DEPENDENTS, status: 422 },
+  BOOK_DEPENDS_CYCLE: { code: ErrorCode.BOOK_DEPENDS_CYCLE, status: 422 },
   BOOK_ROW_CLAIMED: { code: ErrorCode.BOOK_ROW_CLAIMED, status: 409 },
   BOOK_ROW_HISTORY: { code: ErrorCode.BOOK_ROW_HISTORY, status: 409 },
   DOC_REVIEW_STALE: { code: ErrorCode.DOC_REVIEW_STALE, status: 409 },
