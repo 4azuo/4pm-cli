@@ -368,6 +368,32 @@ export async function applyBlockedRelease(root: string, mine: LocalClaim, at: { 
   return true;
 }
 
+/**
+ * Release a task whose security review gave no usable verdict twice: drop the claim, put the row back with a note
+ * and mark it blocked (`security-review`, no attempt counted) — it is not picked again until a person presses Retry,
+ * so a reviewer that keeps failing never loops.
+ * @adr 0616
+ */
+export async function applySecurityBlockedRelease(root: string, mine: LocalClaim): Promise<boolean> {
+  if (!(await dropClaim(root, mine))) return false;
+  const attempts = await B.readAttempts(root);
+  attempts[mine.id] = {
+    ...(attempts[mine.id] ?? { count: 0, last: "", at: "" }),
+    blocked: { reason: "security-review", at: new Date().toISOString(), base: "", head: "" },
+  };
+  await B.writeAttempts(root, attempts);
+  const todo = await B.readBook(root, "AI_TODO.md");
+  const { tasks } = B.parseTasks(todo);
+  const back: B.TaskRow = { ...mine.task, notes: appendNote(mine.task.notes, `blocked: security review gave no verdict; WIP on ${mine.branch}`) };
+  await B.writeBook(root, "AI_TODO.md", B.writeTasks(todo, [...tasks.filter((t) => t.id !== mine.id), back]));
+  await B.writeBook(
+    root,
+    "AI_DONE.md",
+    B.appendIncident(await B.readBook(root, "AI_DONE.md"), `${mine.id}: the security review gave no usable verdict twice — blocked until a person presses Retry.`),
+  );
+  return true;
+}
+
 /** Clear the `blocked` mark of `ids` (Retry, or the branch merges cleanly again). Returns whether any was set. @adr 0539 */
 export async function applyUnblock(root: string, ids: readonly string[]): Promise<boolean> {
   const attempts = await B.readAttempts(root);
@@ -396,7 +422,7 @@ export function stillApproved(approvalsText: string, id: string): boolean | null
 /** A Notes cell without the cli's own `attempt N ended: …` / `blocked: …` remarks (`…; WIP on <branch>`). */
 function userNotes(notes: string): string {
   return notes
-    .replace(/(?:^|;\s*)(?:attempt \d+ ended: .*?|blocked: conflicts with \S+); WIP on \S+/g, "")
+    .replace(/(?:^|;\s*)(?:attempt \d+ ended: .*?|blocked: conflicts with \S+|blocked: security review gave no verdict); WIP on \S+/g, "")
     .replace(/^;\s*/, "")
     .trim();
 }

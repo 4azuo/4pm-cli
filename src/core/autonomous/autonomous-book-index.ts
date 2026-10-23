@@ -15,6 +15,8 @@ import {
   parseDocsSidecar,
   parseLineage,
   type BookIndexPayload,
+  DONE_REVIEWS_SIDECAR_REL,
+  parseDoneReviews,
 } from "@4pm/dto";
 import type { WsHandlerCtx } from "../ws-client/context";
 import { approvalRowHash, approvalStates, bookOfRow, type ApprovalBooks } from "./autonomous-approvals";
@@ -61,7 +63,7 @@ export async function buildServedBookIndex(root: string): Promise<BookIndexPaylo
   if (!commitSha || lastSent.get(root) === commitSha) return null;
   const committedAt = (await gitQuiet(root, ["show", "-s", "--format=%cI", ref]).catch(() => "")).trim() || new Date().toISOString();
   const read = async (rel: string): Promise<string> => (await readBooksFile(root, base, rel)) ?? "";
-  const [userTodo, userQa, aiTodo, aiDone, aiProgress, approvalsText, authorsText, attemptsText, docsText, lineageText] = await Promise.all([
+  const [userTodo, userQa, aiTodo, aiDone, aiProgress, approvalsText, authorsText, attemptsText, docsText, lineageText, doneReviewsText] = await Promise.all([
     read("USER_TODO.md"),
     read("USER_QA.md"),
     read("AI_TODO.md"),
@@ -72,6 +74,7 @@ export async function buildServedBookIndex(root: string): Promise<BookIndexPaylo
     read(ATTEMPTS_REL),
     read(DOCS_SIDECAR_REL),
     read(LINEAGE_SIDECAR_REL),
+    read(DONE_REVIEWS_SIDECAR_REL),
   ]);
   const approvals = parseObject(approvalsText);
   const approvalBooks: ApprovalBooks = { userTodo, userQa, aiTodo };
@@ -93,6 +96,7 @@ export async function buildServedBookIndex(root: string): Promise<BookIndexPaylo
     claimedTasks,
     docs: parseDocsSidecar(docsText),
     lineage: parseLineage(lineageText),
+    doneReviews: parseDoneReviews(doneReviewsText),
   });
   return { commitSha, committedAt, truncated, rows };
 }

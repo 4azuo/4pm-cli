@@ -55,7 +55,8 @@ import { isInQuietHours, readAutonomousConfig, pauseAutonomous, type AutonomousC
 import { ensureLocalAutonomousFiles, pushRecord, readHistories, todayTickCount, writeHistories, type Histories } from "./autonomous-history";
 import { AUTO_APPROVER, autoApproveWaiting } from "./autonomous-auto-approve";
 import { buildSecurityPrompt, findingsText, parseSecurityReply, securityMarkdown } from "./autonomous-security";
-import { AUTO_VERIFY_DONE_QUESTION, AUTO_VERIFY_QUESTION, applyVerifyAnswers, parseVerifyAnswers, verifyEntries } from "./autonomous-verify";
+import { AUTO_VERIFY_DONE_QUESTION, AUTO_VERIFY_QUESTION, applyVerifyAnswers, parseVerifyAnswers, parseVerifyFollowUps, verifyEntries } from "./autonomous-verify";
+import { DONE_REVIEWS_SIDECAR_REL, parseDoneReviews } from "@4pm/dto";
 import * as B from "./autonomous-books";
 import {
   aheadOf,
@@ -88,6 +89,7 @@ import {
   applyUnapprovedRelease,
   applyLeaveRelease,
   applyBlockedRelease,
+  applySecurityBlockedRelease,
   applyUnblock,
   claimRowOf,
   dropClaim,
@@ -206,17 +208,6 @@ export function intakeAssetNote(providers: readonly string[]): string {
 }
 
 /**
- * The evidence-off line of the intake / implement prompts (Rigor · Best performance): no design artifacts, no task
- * evidence. "" while the evidence phase is on.
- * @adr 0608
- */
-export function evidenceOffNote(cfg: Pick<AutonomousConfig, "evidencePhase">, step: "intake" | "implement"): string {
-  if (cfg.evidencePhase) return "";
-  const what = step === "intake" ? "only the book rows (tasks / questions)" : "only the code and its tests";
-  return `\n\nEVIDENCE OFF: this project runs without evidence. Write NO UI mockups, NO sequence diagrams, NO ER or system-diagram change requests and NO \`ai-*\` evidence files — ${what}. Ignore any instruction above that asks for them.`;
-}
-
-/**
  * Intake: analyse ONE approved `USER_TODO` request (or answered intake question) into sized tasks. Books, mockups,
  * sequences and change requests only — no git, no code.
  * @adr 0371 phase 3 @adr 0563
@@ -224,7 +215,8 @@ export function evidenceOffNote(cfg: Pick<AutonomousConfig, "evidencePhase">, st
 export function buildIntakePrompt(cfg: AutonomousConfig, approved: readonly string[], groups: readonly number[] = [], contextFile = ""): string {
   const h = cfg.taskSizeHints;
   // Admin override (ADR-0381) for `cli.autonomous.intake`, else the shared registry default.
-  return resolveCliPrompt("cli.autonomous.intake", {
+  // Evidence off (Best performance) has its own prompt without mockups / sequences / change requests (ADR-0616).
+  return resolveCliPrompt(cfg.evidencePhase ? "cli.autonomous.intake" : "cli.autonomous.intakeNoEvidence", {
     booksIntro: booksIntro(approved, cfg),
     // The only group ids the agent may use for new TSK / QA rows — allocated by the server (ADR-0455).
     groupIds: groups.map(bookGroupCode).join(", "),
@@ -239,7 +231,7 @@ export function buildIntakePrompt(cfg: AutonomousConfig, approved: readonly stri
     sMaxLines: h.sMaxLines,
     mMaxFiles: h.mMaxFiles,
     mMaxLines: h.mMaxLines,
-  }) + evidenceOffNote(cfg, "intake");
+  });
 }
 
 /**
@@ -277,7 +269,7 @@ function buildImplementPrompt(
   return (
     booksIntro(approved, cfg) +
     "\n\n" +
-    resolveCliPrompt("cli.autonomous.implement", {
+    resolveCliPrompt(cfg.evidencePhase ? "cli.autonomous.implement" : "cli.autonomous.implementNoEvidence", {
       taskId: mine.id,
       contextFile: contextRel(mine.id),
       group: mine.task.group,
@@ -297,8 +289,7 @@ function buildImplementPrompt(
       diagramDir: cfg.diagramDir,
       erDir: cfg.erDir,
       sequenceDir: cfg.sequenceDir,
-    }) +
-    evidenceOffNote(cfg, "implement")
+    })
   );
 }
 
@@ -1264,18 +1255,18 @@ async function runClaimed(rc: RunCtx, mine: LocalClaim, resumedClaim: boolean, c
     return;
   }
   // Rigor · Full power (ADR-0608): a security review of the task's diff gates the delivery.
-  if (cfg.securityReview && !(await securityGate(rc, mine))) return;
+  if (cfg.securityReview && !(await securityGate(rc, mine, subs))) return;
   await deliverAndFinish(rc, subs, mine, reply?.summary ?? "", capDetail);
 }
 
 /**
  * The security review before delivery: a read-only run over the task diff and `AI_SECURITY.md`. A high / critical
  * finding fails the attempt (the findings become its reason — the next implement sees them); a reply that does not
- * parse twice returns the row without counting an attempt and alerts the managers; a pass commits
+ * parse twice blocks the row until Retry (no attempt counted) and alerts the managers; a pass commits
  * `ai-security-<ID>.md` as task evidence. True = deliver.
- * @adr 0608
+ * @adr 0608 @adr 0616
  */
-async function securityGate(rc: RunCtx, mine: LocalClaim): Promise<boolean> {
+async function securityGate(rc: RunCtx, mine: LocalClaim, subs: { sub: RepoBase; branch: string }[]): Promise<boolean> {
   const { ctx, root, cfg, log } = rc;
   setAutonomousStep("implement", [mine.id]);
   const diff = await gitQuiet(root, ["diff", `origin/${mine.base}...HEAD`]);
@@ -1287,9 +1278,12 @@ async function securityGate(rc: RunCtx, mine: LocalClaim): Promise<boolean> {
     verdict = out.exitCode === 0 && !out.cancelled ? parseSecurityReply(out.output) : null;
   }
   if (!verdict) {
-    await log(`[security] ${mine.id}: the review gave no usable verdict — returned without delivery`);
-    alert(ctx, { kind: "task-failed-limit", task: mine.id, message: `${mine.id}: the security review gave no usable verdict twice; the task was not delivered and waits for the next cycle.` });
-    await releaseRow(rc, mine, "security review unavailable", false);
+    // Blocked until a person's Retry — never an endless implement → review loop (ADR-0616).
+    await log(`[security] ${mine.id}: the review gave no usable verdict twice — blocked until Retry`);
+    await pushWip(ctx, root, mine, subs, "security review gave no verdict");
+    await publishBooks(rc.bdir, rc.rootBase.base, `chore(auto): ${mine.id} blocked — security review gave no verdict`, async () => applySecurityBlockedRelease(rc.bdir, mine));
+    alert(ctx, { kind: "task-failed-limit", task: mine.id, message: `${mine.id}: the security review gave no usable verdict twice; the task is blocked until Retry.` });
+    await writeLocalClaim(ctx.profileDir, null);
     ctx.bus.autonomousDone(false, "security review unavailable");
     return false;
   }
@@ -1784,6 +1778,8 @@ async function autoVerify(rc: RunCtx, file: "AI_TODO.md" | "AI_DONE.md", ids: re
     : resolveCliPrompt("web.verify", { verifyBook: file.replace(/\.md$/, ""), entries, question: AUTO_VERIFY_QUESTION });
   const out = await runAiPrompt(ctx, prompt, cycleRunId(), "local", false, undefined, undefined, true, false, runOverrides(cfg));
   const answers = out.exitCode === 0 && !out.cancelled ? parseVerifyAnswers(out.output, ids) : {};
+  // Done-verify proposals open the row's follow-up review (ADR-0616).
+  const followUps = done && out.exitCode === 0 && !out.cancelled ? parseVerifyFollowUps(out.output, ids) : {};
   if (!Object.keys(answers).length) {
     await log(`[verify] ${ids.join(", ")}: no usable answer`);
     return;
@@ -1791,7 +1787,12 @@ async function autoVerify(rc: RunCtx, file: "AI_TODO.md" | "AI_DONE.md", ids: re
   const res = await publishBooks(bdir, rootBase.base, `chore(auto): AI verify ${Object.keys(answers).join(", ")}`, async () => {
     const cur = await B.readBook(bdir, file);
     const next = applyVerifyAnswers(cur, answers);
-    if (next === cur) return false;
+    if (Object.keys(followUps).length) {
+      const reviews = parseDoneReviews(await B.readBook(bdir, DONE_REVIEWS_SIDECAR_REL));
+      const at = new Date().toISOString();
+      for (const [id, proposals] of Object.entries(followUps)) reviews[id] = { state: "open", proposals, at };
+      await B.writeBook(bdir, DONE_REVIEWS_SIDECAR_REL, JSON.stringify(reviews, null, 2) + "\n");
+    } else if (next === cur) return false;
     await B.writeBook(bdir, file, next);
     return true;
   });

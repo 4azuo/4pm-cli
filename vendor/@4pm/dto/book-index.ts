@@ -13,6 +13,7 @@ import { bookGroupOf } from "./book-ids";
 import { BOOK_ASSIGNEES_MAX, isValidDue, parseAssigneesCell, parseTagsCell } from "./book-meta";
 import { parseBookState } from "./book-state";
 import { formatIssueRef, parseIssueRef } from "./issue-sync";
+import { DONE_REVIEW_STATES, type DoneReviewsSidecar } from "./done-reviews";
 
 /** The books an index row comes from. */
 export const BOOK_INDEX_BOOKS = ["userTodo", "userQa", "aiTodo", "aiDone"] as const;
@@ -67,6 +68,8 @@ export const bookIndexRowSchema = z.object({
   /** USER_TODO: the linked issue ref (`Issue` cell) and the full `Request` text it syncs. */
   issueRef: z.string().max(200).optional(),
   request: z.string().max(BOOK_INDEX_REQUEST_MAX).optional(),
+  /** AI_DONE: its follow-up review — absent when none was proposed. @adr 0616 */
+  doneReview: z.enum(DONE_REVIEW_STATES).optional(),
 });
 export type BookIndexRow = z.infer<typeof bookIndexRowSchema>;
 
@@ -92,6 +95,8 @@ export interface BookIndexInput {
   claimedTasks: Readonly<Record<string, { desc?: string; team?: string; group?: string; tags?: string; due?: string; assignees?: string } | undefined>>;
   docs: DocsSidecar;
   lineage: LineageSidecar;
+  /** `.autonomous.done-reviews.json` (absent from an older cli). @adr 0616 */
+  doneReviews?: DoneReviewsSidecar;
 }
 
 /** Collapse whitespace and cut to `max` chars. */
@@ -199,11 +204,12 @@ export function buildBookIndex(input: BookIndexInput): { rows: BookIndexRow[]; t
       { state: "running" },
     );
   }
-  const done = [...bookRowsById(books.aiDone)].filter(([id]) => /^(TSK|DOC)-/.test(id)).slice(-BOOK_INDEX_DONE_MAX);
+  const done = [...bookRowsById(books.aiDone)].filter(([id]) => /^(TSK|DOC|AST)-/.test(id)).slice(-BOOK_INDEX_DONE_MAX);
   for (const [id, r] of done) {
     const doneAt = stampIso(r.cells.timestamp ?? "");
     const prUrl = prUrlOf(r.cells.notes ?? "");
-    push("aiDone", id, r.team, r.cells, { state: "done", approval: "approved", ...(doneAt ? { doneAt } : {}), ...(prUrl ? { prUrl } : {}) });
+    const review = input.doneReviews?.[id]?.state;
+    push("aiDone", id, r.team, r.cells, { state: "done", approval: "approved", ...(doneAt ? { doneAt } : {}), ...(prUrl ? { prUrl } : {}), ...(review ? { doneReview: review } : {}) });
   }
   const truncated = rows.length > BOOK_INDEX_ROWS_MAX;
   return { rows: truncated ? rows.slice(0, BOOK_INDEX_ROWS_MAX) : rows, truncated };

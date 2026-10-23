@@ -26,7 +26,7 @@ import type {
   AutonomousWriteReply,
   AutonomousWriteRequest,
 } from "@4pm/ws";
-import { APPROVALS_SIDECAR_REL, ARCHIVE_INDEX_REL, AUTHORS_SIDECAR_REL, parseArchiveIndex, DELIVERY_SIDECAR_REL, DOCS_SIDECAR_REL, HISTORIES_REL, LINEAGE_SIDECAR_REL, TICK_LOG_DIR_REL, isSafeRepoDir } from "@4pm/dto";
+import { APPROVALS_SIDECAR_REL, ARCHIVE_INDEX_REL, AUTHORS_SIDECAR_REL, parseArchiveIndex, DELIVERY_SIDECAR_REL, DOCS_SIDECAR_REL, DONE_REVIEWS_SIDECAR_REL, parseDoneReviews, HISTORIES_REL, LINEAGE_SIDECAR_REL, TICK_LOG_DIR_REL, isSafeRepoDir } from "@4pm/dto";
 import {
   readAutonomousConfig,
   readAutonomousConfigSync,
@@ -35,7 +35,7 @@ import {
 } from "./autonomous-config";
 import { readHistories } from "./autonomous-history";
 import { autonomousPolicy, autonomousStep, CLAIM_FILE, lastAutonomousCheck } from "./autonomous-policy";
-import { ATTEMPTS_REL, findTables, replaceRows } from "./autonomous-books";
+import { ATTEMPTS_REL, defaultAssignees, findTables, replaceRows } from "./autonomous-books";
 import { approvalStates, buildApprovalEntries, mergeApprovalWrite, unapproveIds, type ApprovalBooks } from "./autonomous-approvals";
 import { applyDiscussionBatch } from "./autonomous-discussions";
 import { checkRowGuards } from "./autonomous-row-guards";
@@ -288,7 +288,7 @@ export async function readAutonomous(root: string, profileDir: string, req: Auto
     listWorkOutput(root, base || null, cfg.sequenceDir, keepSeq, askers).catch(() => ({ paths: [] as string[], refs: {} as Record<string, string> })),
   ]);
   design.sequences = seqList.paths;
-  const [settings, approvalsAll, authorsAll, attempts, docsAll, lineageAll, deliveryAll, status, ...books] = await Promise.all([
+  const [settings, approvalsAll, authorsAll, attempts, docsAll, lineageAll, deliveryAll, doneReviewsAll, status, ...books] = await Promise.all([
     readAutonomousConfigText(profileDir),
     read(APPROVALS_REL, "{}"),
     read(AUTHORS_REL, "{}"),
@@ -298,6 +298,8 @@ export async function readAutonomous(root: string, profileDir: string, req: Auto
     read(LINEAGE_SIDECAR_REL, "{}"),
     // The AI Done delivery records (ADR-0582).
     read(DELIVERY_SIDECAR_REL, "{}"),
+    // The AI Done follow-up reviews (ADR-0616).
+    read(DONE_REVIEWS_SIDECAR_REL, "{}"),
     getAutonomousStatus(root, profileDir),
     ...Object.values(BOOK_FILES).map((f) => read(f)),
   ]);
@@ -313,6 +315,7 @@ export async function readAutonomous(root: string, profileDir: string, req: Auto
   const docs = filterJsonMap(docsAll, (k) => liveIds.has(k));
   const lineage = filterJsonMap(lineageAll, (k) => liveGroups.has(k));
   const delivery = filterJsonMap(deliveryAll, (k) => liveIds.has(k));
+  const doneReviews = filterJsonMap(doneReviewsAll, (k) => liveIds.has(k));
   // AI Done one page at a time when asked (the AI Done grid — ADR-0563); other readers get every live row (the
   // archive keeps the live book small).
   const done = req.donePage
@@ -347,6 +350,7 @@ export async function readAutonomous(root: string, profileDir: string, req: Auto
     docs,
     lineage,
     delivery,
+    doneReviews,
     mockups: mockList.paths,
     approvalStates: approvalStatesById,
     ...design,
@@ -421,7 +425,8 @@ type WebWrite = {
     | "BOOK_DEPENDS_CYCLE"
     | "BOOK_ROW_CLAIMED"
     | "BOOK_ROW_HISTORY"
-    | "DOC_REVIEW_STALE";
+    | "DOC_REVIEW_STALE"
+    | "DONE_REVIEW_STALE";
   failedId?: string;
   /** The dependent rows / the claiming worker of a row-guard refusal. @adr 0538 */
   blockers?: string[];
@@ -546,7 +551,8 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
       const next = table
         ? replaceRows(cur, table, [...table.rows, table.header.map((h) => (h.toLowerCase() === "id" ? id : /request/i.test(h) ? req.content : ""))])
         : cur.replace(/\s*$/, "\n") + `| ${id} | | | ${tableCell(req.content)} |\n`;
-      await writeFileInRoot(dir, join(dir, BOOK_FILES.userTodo), next);
+      // The posted request is assigned to its requester (ADR-0616).
+      await writeFileInRoot(dir, join(dir, BOOK_FILES.userTodo), defaultAssignees(cur, next, by));
       const authors = await readJsonMap(dir, join(dir, AUTHORS_REL));
       authors[id] = { by, byLabel: req.byLabel ?? by, at: new Date().toISOString() };
       await writeFileInRoot(dir, join(dir, AUTHORS_REL), JSON.stringify(authors, null, 2) + "\n");
@@ -580,6 +586,8 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
         );
         if (refused) return refused;
       }
+      // A row a person adds without an assignee is assigned to them — the requester (ADR-0616).
+      if (req.book !== "aiDone") content = defaultAssignees(current, content, by);
       // Row guards (ADR-0538): no delete while another row depends on it; no change to a row the AI holds.
       if (req.book !== "aiDone") {
         const books = await approvalBooksIn(dir);
@@ -665,6 +673,22 @@ async function applyWebWrite(dir: string, profileDir: string, req: AutonomousWri
       // A person's review of a DOC round (ADR-0536): only the round waiting for it, else stale.
       const res = await applyDocReview(dir, req.review, true, by, req.byLabel ?? by);
       if (!res.ok) return { ok: false, code: "DOC_REVIEW_STALE", failedId: req.review.id, error: res.error };
+      return { ok: true };
+    }
+    case "doneReview": {
+      // Close an AI Done row's follow-up review, or record the rows created from it (ADR-0616) — the server checked who.
+      const reviews = parseDoneReviews(await readText(dir, join(dir, DONE_REVIEWS_SIDECAR_REL), "{}"));
+      const e = reviews[req.rowId];
+      if (!e || e.state !== "open") return { ok: false, code: "DONE_REVIEW_STALE", failedId: req.rowId, error: "DONE_REVIEW_STALE" };
+      reviews[req.rowId] = {
+        ...e,
+        state: "closed",
+        closedBy: by,
+        closedByLabel: req.byLabel ?? by,
+        closedAt: new Date().toISOString(),
+        ...(req.action === "created" && req.createdIds?.length ? { created: req.createdIds.slice(0, 50) } : {}),
+      };
+      await writeFileInRoot(dir, join(dir, DONE_REVIEWS_SIDECAR_REL), JSON.stringify(reviews, null, 2) + "\n");
       return { ok: true };
     }
     case "taskRetry": {

@@ -904,6 +904,8 @@ export interface AutonomousReadReply {
   approvalStates?: Record<string, ApprovalState>;
   /** `.autonomous.docs.json` text — the DOC rows' rounds, state, files and reviews (absent from an older cli). @adr 0536 */
   docs?: string;
+  /** `.autonomous.done-reviews.json` text — AI Done follow-up reviews (absent from an older cli). @adr 0616 */
+  doneReviews?: string;
   /** `.autonomous.lineage.json` text — which request each book group came from. @adr 0537 */
   lineage?: string;
   /** `.autonomous.delivery.json` text — the delivery record of the AI Done rows on this page (absent from an older cli). @adr 0582 */
@@ -1076,7 +1078,10 @@ export type AutonomousWriteRequest =
   // Restore a mockup / sequence file to its content at `rev` as a new books-branch commit (ADR-0515, machine-0086).
   | { kind: "evidenceRestore"; path: string; rev: string; by: string; byLabel?: string }
   // Release a task blocked by a merge conflict with its base — clears `blocked` in the attempts sidecar (ADR-0539).
-  | { kind: "taskRetry"; taskId: string; by: string; byLabel?: string };
+  | { kind: "taskRetry"; taskId: string; by: string; byLabel?: string }
+  // Close an AI Done row's follow-up review, or record the follow-up rows created from it (ADR-0616) — the server
+  // checked who may (assignee / requester / ADMIN / PM).
+  | { kind: "doneReview"; rowId: string; action: "close" | "created"; createdIds?: string[]; by: string; byLabel?: string };
 // (The `cron` install/uninstall kind was retired by ADR-0392 — the daemon schedules ticks itself.)
 export interface AutonomousWriteReply {
   ok: boolean;

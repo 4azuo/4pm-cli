@@ -22,6 +22,8 @@ export interface ProjectModes {
   collaboration: CollaborationMode;
   /** Auto was chosen on create; the merge-rights probe runs once the primary repo is cloned. */
   pendingAuto?: boolean;
+  /** The outcome of that probe, shown once as a banner on the project page. @adr 0616 */
+  autoProbe?: { ok: boolean; reason?: string; at: string };
 }
 
 /** Defaults: Manual · Power efficiency · Team. */
@@ -43,12 +45,18 @@ export type ProjectModesWriteBody = z.infer<typeof projectModesWriteSchema>;
 /** Read the stored modes (missing / invalid ⇒ defaults). */
 export function readProjectModes(raw: unknown): ProjectModes {
   const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const p = (o.autoProbe && typeof o.autoProbe === "object" ? o.autoProbe : null) as Record<string, unknown> | null;
+  const autoProbe =
+    p && typeof p.ok === "boolean" && typeof p.at === "string"
+      ? { ok: p.ok, at: p.at, ...(typeof p.reason === "string" ? { reason: p.reason.slice(0, 300) } : {}) }
+      : null;
   const pick = <T extends string>(list: readonly T[], v: unknown, def: T): T => (list.includes(v as T) ? (v as T) : def);
   return {
     delivery: pick(DELIVERY_MODES, o.delivery, DEFAULT_PROJECT_MODES.delivery),
     rigor: pick(RIGOR_MODES, o.rigor, DEFAULT_PROJECT_MODES.rigor),
     collaboration: pick(COLLABORATION_MODES, o.collaboration, DEFAULT_PROJECT_MODES.collaboration),
     ...(o.pendingAuto === true ? { pendingAuto: true } : {}),
+    ...(autoProbe ? { autoProbe } : {}),
   };
 }
 

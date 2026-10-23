@@ -332,6 +332,10 @@ export const ErrorCode = {
   PROJECT_MODE_MERGE_DENIED: "PROJECT_MODE_MERGE_DENIED",
   // Rigor · Full power needs an outbound reviewer link or pool (ADR-0608).
   PROJECT_MODE_REVIEWER_MISSING: "PROJECT_MODE_REVIEWER_MISSING",
+  // Only the row's assignees (else its requester), ADMIN or the PM may close an AI Done follow-up review (ADR-0616).
+  DONE_REVIEW_FORBIDDEN: "DONE_REVIEW_FORBIDDEN",
+  // The AI Done row has no open follow-up review any more (closed meanwhile, or none) (ADR-0616). meta.id.
+  DONE_REVIEW_STALE: "DONE_REVIEW_STALE",
   // A restore of a deleted branch whose name exists again on the remote (ADR-0540).
   BRANCH_EXISTS: "BRANCH_EXISTS",
   // A restore of a deleted branch whose commit no worker / the host still has (ADR-0540).
@@ -618,6 +622,7 @@ export const CLI_ERROR_CODE_MAP: Record<string, { code: ErrorCode; status: numbe
   BOOK_ROW_CLAIMED: { code: ErrorCode.BOOK_ROW_CLAIMED, status: 409 },
   BOOK_ROW_HISTORY: { code: ErrorCode.BOOK_ROW_HISTORY, status: 409 },
   DOC_REVIEW_STALE: { code: ErrorCode.DOC_REVIEW_STALE, status: 409 },
+  DONE_REVIEW_STALE: { code: ErrorCode.DONE_REVIEW_STALE, status: 409 },
   AUTONOMOUS_SETTING_FORBIDDEN: { code: ErrorCode.AUTONOMOUS_SETTING_FORBIDDEN, status: 403 },
   BRANCH_EXISTS: { code: ErrorCode.BRANCH_EXISTS, status: 409 },
   BRANCH_RESTORE_UNAVAILABLE: { code: ErrorCode.BRANCH_RESTORE_UNAVAILABLE, status: 410 },

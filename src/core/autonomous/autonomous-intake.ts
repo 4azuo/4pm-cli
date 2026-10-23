@@ -27,7 +27,7 @@ import type { AutonomousConfig } from "./autonomous-config";
 import { addAssetRow, addDocRows, addScopeDocRow, fillIntakeMeta, intakeSources, readLineage, recordIntakeLineage, writeLineage, type IntakeSource } from "./autonomous-docs";
 import { captureAgentErcs, publishIntakeErcs } from "./autonomous-er";
 import { captureAgentSdcs, publishIntakeSdcs } from "./autonomous-diagram";
-import type { NewErcFile } from "./autonomous-er-store";
+import { AUTHORS_REL, readJsonMap, type NewErcFile } from "./autonomous-er-store";
 import type { NewSdcFile } from "./autonomous-diagram-store";
 import { dropClaim, type LocalClaim } from "./autonomous-tasks";
 import { servedTeams } from "./autonomous-teams";
@@ -95,7 +95,8 @@ export async function prepareIntakeOverlay(root: string, ids: readonly string[])
   const strippedQa = B.stripStateRows(userQa);
   if (strippedTodo !== userTodo) await B.writeBook(root, "USER_TODO.md", strippedTodo);
   if (strippedQa !== userQa) await B.writeBook(root, "USER_QA.md", strippedQa);
-  return { ids: await cappedBookIds(root), userTodo, userQa, sources: intakeSources(ids, userTodo, userQa) };
+  const authors = (await readJsonMap(root, AUTHORS_REL)) as Record<string, { by?: string }>;
+  return { ids: await cappedBookIds(root), userTodo, userQa, sources: intakeSources(ids, userTodo, userQa, authors) };
 }
 
 /** The new AI_TODO / USER_QA ids whose group is not one of `groups`. @adr 0455 */

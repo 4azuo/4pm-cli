@@ -21,6 +21,7 @@ export * from "./command";
 export * from "./diagram-change";
 export * from "./diagram-model";
 export * from "./discussion";
+export * from "./done-reviews";
 export * from "./er-change";
 export * from "./er-model";
 export * from "./git-credential";

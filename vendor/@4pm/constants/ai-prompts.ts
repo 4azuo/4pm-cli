@@ -248,6 +248,16 @@ const PROMPT_META: PromptMeta[] = [
     requiredVars: ["booksIntro", "groupIds", "sMaxFiles", "sMaxLines", "mMaxFiles", "mMaxLines"],
     // Every repo text the agent reads (books, discussions, evidence guide) is named as data by the prompt itself (ADR-0563).
     untrustedVars: {},
+  },  {
+    key: "cli.autonomous.intakeNoEvidence",
+    ownerApp: "cli",
+    phase: 1,
+    title: "Autonomous — intake (no evidence)",
+    description:
+      "The intake prompt for projects whose evidence phase is off (Rigor · Best performance, ADR-0616): books only — no mockups, sequences or change requests.",
+    requiredVars: ["booksIntro", "groupIds", "sMaxFiles", "sMaxLines", "mMaxFiles", "mMaxLines"],
+    // Every repo text the agent reads (books, discussions, evidence guide) is named as data by the prompt itself (ADR-0563).
+    untrustedVars: {},
   },
   {
     key: "cli.autonomous.implement",
@@ -256,6 +266,15 @@ const PROMPT_META: PromptMeta[] = [
     title: "Autonomous — implement",
     description:
       "Implements exactly one task on the prepared branches (commit only); may add an ER change request (ADR-0453). Its context — mockups, sequence, ER, diagram, answers, discussions, accepted docs, evidence guide — is read from the working tree (ADR-0563), starting from the run's context manifest (ADR-0565). Keep the final JSON status block intact.",
+    requiredVars: ["taskId", "desc", "branch", "subLines"],
+    untrustedVars: { desc: "request", notes: "request", previousTask: "request", conflictPaths: "data" },
+  },  {
+    key: "cli.autonomous.implementNoEvidence",
+    ownerApp: "cli",
+    phase: 1,
+    title: "Autonomous — implement (no evidence)",
+    description:
+      "The implement prompt for projects whose evidence phase is off (Rigor · Best performance, ADR-0616): code and tests only — no evidence files or change requests. Keep the final JSON status block intact.",
     requiredVars: ["taskId", "desc", "branch", "subLines"],
     untrustedVars: { desc: "request", notes: "request", previousTask: "request", conflictPaths: "data" },
   },
@@ -671,6 +690,8 @@ const REPO_OUTPUT: Readonly<Record<string, RepoOutputKind>> = {
   "cli.scaffold.evidenceGuide": true,
   "cli.autonomous.intake": true,
   "cli.autonomous.implement": true,
+  "cli.autonomous.intakeNoEvidence": true,
+  "cli.autonomous.implementNoEvidence": true,
   "cli.autonomous.docs": true,
   "cli.autonomous.split": true,
   "cli.autonomous.securityReview": true,

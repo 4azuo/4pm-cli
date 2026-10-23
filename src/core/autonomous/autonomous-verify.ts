@@ -68,6 +68,17 @@ export function parseVerifyAnswers(out: string, ids: readonly string[]): Record<
   return answers;
 }
 
+/** The `FOLLOWUP [<ID>] text` proposals per row for `ids` (rows without one are absent). @adr 0616 */
+export function parseVerifyFollowUps(out: string, ids: readonly string[]): Record<string, string[]> {
+  const wanted = new Set(ids);
+  const res: Record<string, string[]> = {};
+  for (const line of out.split("\n")) {
+    const f = /^\s*FOLLOWUP\s*\[([^\]]+)\]\s*(.+)$/i.exec(line);
+    if (f && wanted.has(f[1]!.trim())) (res[f[1]!.trim()] ??= []).push(f[2]!.trim().slice(0, 500));
+  }
+  return res;
+}
+
 /** Write `answers` into the `AI verify` column (added once when absent) of the table holding them. */
 export function applyVerifyAnswers(md: string, answers: Record<string, string>): string {
   const ids = Object.keys(answers);

@@ -1,13 +1,13 @@
 /**
  * Tests of the project-mode steps of the engine: the security-review reply parser and its evidence, the automatic AI
- * Verify answers, the rows `auto` may approve, and the evidence-off prompt note.
+ * Verify answers and the rows `auto` may approve.
  * @adr 0608
  */
 import { describe, expect, it } from "vitest";
 import { findingsText, parseSecurityReply, securityMarkdown } from "./autonomous-security";
-import { applyVerifyAnswers, parseVerifyAnswers, verifyEntries } from "./autonomous-verify";
+import { applyVerifyAnswers, parseVerifyAnswers, parseVerifyFollowUps, verifyEntries } from "./autonomous-verify";
+import { defaultAssignees } from "./autonomous-books";
 import { autoApprovableIds } from "./autonomous-auto-approve";
-import { evidenceOffNote } from "./autonomous-cycle";
 
 const TODO = "| ID | Group | Depends | Task description |\n|---|---|---|---|\n| TSK-000001-001 | Login | | Add the login form |\n| TSK-000001-002 | Login | | Add the logout |\n";
 
@@ -52,9 +52,24 @@ describe("automatic approvals", () => {
   });
 });
 
-describe("evidence off", () => {
-  it("adds the note only when the evidence phase is off", () => {
-    expect(evidenceOffNote({ evidencePhase: true }, "intake")).toBe("");
-    expect(evidenceOffNote({ evidencePhase: false }, "implement")).toContain("EVIDENCE OFF");
+describe("follow-up proposals", () => {
+  it("keeps the FOLLOWUP lines per row", () => {
+    expect(parseVerifyFollowUps("[TSK-000001-001] OK\nFOLLOWUP [TSK-000001-001] add a test\nFOLLOWUP [TSK-000001-001] fix logout", ["TSK-000001-001"])).toEqual({
+      "TSK-000001-001": ["add a test", "fix logout"],
+    });
+  });
+});
+
+describe("default assignees", () => {
+  const me = "11111111-2222-3333-4444-555555555555";
+  it("assigns a new row without assignee to its requester, keeps old rows and set assignees", () => {
+    const next = TODO + "| TSK-000001-003 | Login | | Add remember me |\n";
+    const out = defaultAssignees(TODO, next, me);
+    expect(out).toContain("| Assignees |");
+    expect(out).toMatch(/TSK-000001-003.*11111111-2222-3333-4444-555555555555/);
+    expect(out).not.toMatch(/TSK-000001-001.*11111111/);
+  });
+  it("leaves the book unchanged for a non-user writer", () => {
+    expect(defaultAssignees(TODO, TODO + "| TSK-000001-003 | Login | | x |\n", "auto")).toBe(TODO + "| TSK-000001-003 | Login | | x |\n");
   });
 });

@@ -37,6 +37,8 @@ import {
   type DocsSidecar,
   type LineageSidecar,
   type SpecDocs,
+  formatAssigneesCell,
+  isValidAssigneesCell,
 } from "@4pm/dto";
 import * as B from "./autonomous-books";
 import { git, gitQuiet, type RepoBase } from "./autonomous-git";
@@ -124,8 +126,12 @@ export interface IntakeSource {
   title: string;
 }
 
-/** The request text + team of each intake id (`REQ-…` from USER_TODO, an intake `QA-…` from USER_QA). */
-export function intakeSources(ids: readonly string[], userTodo: string, userQa: string): IntakeSource[] {
+/**
+ * The request text + team of each intake id (`REQ-…` from USER_TODO, an intake `QA-…` from USER_QA). A request with no
+ * `Assignees` is assigned to its requester (the author in `authors`), so its tasks and their AI Done rows are too.
+ * @adr 0616
+ */
+export function intakeSources(ids: readonly string[], userTodo: string, userQa: string, authors: Record<string, { by?: string }> = {}): IntakeSource[] {
   const qa = new Map(B.parseQa(userQa).rows.map((q) => [q.id, q]));
   return ids.map((id) => {
     if (id.startsWith("REQ-")) {
@@ -135,13 +141,18 @@ export function intakeSources(ids: readonly string[], userTodo: string, userQa: 
         team: cellOf(userTodo, id, "team"),
         tags: cellOf(userTodo, id, "tags"),
         due: cellOf(userTodo, id, "due"),
-        assignees: cellOf(userTodo, id, "assignees"),
+        assignees: cellOf(userTodo, id, "assignees") || requesterCell(authors[id]?.by),
         title: cellOf(userTodo, id, "title"),
       };
     }
     const q = qa.get(id);
     return { id, request: q ? `${q.original}\nQ: ${q.question}\nA: ${q.answer}` : "", team: q?.team ?? "", tags: q?.tags ?? "", due: q?.due ?? "", assignees: q?.assignees ?? "", title: q?.title ?? "" };
   });
+}
+
+/** The `Assignees` cell naming a requester (a user id), or "" (no author, or not a user id — e.g. `auto`). */
+function requesterCell(by: string | undefined): string {
+  return by && isValidAssigneesCell(by) ? formatAssigneesCell([by]) : "";
 }
 
 /** One cell (`column` lower-cased) of a row, via the books parser; "" when none. */

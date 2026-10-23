@@ -11,7 +11,7 @@
  * USER_TODO / USER_QA rows the cycle used keep a `State` (last column) instead of being removed.
  * @adr 0371 @adr 0450 @adr 0543 @adr 0549 @adr 0562
  */
-import { ATTEMPTS_SIDECAR_REL, BOOK_ASSIGNEES_HEADER, BOOK_STATE_HEADER, clampBookTitle, parseBookState } from "@4pm/dto";
+import { ATTEMPTS_SIDECAR_REL, BOOK_ASSIGNEES_HEADER, BOOK_STATE_HEADER, clampBookTitle, formatAssigneesCell, isValidAssigneesCell, parseAssigneesCell, parseBookState } from "@4pm/dto";
 import { readFileInRoot, writeFileInRoot } from "../../utils/safe-path";
 import { join } from "node:path";
 
@@ -362,6 +362,43 @@ function insertColumns(table: MdTable, after: string, names: string[]): MdTable 
 }
 
 /**
+ * Rows added by a person (in `next`, not in `prev`) with no `Assignees` are assigned to that person — the requester
+ * (`by`, a user id; anything else ⇒ unchanged). The column is added after `Due` (else the meta anchor) when missing.
+ * @adr 0616 @adr 0585
+ */
+export function defaultAssignees(prev: string, next: string, by: string): string {
+  if (!isValidAssigneesCell(by) || !parseAssigneesCell(by).length) return next;
+  const before = new Set<string>();
+  for (const t of findTables(prev)) {
+    const idc = col(t.header, "ID");
+    if (idc >= 0) for (const r of t.rows) before.add((r[idc] ?? "").trim());
+  }
+  let out = next;
+  for (let k = 0; ; k++) {
+    const t = findTables(out)[k];
+    if (!t) return out;
+    const idc = col(t.header, "ID");
+    if (idc < 0) continue;
+    const isNew = (r: string[]): boolean => {
+      const id = (r[idc] ?? "").trim();
+      return !!id && !before.has(id);
+    };
+    const ac = col(t.header, BOOK_ASSIGNEES_HEADER);
+    if (!t.rows.some((r) => isNew(r) && !(ac >= 0 && (r[ac] ?? "").trim()))) continue;
+    const table = ac >= 0 ? t : insertColumns(t, col(t.header, "Due") >= 0 ? "Due" : metaAnchor(t), [BOOK_ASSIGNEES_HEADER]);
+    const a = col(table.header, BOOK_ASSIGNEES_HEADER);
+    const rows = table.rows.map((r) => {
+      if (!isNew(r) || (r[a] ?? "").trim()) return r;
+      const copy = [...r];
+      while (copy.length < table.header.length) copy.push("");
+      copy[a] = formatAssigneesCell([by]);
+      return copy;
+    });
+    out = replaceRows(out, table, rows);
+  }
+}
+
+/**
  * Upgrade a Done table in place: `Group` + `Depends` after `ID`, `Evidence` after `Files` and `Delivery` after
  * `Evidence`, keeping every other column (e.g. the web's `AI verify`).
  * @adr 0400 @adr 0404 @adr 0563
@@ -620,8 +657,9 @@ export interface AttemptEntry {
    * presses Retry or the branch merges cleanly again (`base` / `head` = the shas it was blocked at). @adr 0539
    * `pr-closed`: the request / DOC PR of its group was closed without merge; `attempt-limit`: a request's intake failed
    * `maxTaskAttempts` times — both wait for Retry. @adr 0563
+   * `security-review`: the security review gave no usable verdict twice — waits for Retry. @adr 0616
    */
-  blocked?: { reason: "merge-conflict" | "pr-closed" | "attempt-limit"; at: string; base: string; head: string; url?: string };
+  blocked?: { reason: "merge-conflict" | "pr-closed" | "attempt-limit" | "security-review"; at: string; base: string; head: string; url?: string };
 }
 
 /** Read the attempts map (`{}` on any error). */
