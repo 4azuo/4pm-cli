@@ -31,6 +31,7 @@ import type { GitAuthMethod } from "@4pm/dto";
 import { configureGitAuth } from "../../git/git-auth";
 import { requestGitSnapshot } from "../../git/git-snapshot";
 import { probeRepo } from "../../git/repo-probe";
+import { probePush } from "../../git/push-probe";
 import { pauseAutonomous } from "../../autonomous/autonomous-config";
 import { clearAutonomousProjectState, setAutonomousPolicy, setAutonomousServedProject } from "../../autonomous/autonomous-policy";
 import { onReconnectVerifyClaim, releaseClaimOnLeave, setAutonomousLeaving } from "../../autonomous/autonomous-cycle";
@@ -193,6 +194,11 @@ export function handleProjectChannels(
     case WsChannels.REPO_PROBE: {
       // Probe a repo branch for the create wizard (ADR-0370, project-0076) with this worker's git creds.
       void probeRepo(payload as unknown as RepoProbeRequest).then((reply) => ctx.send(WsChannels.REPO_PROBE, reply, message.id));
+      return true;
+    }
+    case WsChannels.REPO_PUSH_PROBE: {
+      // Merge-rights probe before Delivery · Auto (ADR-0608, project-0135).
+      void probePush(ctx.physicRoot).then((reply) => ctx.send(WsChannels.REPO_PUSH_PROBE, reply, message.id));
       return true;
     }
     case WsChannels.PROJECT_PUBLISH: {

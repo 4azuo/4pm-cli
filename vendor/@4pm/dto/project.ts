@@ -11,6 +11,7 @@ import { TEMPLATE_KINDS, type ProjectTemplateSelection } from "./template";
 import { readMcpServers, type McpApprovedServer } from "./mcp";
 import { readProjectNetworkSettings, DEFAULT_NETWORK_MODE, type ProjectNetworkSettings } from "./network";
 import { classifyProjectFailure, type ProjectFailCode } from "./project-failure";
+import { DEFAULT_PROJECT_MODES, projectModesSchema, readProjectModes, type ProjectModes } from "./project-modes";
 
 /** Lightweight project-manager (PM) summary shown in list/detail rows. */
 export interface ProjectManagerSummary {
@@ -206,6 +207,8 @@ export const createProjectRequestSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().max(2000).optional(),
   machineUserId: z.string().guid().optional(),
+  /** Project modes; missing ⇒ Manual · Power efficiency · Team. @adr 0608 */
+  modes: projectModesSchema.optional(),
 });
 export type CreateProjectRequest = z.infer<typeof createProjectRequestSchema>;
 
@@ -496,6 +499,8 @@ export interface ProjectSettings {
   mcp: { servers: McpApprovedServer[] };
   /** Network egress policy of the project's AI runs. @adr 0439 */
   network: ProjectNetworkSettings;
+  /** Delivery × Rigor × Collaboration presets. @adr 0608 */
+  modes: ProjectModes;
 }
 
 /** Defaults applied when a project settings key is absent. @adr 0081 @adr 0082 @adr 0113 */
@@ -509,6 +514,7 @@ export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
   alerts: [],
   mcp: { servers: [] },
   network: { mode: DEFAULT_NETWORK_MODE, allow: [], deny: [] },
+  modes: DEFAULT_PROJECT_MODES,
   outboundReview: {
     enabled: false,
     ruleCheck: false,
@@ -625,6 +631,7 @@ export function readProjectSettings(
     alerts: readProjectAlertRules(settings),
     mcp: { servers: readMcpServers(settings?.mcp) },
     network: readProjectNetworkSettings(settings?.network),
+    modes: readProjectModes(settings?.modes),
     memory: {
       mode: PROJECT_MEMORY_MODES.includes(memory.mode as ProjectMemoryMode)
         ? (memory.mode as ProjectMemoryMode)

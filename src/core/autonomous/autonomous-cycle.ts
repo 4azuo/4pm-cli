@@ -14,8 +14,8 @@
  */
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readFile, readdir, rm, stat } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { logger } from "../../common/logger/logger";
 import type { WsHandlerCtx } from "../ws-client/context";
 import { cancelActiveRun, runAiPrompt, type AiPromptOutcome, type AiRunOverrides } from "../ws-client/command-dispatch";
@@ -53,6 +53,9 @@ import { requestScopeTags, wrapUntrusted } from "@4pm/constants";
 import { cappedBookIds } from "./autonomous";
 import { isInQuietHours, readAutonomousConfig, pauseAutonomous, type AutonomousConfig } from "./autonomous-config";
 import { ensureLocalAutonomousFiles, pushRecord, readHistories, todayTickCount, writeHistories, type Histories } from "./autonomous-history";
+import { AUTO_APPROVER, autoApproveWaiting } from "./autonomous-auto-approve";
+import { buildSecurityPrompt, findingsText, parseSecurityReply, securityMarkdown } from "./autonomous-security";
+import { AUTO_VERIFY_DONE_QUESTION, AUTO_VERIFY_QUESTION, applyVerifyAnswers, parseVerifyAnswers, verifyEntries } from "./autonomous-verify";
 import * as B from "./autonomous-books";
 import {
   aheadOf,
@@ -128,7 +131,7 @@ import {
 } from "./autonomous-intake";
 import { archiveBooks } from "./autonomous-archive";
 import { syncBooksToBase } from "./autonomous-books-sync";
-import { branchProtection } from "../git/git-host";
+import { branchProtection, mergePullRequest } from "../git/git-host";
 import { alertClosedPrs, applyDeliveryStates, deliveryStates, pointerAdvance, prState, refreshPrStates } from "./autonomous-pr-states";
 import { applyPointerAdvance, pushRootBranch, recordPointerEntry, submoduleFiles, withoutGitlinks, type SubBranch } from "./autonomous-submodules";
 import { assetFilePaths, assetParams, assetsToGenerate, planFromNotes, writeAssetFiles } from "./autonomous-assets";
@@ -137,14 +140,14 @@ import { captureRepo, recordDeliveries } from "./autonomous-delivery";
 import { readProfileConfig } from "../../config/profile";
 import { activeProvider, claudeHomeDirs } from "../../utils/ai-cli";
 import { checkClaudeUsage } from "../ai/claude-usage";
-import { appendFileInRoot, readFileInRoot } from "../../utils/safe-path";
+import { appendFileInRoot, readFileInRoot, writeFileInRoot } from "../../utils/safe-path";
 import { withEgressRun } from "../network/egress-env";
 import { isSequenceFile, repairSequenceFiles, type SequenceFixer } from "./autonomous-mermaid";
 import { servesTeam } from "./autonomous-teams";
 import { blockedErGroups, blockingErcCount, captureAgentErcs, publishTaskErcs } from "./autonomous-er";
 import { blockedDiagramGroups, blockingSdcCount, captureAgentSdcs, publishTaskSdcs } from "./autonomous-diagram";
 import type { NewSdcFile } from "./autonomous-diagram-store";
-import { applyDocRoundDone, docManifest, numberNewDocs, readDocs, readLineage, readSpecDocsAt, writeDocs, writeLineage, type DocNumberAllocator, type DocRepo, type IntakeSource } from "./autonomous-docs";
+import { applyDocReview, applyDocRoundDone, docManifest, numberNewDocs, readDocs, readLineage, readSpecDocsAt, writeDocs, writeLineage, type DocNumberAllocator, type DocRepo, type IntakeSource } from "./autonomous-docs";
 import { buildDocsPrompt } from "./autonomous-doc-round";
 import type { NewErcFile } from "./autonomous-er-store";
 import { lifecycle } from "../session/lifecycle";
@@ -203,6 +206,17 @@ export function intakeAssetNote(providers: readonly string[]): string {
 }
 
 /**
+ * The evidence-off line of the intake / implement prompts (Rigor · Best performance): no design artifacts, no task
+ * evidence. "" while the evidence phase is on.
+ * @adr 0608
+ */
+export function evidenceOffNote(cfg: Pick<AutonomousConfig, "evidencePhase">, step: "intake" | "implement"): string {
+  if (cfg.evidencePhase) return "";
+  const what = step === "intake" ? "only the book rows (tasks / questions)" : "only the code and its tests";
+  return `\n\nEVIDENCE OFF: this project runs without evidence. Write NO UI mockups, NO sequence diagrams, NO ER or system-diagram change requests and NO \`ai-*\` evidence files — ${what}. Ignore any instruction above that asks for them.`;
+}
+
+/**
  * Intake: analyse ONE approved `USER_TODO` request (or answered intake question) into sized tasks. Books, mockups,
  * sequences and change requests only — no git, no code.
  * @adr 0371 phase 3 @adr 0563
@@ -225,7 +239,7 @@ export function buildIntakePrompt(cfg: AutonomousConfig, approved: readonly stri
     sMaxLines: h.sMaxLines,
     mMaxFiles: h.mMaxFiles,
     mMaxLines: h.mMaxLines,
-  });
+  }) + evidenceOffNote(cfg, "intake");
 }
 
 /**
@@ -283,7 +297,8 @@ function buildImplementPrompt(
       diagramDir: cfg.diagramDir,
       erDir: cfg.erDir,
       sequenceDir: cfg.sequenceDir,
-    })
+    }) +
+    evidenceOffNote(cfg, "implement")
   );
 }
 
@@ -683,6 +698,8 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
     // --- Housekeeping on the books (no tokens): PR states, DOC PRs, fold, done marks, archive; then the books sync ---
     await housekeeping(rc).catch((e) => log(`[warn] housekeeping: ${String(e)}`));
     await syncBooksToBase(root, rootBase, cfg, log).catch(() => undefined);
+    // Best performance (ADR-0608): requests and AI Todo rows waiting for an approval are approved as `auto`.
+    if (cfg.autoApprove) await autoApproveWaiting(ctx, bdir, rootBase.base, log).catch((e) => log(`[warn] auto-approve: ${String(e)}`));
 
     // --- Auto-resolve one conflicting 4PM PR before any new work (ADR-0539 §5) ---------------------
     if (!mine && cfg.autoResolvePrConflicts && !(await allAiProfilesExhausted(ctx, cfg))) {
@@ -1246,7 +1263,51 @@ async function runClaimed(rc: RunCtx, mine: LocalClaim, resumedClaim: boolean, c
     await finishDocRound(rc, mine, subs, reply?.summary ?? "", capDetail);
     return;
   }
+  // Rigor · Full power (ADR-0608): a security review of the task's diff gates the delivery.
+  if (cfg.securityReview && !(await securityGate(rc, mine))) return;
   await deliverAndFinish(rc, subs, mine, reply?.summary ?? "", capDetail);
+}
+
+/**
+ * The security review before delivery: a read-only run over the task diff and `AI_SECURITY.md`. A high / critical
+ * finding fails the attempt (the findings become its reason — the next implement sees them); a reply that does not
+ * parse twice returns the row without counting an attempt and alerts the managers; a pass commits
+ * `ai-security-<ID>.md` as task evidence. True = deliver.
+ * @adr 0608
+ */
+async function securityGate(rc: RunCtx, mine: LocalClaim): Promise<boolean> {
+  const { ctx, root, cfg, log } = rc;
+  setAutonomousStep("implement", [mine.id]);
+  const diff = await gitQuiet(root, ["diff", `origin/${mine.base}...HEAD`]);
+  const security = await readFileInRoot(root, join(root, "AI_SECURITY.md"), "utf8").catch(() => "");
+  const prompt = buildSecurityPrompt(mine.id, mine.task.desc, diff, security);
+  let verdict = null as ReturnType<typeof parseSecurityReply>;
+  for (let i = 0; i < 2 && !verdict; i++) {
+    const out = await runAiPrompt(ctx, prompt, cycleRunId(), "local", false, undefined, undefined, true, false, runOverrides(cfg));
+    verdict = out.exitCode === 0 && !out.cancelled ? parseSecurityReply(out.output) : null;
+  }
+  if (!verdict) {
+    await log(`[security] ${mine.id}: the review gave no usable verdict — returned without delivery`);
+    alert(ctx, { kind: "task-failed-limit", task: mine.id, message: `${mine.id}: the security review gave no usable verdict twice; the task was not delivered and waits for the next cycle.` });
+    await releaseRow(rc, mine, "security review unavailable", false);
+    ctx.bus.autonomousDone(false, "security review unavailable");
+    return false;
+  }
+  if (verdict.verdict === "fail") {
+    const reason = `security review failed: ${findingsText(verdict.findings).replace(/\n/g, " · ")}`.slice(0, 1500);
+    await log(`[security] ${mine.id}: fail (${verdict.findings.length} finding(s))`);
+    emitEvent(ctx, "task.failed", mine.id, { taskId: mine.id, group: taskGroup(mine.id), reason: reason.slice(0, 300) });
+    await releaseRow(rc, mine, reason);
+    ctx.bus.autonomousDone(false, "security review failed");
+    return false;
+  }
+  const rel = `${cfg.evidenceDir}/AI_DONE/${mine.id}/ai-security-${mine.id}.md`;
+  await mkdir(dirname(join(root, rel)), { recursive: true });
+  await writeFileInRoot(root, join(root, rel), securityMarkdown(mine.id, verdict));
+  await gitQuiet(root, ["add", "--", rel]);
+  await gitQuiet(root, ["-c", "user.name=4PM", "-c", "user.email=noreply@4pm.app", "commit", "-q", "-m", `docs(${mine.id}): security review`]);
+  await log(`[security] ${mine.id}: pass (${verdict.findings.length} finding(s))`);
+  return true;
 }
 
 /** Today (UTC) as `YYYY-MM-DD`. */
@@ -1330,6 +1391,12 @@ async function finishIntake(rc: RunCtx, mine: LocalClaim, patch: IntakePatch, su
       const out = await deliverBranch(rc, mine, subs, `${mine.id}: design (mockups / sequence diagrams)`, `The UI mockups and sequence diagrams of ${mine.id} (4PM autonomous intake). The group's docs and tasks start once this is merged.`);
       delivery = out.delivery;
       pointers = out.pointers;
+      // Delivery · Auto (ADR-0608): a request PR that fell back from the direct merge is merged at once (not while it
+      // waits for submodule PRs).
+      if (rc.cfg.autoMergeRequestPr && delivery.state === "open" && delivery.url && !pointers) {
+        const merged = await mergePullRequest(rootBase.url, delivery.url);
+        await log(`[intake] ${mine.id}: auto-merge of the request PR — ${"error" in merged ? `failed (${merged.error})` : merged.result}`);
+      }
       notes = delivery.url ? `PR ${delivery.url}` : `merged into ${rootBase.base}`;
     } catch (err) {
       const reason = `request PR failed: ${err instanceof Error ? err.message : String(err)}`;
@@ -1387,6 +1454,10 @@ async function publishIntake(rc: RunCtx, mine: LocalClaim, capDetail: CapDetail)
     return;
   }
   await reportNewBookRows(ctx, bdir, before);
+  // Best performance (ADR-0608): the rows this intake created are approved as `auto` right away.
+  if (cfg.autoApprove) await autoApproveWaiting(ctx, bdir, rootBase.base, log).catch((e) => log(`[warn] auto-approve: ${String(e)}`));
+  // Full power (ADR-0608): the new tasks get an automatic AI Verify (informational).
+  if (cfg.autoVerifyBooks) await autoVerify(rc, "AI_TODO.md", patch.tasks.map((t) => t.id), false).catch((e) => log(`[warn] auto-verify: ${String(e)}`));
   const hist = await readHistories(root);
   hist.consecutiveFails = 0;
   await recordRun(root, hist, "success", `${mine.id} taken in`, today());
@@ -1690,10 +1761,41 @@ async function deliverAndFinish(rc: RunCtx, subs: { sub: RepoBase; branch: strin
   await writeLocalClaim(ctx.profileDir, null);
   await log(`[done] ${mine.id} — ${delivered.notes} (${fin})`);
   emitEvent(ctx, "task.done", mine.id, { taskId: mine.id, group: taskGroup(mine.id), prUrl: delivered.prUrl ?? "" });
+  // Full power (ADR-0608): the finished row gets an automatic done-verify (informational).
+  if (cfg.autoVerifyDone && fin === "pushed") await autoVerify(rc, "AI_DONE.md", [mine.id], true).catch((e) => log(`[warn] auto-verify: ${String(e)}`));
   const hist = await readHistories(root);
   hist.consecutiveFails = 0;
   await recordRun(root, hist, "success", `${mine.id} delivered`, today());
   ctx.bus.autonomousDone(true, "task done", { taskId: mine.id, ...capDetail });
+}
+
+/**
+ * Automatic AI Verify of `ids` in `file` (Rigor · Full power): the books' read-only verify prompt, its one-line answers
+ * written to the `AI verify` column on the books branch. Informational — never blocks, a failure changes nothing.
+ * @adr 0608
+ */
+async function autoVerify(rc: RunCtx, file: "AI_TODO.md" | "AI_DONE.md", ids: readonly string[], done: boolean): Promise<void> {
+  const { ctx, bdir, rootBase, cfg, log } = rc;
+  if (!ids.length) return;
+  const entries = verifyEntries(await B.readBook(bdir, file), ids);
+  if (!entries) return;
+  const prompt = done
+    ? resolveCliPrompt("web.verifyDone", { entries, question: AUTO_VERIFY_DONE_QUESTION })
+    : resolveCliPrompt("web.verify", { verifyBook: file.replace(/\.md$/, ""), entries, question: AUTO_VERIFY_QUESTION });
+  const out = await runAiPrompt(ctx, prompt, cycleRunId(), "local", false, undefined, undefined, true, false, runOverrides(cfg));
+  const answers = out.exitCode === 0 && !out.cancelled ? parseVerifyAnswers(out.output, ids) : {};
+  if (!Object.keys(answers).length) {
+    await log(`[verify] ${ids.join(", ")}: no usable answer`);
+    return;
+  }
+  const res = await publishBooks(bdir, rootBase.base, `chore(auto): AI verify ${Object.keys(answers).join(", ")}`, async () => {
+    const cur = await B.readBook(bdir, file);
+    const next = applyVerifyAnswers(cur, answers);
+    if (next === cur) return false;
+    await B.writeBook(bdir, file, next);
+    return true;
+  });
+  await log(`[verify] ${Object.keys(answers).length} row(s) verified in ${file} (${res})`);
 }
 
 /**
@@ -2046,14 +2148,17 @@ async function runAssetRound(rc: RunCtx, mine: LocalClaim): Promise<void> {
   const head = (await gitQuiet(root, ["rev-parse", "HEAD"])).trim();
   const before = new Set((prev?.files ?? []).map((f) => f.path));
   const files = items.flatMap((a) => a.files.map((path) => ({ path, type: "asset", action: before.has(path) ? ("updated" as const) : ("created" as const) })));
-  const res = await publishBooks(bdir, base, `chore(auto): ${mine.id} assets round ${round} ready for review`, async () => {
+  // Best performance accepts the round at once as `auto` (ADR-0608); otherwise it waits for a person's review.
+  const autoAccept = cfg.autoApprove;
+  const res = await publishBooks(bdir, base, `chore(auto): ${mine.id} assets round ${round} ${autoAccept ? "accepted automatically" : "ready for review"}`, async () => {
     if (!(await dropClaim(bdir, mine))) return false;
     await applyDocRoundDone(bdir, mine.task, { branch: mine.branch, head, files, assets: items });
+    if (autoAccept) await applyDocReview(bdir, { id: mine.id, round, decision: "proceed", opinion: "" }, true, AUTO_APPROVER, AUTO_APPROVER);
     return true;
   });
   await writeLocalClaim(ctx.profileDir, null);
-  await log(`[assets] ${mine.id} round ${round}: ${files.length} file(s) on ${mine.branch} — waiting for review (${res})`);
-  alert(ctx, { kind: "docs-review", task: mine.id, message: `${mine.id} round ${round}: ${files.length} asset file(s) ready for review.` });
+  await log(`[assets] ${mine.id} round ${round}: ${files.length} file(s) on ${mine.branch} — ${autoAccept ? "accepted automatically" : "waiting for review"} (${res})`);
+  if (!autoAccept) alert(ctx, { kind: "docs-review", task: mine.id, message: `${mine.id} round ${round}: ${files.length} asset file(s) ready for review.` });
   const hist = await readHistories(root);
   hist.consecutiveFails = 0;
   await recordRun(root, hist, "success", `${mine.id} assets round ${round}`, today());

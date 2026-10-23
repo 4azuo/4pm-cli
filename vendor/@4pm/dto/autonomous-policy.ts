@@ -61,6 +61,20 @@ export interface ProjectAutonomousSettings {
   archiveAfterDays: number;
   /** The books-sync PR into `<base>` is refreshed at most this often (minutes, 1–1440, default 10). */
   booksSyncMinutes: number;
+  /** Merge the intake request PR (mockups / sequences) once pushed (Delivery · Auto, default off). @adr 0608 */
+  autoMergeRequestPr: boolean;
+  /** Merge the books-sync PR when refreshed (Delivery · Auto, default off). @adr 0608 */
+  autoMergeBooksSync: boolean;
+  /** Run the book-logic AI Verify on the rows an intake just published (Full power, default off). @adr 0608 */
+  autoVerifyBooks: boolean;
+  /** Run the done-verify on a row that just reached AI_DONE (Full power, default off). @adr 0608 */
+  autoVerifyDone: boolean;
+  /** Security review of each task's diff before delivery; a high / critical finding fails the attempt (default off). @adr 0608 */
+  securityReview: boolean;
+  /** Intake / implement write mockups, sequences, ER / diagram change requests and task evidence (default on). @adr 0608 */
+  evidencePhase: boolean;
+  /** New requests and intake rows are approved by the server as `auto`; AST rounds auto-accept (default off). @adr 0608 */
+  autoApprove: boolean;
 }
 
 /** The project-scoped keys (a worker settings write carrying one is refused). */
@@ -83,6 +97,13 @@ export const PROJECT_AUTONOMOUS_KEYS = [
   "docsPhase",
   "archiveAfterDays",
   "booksSyncMinutes",
+  "autoMergeRequestPr",
+  "autoMergeBooksSync",
+  "autoVerifyBooks",
+  "autoVerifyDone",
+  "securityReview",
+  "evidencePhase",
+  "autoApprove",
 ] as const satisfies readonly (keyof ProjectAutonomousSettings)[];
 
 /** Lower bound of `runTimeoutMinutes`. */
@@ -108,6 +129,13 @@ export const DEFAULT_PROJECT_AUTONOMOUS_SETTINGS: ProjectAutonomousSettings = {
   docsPhase: true,
   archiveAfterDays: 30,
   booksSyncMinutes: 10,
+  autoMergeRequestPr: false,
+  autoMergeBooksSync: false,
+  autoVerifyBooks: false,
+  autoVerifyDone: false,
+  securityReview: false,
+  evidencePhase: true,
+  autoApprove: false,
 };
 
 /** Coerce an unknown object into full project-scoped settings (missing / invalid ⇒ default). */
@@ -119,6 +147,7 @@ export function readProjectAutonomousSettings(raw: unknown): ProjectAutonomousSe
     const t = typeof v === "string" ? v.trim().replace(/\/+$/, "") : "";
     return t && isSafeRepoDir(t) ? t : def;
   };
+  const bool = (v: unknown, def: boolean): boolean => (typeof v === "boolean" ? v : def);
   const claimTtlHours = Math.max(1, num(o.claimTtlHours, d.claimTtlHours));
   const h = (o.taskSizeHints && typeof o.taskSizeHints === "object" ? o.taskSizeHints : {}) as Record<string, unknown>;
   return {
@@ -151,6 +180,13 @@ export function readProjectAutonomousSettings(raw: unknown): ProjectAutonomousSe
     docsPhase: typeof o.docsPhase === "boolean" ? o.docsPhase : d.docsPhase,
     archiveAfterDays: Math.min(3650, Math.max(1, Math.floor(num(o.archiveAfterDays, d.archiveAfterDays)))),
     booksSyncMinutes: Math.min(1440, Math.max(1, Math.floor(num(o.booksSyncMinutes, d.booksSyncMinutes)))),
+    autoMergeRequestPr: bool(o.autoMergeRequestPr, d.autoMergeRequestPr),
+    autoMergeBooksSync: bool(o.autoMergeBooksSync, d.autoMergeBooksSync),
+    autoVerifyBooks: bool(o.autoVerifyBooks, d.autoVerifyBooks),
+    autoVerifyDone: bool(o.autoVerifyDone, d.autoVerifyDone),
+    securityReview: bool(o.securityReview, d.securityReview),
+    evidencePhase: bool(o.evidencePhase, d.evidencePhase),
+    autoApprove: bool(o.autoApprove, d.autoApprove),
   };
 }
 
@@ -332,6 +368,13 @@ export const projectAutonomousPolicyWriteSchema = z
         docsPhase: z.boolean().optional(),
         archiveAfterDays: z.number().int().min(1).max(3650).optional(),
         booksSyncMinutes: z.number().int().min(1).max(1440).optional(),
+        autoMergeRequestPr: z.boolean().optional(),
+        autoMergeBooksSync: z.boolean().optional(),
+        autoVerifyBooks: z.boolean().optional(),
+        autoVerifyDone: z.boolean().optional(),
+        securityReview: z.boolean().optional(),
+        evidencePhase: z.boolean().optional(),
+        autoApprove: z.boolean().optional(),
       })
       .strict()
       .optional(),

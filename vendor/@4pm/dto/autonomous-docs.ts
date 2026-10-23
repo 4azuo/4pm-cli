@@ -305,7 +305,7 @@ export const docReviewSchema = z
     round: z.number().int().min(1).max(999),
     decision: z.enum(["proceed", "revise"]),
     opinion: z.string().max(DOC_OPINION_MAX).default(""),
-    /** AST rows (ADR-0615): the assets to generate again, each with its instruction. */
+    /** AST rows: the assets to generate again, each with its instruction. @adr 0615 */
     regenerate: z.array(z.object({ key: z.string().min(1).max(64), opinion: z.string().trim().min(1).max(DOC_OPINION_MAX) })).max(50).optional(),
   })
   .refine((r) => r.decision === "proceed" || r.opinion.trim().length > 0 || (r.regenerate?.length ?? 0) > 0, { message: "an opinion is required to revise" });

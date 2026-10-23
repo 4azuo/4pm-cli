@@ -34,6 +34,7 @@ export * from "./onboarding";
 export * from "./org";
 export * from "./overview-layout";
 export * from "./project-failure";
+export * from "./project-modes";
 export * from "./project";
 export * from "./storage";
 export * from "./template";

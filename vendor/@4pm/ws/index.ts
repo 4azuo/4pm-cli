@@ -18,6 +18,7 @@ export * from "./messages/faq-compose";
 export * from "./messages/generator";
 export * from "./messages/git-token";
 export * from "./messages/memory";
+export * from "./messages/project-modes";
 export * from "./messages/research-ask";
 export * from "./messages/run-slot";
 export * from "./messages/support-answer";

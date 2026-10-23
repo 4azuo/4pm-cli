@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { isBooksSetPath } from "@4pm/dto";
 import type { AutonomousConfig } from "./autonomous-config";
 import { booksDirsNow, deliverPr, git, gitQuiet, hasRemoteBranch, type RepoBase } from "./autonomous-git";
+import { mergePullRequest } from "../git/git-host";
 import { directMerge } from "./autonomous-merge";
 import { booksBranch } from "./autonomous-tasks";
 
@@ -39,7 +40,7 @@ export type BooksSyncResult = "skipped" | "unchanged" | "opened" | "merged" | "f
 export async function syncBooksToBase(
   root: string,
   rootBase: RepoBase,
-  cfg: Pick<AutonomousConfig, "booksSyncMinutes" | "skipPullRequest">,
+  cfg: Pick<AutonomousConfig, "booksSyncMinutes" | "skipPullRequest" | "autoMergeBooksSync">,
   log: (line: string) => Promise<void>,
 ): Promise<BooksSyncResult> {
   const base = rootBase.base;
@@ -90,6 +91,12 @@ export async function syncBooksToBase(
       return "failed";
     }
     await log(`[books-sync] PR ${pr.url ?? "open"}`);
+    // Delivery · Auto (ADR-0608): the books-sync PR is merged once refreshed.
+    if (cfg.autoMergeBooksSync && pr.url) {
+      const merged = await mergePullRequest(rootBase.url, pr.url);
+      await log(`[books-sync] auto-merge — ${"error" in merged ? `failed (${merged.error})` : merged.result}`);
+      if (!("error" in merged) && merged.result === "merged") return "merged";
+    }
     return "opened";
   } catch (err) {
     await log(`[warn] books sync: ${err instanceof Error ? err.message : String(err)}`);

@@ -328,6 +328,10 @@ export const ErrorCode = {
   DOC_REVIEW_STALE: "DOC_REVIEW_STALE",
   // Only ADMIN / the project's PM may change this autonomous setting (`skipPullRequest` — ADR-0539). meta.key.
   AUTONOMOUS_SETTING_FORBIDDEN: "AUTONOMOUS_SETTING_FORBIDDEN",
+  // Delivery · Auto refused: the merge-rights probe failed on the primary repo's base (ADR-0608). meta.reason.
+  PROJECT_MODE_MERGE_DENIED: "PROJECT_MODE_MERGE_DENIED",
+  // Rigor · Full power needs an outbound reviewer link or pool (ADR-0608).
+  PROJECT_MODE_REVIEWER_MISSING: "PROJECT_MODE_REVIEWER_MISSING",
   // A restore of a deleted branch whose name exists again on the remote (ADR-0540).
   BRANCH_EXISTS: "BRANCH_EXISTS",
   // A restore of a deleted branch whose commit no worker / the host still has (ADR-0540).

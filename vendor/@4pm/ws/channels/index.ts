@@ -137,6 +137,9 @@ export const WsChannels = {
   // server → cli (reply): probe a repo branch before creating a project (ADR-0370, project-0076) —
   // branch existence, remote branches, and whether the source ref already holds a 4PM scaffold.
   REPO_PROBE: "repo.probe",
+  // server → cli (reply): may the project credential push the primary repo's `<base>`? — before Delivery · Auto
+  // is accepted (ADR-0608)
+  REPO_PUSH_PROBE: "repo.pushProbe",
   // server → cli (request / reply): let the AI resolve a pull request's conflicts — merge the target into the
   // head branch on the worker, resolve, push (never forced). The reply only says whether it started (ADR-0539).
   GIT_PR_RESOLVE: "git.prResolve",
@@ -208,6 +211,9 @@ export const WsChannels = {
   GENERATOR_RUN: "generator.run",
   GENERATOR_POLL: "generator.poll",
   GENERATOR_IMAGE: "generator.image",
+  // cli → server (reply): sign approvals as the actor `auto` for rows the cli just published — only while the
+  // project's rigor is Best performance (ADR-0608)
+  AUTONOMOUS_AUTO_APPROVE: "autonomous.autoApprove",
   // cli → server (one-way): an autonomous condition the project's managers must see (ADR-0371) —
   // protected base, lost claim, attempt limit, task split, task question. The server notifies them.
   AUTONOMOUS_ALERT: "autonomous.alert",

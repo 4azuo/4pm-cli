@@ -280,6 +280,16 @@ const PROMPT_META: PromptMeta[] = [
     untrustedVars: { desc: "request", notes: "request", reasons: "data", diff: "data" },
   },
   {
+    key: "cli.autonomous.securityReview",
+    ownerApp: "cli",
+    phase: 1,
+    title: "Autonomous — security review",
+    description:
+      "Read-only (Rigor · Full power, ADR-0608): reviews one finished task's diff against AI_SECURITY.md before delivery; a high / critical finding fails the attempt. Keep the final JSON verdict block intact.",
+    requiredVars: ["taskId", "desc", "diff", "security"],
+    untrustedVars: { desc: "request", diff: "data", security: "data" },
+  },
+  {
     key: "cli.autonomous.fixDiagram",
     ownerApp: "cli",
     phase: 1,
@@ -663,6 +673,7 @@ const REPO_OUTPUT: Readonly<Record<string, RepoOutputKind>> = {
   "cli.autonomous.implement": true,
   "cli.autonomous.docs": true,
   "cli.autonomous.split": true,
+  "cli.autonomous.securityReview": true,
   "cli.git.prResolve": true,
   "server.generators": true,
   "web.guide": "guide",

@@ -87,7 +87,7 @@ export function isDocRowId(id: string): boolean {
  * @adr 0453 @adr 0536
  */
 export function designGroupKey(id: string): string {
-  const m = /^(?:TSK|DOC|QA)-(\d{6})-/.exec(id);
+  const m = /^(?:TSK|DOC|AST|QA)-(\d{6})-/.exec(id);
   return m ? `TSK-${m[1]}` : "";
 }
 

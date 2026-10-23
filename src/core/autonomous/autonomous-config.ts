@@ -81,6 +81,18 @@ export interface AutonomousConfig {
   archiveAfterDays: number;
   /** The books-sync PR is refreshed at most this often (minutes) — policy-only. @adr 0563 */
   booksSyncMinutes: number;
+  /**
+   * Project-mode knobs — policy-only: auto-merge the request / books-sync PRs, automatic AI Verify, the security review,
+   * the evidence phase, automatic approvals.
+   * @adr 0608
+   */
+  autoMergeRequestPr: boolean;
+  autoMergeBooksSync: boolean;
+  autoVerifyBooks: boolean;
+  autoVerifyDone: boolean;
+  securityReview: boolean;
+  evidencePhase: boolean;
+  autoApprove: boolean;
 }
 
 /** Lower bound of `runTimeoutMinutes`. @adr 0452 */
@@ -114,6 +126,13 @@ export const DEFAULT_AUTONOMOUS_CONFIG: AutonomousConfig = {
   docsPhase: true,
   archiveAfterDays: 30,
   booksSyncMinutes: 10,
+  autoMergeRequestPr: false,
+  autoMergeBooksSync: false,
+  autoVerifyBooks: false,
+  autoVerifyDone: false,
+  securityReview: false,
+  evidencePhase: true,
+  autoApprove: false,
 };
 
 /** The config file path under a profile dir. */
@@ -176,6 +195,13 @@ function coerce(raw: unknown): AutonomousConfig {
     docsPhase: d.docsPhase,
     archiveAfterDays: d.archiveAfterDays,
     booksSyncMinutes: d.booksSyncMinutes,
+    autoMergeRequestPr: d.autoMergeRequestPr,
+    autoMergeBooksSync: d.autoMergeBooksSync,
+    autoVerifyBooks: d.autoVerifyBooks,
+    autoVerifyDone: d.autoVerifyDone,
+    securityReview: d.securityReview,
+    evidencePhase: d.evidencePhase,
+    autoApprove: d.autoApprove,
   };
 }
 

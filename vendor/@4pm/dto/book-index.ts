@@ -181,7 +181,7 @@ export function buildBookIndex(input: BookIndexInput): { rows: BookIndexRow[]; t
   for (const [id, r] of bookRowsById(books.aiTodo)) {
     if (!/^(TSK|DOC)-/.test(id)) continue;
     inTodo.add(id);
-    const doc = id.startsWith("DOC-") ? docs[id] : undefined;
+    const doc = id.startsWith("DOC-") || id.startsWith("AST-") ? docs[id] : undefined;
     push("aiTodo", id, r.team, r.cells, {
       state: doc?.state === "review" ? "review" : "open",
       ...(doc ? { reviewRound: doc.round } : {}),
