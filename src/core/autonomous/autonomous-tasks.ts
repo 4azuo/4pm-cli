@@ -14,7 +14,7 @@ import * as B from "./autonomous-books";
 import { isMerged, type RepoBase } from "./autonomous-git";
 import { evidenceCell, moveTaskEvidence, rehomeTaskLinks } from "./autonomous-evidence";
 import { readFileInRoot } from "../../utils/safe-path";
-import { APPROVALS_SIDECAR_REL, BOOK_STATE, mergeWait, approvalEntrySchema, bookRowStates, bookRowTeam, buildDependsWaiting, type DeliveryRecord, type PointerEntry, type WaitingItem } from "@4pm/dto";
+import { APPROVALS_SIDECAR_REL, BOOK_STATE, mergeWait, approvalEntrySchema, bookGroupOf, bookRowStates, bookRowTeam, buildDependsWaiting, type DeliveryRecord, type PointerEntry, type WaitingItem } from "@4pm/dto";
 import { verifiedApprovedIds } from "./autonomous-approvals";
 import { servesTeam } from "./autonomous-teams";
 import { docRunnable, readDocs, readLineage } from "./autonomous-docs";
@@ -166,7 +166,9 @@ export interface Candidate {
  * while its docs entry is pending (never in `review`) and is not held back by its group's change requests; a
  * `DOC-…` dependency is satisfied once accepted (in AI Done) **and** its DOC PR is merged into `<base>`, and never
  * counts toward the merged rule. Every DOC / task row of a group whose request PR is not merged waits (`mergeWait`).
- * @adr 0536 @adr 0563
+ * A `REQ-…` dependency waits like a request's (`buildDependsWaiting`: taken in and every row of its groups done); the
+ * row's own source request is ignored, so a group never waits on itself.
+ * @adr 0536 @adr 0561 @adr 0563
  */
 export async function pickTask(
   root: string,
@@ -175,11 +177,12 @@ export async function pickTask(
 ): Promise<Candidate | null> {
   // A team-restricted worker only takes its teams' tasks (ADR-0450).
   const served = (team: string | undefined): boolean => (opts.profileDir ? servesTeam(opts.profileDir, team) : true);
-  const [todo, prog, done, qa, attempts, approved, docs, lineage] = await Promise.all([
+  const [todo, prog, done, qa, userTodo, attempts, approved, docs, lineage] = await Promise.all([
     B.readBook(root, "AI_TODO.md"),
     B.readBook(root, "AI_PROGRESS.md"),
     B.readBook(root, "AI_DONE.md"),
     B.readBook(root, "USER_QA.md"),
+    B.readBook(root, "USER_TODO.md"),
     B.readAttempts(root),
     approvedIds(root),
     readDocs(root),
@@ -202,6 +205,13 @@ export async function pickTask(
   const qaRows = new Map(B.parseQa(qa).rows.map((q) => [q.id, q]));
   const claimed = new Set(claims.map((c) => c.id));
   const rank = (p: string): number => ({ high: 0, medium: 1, low: 2 })[p.trim().toLowerCase()] ?? 1;
+  // `REQ-…` deps use the intake rule (ADR-0561): taken in, and no open row left in the groups made from it.
+  const requestWaitingOf = buildDependsWaiting({
+    pendingRequests: new Set(B.openRowIds(userTodo, "REQ-")),
+    openIds: [...B.parseTasks(todo).tasks.map((t) => t.id), ...claims.map((c) => c.id), ...B.parseQa(qa).rows.filter(B.qaOpen).map((q) => q.id)],
+    doneIds: new Set(doneMap.keys()),
+    lineage,
+  });
   const groupNum = (id: string): number => Number(/^(?:TSK|DOC)-(\d+)/.exec(id)?.[1] ?? 9999);
   const tasks = B.parseTasks(todo)
     .tasks.map((t, i) => ({ t, i }))
@@ -221,6 +231,9 @@ export async function pickTask(
         return !q || !B.qaOpen(q) || (q.answer.trim().length > 0 && approved.has(d));
       });
     if (!qaOk) continue;
+    const own = lineage[bookGroupOf(t.id) ?? ""];
+    const reqDeps = t.depends.filter((d) => d.startsWith("REQ-") && d !== own?.source && d !== own?.root);
+    if (requestWaitingOf(reqDeps).length > 0) continue;
     // The group's request PR / DOC PR must be in <base> first: the branch starts from it (ADR-0563).
     if (mergeWait(t, lineage, docs)) continue;
     const docDeps = t.depends.filter((d) => d.startsWith("DOC-"));
