@@ -314,12 +314,12 @@ export const ErrorCode = {
   BOOK_ROW_HAS_DEPENDENTS: "BOOK_ROW_HAS_DEPENDENTS",
   /** A `Depends` edit closes a dependency cycle (`meta.cycle`). @adr 0613 */
   BOOK_DEPENDS_CYCLE: "BOOK_DEPENDS_CYCLE",
-  /** Generator providers: no connection / not enabled for the project / token refused / no credits / provider failure. @adr 0614 */
-  GENERATOR_NOT_CONNECTED: "GENERATOR_NOT_CONNECTED",
-  GENERATOR_NOT_ENABLED: "GENERATOR_NOT_ENABLED",
-  GENERATOR_INVALID_TOKEN: "GENERATOR_INVALID_TOKEN",
-  GENERATOR_NO_CREDITS: "GENERATOR_NO_CREDITS",
-  GENERATOR_PROVIDER_ERROR: "GENERATOR_PROVIDER_ERROR",
+  /** External services: no connection / not enabled for the project / token refused / no credits / service failure.  0614 */
+  EXTERNAL_SERVICE_NOT_CONNECTED: "EXTERNAL_SERVICE_NOT_CONNECTED",
+  EXTERNAL_SERVICE_NOT_ENABLED: "EXTERNAL_SERVICE_NOT_ENABLED",
+  EXTERNAL_SERVICE_INVALID_TOKEN: "EXTERNAL_SERVICE_INVALID_TOKEN",
+  EXTERNAL_SERVICE_NO_CREDITS: "EXTERNAL_SERVICE_NO_CREDITS",
+  EXTERNAL_SERVICE_ERROR: "EXTERNAL_SERVICE_ERROR",
   // A book save edits / deletes a row the AI is working on (live AI_PROGRESS claim — ADR-0538). meta.id, meta.worker.
   BOOK_ROW_CLAIMED: "BOOK_ROW_CLAIMED",
   // A book save edits / deletes a request or question kept as history (a `State` — taken in / done, ADR-0562). meta.id.

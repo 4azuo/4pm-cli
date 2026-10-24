@@ -1,0 +1,28 @@
+# CI for the standalone 4pm-cli repo (ADR-0617): builds from the committed vendor/ subset with no
+# monorepo (ADR-0194), so a pull request here is checked before the monorepo bumps the submodule.
+# Lint runs only in the monorepo — the ESLint config lives at its root, not in this repo.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # No lockfile in this repo — the ranges in package.json resolve fresh on every run.
+      - run: npm install --no-audit --no-fund
+      # Fail only on high/critical, as in the monorepo (ADR-0136).
+      - run: npm audit --audit-level=high
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build

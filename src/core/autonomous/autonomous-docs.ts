@@ -341,7 +341,7 @@ export async function addAssetRow(
     group: groupTasks[0]?.group ?? "",
     desc: `Assets for ${src.id}: ${items.map((a) => a.key).join(", ")}`.slice(0, 500),
     title: `Assets: ${src.title || src.id}`,
-    notes: `${items.length} asset(s) — generated through the project's generator, reviewed in rounds`,
+    notes: `${items.length} asset(s) — generated through the project's external service, reviewed in rounds`,
     team: src.team,
     tags: src.tags,
     due: src.due,

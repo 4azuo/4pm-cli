@@ -7,7 +7,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DEFAULT_ASSET_DIR, parseAssetItems, readSpecAssetDir, type AssetItem } from "@4pm/dto";
-import type { GeneratorImage, GeneratorParams } from "@4pm/ws";
+import type { ExternalServiceImage, ExternalServiceParams } from "@4pm/ws";
 import { gitQuiet } from "./autonomous-git";
 
 /** At most this many assets are generated per round; the rest wait for the next one. */
@@ -36,7 +36,7 @@ export function assetsToGenerate(items: readonly AssetItem[], round: number): As
 }
 
 /** The provider-neutral parameters of one asset. */
-export function assetParams(item: AssetItem, style: string, firstFrame?: string): GeneratorParams {
+export function assetParams(item: AssetItem, style: string, firstFrame?: string): ExternalServiceParams {
   const parts = [item.description];
   if (item.regenerate) parts.push(`Change from the previous version: ${item.regenerate}`);
   if (style) parts.push(`Project style: ${style}`);
@@ -63,7 +63,7 @@ function safeLabel(label: string): string {
  * Repo paths of an asset's images: one image ⇒ `<assetDir>/<path>` (`.png` added); several ⇒ a folder
  * `<assetDir>/<path without .png>/<label>.png`.
  */
-export function assetFilePaths(assetDir: string, item: AssetItem, images: readonly GeneratorImage[]): string[] {
+export function assetFilePaths(assetDir: string, item: AssetItem, images: readonly ExternalServiceImage[]): string[] {
   const base = `${assetDir}/${item.path}`.replace(/\/+/g, "/");
   if (images.length === 1) return [base.endsWith(".png") ? base : `${base}.png`];
   const folder = base.replace(/\.png$/, "");
@@ -77,7 +77,7 @@ export function assetFilePaths(assetDir: string, item: AssetItem, images: readon
 }
 
 /** Write the images (base64 PNG) at their repo paths under `root`. */
-export async function writeAssetFiles(root: string, paths: readonly string[], images: readonly GeneratorImage[]): Promise<void> {
+export async function writeAssetFiles(root: string, paths: readonly string[], images: readonly ExternalServiceImage[]): Promise<void> {
   for (let i = 0; i < paths.length; i++) {
     const abs = join(root, paths[i]!);
     await mkdir(dirname(abs), { recursive: true });

@@ -260,7 +260,7 @@ function normalize(raw: unknown): AutonomousPolicy | null {
     allowed: o.allowed === true,
     ...(typeof o.reason === "string" ? { reason: o.reason as AutonomousPolicy["reason"] } : {}),
     settings: readProjectAutonomousSettings(o.settings),
-    // The project's asset generators (ADR-0615).
+    // The project's external services for assets (ADR-0615).
     ...(Array.isArray(o.assetProviders) ? { assetProviders: o.assetProviders.filter((p): p is string => typeof p === "string") } : {}),
   };
 }

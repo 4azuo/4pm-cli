@@ -1,5 +1,5 @@
 /**
- * `generator.*` messages — the cli asks the server to generate project assets through the org's connected generator
+ * `externalService.*` messages — the cli asks the server to generate project assets through the org's connected external service
  * provider (PixelLab first). The provider token never reaches the worker: the server makes every provider call.
  * cli → server (with reply), relayed by the cli-server to the server's internal gRPC. A long-running generation
  * returns a `jobId` the cli polls; finished images are fetched one at a time (each reply stays small).
@@ -7,10 +7,10 @@
  */
 
 /** What a generation produces, in 4PM's own vocabulary (each provider adapter maps it to its API). */
-export type GeneratorCapability = "image.pixel" | "character.directions" | "animation.frames" | "tileset";
+export type ExternalServiceCapability = "image.pixel" | "character.directions" | "animation.frames" | "tileset";
 
 /** The provider-neutral parameters of one generation. */
-export interface GeneratorParams {
+export interface ExternalServiceParams {
   description: string;
   width: number;
   height: number;
@@ -29,51 +29,51 @@ export interface GeneratorParams {
   seed?: number;
 }
 
-/** `generator.run` request. */
-export interface GeneratorRunRequest {
+/** `externalService.run` request. */
+export interface ExternalServiceRunRequest {
   provider: string;
-  capability: GeneratorCapability;
-  params: GeneratorParams;
+  capability: ExternalServiceCapability;
+  params: ExternalServiceParams;
 }
 
 /** One generated image (PNG, base64) with a label (a direction, a frame number, a tile id). */
-export interface GeneratorImage {
+export interface ExternalServiceImage {
   label: string;
   base64: string;
 }
 
-/** A finished generation's images, or a job to poll; `error` = the code of a refusal (`GENERATOR_*`). */
-export interface GeneratorRunReply {
-  images?: GeneratorImage[];
+/** A finished generation's images, or a job to poll; `error` = the code of a refusal (`EXTERNAL_SERVICE_*`). */
+export interface ExternalServiceRunReply {
+  images?: ExternalServiceImage[];
   jobId?: string;
   error?: string;
   message?: string;
 }
 
-/** `generator.poll` request. */
-export interface GeneratorPollRequest {
+/** `externalService.poll` request. */
+export interface ExternalServicePollRequest {
   provider: string;
   jobId: string;
 }
 
-/** A job's state; once `done`, how many images it produced (fetch each with `generator.image`). */
-export interface GeneratorPollReply {
+/** A job's state; once `done`, how many images it produced (fetch each with `externalService.image`). */
+export interface ExternalServicePollReply {
   state: "pending" | "done" | "failed";
   count?: number;
   error?: string;
   message?: string;
 }
 
-/** `generator.image` request — one image of a finished job. */
-export interface GeneratorImageRequest {
+/** `externalService.image` request — one image of a finished job. */
+export interface ExternalServiceImageRequest {
   provider: string;
   jobId: string;
   index: number;
 }
 
 /** One image of a finished job (or an `error`). */
-export interface GeneratorImageReply {
-  image?: GeneratorImage;
+export interface ExternalServiceImageReply {
+  image?: ExternalServiceImage;
   error?: string;
   message?: string;
 }

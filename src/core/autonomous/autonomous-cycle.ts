@@ -137,7 +137,7 @@ import { branchProtection, mergePullRequest } from "../git/git-host";
 import { alertClosedPrs, applyDeliveryStates, deliveryStates, pointerAdvance, prState, refreshPrStates } from "./autonomous-pr-states";
 import { applyPointerAdvance, pushRootBranch, recordPointerEntry, submoduleFiles, withoutGitlinks, type SubBranch } from "./autonomous-submodules";
 import { assetFilePaths, assetParams, assetsToGenerate, planFromNotes, writeAssetFiles } from "./autonomous-assets";
-import { GeneratorError, generateImages } from "./autonomous-generator";
+import { ExternalServiceError, generateImages } from "./autonomous-generator";
 import { captureRepo, recordDeliveries } from "./autonomous-delivery";
 import { readProfileConfig } from "../../config/profile";
 import { activeProvider, claudeHomeDirs } from "../../utils/ai-cli";
@@ -2073,7 +2073,7 @@ async function finishDocRound(rc: RunCtx, mine: LocalClaim, subs: readonly SubBr
 
 /**
  * One round of an `AST-…` row: generate the assets of the round (every asset first, then the ones a reviewer marked)
- * through the project's generator provider, write them under the spec's `asset_dir` on the AST branch, push it, and
+ * through the project's external service, write them under the spec's `asset_dir` on the AST branch, push it, and
  * put the row in review with what each asset produced. Provider refusals (no credits, refused token, not enabled)
  * release the row without counting an attempt and alert the managers.
  * @adr 0615 @adr 0614
@@ -2084,9 +2084,9 @@ async function runAssetRound(rc: RunCtx, mine: LocalClaim): Promise<void> {
   setAutonomousStep("docs", [mine.id]);
   const provider = autonomousPolicy()?.assetProviders?.[0];
   if (!provider) {
-    await log(`[assets] ${mine.id}: no generator is enabled for the project — waiting`);
-    await releaseRow(rc, mine, "no generator enabled for the project", false);
-    ctx.bus.autonomousDone(false, "no generator");
+    await log(`[assets] ${mine.id}: no external service is enabled for the project — waiting`);
+    await releaseRow(rc, mine, "no external service enabled for the project", false);
+    ctx.bus.autonomousDone(false, "no external service");
     return;
   }
   const prev = parseDocsSidecar(await remoteBook(root, base, DOCS_SIDECAR_REL))[mine.id];
@@ -2117,19 +2117,19 @@ async function runAssetRound(rc: RunCtx, mine: LocalClaim): Promise<void> {
       }
       await log(`[assets] ${mine.id}: generating ${item.key} (${item.capability})`);
       const images = await generateImages(ctx, provider, item.capability, assetParams(item, style, first), { deadlineMs });
-      if (images.length === 0) throw new GeneratorError("GENERATOR_PROVIDER_ERROR", `no image for ${item.key}`);
+      if (images.length === 0) throw new ExternalServiceError("EXTERNAL_SERVICE_ERROR", `no image for ${item.key}`);
       const paths = assetFilePaths(assetDir, item, images);
       await writeAssetFiles(root, paths, images);
       firstOf.set(item.key, images[0]!.base64);
       items = items.map((a) => (a.key === item.key ? { ...a, files: paths, round, regenerate: undefined } : a));
     }
   } catch (err) {
-    const code = err instanceof GeneratorError ? err.code : "";
+    const code = err instanceof ExternalServiceError ? err.code : "";
     const message = err instanceof Error ? err.message : String(err);
     // The org's account, not this row, is the problem: wait without spending an attempt.
-    const blocking = ["GENERATOR_NO_CREDITS", "GENERATOR_INVALID_TOKEN", "GENERATOR_NOT_ENABLED", "GENERATOR_NOT_CONNECTED"].includes(code);
+    const blocking = ["EXTERNAL_SERVICE_NO_CREDITS", "EXTERNAL_SERVICE_INVALID_TOKEN", "EXTERNAL_SERVICE_NOT_ENABLED", "EXTERNAL_SERVICE_NOT_CONNECTED"].includes(code);
     await log(`[assets] ${mine.id}: ${code || "error"} — ${message}`);
-    if (blocking) alert(ctx, { kind: "asset-generator", task: mine.id, message: `${mine.id}: the asset generator refused (${code}) — ${message}` });
+    if (blocking) alert(ctx, { kind: "asset-generator", task: mine.id, message: `${mine.id}: the external service refused (${code}) — ${message}` });
     await releaseRow(rc, mine, `asset generation failed: ${message}`.slice(0, 200), !blocking);
     ctx.bus.autonomousDone(false, "asset generation failed");
     return;
