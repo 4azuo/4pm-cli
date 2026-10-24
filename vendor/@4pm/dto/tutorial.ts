@@ -12,8 +12,8 @@ export interface UserTutorial {
   seen: Record<string, number>;
 }
 
-/** Tour ids are kebab / dotted names. */
-const TOUR_ID = /^[a-z0-9][a-z0-9.-]{0,63}$/;
+/** Tour ids are kebab / dotted names (an id outside it is refused, so its tour would never be recorded as seen). */
+export const TOUR_ID = /^[a-z0-9][a-z0-9.-]{0,63}$/;
 
 /** Body of PUT /users/me/tutorial — `reset` clears `seen` (Restart all tours). */
 export const tutorialUpdateSchema = z

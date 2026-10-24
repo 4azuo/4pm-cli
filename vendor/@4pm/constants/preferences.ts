@@ -54,3 +54,17 @@ export const Density = {
 
 /** Density union type. */
 export type Density = (typeof Density)[keyof typeof Density];
+
+/** Motion level the user wants; `system` follows the OS reduced-motion setting. @adr 0623 */
+export const MotionPref = {
+  SYSTEM: "system",
+  FULL: "full",
+  REDUCED: "reduced",
+  OFF: "off",
+} as const;
+
+/** MotionPref union type. */
+export type MotionPref = (typeof MotionPref)[keyof typeof MotionPref];
+
+/** Motion preferences in the order the settings switch lists them. @adr 0623 */
+export const MOTION_PREFS: MotionPref[] = [MotionPref.SYSTEM, MotionPref.FULL, MotionPref.REDUCED, MotionPref.OFF];
