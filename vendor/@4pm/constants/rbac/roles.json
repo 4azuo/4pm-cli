@@ -124,7 +124,11 @@
         "integration.page_write",
         "project.ci_read",
         "project.ci_run",
-        "project.ci_edit"
+        "project.ci_edit",
+        "project.marketing_read",
+        "project.marketing_write",
+        "project.marketing_generate",
+        "project.marketing_approve"
       ]
     },
     "SA_SE": {
@@ -159,7 +163,8 @@
         "research.read",
         "integration.read",
         "project.ci_read",
-        "project.ci_run"
+        "project.ci_run",
+        "project.marketing_read"
       ]
     },
     "QA": {
@@ -183,7 +188,8 @@
         "research.read",
         "integration.read",
         "project.ci_read",
-        "project.ci_run"
+        "project.ci_run",
+        "project.marketing_read"
       ]
     },
     "BA": {
@@ -210,7 +216,10 @@
         "research.use",
         "research.read",
         "integration.read",
-        "project.ci_read"
+        "project.ci_read",
+        "project.marketing_read",
+        "project.marketing_write",
+        "project.marketing_generate"
       ]
     },
     "MACHINE": {
@@ -277,7 +286,10 @@
         "project.rule_manage",
         "project.tag_manage",
         "machine.config_template_read",
-        "machine.config_template_manage"
+        "machine.config_template_manage",
+        "project.marketing_write",
+        "project.marketing_generate",
+        "project.marketing_approve"
       ]
     }
   }

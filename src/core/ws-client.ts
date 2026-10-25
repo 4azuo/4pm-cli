@@ -41,6 +41,7 @@ import {
   type MachineUsagePayload,
   type QuotaCheckReply,
   type ToolRestoreFailureItem,
+  type FeatureToolItem,
   type ToolsReportPayload,
   type UsageReportPayload,
   type WsChannelName,
@@ -97,6 +98,9 @@ import { scheduleBookIndex } from "./autonomous/autonomous-book-index";
 import { startAutonomousScheduler } from "./autonomous/autonomous-scheduler";
 import { handleFsChannels } from "./ws-client/handlers/fs";
 import { handleGitChannels } from "./ws-client/handlers/git";
+import { handleMarketingChannels } from "./ws-client/handlers/marketing";
+import { marketingFeatureTools } from "./marketing/marketing-tools";
+import { ragFeatureTool } from "./knowledge/rag";
 import { handleMiscChannels } from "./ws-client/handlers/misc";
 import { handleProjectChannels } from "./ws-client/handlers/project";
 import { handleResearchChannels } from "./ws-client/handlers/research";
@@ -559,9 +563,16 @@ export class WsClient {
     try {
       const autoUpdate = readProfileConfig(this.context.profileDir).autoUpdateTools ?? [];
       const { catalog, extras } = await detectWorkerTools(autoUpdate);
+      // Feature tools (ADR-0641): the served project's RAG runtime + the marketing capture tools — read-only in Tools.
+      const root = this.physicRoot;
+      const features: FeatureToolItem[] = [
+        ...(root ? [await ragFeatureTool(root).catch(() => null)].filter((x): x is FeatureToolItem => x !== null) : []),
+        ...(await marketingFeatureTools().catch(() => [])),
+      ];
       this.send(WsChannels.TOOLS_REPORT, {
         catalog,
         extras,
+        features,
         trigger,
         ...(restoreFailed !== undefined ? { restoreFailed } : {}),
       } satisfies ToolsReportPayload);
@@ -1140,6 +1151,7 @@ export class WsClient {
     if (handleWorkerChannels(this.hctx, message, payload)) return;
     if (handleToolsChannels(this.hctx, message, payload)) return;
     if (handleGitChannels(this.hctx, message, payload)) return;
+    if (handleMarketingChannels(this.hctx, message, payload)) return;
     if (handleSupportChannels(this.hctx, message, payload)) return;
     if (handleResearchChannels(this.hctx, message, payload)) return;
     if (handleMiscChannels(this.hctx, message, payload)) return;

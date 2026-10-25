@@ -44,6 +44,8 @@ export interface GitCredentialResponse {
   hasCaCert: boolean;
   appId: string;
   keyFingerprint: string;
+  /** The stored private key can't be decrypted any more (the server's SECRETS_ENC_KEY changed) — upload the .pem again. */
+  keyUnreadable: boolean;
   /** Whether `settings.gitAuth.method` is `github-app`. */
   active: boolean;
   repos: GitCredentialRepo[];

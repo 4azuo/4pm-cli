@@ -382,7 +382,7 @@ export function handleWorkerChannels(
       // Request/reply (machine-0083): save this machine user's search settings.
       const req = payload as unknown as RagSettingsRequest;
       if (ctx.physicRoot) {
-        void ragSettings(ctx.physicRoot, { minScore: Number(req.minScore), topK: Number(req.topK) }).then((reply) =>
+        void ragSettings(ctx.physicRoot, { minScore: Number(req.minScore), topK: Number(req.topK), rerank: req.rerank === true }).then((reply) =>
           ctx.send(WsChannels.RAG_SETTINGS, reply, message.id),
         );
       }

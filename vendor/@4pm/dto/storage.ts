@@ -27,6 +27,8 @@ export const STORAGE_KINDS = [
   "knowledgeText",
   "marketPackages",
   "marketMedia",
+  // Marketing photos / videos of a project (ADR-0640) — metered, cleared by run retention.
+  "marketing",
 ] as const;
 export type StorageKind = (typeof STORAGE_KINDS)[number];
 
@@ -54,6 +56,7 @@ export const STORAGE_KIND_COLOUR: Record<StorageKind, StorageColour> = {
   knowledgeText: "messages",
   marketPackages: "files",
   marketMedia: "files",
+  marketing: "files",
 };
 
 /** Kinds owned (stored + cleared) by `@4pm/community`. */

@@ -15,17 +15,17 @@
  * Never throws — errors map to a reply.
  * @adr 0156 @adr 0157 @adr 0489 @adr 0496 @adr 0573
  */
-import { statfs } from "node:fs/promises";
+import { readFile, statfs } from "node:fs/promises";
 import { existsSync, lstatSync, renameSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { totalmem, cpus } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import type {
+  FeatureToolItem,
   RagIndex,
   RagInstallReply,
   RagMachine,
-  RagOption,
   RagPrereq,
   RagQueryReply,
   RagQueryResult,
@@ -40,6 +40,7 @@ import { logger } from "../../common/logger/logger";
 import { execInProject, projectSpawnArgs } from "../agent/agent-spawn";
 import { withEgressRun } from "../network/egress-env";
 import { RAG_ENGINE_MJS, RAG_ENGINE_VERSION } from "./rag-engine-script";
+import { RAG_RERANKER, ragOptionsFor } from "./rag-models";
 import runtimeLock from "./rag-runtime.lock.json";
 
 const RAG_REL = ".4pm/rag";
@@ -58,7 +59,7 @@ const RUNTIME_PACKAGE = {
 /** Minimum Node for `node:sqlite` with extension loading. */
 const MIN_NODE: [number, number] = [22, 13];
 /** Search settings when none were saved. */
-const DEFAULT_SETTINGS: RagSettings = { minScore: 0, topK: 8 };
+const DEFAULT_SETTINGS: RagSettings = { minScore: 0, topK: 8, rerank: false };
 /** Disk the recommended option needs (GB, model + runtime + headroom). */
 const NEED_DISK_GB = 1;
 
@@ -116,41 +117,6 @@ function nodeOk(version: string): boolean {
   return maj > MIN_NODE[0] || (maj === MIN_NODE[0] && min >= MIN_NODE[1]);
 }
 
-/** Compute install options (q8 ONNX embedding models; the engine adds ~95 MB) tuned to RAM + free disk. */
-function optionsFor(m: RagMachine): RagOption[] {
-  const opts: RagOption[] = [
-    {
-      id: "small",
-      label: "Small · bge-small (English)",
-      model: "Xenova/bge-small-en-v1.5",
-      sizeMB: 35,
-      recommended: m.ramGB < 8,
-      note: "Lightweight, low RAM.",
-    },
-  ];
-  if (m.diskFreeGB > 1.5) {
-    opts.push({
-      id: "multilingual",
-      label: "Multilingual · MiniLM-L12 (incl. Vietnamese)",
-      model: "Xenova/paraphrase-multilingual-MiniLM-L12-v2",
-      sizeMB: 130,
-      recommended: m.ramGB >= 8,
-      note: "Best for mixed Vietnamese / English content.",
-    });
-  }
-  if (m.ramGB >= 8 && m.diskFreeGB > 2) {
-    opts.push({
-      id: "base",
-      label: "Base · bge-base (English)",
-      model: "Xenova/bge-base-en-v1.5",
-      sizeMB: 110,
-      recommended: false,
-      note: "Higher-quality English, needs ≥ 8 GB RAM.",
-    });
-  }
-  return opts;
-}
-
 /** Shape of `.index.json` (agent-written ⇒ validated). */
 const indexMetaSchema = z.object({
   chunks: z.number().int().min(0).max(1_000_000).optional(),
@@ -186,7 +152,7 @@ async function readIndexMeta(root: string, model: string): Promise<RagIndex> {
 function clampSettings(s: Partial<RagSettings>): RagSettings {
   const minScore = Number.isFinite(s.minScore) ? Math.min(Math.max(Number(s.minScore), 0), 1) : DEFAULT_SETTINGS.minScore;
   const topK = Number.isFinite(s.topK) ? Math.min(Math.max(Math.floor(Number(s.topK)), 1), 20) : DEFAULT_SETTINGS.topK;
-  return { minScore: Math.round(minScore * 1000) / 1000, topK };
+  return { minScore: Math.round(minScore * 1000) / 1000, topK, rerank: s.rerank === true };
 }
 
 /** Read `.4pm/rag/settings.json` (agent-writable ⇒ validated + clamped; defaults when missing/bad). */
@@ -194,7 +160,7 @@ async function readSettings(root: string): Promise<RagSettings> {
   const raw = await readSmall(root, "settings.json", 4 * 1024);
   if (raw === null) return { ...DEFAULT_SETTINGS };
   try {
-    const parsed = z.object({ minScore: z.number().optional(), topK: z.number().optional() }).parse(JSON.parse(raw));
+    const parsed = z.object({ minScore: z.number().optional(), topK: z.number().optional(), rerank: z.boolean().optional() }).parse(JSON.parse(raw));
     return clampSettings(parsed);
   } catch {
     return { ...DEFAULT_SETTINGS };
@@ -209,6 +175,8 @@ export async function ragSettings(root: string, input: Partial<RagSettings>): Pr
   try {
     await mkdirInRoot(root, join(root, RAG_REL));
     await writeFileInRoot(root, join(root, RAG_REL, "settings.json"), `${JSON.stringify(settings)}\n`);
+    // Turning the reranker on downloads it in the background (queries run without it until it is ready).
+    if (settings.rerank) await warmReranker(root);
     return { ok: true, settings };
   } catch (err) {
     return { ok: false, settings: await readSettings(root), error: err instanceof Error ? err.message : String(err) };
@@ -278,11 +246,31 @@ export async function ragStatus(root: string): Promise<RagStatusReply> {
     prereqs,
     model: { present: model !== "", name: model },
     machine,
-    options: optionsFor(machine),
+    options: ragOptionsFor(machine),
+    reranker: { ready: existsSync(join(root, RAG_REL, ".reranker")), installing: existsSync(join(root, RAG_REL, ".reranker-installing")) },
     installLog: log,
     index: await readIndexMeta(root, model),
     settings: await readSettings(root),
   };
+}
+
+/**
+ * The RAG runtime as a Tools-tab feature tool — a side-effect-free read (no migration, no folder probe): installed when
+ * the runtime packages and the model marker are there; version = the transformers package; detail = the model.
+ * @adr 0641
+ */
+export async function ragFeatureTool(root: string): Promise<FeatureToolItem> {
+  const modules = join(root, RUNTIME_REL, "node_modules");
+  let version: string | null;
+  try {
+    version = (JSON.parse(await readFile(join(modules, "@huggingface", "transformers", "package.json"), "utf8")) as { version?: string }).version ?? null;
+  } catch {
+    version = null;
+  }
+  const modelName = ((await readSmall(root, ".installed", 512)) ?? "").trim();
+  const model = /^[A-Za-z0-9._/-]{1,200}$/.test(modelName) ? modelName : "";
+  const installed = version !== null && existsSync(join(modules, "sqlite-vec", "package.json")) && model !== "";
+  return { id: "rag", feature: "rag", label: "RAG engine", installed, version: installed ? version : null, source: "auto", detail: installed ? model : null };
 }
 
 /** Read `install.log` + `index.log` tails (last ~200 lines). */
@@ -377,6 +365,22 @@ rm -f "$R/.installing"
   return { ok: true, started: true };
 }
 
+/** Download the reranker in the background when it isn't there yet (and the runtime is installed). @adr 0642 */
+async function warmReranker(root: string): Promise<void> {
+  const dir = join(root, RAG_REL);
+  if (existsSync(join(dir, ".reranker")) || existsSync(join(dir, ".reranker-installing"))) return;
+  if (!existsSync(join(root, RUNTIME_REL, "node_modules", "@huggingface", "transformers", "package.json"))) return;
+  await ensureFiles(root);
+  const script = `
+set +e
+R="${RAG_REL}"
+touch "$R/.reranker-installing"
+{ echo "[install] $(date) downloading reranker: ${RAG_RERANKER.model}"; ${engineCmd()} warm-rerank 2>&1; } >> "$R/install.log" 2>&1
+rm -f "$R/.reranker-installing"
+`;
+  spawnBackground(root, script, {});
+}
+
 /** rag.reindex — (re)build the vector index in the background. Returns started. */
 export async function ragReindex(root: string): Promise<RagReindexReply> {
   if (!repoCloned(root)) return { ok: false, started: false, error: NO_REPO };
@@ -427,10 +431,12 @@ export async function ragQuery(root: string, queryText: string, k?: number, kind
   if (!repoCloned(root)) return { results: [], error: NO_REPO };
   await migrateLegacyRag(root);
   if (!existsSync(join(root, RAG_REL, "index.db"))) return { results: [], error: "no index — reindex first" };
+  // The reranker counts only once it is downloaded (ADR-0642).
+  const rerankOn = settings.rerank === true && existsSync(join(root, RAG_REL, ".reranker"));
   try {
     await ensureFiles(root);
     const { stdout } = await withEgressRun({ grants: ["rag"] }, () =>
-      execInProject(process.execPath, ["--disable-warning=ExperimentalWarning", `${RAG_REL}/engine.mjs`, "query", String(kk), kindList.join(","), String(settings.minScore)], {
+      execInProject(process.execPath, ["--disable-warning=ExperimentalWarning", `${RAG_REL}/engine.mjs`, "query", String(kk), kindList.join(","), String(settings.minScore), rerankOn ? "1" : "0"], {
         cwd: root,
         timeout: 30_000,
         maxBuffer: 256 * 1024,
@@ -439,8 +445,8 @@ export async function ragQuery(root: string, queryText: string, k?: number, kind
     );
     const parsed = queryReplySchema.parse(JSON.parse(stdout.trim() || '{"results":[]}'));
     const results: RagQueryResult[] = parsed.results
-      // Only project-relative Markdown paths (no absolute / parent escapes).
-      .filter((r) => /\.md$/i.test(r.path) && !r.path.startsWith("/") && !r.path.split("/").includes(".."))
+      // Only project-relative Markdown — or, from a code model, source — paths (no absolute / parent escapes).
+      .filter((r) => (/\.md$/i.test(r.path) || r.kind === "code") && !r.path.startsWith("/") && !r.path.split("/").includes(".."))
       .slice(0, kk)
       .map((r) => ({
         path: r.path,

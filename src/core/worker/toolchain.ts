@@ -109,7 +109,7 @@ async function releaseUrl(tool: "gh" | "glab"): Promise<string> {
 }
 
 /** Find a file named `name` anywhere under `dir`. */
-async function findFile(dir: string, name: string): Promise<string | null> {
+export async function findFile(dir: string, name: string): Promise<string | null> {
   for (const e of await readdir(dir, { withFileTypes: true })) {
     const p = join(dir, e.name);
     if (e.isDirectory()) {
@@ -121,7 +121,7 @@ async function findFile(dir: string, name: string): Promise<string | null> {
 }
 
 /** Stream `url` into `dest`, aborting only when no byte arrives for `DOWNLOAD_IDLE_MS`. */
-async function downloadTo(url: string, dest: string): Promise<void> {
+export async function downloadTo(url: string, dest: string): Promise<void> {
   const ctrl = new AbortController();
   let idle = setTimeout(() => ctrl.abort(), DOWNLOAD_IDLE_MS);
   const bump = (): void => {

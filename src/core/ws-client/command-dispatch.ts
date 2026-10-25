@@ -31,6 +31,7 @@ import {
   type AiRunSource,
 } from "@4pm/ws";
 import { runCommand } from "../exec/executor";
+import { runMarketingJob } from "../marketing/marketing-run";
 import { runAiFailover, TIMEOUT_EXIT, type AiRunHandlers, type AiRunResult } from "../ai/ai-runner";
 import { createAccountLeaser } from "../ai/ai-account-lease";
 import { createAiTextRunner } from "../ai/ai-text-run";
@@ -271,6 +272,14 @@ export function handleCommandChannels(
   // (ADR-0249) caps a text-only run (review/compose/suggest/generators) so it can't loop;
   // `aiReadOnly` (ADR-0265) runs a read-only agent that inspects the repo but can't write.
   if (dispatch.ai) {
+    // A marketing photo run (ADR-0640): the job prepares its own worktrees around the agent and never touches the
+    // served working tree, so it takes no repo lock.
+    if (dispatch.marketing && dispatch.aiBypass) {
+      void runMarketingJob(ctx, dispatch, (prompt, overrides) =>
+        runAiPrompt(ctx, prompt, dispatch.commandId, "server", false, undefined, dispatch.aiConfig, false, true, overrides),
+      );
+      return true;
+    }
     // A `/…` line is a 4pm-cli slash command, not an AI prompt (ADR-0249) — run it on the
     // worker (like the TUI) unless the operator blocked it via `webBlockedCommands`.
     if (dispatch.cmd.trimStart().startsWith("/")) {
@@ -421,6 +430,16 @@ export interface AiRunOverrides {
   failoverOnTimeout?: boolean;
   /** What started the run, for the worker's live AI state (default: by origin). @adr 0522 */
   source?: AiRunSource;
+  /** Run the agent here instead of the served root (a job's own work dir — e.g. a marketing run). @adr 0640 */
+  cwd?: string;
+  /** First output `seq` (a job that already streamed its own lines on this command). @adr 0640 */
+  seqStart?: number;
+  /**
+   * A job's last step, after the agent and before the command's `done`: may stream lines (same `seq` space) and
+   * returns the command's final exit code.
+   * @adr 0640
+   */
+  finish?: (agent: { exitCode: number; cancelled: boolean; neverStarted: boolean }, emit: (line: string) => void) => Promise<number>;
 }
 
 /** The outcome of a prompt refused before it ran (token cap / outbound review). */
@@ -522,7 +541,7 @@ async function runAiPromptInner(
   // Run inside the live serving-project folder (kept current by the connect handler +
   // PHYSIC_SYNC/DELETE), not the stale manual `physicPath`. Idle cli ⇒ warn and fall
   // back to the launch dir so the operator knows no project is attached.
-  const cwd = ctx.physicRoot ?? config.physicPath ?? process.cwd();
+  const cwd = overrides?.cwd ?? ctx.physicRoot ?? config.physicPath ?? process.cwd();
   if (ctx.physicRoot) {
     ctx.ensurePhysicFolderPath(ctx.physicRoot); // (re)create if a new/removed folder
     // Set the git commit author to the machine username before the AI (which may commit)
@@ -571,7 +590,7 @@ async function runAiPromptInner(
   // echoing the raw operator prompt so the console shows exactly what was typed.
   const guardedPrompt =
     ctx.restrictToFolder && ctx.physicRoot
-      ? folderScopeGuard(ctx.physicRoot, aiBodyPrompt)
+      ? folderScopeGuard(overrides?.cwd ?? ctx.physicRoot, aiBodyPrompt)
       : aiBodyPrompt;
   const hint = { credential: startCred ?? workingCred };
   // Shared AI memory: resume the native session on the SAME profile when we have one
@@ -647,7 +666,7 @@ async function runAiPromptInner(
 
   // Try the profile candidates until one authenticates; stream verbatim to the
   // transcript AND the server (one commandId, a single final "done").
-  let seq = 0;
+  let seq = overrides?.seqStart ?? 0;
   // Response marker: emitted once, right before the first output chunk, as "<cmd> ›".
   let responseHeaderShown = false;
   // Result auto-collapse (ADR-0108): decide once from the leading output whether the whole
@@ -815,6 +834,22 @@ async function runAiPromptInner(
     if (result.workedKey) setWorkingCredential(ctx.profileDir, result.workedKey);
     ctx.bus.setActiveProfile(profileLabel ?? plan.cmd);
   }
+  // The agent's own exit: its tokens are metered by it, whatever a job's last step decides.
+  const agentExitCode = result.exitCode;
+  // A job's last step (ADR-0640) runs inside the command, so its lines + exit code land before `done`.
+  if (overrides?.finish) {
+    const emit = (line: string): void => {
+      ctx.bus.push({ source: origin, kind: "log", text: line });
+      ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: `${line}\n`, log: true });
+    };
+    try {
+      const exitCode = await overrides.finish({ exitCode: agentExitCode, cancelled: !!result.cancelled, neverStarted }, emit);
+      result = { ...result, exitCode };
+    } catch (err) {
+      emit(`✗ ${err instanceof Error ? err.message : String(err)}`);
+      result = { ...result, exitCode: agentExitCode === 0 ? 1 : agentExitCode };
+    }
+  }
   ctx.send(WsChannels.COMMAND_OUTPUT, {
     commandId,
     seq: seq++,
@@ -852,7 +887,7 @@ async function runAiPromptInner(
   const events: UsageReportPayload["events"] = [
     { metric: UsageMetric.COMMANDS, amount: 1, occurredAt },
   ];
-  if (result.exitCode === 0 && result.usage.tokens > 0) {
+  if (agentExitCode === 0 && result.usage.tokens > 0) {
     events.push({
       metric: UsageMetric.AI_TOKENS,
       amount: result.usage.tokens,

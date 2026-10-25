@@ -988,6 +988,22 @@ export interface WorkerToolStatus {
 }
 
 /**
+ * A tool a 4PM feature installs or needs on its own (Tools tab, read-only "Feature tools" group): the RAG runtime,
+ * the marketing capture tools. `source`: `auto` = installed by the feature on first use, `system` = found on the
+ * worker's PATH, `detect` = never installed by 4PM (only checked). `detail` = e.g. the RAG model.
+ * @adr 0641
+ */
+export interface WorkerFeatureToolStatus {
+  id: "rag" | "playwright" | "chromium" | "vhs" | "ttyd" | "ffmpeg" | "xvfb";
+  feature: "rag" | "marketing";
+  label: string;
+  installed: boolean;
+  version: string | null;
+  source: "auto" | "system" | "detect";
+  detail?: string | null;
+}
+
+/**
  * Data GET /machines/:id/tools — the default catalog + extra global packages. Since
  * ADR-0254 this is read from the DB `MachineLink.toolSnapshot` (not a live probe), so an offline
  * worker still returns its last-synced set; `checkedAt`/`online` drive the panel's staleness + Refresh.
@@ -1000,6 +1016,8 @@ export interface WorkerToolsResponse {
   checkedAt: string | null;
   /** Whether the worker is currently online — Refresh (live re-detect + report) is enabled only then. */
   online: boolean;
+  /** Feature tools (read-only group); empty on an older cli. @adr 0641 */
+  features?: WorkerFeatureToolStatus[];
   /**
    * Tools that failed the last restore reconcile — drives the "Restore tools" button's red
    * count + failed line. Empty/absent when the last restore fully satisfied the recorded snapshot.
@@ -1044,6 +1062,8 @@ export interface ToolRestoreFailure {
 export interface WorkerToolSnapshot {
   catalog: WorkerToolStatus[];
   extras: WorkerToolStatus[];
+  /** Feature tools — shown read-only, never a restore target. @adr 0641 */
+  features?: WorkerFeatureToolStatus[];
   /**
    * Tools that stayed missing/mismatched after the last restore reconcile — transient,
    * cleared to empty on a report where every manifest entry is satisfied. Drives the "Restore tools"
@@ -1648,6 +1668,8 @@ export type RagQueryQuery = z.infer<typeof ragQueryQuerySchema>;
 export const ragSettingsRequestSchema = z.object({
   minScore: z.number().min(0).max(1),
   topK: z.number().int().min(1).max(20),
+  /** Re-rank results with the reranker model; absent = off. @adr 0642 */
+  rerank: z.boolean().optional(),
 });
 export type RagSettingsBody = z.infer<typeof ragSettingsRequestSchema>;
 

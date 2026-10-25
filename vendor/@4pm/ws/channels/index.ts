@@ -83,6 +83,10 @@ export const WsChannels = {
   DIAGRAM_WRITE: "diagram.write",
   /** CI workflow files proposed as a PR / MR from the worker. @api machine-0101 @adr 0606 */
   CI_PROPOSE: "ci.propose",
+  /** Marketing scenes on `4pm/marketing/<base>`: read the overview / a set; write a file; approve shots. @adr 0640 */
+  MARKETING_READ: "marketing.read",
+  MARKETING_WRITE: "marketing.write",
+  MARKETING_APPROVE: "marketing.approve",
   // subagents & skills management (ADR-0153): list/read/write .claude/agents + .claude/skills
   AGENTS_LIST: "agents.list",
   AGENTS_READ: "agents.read",

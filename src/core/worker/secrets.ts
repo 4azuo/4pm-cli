@@ -87,3 +87,18 @@ export async function writeSecrets(
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
+
+/**
+ * The values of the named project secrets (string values only; unknown keys are left out) — for a job step that must
+ * hand them to a process (a marketing run's recipe env and test accounts). Never sent over the wire.
+ * @adr 0640
+ */
+export async function readSecretValues(root: string, keys: readonly string[]): Promise<Record<string, string>> {
+  const all = await readSecretsObject(root);
+  const out: Record<string, string> = {};
+  for (const k of keys) {
+    const v = all[k];
+    if (typeof v === "string") out[k] = v;
+  }
+  return out;
+}

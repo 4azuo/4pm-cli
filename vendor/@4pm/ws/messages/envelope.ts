@@ -4,6 +4,7 @@
  */
 import type { WsChannelName } from "../channels";
 import type { RunQueueInfo } from "./run-slot";
+import type { MarketingRunSpec } from "./marketing";
 
 /** One host-mounted AI login the cli found (`machine.status.aiMounts`). @adr 0479 */
 export interface AiMountReport {
@@ -296,6 +297,13 @@ export interface CommandDispatchPayload {
    * @adr 0261
    */
   aiConfig?: AiRunConfig;
+  /**
+   * A marketing photo run: the cli prepares the scene + source worktrees, runs the agent there, commits the capture
+   * code on `4pm/marketing/<base>`, shoots, uploads the files and prints a `<marketing-run>` report. Only with
+   * `ai:true` + `aiBypass` (`job: marketing-photos-generate`).
+   * @adr 0640
+   */
+  marketing?: MarketingRunSpec;
 }
 
 /**
@@ -487,9 +495,22 @@ export interface ToolRestoreFailureItem {
   retryable: boolean;
 }
 
+/** A feature tool (RAG runtime, marketing capture tools) — mirrors `@4pm/dto` `WorkerFeatureToolStatus`. @adr 0641 */
+export interface FeatureToolItem {
+  id: "rag" | "playwright" | "chromium" | "vhs" | "ttyd" | "ffmpeg" | "xvfb";
+  feature: "rag" | "marketing";
+  label: string;
+  installed: boolean;
+  version: string | null;
+  source: "auto" | "system" | "detect";
+  detail?: string | null;
+}
+
 export interface ToolsReportPayload {
   catalog: ToolStatus[];
   extras: ToolStatus[];
+  /** Feature tools, read-only in the Tools tab; absent from an older cli. @adr 0641 */
+  features?: FeatureToolItem[];
   /**
    * Tools that failed the last restore reconcile — transient, empty when the reported set
    * satisfies the manifest. Persisted to `toolSnapshot.restoreFailed`; drives the server re-drive.
@@ -1556,6 +1577,12 @@ export interface RagOption {
   sizeMB: number;
   recommended: boolean;
   note?: string;
+  /** What the model reads: English only, many languages, or code. @adr 0642 */
+  languages?: "en" | "multi" | "code";
+  /** SPDX licence of the model (only commercial-friendly ones are offered). @adr 0642 */
+  license?: string;
+  /** The model also indexes source files (kind `code`). @adr 0642 */
+  indexesCode?: boolean;
 }
 
 /** The worker's relevant hardware (best-effort). */
@@ -1598,6 +1625,8 @@ export interface RagStatusReply {
   index: RagIndex;
   /** This machine user's search settings. @adr 0496 */
   settings: RagSettings;
+  /** The optional reranker: downloaded and ready, or being downloaded. @adr 0642 */
+  reranker?: { ready: boolean; installing: boolean };
 }
 
 /** Per-machine-user RAG search settings (`.4pm/rag/settings.json`). @adr 0496 @adr 0573 */
@@ -1606,6 +1635,8 @@ export interface RagSettings {
   minScore: number;
   /** Files per search when the query has no `k` (1–20). */
   topK: number;
+  /** Re-score the top chunks with the reranker before grouping (downloads it when first turned on). @adr 0642 */
+  rerank?: boolean;
 }
 
 /** rag.settings — save this machine user's search settings. @adr 0496 */

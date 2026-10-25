@@ -376,6 +376,26 @@ const PROMPT_META: PromptMeta[] = [
     untrustedVars: { baseBlock: "request", extraBlock: "request", specContext: "data" },
   },
   {
+    key: "server.marketing.scenesCompose",
+    ownerApp: "server",
+    phase: 2,
+    title: "Marketing — propose shots",
+    description:
+      "Read-only agent: proposes marketing screenshots of the project's app as SHOTS.md sections in a <marketing-shots> block, from the repo and the user's brief (ADR-0640). Keep the section / field format.",
+    requiredVars: ["set", "driver", "existing", "brief"],
+    untrustedVars: { existing: "data", brief: "request" },
+  },
+  {
+    key: "server.marketing.photosGenerate",
+    ownerApp: "server",
+    phase: 2,
+    title: "Marketing — write the capture code",
+    description:
+      "Write-capable agent of a photo run: writes run.yaml (first run) and the capture script for the set's driver under .4pm/marketing/ on the marketing branch; the worker appends the approved shots, commits and runs the capture (ADR-0640). Keep the MKT_* contract and file names.",
+    requiredVars: ["set", "driver", "target", "recipeState"],
+    untrustedVars: {},
+  },
+  {
     key: "web.ciWorkflowGenerate",
     ownerApp: "web",
     phase: 2,

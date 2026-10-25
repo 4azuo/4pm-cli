@@ -2,7 +2,7 @@
   "name": "@4pm/cli",
   "version": "0.0.0",
   "private": true,
-  "description": "4PM CLI \u2014 drives Claude/Codex CLIs on AI worker machines (Node + TypeScript)",
+  "description": "4PM CLI — drives Claude/Codex CLIs on AI worker machines (Node + TypeScript)",
   "license": "LicenseRef-4PM-Source-Available",
   "type": "module",
   "bin": {
@@ -29,6 +29,7 @@
     "react": "^19.3.0",
     "tar": "^7.4.3",
     "ws": "^8.22.0",
+    "yaml": "^2.9.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {

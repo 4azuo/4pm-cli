@@ -28,6 +28,7 @@ export * from "./git-credential";
 export * from "./git-overview";
 export * from "./issue-sync";
 export * from "./machine";
+export * from "./marketing";
 export * from "./mcp";
 export * from "./meta";
 export * from "./network";

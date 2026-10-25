@@ -123,6 +123,8 @@ export const commandResultSinkSchema = z.discriminatedUnion("kind", [
   // A checklist run with AI started through the public API (ADR-0482): the sink records the verdicts as a
   // checklist run. Server-only too.
   z.object({ kind: z.literal("checklist-ai"), runId: z.string().guid() }),
+  // A marketing photo run (ADR-0640): the sink closes the run from the worker's `<marketing-run>` report. Server-only.
+  z.object({ kind: z.literal("marketing-run"), runId: z.string().guid() }),
 ]);
 export type CommandResultSink = z.infer<typeof commandResultSinkSchema>;
 

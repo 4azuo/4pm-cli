@@ -18,7 +18,7 @@ describe("RAG folder", () => {
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
   it("writes nothing while the repo is not cloned", async () => {
-    const reply = await ragSettings(root, { minScore: 0.5, topK: 5 });
+    const reply = await ragSettings(root, { minScore: 0.5, topK: 5, rerank: false });
     expect(reply.ok).toBe(false);
     expect(existsSync(join(root, ".4pm"))).toBe(false);
     expect(existsSync(join(root, ".claude"))).toBe(false);
@@ -28,11 +28,11 @@ describe("RAG folder", () => {
     mkdirSync(join(root, ".git"));
     mkdirSync(join(root, ".claude", "rag", "models"), { recursive: true });
     writeFileSync(join(root, ".claude", "rag", "models", "m.onnx"), "x");
-    const reply = await ragSettings(root, { minScore: 0.5, topK: 5 });
+    const reply = await ragSettings(root, { minScore: 0.5, topK: 5, rerank: false });
     expect(reply.ok).toBe(true);
     expect(existsSync(join(root, ".claude", "rag"))).toBe(false);
     expect(existsSync(join(root, ".4pm", "rag", "models", "m.onnx"))).toBe(true);
-    expect(JSON.parse(readFileSync(join(root, ".4pm", "rag", "settings.json"), "utf8"))).toEqual({ minScore: 0.5, topK: 5 });
+    expect(JSON.parse(readFileSync(join(root, ".4pm", "rag", "settings.json"), "utf8"))).toEqual({ minScore: 0.5, topK: 5, rerank: false });
   });
 
   it("drops the legacy copy when .4pm/rag already exists", async () => {

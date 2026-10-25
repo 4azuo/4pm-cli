@@ -5,7 +5,7 @@
  */
 
 /**
- * The 15 AI functions inside a project — the "job" a pool/machine can be dedicated to. The caller
+ * The AI functions inside a project — the "job" a pool/machine can be dedicated to. The caller
  * stamps the job on an AI dispatch (the end user never picks it); routing orders candidates by it.
  * Values are stable wire strings (do not rename once shipped).
  */
@@ -32,6 +32,10 @@ export const AiJob = {
   DIAGRAM_DRAFT: "diagram-draft",
   /** CI workflow AI authoring — the YAML returned for review (read-only agent; `ciSecurity` for a security workflow). @adr 0607 */
   CI_GENERATE: "ci-generate",
+  /** Marketing shots proposed from the repo docs + a brief (read-only agent; `marketingPhotos`). @adr 0640 */
+  MARKETING_SCENES_COMPOSE: "marketing-scenes-compose",
+  /** Marketing photo run — the agent writes the capture code, the cli shoots (write-capable agent; `marketingPhotos`). @adr 0640 */
+  MARKETING_PHOTOS_GENERATE: "marketing-photos-generate",
   /** Subagent/skill content generate (one-shot). */
   AGENTS_GENERATE: "agents-generate",
   /** Template "Analyze impact" report — read-only agent. */
