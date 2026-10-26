@@ -3,8 +3,8 @@
  * from the remote-tracking ref after a fetch; writes build the new tree in a temporary index (`GIT_INDEX_FILE`) from
  * that ref (or from nothing, the first time), commit it with `commit-tree` and push `<commit>:refs/heads/<branch>`.
  * A refused non-fast-forward push is a lost race: fetch and rebuild (3 attempts). The working tree is never touched,
- * so no repo lock is taken.
- * @adr 0640 @arch 0067
+ * so no repo lock is taken. A new base's branch can be created from another base's (`copyMarketingBranch`).
+ * @adr 0640 @adr 0646 @arch 0067
  */
 import { mkdtemp, rm, writeFile, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -78,6 +78,55 @@ export async function marketingRef(root: string, base: string): Promise<string |
   return sha || null;
 }
 
+/** The bases that have a scene branch on the remote (`4pm/marketing/<base>`). */
+export async function listMarketingBases(root: string): Promise<string[]> {
+  const prefix = "refs/heads/4pm/marketing/";
+  const out = await mgq(root, ["ls-remote", "--heads", "origin", `${prefix}*`]);
+  return out
+    .split("\n")
+    .map((l) => l.split("\t")[1]?.trim() ?? "")
+    .filter((r) => r.startsWith(prefix))
+    .map((r) => r.slice(prefix.length))
+    .filter((b) => MARKETING_BASE_RE.test(b))
+    .sort();
+}
+
+/**
+ * Create `4pm/marketing/<to>` (orphan, one commit) from the tree of `4pm/marketing/<from>` without `drop` (paths under
+ * `.4pm/marketing/`). Refuses when `<to>` already has a branch; the push only creates the ref (never overwrites).
+ */
+export async function copyMarketingBranch(root: string, from: string, to: string, message: string, drop: string[]): Promise<string> {
+  const source = await marketingRef(root, from);
+  if (!source) throw new MarketingGitError("MARKETING_SET_NOT_FOUND", `${marketingBranch(from)} does not exist.`);
+  if (await marketingRef(root, to)) throw new MarketingGitError("MARKETING_BRANCH_EXISTS", `${marketingBranch(to)} already exists.`);
+  const gitDir = (await mg(root, ["rev-parse", "--absolute-git-dir"])).trim();
+  const name = (await mgq(root, ["config", "user.name"])).trim() || "4PM";
+  const email = (await mgq(root, ["config", "user.email"])).trim() || "4pm@users.noreply.4pm";
+  const index = join(gitDir, `4pm-marketing-index-${process.pid}-${Date.now()}`);
+  const env: NodeJS.ProcessEnv = { GIT_INDEX_FILE: index, GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: email, GIT_COMMITTER_NAME: name, GIT_COMMITTER_EMAIL: email };
+  const branch = marketingBranch(to);
+  try {
+    await mg(root, ["read-tree", source], env);
+    const paths = drop.map((p) => `${MARKETING_ROOT}/${p}`);
+    const present = (await mg(root, ["ls-files", "-z", "--", ...paths], env)).split("\0").filter(Boolean);
+    if (present.length) await mg(root, ["update-index", "--force-remove", "--", ...present], env);
+    const tree = (await mg(root, ["write-tree"], env)).trim();
+    const commit = (await mg(root, ["commit-tree", tree, "-m", message], env)).trim();
+    try {
+      // `--force-with-lease=<ref>:` = only when the ref does not exist yet.
+      await mg(root, ["push", "-q", `--force-with-lease=refs/heads/${branch}:`, "origin", `${commit}:refs/heads/${branch}`], undefined, 180_000);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (isRace(msg)) throw new MarketingGitError("MARKETING_BRANCH_EXISTS", `${branch} was created meanwhile.`);
+      throw new MarketingGitError("MARKETING_WRITE_FAILED", `Push to ${branch} failed: ${msg}`);
+    }
+    await mgq(root, ["fetch", "-q", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
+    return commit;
+  } finally {
+    await execInProject("rm", ["-f", index], { cwd: root, timeout: 10_000 }).catch(() => undefined);
+  }
+}
+
 /** A file at a commit (content + blob id), or null when absent. `rel` is relative to `.4pm/marketing/`. */
 export async function readMarketingFile(root: string, commit: string | null, rel: string): Promise<{ content: string; sha: string } | null> {
   if (!commit) return null;
@@ -93,6 +142,13 @@ export async function readMarketingFile(root: string, commit: string | null, rel
 export async function listPhotoSets(root: string, commit: string | null): Promise<string[]> {
   if (!commit) return [];
   const out = await mgq(root, ["ls-tree", "-d", "--name-only", `${commit}:${MARKETING_ROOT}/photos`]);
+  return out.split("\n").map((l) => l.trim()).filter(Boolean).sort();
+}
+
+/** The video folders at a commit. @adr 0646 */
+export async function listVideos(root: string, commit: string | null): Promise<string[]> {
+  if (!commit) return [];
+  const out = await mgq(root, ["ls-tree", "-d", "--name-only", `${commit}:${MARKETING_ROOT}/videos`]);
   return out.split("\n").map((l) => l.trim()).filter(Boolean).sort();
 }
 

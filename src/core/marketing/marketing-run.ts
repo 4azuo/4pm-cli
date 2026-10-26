@@ -5,8 +5,11 @@
  * as detached worktrees in a shared temp dir the agent works in; **finish** (inside the command, before `done`) —
  * commit the agent's `.4pm/marketing/**` changes (sidecars and `SHOTS.md` restored) and push, start the app with
  * `run.yaml` (or use the target URL), run the set's driver capture, upload every output file, and send the report
- * (also printed as `<marketing-run>{…}</marketing-run>`). The temp dir and worktrees are always removed.
- * @adr 0640 @arch 0067
+ * (also printed as `<marketing-run>{…}</marketing-run>`). The temp dir and worktrees are always removed. The recipe
+ * steps, the app and the capture run under the project's egress context with the run id, so a connection the project's
+ * Networks refuse is named in the log and fails the run as `MARKETING_EGRESS_BLOCKED`; the app start + capture hold the
+ * worker's render slot.
+ * @adr 0640 @adr 0646 @arch 0067
  */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -33,11 +36,13 @@ import {
 import { WsChannels, type CommandDispatchPayload, type MarketingRunSpec } from "@4pm/ws";
 import { parse as parseYaml } from "yaml";
 import { makeAgentTempDir, removeSharedTree, shareWithAgent, unregisterAgentRoot } from "../../utils/agent-user";
+import { egressEnv } from "../network/egress-env";
+import { watchRefusedEgress } from "../network/egress-events";
 import { readSecretValues } from "../worker/secrets";
 import type { AiRunOverrides } from "../ws-client/command-dispatch";
 import type { WsHandlerCtx } from "../ws-client/context";
 import { marketingRef, mg, mgq, readMarketingFile } from "./marketing-git";
-import { runShell, runStep, startShell, stopGroup, type LineSink } from "./marketing-process";
+import { runShell, runStep, startShell, stopGroup, withRenderSlot, type LineSink } from "./marketing-process";
 import { ensurePlaywright, ensureTerminalTools, hasCommand, marketingBinDir, playwrightEnv } from "./marketing-tools";
 
 /** The agent run the job wraps (injected by the dispatch path). */
@@ -51,7 +56,7 @@ const CAPTURE_TIMEOUT_MS = 15 * 60_000;
 const MAX_LOG_LINES = 400;
 
 /** A failure with a run code. */
-class RunFailure extends Error {
+export class RunFailure extends Error {
   constructor(
     readonly code: string,
     message: string,
@@ -73,12 +78,12 @@ interface Prepared {
 }
 
 /** SHA-256 hex. */
-function sha256(text: string): string {
+export function sha256(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
 /** A line sink that stops after `max` lines (with one note). */
-function capped(sink: LineSink, max = MAX_LOG_LINES): LineSink {
+export function capped(sink: LineSink, max = MAX_LOG_LINES): LineSink {
   let n = 0;
   return (line) => {
     n++;
@@ -144,29 +149,31 @@ function promptContext(p: Prepared, spec: MarketingRunSpec): string {
   ].join("\n");
 }
 
-/** Commit + push the agent's marketing changes; the commit sha (null when nothing changed). */
-async function commitCapture(p: Prepared, spec: MarketingRunSpec, runId: string, log: LineSink): Promise<string | null> {
-  const wt = p.marketingDir;
+/**
+ * Commit + push the agent's marketing changes in the `marketing/` worktree `wt`, after restoring `keep` (the users'
+ * scene file) and the sidecars; the commit sha (HEAD when nothing changed).
+ */
+export async function commitMarketingWork(wt: string, base: string, keep: string, subject: string, log: LineSink): Promise<string | null> {
   // The scenes and the sidecars are the users' — never the agent's.
-  for (const f of [`${MARKETING_ROOT}/approvals.json`, `${MARKETING_ROOT}/authors.json`, `${MARKETING_ROOT}/photos/${spec.set}/SHOTS.md`]) {
+  for (const f of [`${MARKETING_ROOT}/approvals.json`, `${MARKETING_ROOT}/authors.json`, `${MARKETING_ROOT}/${keep}`]) {
     await mgq(wt, ["checkout", "HEAD", "--", f]);
   }
   await mg(wt, ["add", "-A", "--", MARKETING_ROOT]);
   if (!(await mgq(wt, ["diff", "--cached", "--name-only"])).trim()) {
-    log("marketing: the capture code is unchanged");
+    log("marketing: the marketing code is unchanged");
     return (await mgq(wt, ["rev-parse", "HEAD"])).trim() || null;
   }
   const ident = ["-c", "user.name=4PM", "-c", "user.email=4pm@users.noreply.4pm"];
-  await mg(wt, [...ident, "commit", "-q", "-m", `chore(marketing): ${spec.set} capture (4PM run ${runId})`]);
-  const branch = marketingBranch(spec.base);
+  await mg(wt, [...ident, "commit", "-q", "-m", subject]);
+  const branch = marketingBranch(base);
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       await mg(wt, ["push", "-q", "origin", `HEAD:refs/heads/${branch}`], undefined, 180_000);
       const sha = (await mg(wt, ["rev-parse", "HEAD"])).trim();
-      log(`marketing: capture code committed (${sha.slice(0, 10)})`);
+      log(`marketing: marketing code committed (${sha.slice(0, 10)})`);
       return sha;
     } catch (err) {
-      if (attempt === 3) throw new RunFailure("MARKETING_WRITE_FAILED", `Push of the capture code failed: ${err instanceof Error ? err.message : String(err)}`);
+      if (attempt === 3) throw new RunFailure("MARKETING_WRITE_FAILED", `Push of the marketing code failed: ${err instanceof Error ? err.message : String(err)}`);
       // Someone saved scenes meanwhile: replay the commit on top.
       await mg(wt, ["fetch", "-q", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
       await mg(wt, [...ident, "rebase", "-q", `refs/remotes/origin/${branch}`]);
@@ -235,10 +242,17 @@ async function accounts(root: string, shots: MarketingShot[]): Promise<Record<st
   return out;
 }
 
+/** The egress variables of the run's processes (`{}` when the proxy is off). */
+export function netEnv(runId: string): Record<string, string> {
+  const env = egressEnv(process.env, { runId });
+  return Object.keys(env).length > 0 ? { ...env, NODE_USE_ENV_PROXY: "1" } : {};
+}
+
 /** Run the set's driver capture into the out dir. */
 async function capture(p: Prepared, spec: MarketingRunSpec, baseUrl: string | null, log: LineSink): Promise<void> {
   const captureDir = join(p.marketingDir, MARKETING_ROOT, "photos", spec.set, "capture");
   const env: Record<string, string> = {
+    ...netEnv(spec.runId),
     MKT_OUT_DIR: p.outDir,
     MKT_SHOTS: JSON.stringify({ settings: p.settings, shots: p.shots.map(({ id, title, fields }) => ({ id, title, fields })) }),
     MKT_ACCOUNTS: JSON.stringify(await accounts(p.root, p.shots)),
@@ -281,6 +295,44 @@ async function capture(p: Prepared, spec: MarketingRunSpec, baseUrl: string | nu
   if (code !== 0) log(`marketing: the capture exited with ${code}`);
 }
 
+/** Start the app (local target, not terminal) with the recipe, run the capture, stop the app. */
+async function shoot(p: Prepared, spec: MarketingRunSpec, emit: LineSink): Promise<void> {
+  let app: ChildProcess | null = null;
+  const appLines: string[] = [];
+  try {
+    let baseUrl: string | null = spec.targetUrl;
+    if (spec.target === "local" && p.settings.driver !== "terminal") {
+      const recipe = readRecipe(p);
+      const env = { ...netEnv(spec.runId), ...(await recipeEnv(p.root, recipe)) };
+      const cwd = join(p.sourceDir, recipe.workdir);
+      for (const [step, line] of [["install", recipe.install], ["build", recipe.build]] as const) {
+        if (!line) continue;
+        emit(`marketing: ${step}: ${line}`);
+        const code = await runShell(line, cwd, env, BUILD_TIMEOUT_MS, capped(emit, 60));
+        if (code !== 0) throw new RunFailure("MARKETING_APP_START_FAILED", `${step} failed (exit ${code}).`);
+      }
+      emit(`marketing: start: ${recipe.start}`);
+      app = startShell(recipe.start, cwd, env, (l) => {
+        appLines.push(l);
+        if (appLines.length > 200) appLines.shift();
+      });
+      await waitReady(recipe, app, () => appLines);
+      emit("marketing: the app is ready");
+      if (recipe.seed) {
+        const code = await runShell(recipe.seed, cwd, env, SEED_TIMEOUT_MS, capped(emit, 60));
+        if (code !== 0) throw new RunFailure("MARKETING_APP_START_FAILED", `seed failed (exit ${code}).`);
+      }
+      baseUrl = recipe.url;
+    }
+    await capture(p, spec, baseUrl, emit);
+  } catch (err) {
+    if (appLines.length) for (const l of appLines.slice(-30)) emit(`app | ${l}`);
+    throw err;
+  } finally {
+    if (app) await stopGroup(app);
+  }
+}
+
 /** Upload the output files; returns how many were stored. */
 async function upload(ctx: WsHandlerCtx, p: Prepared, spec: MarketingRunSpec, log: LineSink): Promise<number> {
   const ids = new Set(p.shots.map((s) => s.id));
@@ -312,7 +364,7 @@ async function upload(ctx: WsHandlerCtx, p: Prepared, spec: MarketingRunSpec, lo
 }
 
 /** Send the report to the server (best-effort) and print it. */
-async function sendReport(ctx: WsHandlerCtx, spec: MarketingRunSpec, report: MarketingRunReport, log: LineSink): Promise<void> {
+export async function sendReport(ctx: WsHandlerCtx, spec: MarketingRunSpec, report: MarketingRunReport, log: LineSink): Promise<void> {
   try {
     const res = await fetch(`${ctx.serverUrl}${spec.uploadPath}/report`, {
       method: "POST",
@@ -355,6 +407,15 @@ export async function runMarketingJob(ctx: WsHandlerCtx, dispatch: CommandDispat
   };
   const report: MarketingRunReport = { ok: false, shots: 0, files: 0, sourceSha: null, commitSha: null };
   let reported = false;
+  // Hosts the project's Networks refused to this run's processes (named in the log and in a failed run's error).
+  const refused = new Set<string>();
+  let live: LineSink | null = null;
+  const unwatch = watchRefusedEgress(spec.runId, (host, port) => {
+    const key = `${host}:${port}`;
+    if (refused.has(key) || refused.size >= 20) return;
+    refused.add(key);
+    live?.(`marketing: ${key} was refused by the project's Networks`);
+  });
   let prepared: Prepared | null = null;
   try {
     const root = ctx.physicRoot;
@@ -368,6 +429,7 @@ export async function runMarketingJob(ctx: WsHandlerCtx, dispatch: CommandDispat
     pre(`✗ ${report.error}`);
     await sendReport(ctx, spec, report, pre);
     ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: seq++, chunk: "", done: true, exitCode: 1 });
+    unwatch();
     await cleanup(prepared);
     return;
   }
@@ -377,45 +439,13 @@ export async function runMarketingJob(ctx: WsHandlerCtx, dispatch: CommandDispat
       cwd: p.dir,
       seqStart: seq,
       finish: async (agentRun, emit) => {
+        live = emit;
         try {
           if (agentRun.neverStarted || agentRun.cancelled || agentRun.exitCode !== 0) {
             throw new RunFailure(agentRun.cancelled ? "MARKETING_RUN_CANCELLED" : "MARKETING_AGENT_FAILED", agentRun.cancelled ? "The run was stopped." : `The agent run failed (exit ${agentRun.exitCode}).`);
           }
-          report.commitSha = await commitCapture(p, spec, spec.runId, emit);
-          let app: ChildProcess | null = null;
-          const appLines: string[] = [];
-          try {
-            let baseUrl: string | null = spec.targetUrl;
-            if (spec.target === "local" && p.settings.driver !== "terminal") {
-              const recipe = readRecipe(p);
-              const env = await recipeEnv(p.root, recipe);
-              const cwd = join(p.sourceDir, recipe.workdir);
-              for (const [step, line] of [["install", recipe.install], ["build", recipe.build]] as const) {
-                if (!line) continue;
-                emit(`marketing: ${step}: ${line}`);
-                const code = await runShell(line, cwd, env, BUILD_TIMEOUT_MS, capped(emit, 60));
-                if (code !== 0) throw new RunFailure("MARKETING_APP_START_FAILED", `${step} failed (exit ${code}).`);
-              }
-              emit(`marketing: start: ${recipe.start}`);
-              app = startShell(recipe.start, cwd, env, (l) => {
-                appLines.push(l);
-                if (appLines.length > 200) appLines.shift();
-              });
-              await waitReady(recipe, app, () => appLines);
-              emit("marketing: the app is ready");
-              if (recipe.seed) {
-                const code = await runShell(recipe.seed, cwd, env, SEED_TIMEOUT_MS, capped(emit, 60));
-                if (code !== 0) throw new RunFailure("MARKETING_APP_START_FAILED", `seed failed (exit ${code}).`);
-              }
-              baseUrl = recipe.url;
-            }
-            await capture(p, spec, baseUrl, emit);
-          } catch (err) {
-            if (appLines.length) for (const l of appLines.slice(-30)) emit(`app | ${l}`);
-            throw err;
-          } finally {
-            if (app) await stopGroup(app);
-          }
+          report.commitSha = await commitMarketingWork(p.marketingDir, spec.base, `photos/${spec.set}/SHOTS.md`, `chore(marketing): ${spec.set} capture (4PM run ${spec.runId})`, emit);
+          await withRenderSlot(emit, () => shoot(p, spec, emit));
           report.files = await upload(ctx, p, spec, emit);
           if (report.files === 0) throw new RunFailure("MARKETING_CAPTURE_FAILED", "The capture produced no file.");
           report.ok = true;
@@ -424,6 +454,11 @@ export async function runMarketingJob(ctx: WsHandlerCtx, dispatch: CommandDispat
           report.ok = false;
           report.code = err instanceof RunFailure ? err.code : "MARKETING_CAPTURE_FAILED";
           report.error = err instanceof Error ? err.message : String(err);
+          // A start / capture that failed while the project's Networks refused hosts: name them.
+          if (refused.size > 0 && (report.code === "MARKETING_APP_START_FAILED" || report.code === "MARKETING_CAPTURE_FAILED")) {
+            report.code = "MARKETING_EGRESS_BLOCKED";
+            report.error = `${report.error} Refused by the project's Networks: ${[...refused].join(", ")} — allow them in Settings ▸ Networks.`;
+          }
           emit(`✗ ${report.error}`);
           return agentRun.exitCode !== 0 ? agentRun.exitCode : 1;
         } finally {
@@ -433,6 +468,7 @@ export async function runMarketingJob(ctx: WsHandlerCtx, dispatch: CommandDispat
       },
     });
   } finally {
+    unwatch();
     // A run refused before the agent (token cap / outbound review) never reached finish.
     if (!reported) {
       report.code ??= "MARKETING_AGENT_FAILED";

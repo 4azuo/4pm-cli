@@ -87,6 +87,8 @@ export const WsChannels = {
   MARKETING_READ: "marketing.read",
   MARKETING_WRITE: "marketing.write",
   MARKETING_APPROVE: "marketing.approve",
+  /** Create `4pm/marketing/<to>` from another base's scenes (approvals / authors reset). @adr 0646 */
+  MARKETING_COPY: "marketing.copy",
   // subagents & skills management (ADR-0153): list/read/write .claude/agents + .claude/skills
   AGENTS_LIST: "agents.list",
   AGENTS_READ: "agents.read",

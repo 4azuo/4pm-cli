@@ -32,8 +32,8 @@ export const STORAGE_KINDS = [
 ] as const;
 export type StorageKind = (typeof STORAGE_KINDS)[number];
 
-/** The three meter colours (the `messages` colour is labelled "Text" in the UI). */
-export type StorageColour = "messages" | "files" | "commandHistory";
+/** The meter colours (the `messages` colour is labelled "Text" in the UI). */
+export type StorageColour = "messages" | "files" | "commandHistory" | "marketing";
 
 /** Which meter colour each kind adds into. */
 export const STORAGE_KIND_COLOUR: Record<StorageKind, StorageColour> = {
@@ -56,7 +56,7 @@ export const STORAGE_KIND_COLOUR: Record<StorageKind, StorageColour> = {
   knowledgeText: "messages",
   marketPackages: "files",
   marketMedia: "files",
-  marketing: "files",
+  marketing: "marketing",
 };
 
 /** Kinds owned (stored + cleared) by `@4pm/community`. */
@@ -110,9 +110,9 @@ export function isClearableStorageKind(kind: StorageKind): boolean {
 /** Per-kind byte figures; kinds absent from the map count as 0. */
 export type StorageKindBytes = Partial<Record<StorageKind, number>>;
 
-/** Sum the per-kind bytes into the three meter colours. */
+/** Sum the per-kind bytes into the meter colours. */
 export function colourTotals(kinds: StorageKindBytes): Record<StorageColour, number> {
-  const out: Record<StorageColour, number> = { messages: 0, files: 0, commandHistory: 0 };
+  const out: Record<StorageColour, number> = { messages: 0, files: 0, commandHistory: 0, marketing: 0 };
   for (const k of STORAGE_KINDS) out[STORAGE_KIND_COLOUR[k]] += kinds[k] ?? 0;
   return out;
 }
@@ -122,13 +122,13 @@ export type StorageTarget = "total" | StorageColour | StorageKind;
 
 /** Type guard for a storage target. */
 export function isStorageTarget(v: unknown): v is StorageTarget {
-  return v === "total" || v === "messages" || v === "files" || v === "commandHistory" || isStorageKind(v);
+  return v === "total" || v === "messages" || v === "files" || v === "commandHistory" || v === "marketing" || isStorageKind(v);
 }
 
 /** Bytes a target measures, given the per-kind map and the total. */
 export function storageTargetBytes(target: StorageTarget, kinds: StorageKindBytes, usedBytes: number): number {
   if (target === "total") return usedBytes;
-  if (target === "messages" || target === "files" || target === "commandHistory") return colourTotals(kinds)[target];
+  if (target === "messages" || target === "files" || target === "commandHistory" || target === "marketing") return colourTotals(kinds)[target];
   return kinds[target] ?? 0;
 }
 

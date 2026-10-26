@@ -396,6 +396,26 @@ const PROMPT_META: PromptMeta[] = [
     untrustedVars: {},
   },
   {
+    key: "server.marketing.videoCompose",
+    ownerApp: "server",
+    phase: 2,
+    title: "Marketing — propose video scenes",
+    description:
+      "Read-only agent: proposes the scenes of a marketing video as SCENES.md sections in a <marketing-scenes> block, from the repo, the photo sets' shots and the user's brief (ADR-0646). Keep the section / field format.",
+    requiredVars: ["video", "locales", "shots", "existing", "brief"],
+    untrustedVars: { shots: "data", existing: "data", brief: "request" },
+  },
+  {
+    key: "server.marketing.videoGenerate",
+    ownerApp: "server",
+    phase: 2,
+    title: "Marketing — adapt the video project",
+    description:
+      "Write-capable agent of a video run: adapts the Remotion project scaffolded from the video template (brand colours, font, logo, scene styling) under .4pm/marketing/videos/<video>/remotion/ on the marketing branch; the worker renders it (ADR-0646). Keep render.mjs, the props contract and file names.",
+    requiredVars: ["video", "templateState"],
+    untrustedVars: {},
+  },
+  {
     key: "web.ciWorkflowGenerate",
     ownerApp: "web",
     phase: 2,

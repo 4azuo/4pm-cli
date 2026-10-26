@@ -2,8 +2,9 @@
  * Egress event aggregation (Networks) — the proxy records every logged decision here; decisions are
  * folded per run × host × port × decision × minute and flushed every 60 s as one `network.events` batch
  * to the server (the Networks log). While offline up to {@link MAX_BUFFER} aggregates wait; beyond that the
- * oldest are dropped and the drop count rides on the next batch.
- * @adr 0439
+ * oldest are dropped and the drop count rides on the next batch. A run can watch its own refused connections (a
+ * marketing run names the hosts it was refused).
+ * @adr 0439 @adr 0646
  */
 import type { NetworkDecision, NetworkMode } from "@4pm/dto";
 import type { NetworkEventAggregate, NetworkEventsPayload } from "@4pm/ws";
@@ -22,6 +23,16 @@ let dropped = 0;
 /** Sends a batch; returns false when it could not be sent (offline). */
 let sink: ((payload: NetworkEventsPayload) => boolean) | null = null;
 let timer: NodeJS.Timeout | null = null;
+/** Watchers of refused connections, by run id. */
+const refusedWatchers = new Map<string, (host: string, port: number) => void>();
+
+/** Call `cb` for each blocked / denied connection of run `runId`; returns the unsubscribe. */
+export function watchRefusedEgress(runId: string, cb: (host: string, port: number) => void): () => void {
+  refusedWatchers.set(runId, cb);
+  return () => {
+    if (refusedWatchers.get(runId) === cb) refusedWatchers.delete(runId);
+  };
+}
 
 /** Register the sender (the WS client) and start the flush timer. */
 export function setEgressEventSink(send: (payload: NetworkEventsPayload) => boolean): void {
@@ -50,6 +61,7 @@ export function recordEgress(e: {
   runId?: string;
   taskId?: string;
 }): void {
+  if (e.runId && (e.decision === "blocked" || e.decision === "denied")) refusedWatchers.get(e.runId)?.(e.host, e.port);
   const now = new Date();
   const minute = Math.floor(now.getTime() / 60_000);
   const key = [e.runId ?? "", e.taskId ?? "", e.projectId ?? "", e.host, e.port, e.decision, e.mode, minute].join("|");

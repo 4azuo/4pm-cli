@@ -32,6 +32,7 @@ import {
 } from "@4pm/ws";
 import { runCommand } from "../exec/executor";
 import { runMarketingJob } from "../marketing/marketing-run";
+import { runMarketingVideoJob } from "../marketing/marketing-video-run";
 import { runAiFailover, TIMEOUT_EXIT, type AiRunHandlers, type AiRunResult } from "../ai/ai-runner";
 import { createAccountLeaser } from "../ai/ai-account-lease";
 import { createAiTextRunner } from "../ai/ai-text-run";
@@ -272,10 +273,11 @@ export function handleCommandChannels(
   // (ADR-0249) caps a text-only run (review/compose/suggest/generators) so it can't loop;
   // `aiReadOnly` (ADR-0265) runs a read-only agent that inspects the repo but can't write.
   if (dispatch.ai) {
-    // A marketing photo run (ADR-0640): the job prepares its own worktrees around the agent and never touches the
-    // served working tree, so it takes no repo lock.
+    // A marketing photo / video run (ADR-0640 / ADR-0646): the job prepares its own worktrees around the agent and
+    // never touches the served working tree, so it takes no repo lock.
     if (dispatch.marketing && dispatch.aiBypass) {
-      void runMarketingJob(ctx, dispatch, (prompt, overrides) =>
+      const job = dispatch.marketing.kind === "videos" && dispatch.marketing.video ? runMarketingVideoJob : runMarketingJob;
+      void job(ctx, dispatch, (prompt, overrides) =>
         runAiPrompt(ctx, prompt, dispatch.commandId, "server", false, undefined, dispatch.aiConfig, false, true, overrides),
       );
       return true;

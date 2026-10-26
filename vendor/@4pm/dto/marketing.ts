@@ -22,6 +22,9 @@ export type MarketingDriver = (typeof MARKETING_DRIVERS)[number];
 /** Themes a shot can be taken in. */
 export const MARKETING_THEMES = ["light", "dark"] as const;
 export type MarketingTheme = (typeof MARKETING_THEMES)[number];
+/** Run kinds. */
+export const MARKETING_RUN_KINDS = ["photos", "videos"] as const;
+export type MarketingRunKind = (typeof MARKETING_RUN_KINDS)[number];
 /** Capture targets. */
 export const MARKETING_TARGETS = ["local", "url"] as const;
 export type MarketingTarget = (typeof MARKETING_TARGETS)[number];
@@ -352,7 +355,7 @@ export type MarketingGenerateRequest = z.infer<typeof marketingGenerateSchema>;
 
 /** List runs. @api marketing-0009 */
 export const marketingRunsQuerySchema = baseRequestSchema.extend({
-  kind: z.enum(["photos"]).optional(),
+  kind: z.enum(MARKETING_RUN_KINDS).optional(),
   base: baseField,
   set: z.string().regex(MARKETING_SET_RE).optional(),
 });
@@ -361,17 +364,30 @@ export type MarketingRunsQuery = z.infer<typeof marketingRunsQuerySchema>;
 /** Pin / unpin a run. @api marketing-0013 */
 export const marketingRunPatchSchema = z.object({ pinned: z.boolean() });
 
-/** Marketing settings. @api marketing-0015 */
+/** Languages suggested in the "languages the app supports" picker (any language tag is accepted). @adr 0645 */
+export const MARKETING_LOCALE_SUGGESTIONS = ["en", "vi", "ja", "zh", "ko", "fr", "de", "es", "pt-BR", "zh-TW", "th", "id"] as const;
+/** Most languages a project can declare. */
+export const MARKETING_LOCALES_MAX = 20;
+
+/** Marketing settings; `themes` / `locales` are what the app supports. @api marketing-0015 @adr 0645 */
 export const marketingSettingsSchema = z
   .object({
     keepRuns: z.number().int().min(1).max(20),
     captureTarget: z.enum(MARKETING_TARGETS),
     targetUrl: z.string().url().max(500).regex(/^https?:\/\//).nullable().default(null),
+    themes: z.array(z.enum(MARKETING_THEMES)).min(1).max(MARKETING_THEMES.length).default(["light"]),
+    locales: z.array(z.string().regex(MARKETING_LOCALE_RE)).min(1).max(MARKETING_LOCALES_MAX).default(["en"]),
   });
 export type MarketingSettings = z.infer<typeof marketingSettingsSchema>;
 
 /** Settings when a project never saved any. */
-export const DEFAULT_MARKETING_SETTINGS: MarketingSettings = { keepRuns: 3, captureTarget: "local", targetUrl: null };
+export const DEFAULT_MARKETING_SETTINGS: MarketingSettings = {
+  keepRuns: 3,
+  captureTarget: "local",
+  targetUrl: null,
+  themes: ["light"],
+  locales: ["en"],
+};
 
 /** Who did something to a shot. */
 export interface MarketingStamp {
@@ -397,6 +413,43 @@ export interface MarketingOverviewResponse {
   recipe: { content: string; sha: string } | null;
   settings: MarketingSettings;
   photosEnabled: boolean;
+  /** Plan `marketingVideo`. @adr 0646 */
+  videosEnabled: boolean;
+  /** The base's videos. @adr 0646 */
+  videos: { video: string; scenes: number; approved: number }[];
+  /** When the base has no scene branch: the bases whose scenes it can copy. @adr 0646 */
+  copyFrom: string[];
+}
+
+/** Create a base's scenes from another base's. @api marketing-0018 @adr 0646 */
+export const marketingCopySchema = z.object({
+  from: z.string().regex(MARKETING_BASE_RE),
+  to: z.string().regex(MARKETING_BASE_RE),
+});
+export type MarketingCopyRequest = z.infer<typeof marketingCopySchema>;
+
+/**
+ * Feature tools a capture driver needs that a worker can't install itself (only detected): Xvfb for Electron on Linux,
+ * the terminal tools when no prebuilt binary exists there. @adr 0646
+ */
+export const MARKETING_DRIVER_TOOLS: Record<MarketingDriver, readonly string[]> = {
+  web: [],
+  api: [],
+  electron: ["xvfb"],
+  terminal: ["vhs", "ttyd", "ffmpeg"],
+};
+
+/**
+ * The tools a worker misses for a driver, from its reported feature tools: rows that are not installed and can only be
+ * detected (`source: "detect"`). `null` when the worker reports no feature tools (an older cli — unknown).
+ */
+export function marketingMissingTools(
+  driver: MarketingDriver,
+  features: readonly { id: string; installed: boolean; source: string }[] | undefined,
+): string[] | null {
+  if (!features) return null;
+  const need = MARKETING_DRIVER_TOOLS[driver];
+  return features.filter((f) => need.includes(f.id) && !f.installed && f.source === "detect").map((f) => f.id);
 }
 
 /** A shot as the grid shows it. */
@@ -418,10 +471,12 @@ export interface MarketingSetResponse {
 /** A run. @api marketing-0009 */
 export interface MarketingRunResponse {
   id: string;
-  kind: "photos";
+  kind: MarketingRunKind;
   base: string;
+  /** The photo set, or the video of a video run. */
   set: string;
-  driver: MarketingDriver;
+  /** The capture driver; `video` on a video run. */
+  driver: MarketingDriver | "video";
   target: MarketingTarget;
   sourceRef: string | null;
   sourceSha: string | null;
@@ -452,6 +507,8 @@ export interface MarketingAssetResponse {
   bytes: number;
   width: number | null;
   height: number | null;
+  /** Video length (mp4 only). @adr 0646 */
+  durationMs: number | null;
 }
 
 /** A run with its files. @api marketing-0010 */

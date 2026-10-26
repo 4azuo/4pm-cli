@@ -485,7 +485,7 @@ export const orgAliasSchema = z
   .regex(/^([a-z0-9-]{3,40})?$/, "alias must be 3–40 chars of a–z, 0–9, -");
 
 /**
- * Hosted-storage usage vs the plan cap, split into the 3 meter colours plus the
+ * Hosted-storage usage vs the plan cap, split into the meter colours plus the
  * per-kind figures.
  * With `?userId`, `machineUser` carries that machine user's own cli footprint (across its links).
  * @api org-0004 @adr 0122 @adr 0365
@@ -493,7 +493,7 @@ export const orgAliasSchema = z
 export interface StorageUsageResponse {
   /** `entitlements.templateStorageBytes` (total hosted cap); null = unlimited. */
   quotaBytes: number | null;
-  /** messages + attachments + commandHistory + files. */
+  /** messages + attachments + commandHistory + files + marketing. */
   usedBytes: number;
   /** When the counter was last reconciled — UI shows "as of N min ago". */
   computedAt: string;
@@ -504,6 +504,8 @@ export interface StorageUsageResponse {
     commandHistory: number;
     /** Templates + artifacts + message/post/comment attachments + memo/AI-doc images and files. */
     files: number;
+    /** Project marketing photos / videos and uploaded audio. @adr 0640 */
+    marketing: number;
   };
   /** Per-kind bytes; the colours above are sums of these. */
   kinds: StorageKindBytes;

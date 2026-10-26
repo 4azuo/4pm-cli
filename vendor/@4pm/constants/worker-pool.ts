@@ -36,6 +36,10 @@ export const AiJob = {
   MARKETING_SCENES_COMPOSE: "marketing-scenes-compose",
   /** Marketing photo run — the agent writes the capture code, the cli shoots (write-capable agent; `marketingPhotos`). @adr 0640 */
   MARKETING_PHOTOS_GENERATE: "marketing-photos-generate",
+  /** Marketing video scenes proposed from the repo + a brief (read-only agent; `marketingVideo`). @adr 0646 */
+  MARKETING_VIDEO_COMPOSE: "marketing-video-compose",
+  /** Marketing video run — the agent adapts the Remotion project, the cli renders (write-capable agent; `marketingVideo`). @adr 0646 */
+  MARKETING_VIDEO_GENERATE: "marketing-video-generate",
   /** Subagent/skill content generate (one-shot). */
   AGENTS_GENERATE: "agents-generate",
   /** Template "Analyze impact" report — read-only agent. */

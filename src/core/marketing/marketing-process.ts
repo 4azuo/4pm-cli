@@ -1,14 +1,36 @@
 /**
  * Processes of a marketing run: a shell step with a timeout (its output streamed line by line), and a long-running
  * process (the app) started in its own process group so the whole tree can be stopped. Inside an agent root they run as
- * the agent with an allow-listed env plus the step's own variables (`projectSpawnArgs`).
- * @adr 0640
+ * the agent with an allow-listed env plus the step's own variables (`projectSpawnArgs`). The render slot lets one
+ * capture / render run at a time on this worker.
+ * @adr 0640 @adr 0646
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { projectSpawnArgs } from "../agent/agent-spawn";
 
 /** A line sink. */
 export type LineSink = (line: string) => void;
+
+/** The tail of the render-slot queue (one capture / render at a time on this worker). */
+let slotTail: Promise<void> = Promise.resolve();
+/** Whether a capture / render holds the slot. */
+let slotBusy = false;
+
+/** Run `fn` holding the worker's render slot; waits (logging once) while another run holds it. */
+export async function withRenderSlot<T>(sink: LineSink, fn: () => Promise<T>): Promise<T> {
+  if (slotBusy) sink("marketing: waiting for another capture / render on this worker to finish…");
+  const prev = slotTail;
+  let release!: () => void;
+  slotTail = new Promise<void>((r) => (release = r));
+  await prev;
+  slotBusy = true;
+  try {
+    return await fn();
+  } finally {
+    slotBusy = false;
+    release();
+  }
+}
 
 /** Split a stream into lines for a sink (the last partial line is flushed on close). */
 function lines(child: ChildProcess, sink: LineSink): void {
