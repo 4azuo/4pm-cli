@@ -107,7 +107,8 @@ import { handleResearchChannels } from "./ws-client/handlers/research";
 import { handleSupportChannels } from "./ws-client/handlers/support";
 import { handleToolsChannels } from "./ws-client/handlers/tools";
 import { handleWorkerChannels } from "./ws-client/handlers/worker";
-import { cliUpdateLocked } from "./update";
+import { canonVersion, cliUpdateLocked } from "./update";
+import { clearUpdateTrial, takeUpdateReport } from "./update-state";
 
 const HEARTBEAT_MS = 30_000;
 /** How often to poll the Claude subscription usage API. @adr 0072 */
@@ -647,6 +648,17 @@ export class WsClient {
     });
   }
 
+  /**
+   * A session is up: this version is healthy, so its boot trial ends; and a load / boot failure queued by an
+   * earlier boot is reported now so the web Update modal shows why.
+   * @adr 0644
+   */
+  private settleUpdateTrial(): void {
+    clearUpdateTrial(canonVersion(CLI_VERSION));
+    const report = takeUpdateReport();
+    if (report) this.send(WsChannels.CLI_UPDATE_RESULT, { ok: false, ...report }, null);
+  }
+
   /** Record a platform IP block so run() waits the long interval; keeps the last known IP. @adr 0519 */
   private notePlatformIpBlocked(ip: string): void {
     this.platformIpBlocked = true;
@@ -1048,6 +1060,7 @@ export class WsClient {
         this.finishReconnect();
         this.sendMachineStatus();
         this.flushOfflineBuffer();
+        this.settleUpdateTrial();
         // git.token `revoked` reports lost while offline — re-sent so the server drops dead tokens (ADR-0535).
         void flushPendingRevoked();
         this.startHeartbeat();

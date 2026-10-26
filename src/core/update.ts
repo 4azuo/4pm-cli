@@ -7,8 +7,9 @@
  * extract it over the running install root — also for a cli first installed with npm (npm is only a
  * first-install channel; the cli never runs `npm i -g` to update itself). After updating, verify the
  * version at the re-exec path actually advanced before claiming success, so a mis-applied update can't
- * trigger a restart loop.
- * @api meta-0001 @adr 0015 @adr 0053 @adr 0363 @adr 0499 @adr 0508
+ * trigger a restart loop. The release must load before it is installed, and a version that failed to load
+ * or start on this worker is skipped for 24 h on every path.
+ * @api meta-0001 @adr 0015 @adr 0053 @adr 0363 @adr 0499 @adr 0508 @adr 0644
  */
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { accessSync, constants as fsConstants, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -21,12 +22,23 @@ import { CLI_SIGNING_PUBLIC_KEYS } from "../config/signing";
 import { CLI_VERSION } from "../version";
 import { readableInstallTree } from "../utils/agent-user";
 import { fetchCliVersion } from "../services/api";
+import { checkReleaseLoads, ReleaseLoadError } from "./update-load-check";
+import {
+  activeBadVersion,
+  beginUpdateTrial,
+  dropUpdateTrial,
+  markBadVersion,
+  queueUpdateReport,
+  readUpdateState,
+  type BadVersion,
+} from "./update-state";
 
 /** Result of the startup update-check step. */
 export type UpdateResult =
   | { action: "none" }
   | { action: "updated"; version: string }
-  | { action: "blocked"; minSupported: string };
+  // `locked`: an update-locked image (ADR-0432) — the caller exits; otherwise it waits and retries (ADR-0644).
+  | { action: "blocked"; minSupported: string; locked?: boolean };
 
 /**
  * Compare two cli versions — returns <0 / 0 / >0. Numeric major.minor.patch first; on equal numbers the
@@ -109,6 +121,8 @@ function updateTargetRoot(): string {
 
 /** The root the last successful update was applied to (null until an update ran in this process). */
 let appliedRoot: string | null = null;
+/** The version the last successful update installed (null until an update ran in this process). */
+let appliedVersion: string | null = null;
 
 /**
  * The argv for re-executing into the freshly updated cli: the same args, but pointing at the root the
@@ -201,6 +215,9 @@ async function updateViaDownload(
   verifyTarballSignature(buf, signature);
   const tmp = join(mkdtempSync(join(tmpdir(), "4pm-update-")), "cli.tgz");
   writeFileSync(tmp, buf);
+  // The release must load before it replaces anything (ADR-0644): a dependency left out of the bundle used
+  // to crash the re-exec, and a container restart then reinstalled it — a loop with the worker offline.
+  await checkReleaseLoads(tmp, runningInstallRoot());
   // Extract over the RUNNING install root (parent of dist/ — resolved from
   // import.meta.url so it matches where CLI_VERSION is read, not a symlinked bin path) — or, when that
   // root is read-only (hardened container — ADR-0428), over a fresh copy of it in the runtime dir, so
@@ -243,6 +260,50 @@ export function cliUpdateLocked(): boolean {
 export const CLI_UPDATE_LOCKED_REASON =
   "This worker runs an update-locked image (:full-locked) — the cli cannot update itself. Pull a newer image and recreate the container.";
 
+/** The reason reported to the web when the latest version is marked bad on this worker. @adr 0644 */
+export function badVersionReason(version: string, bad: BadVersion): string {
+  return `${version} failed on this worker (${bad.reason}) — skipped until a newer release or 24 h after ${bad.at}.`;
+}
+
+/** The still-active bad mark of a release version, or null. @adr 0644 */
+function badMarkOf(version: string): BadVersion | null {
+  return activeBadVersion(canonVersion(version));
+}
+
+/** Mark the version bad when the update failed because the release does not load. @adr 0644 */
+function noteLoadFailure(version: string, err: unknown): void {
+  if (err instanceof ReleaseLoadError) markBadVersion(canonVersion(version), `failed to load: ${err.reason}`);
+}
+
+/** Record the boot trial right before re-executing into the version this process installed. @adr 0644 */
+export function beginTrialForAppliedUpdate(): void {
+  if (appliedVersion) beginUpdateTrial(canonVersion(CLI_VERSION), canonVersion(appliedVersion));
+}
+
+/**
+ * Judge the boot trial left by a previous process. A trial for this very version stays until the session
+ * proves healthy; a trial for a NEWER version means it never became healthy and this boot is back on an
+ * older cli (a container restart returns to the image's) — mark it bad and queue a report for the web.
+ * @adr 0644
+ */
+export function settleUpdateTrialAtBoot(): void {
+  const trial = readUpdateState().trial;
+  if (!trial) return;
+  const current = canonVersion(CLI_VERSION);
+  if (trial.to === current) return;
+  if (compareSemver(trial.to, current) > 0) {
+    const reason = `it did not start — the worker came back on ${CLI_VERSION}`;
+    markBadVersion(trial.to, reason);
+    queueUpdateReport({
+      message: `${trial.to} ${reason}; skipped for 24 h. Check the worker's log for the crash.`,
+      fromVersion: CLI_VERSION,
+      toVersion: trial.to,
+      at: new Date().toISOString(),
+    });
+  }
+  dropUpdateTrial();
+}
+
 /** Result of a manual `4pm update` (distinguishes failure from already-latest). */
 export type ManualUpdateResult =
   | { action: "dev-build"; version: string }
@@ -275,10 +336,14 @@ export async function updateToLatest(serverUrl: string, force = false): Promise<
   }
   // Update-locked image (ADR-0432): never replace the cli — the caller reports why.
   if (cliUpdateLocked()) return { action: "locked", version: CLI_VERSION, latest: meta.latest };
+  // A version that failed to load or start here is skipped on every path, a forced push too (ADR-0644).
+  const bad = badMarkOf(meta.latest);
+  if (bad) return { action: "failed", error: badVersionReason(meta.latest, bad), toVersion: meta.latest };
   console.log(t("update.updating", { from: CLI_VERSION, to: meta.latest }));
   try {
     await updateViaDownload(meta.source.tarballUrl, meta.source.checksum, meta.source.signature);
   } catch (err) {
+    noteLoadFailure(meta.latest, err);
     return { action: "failed", error: String(err), toVersion: meta.latest };
   }
   // Verify the update actually landed on the running install — the same
@@ -294,6 +359,7 @@ export async function updateToLatest(serverUrl: string, force = false): Promise<
       toVersion: meta.latest,
     };
   }
+  appliedVersion = meta.latest;
   return { action: "updated", version: meta.latest };
 }
 
@@ -336,13 +402,25 @@ export async function checkAndUpdate(
   if (cliUpdateLocked()) {
     if (mandatory) {
       console.error(t("update.lockedMandatory", { current: CLI_VERSION, min: meta.minSupported }));
-      return { action: "blocked", minSupported: meta.minSupported };
+      return { action: "blocked", minSupported: meta.minSupported, locked: true };
     }
     console.warn(t("update.lockedAvailable", { current: CLI_VERSION, latest: meta.latest }));
     return { action: "none" };
   }
   if (!mandatory && !autoUpdate) {
     console.warn(t("update.newVersionAutoUpdateOff", { latest: meta.latest, current: CLI_VERSION }));
+    return { action: "none" };
+  }
+  // Skip a version that failed to load or start here (ADR-0644): optional ⇒ keep running the current one;
+  // mandatory ⇒ blocked, and `4pm start` waits for a newer release instead of exiting.
+  const bad = badMarkOf(meta.latest);
+  if (bad) {
+    const reason = badVersionReason(meta.latest, bad);
+    if (mandatory) {
+      console.error(t("update.failed", { error: reason }));
+      return { action: "blocked", minSupported: meta.minSupported };
+    }
+    console.warn(t("update.failedSkipping", { error: reason }));
     return { action: "none" };
   }
 
@@ -356,6 +434,7 @@ export async function checkAndUpdate(
   try {
     await updateViaDownload(meta.source.tarballUrl, meta.source.checksum, meta.source.signature);
   } catch (err) {
+    noteLoadFailure(meta.latest, err);
     if (mandatory) {
       console.error(t("update.failed", { error: String(err) }));
       return { action: "blocked", minSupported: meta.minSupported };
@@ -378,5 +457,6 @@ export async function checkAndUpdate(
     console.warn(`${msg} ${t("update.skippingRestart")}`);
     return { action: "none" };
   }
+  appliedVersion = meta.latest;
   return { action: "updated", version: meta.latest };
 }

@@ -9,6 +9,7 @@
   "error.linkInvalid": "Link is no longer valid ({reason}) — deleted .cre. Run `4pm link` to pair again.",
   "start.notLinked": "Profile \"{profile}\" is not linked — run `4pm link --server <URL>` first.",
   "start.updateBlocked": "CLI is older than minSupported ({minSupported}) and the update failed — cannot connect.",
+  "start.updateBlockedWaiting": "The cli ({current}) is below the minimum version {minSupported} and cannot update right now — retrying in {minutes} min (Ctrl+C to stop).",
   "start.alreadyRunning": "Profile \"{profile}\" is already running (pid {pid}). Only one `4pm start` per profile is allowed.",
   "attach.needsTty": "`4pm attach` needs an interactive terminal (TTY).",
   "attach.noDaemon": "No running daemon for profile \"{profile}\". Start it first: 4pm start --profile {profile}",

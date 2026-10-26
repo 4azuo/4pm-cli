@@ -9,6 +9,7 @@
   "error.linkInvalid": "链接已失效（{reason}）— 已删除 .cre。运行 `4pm link` 以重新配对。",
   "start.notLinked": "配置文件 “{profile}” 尚未链接 — 请先运行 `4pm link --server <URL>`。",
   "start.updateBlocked": "CLI 版本低于 minSupported（{minSupported}）且更新失败 — 无法连接。",
+  "start.updateBlockedWaiting": "cli（{current}）低于最低版本 {minSupported}，当前无法更新 — {minutes} 分钟后重试（按 Ctrl+C 停止）。",
   "start.alreadyRunning": "配置文件 “{profile}” 已在运行（pid {pid}）。每个配置文件只允许一个 `4pm start`。",
   "attach.needsTty": "`4pm attach` 需要交互式终端（TTY）。",
   "attach.noDaemon": "配置文件 “{profile}” 没有正在运行的守护进程。请先启动：4pm start --profile {profile}",

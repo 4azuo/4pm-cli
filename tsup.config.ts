@@ -61,7 +61,9 @@ export default defineConfig({
   // `jsonc-parser` edits `.vscode/tasks.json` / settings JSONC in place for package installs (ADR-0460).
   // `mermaid` parses the sequence diagrams an intake writes before they are committed (ADR-0580); it is
   // `await import`ed, so its module body runs only when a check first runs (its code still loads with the file).
-  noExternal: [/^@4pm\//, "ws", "zod", "ink", "react", "react/jsx-runtime", "tar", "jsonc-parser", "mermaid"],
+  // `croner` (autonomous scheduler) and `yaml` (marketing run recipes) are top-level imports: left external, a
+  // self-update into an install whose node_modules predate them crashed at load with ERR_MODULE_NOT_FOUND.
+  noExternal: [/^@4pm\//, "ws", "zod", "ink", "react", "react/jsx-runtime", "tar", "jsonc-parser", "mermaid", "croner", "yaml"],
   // ink's reconciler only `await import('./devtools.js')` when process.env['DEV'] ===
   // 'true' (ADR-0057), and that module top-level `import`s the optional `react-devtools-core`
   // we don't install. With splitting off esbuild inlines the dynamic-import target and would

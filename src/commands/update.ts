@@ -5,6 +5,7 @@
  */
 import { readCredential } from "../core/profile/credential";
 import { updateToLatest } from "../core/update";
+import { useUpdateStateDir } from "../core/update-state";
 import { readProfileConfig } from "../config/profile";
 import { initI18n, t } from "../i18n";
 
@@ -36,6 +37,8 @@ export async function runUpdate(
     "http://localhost:42001"
   ).replace(/\/$/, "");
 
+  // The profile's bad-version marks apply to a manual update too (ADR-0644).
+  useUpdateStateDir(profileDir);
   let result;
   try {
     result = await updateToLatest(serverUrl);

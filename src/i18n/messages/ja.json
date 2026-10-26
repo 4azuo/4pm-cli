@@ -9,6 +9,7 @@
   "error.linkInvalid": "リンクは無効になりました（{reason}）— .cre を削除しました。`4pm link` を実行して再ペアリングしてください。",
   "start.notLinked": "プロファイル「{profile}」はリンクされていません — まず `4pm link --server <URL>` を実行してください。",
   "start.updateBlocked": "CLI が minSupported（{minSupported}）より古く、更新に失敗しました — 接続できません。",
+  "start.updateBlockedWaiting": "cli ({current}) は最小バージョン {minSupported} 未満で、現在更新できません — {minutes} 分後に再試行します（Ctrl+C で停止）。",
   "start.alreadyRunning": "プロファイル「{profile}」は既に実行中です（pid {pid}）。プロファイルごとに `4pm start` は 1 つのみ許可されます。",
   "attach.needsTty": "`4pm attach` にはインタラクティブなターミナル（TTY）が必要です。",
   "attach.noDaemon": "プロファイル「{profile}」の実行中のデーモンがありません。先に起動してください: 4pm start --profile {profile}",

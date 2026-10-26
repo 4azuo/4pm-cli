@@ -19,6 +19,7 @@ import { importCredentialFromEnv, runCredentialExport } from "./commands/credent
 import { runUnlink } from "./commands/unlink";
 import { runUpdate } from "./commands/update";
 import { runVersion } from "./commands/version";
+import { CLI_VERSION } from "./version";
 import {
   defaultProfileName,
   listProfiles,
@@ -81,6 +82,12 @@ async function pickLinkedProfile(
  * Parse args and dispatch to the matching command.
  */
 async function main(): Promise<void> {
+  // Load check of a staged update (ADR-0644): reaching this line means every import loaded — report and
+  // stop before touching the profile or the network.
+  if (process.env.FOURPM_LOAD_CHECK === "1") {
+    console.log(`4pm-load-ok ${CLI_VERSION}`);
+    return;
+  }
   // Localize pre-command text (profile picker / errors) from the environment; each command
   // re-inits from its own config.json `locale` once resolved (ADR-0276).
   initI18n();

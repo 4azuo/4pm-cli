@@ -9,6 +9,7 @@
   "error.linkInvalid": "Liên kết không còn hợp lệ ({reason}) — đã xóa .cre. Chạy `4pm link` để ghép nối lại.",
   "start.notLinked": "Hồ sơ \"{profile}\" chưa được liên kết — hãy chạy `4pm link --server <URL>` trước.",
   "start.updateBlocked": "CLI cũ hơn minSupported ({minSupported}) và cập nhật thất bại — không thể kết nối.",
+  "start.updateBlockedWaiting": "cli ({current}) thấp hơn phiên bản tối thiểu {minSupported} và hiện không cập nhật được — thử lại sau {minutes} phút (Ctrl+C để dừng).",
   "start.alreadyRunning": "Hồ sơ \"{profile}\" đang chạy (pid {pid}). Mỗi hồ sơ chỉ được phép chạy một `4pm start`.",
   "attach.needsTty": "`4pm attach` cần một terminal tương tác (TTY).",
   "attach.noDaemon": "Không có tiến trình nền nào cho hồ sơ \"{profile}\". Hãy khởi động trước: 4pm start --profile {profile}",

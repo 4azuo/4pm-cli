@@ -10,7 +10,8 @@ import { join } from "node:path";
 import { readCredential } from "../core/profile/credential";
 import { collectFingerprint } from "../core/profile/fingerprint";
 import { fetchWhoami } from "../services/api";
-import { checkAndUpdate } from "../core/update";
+import { beginTrialForAppliedUpdate, canonVersion, checkAndUpdate, settleUpdateTrialAtBoot } from "../core/update";
+import { clearUpdateTrial, useUpdateStateDir } from "../core/update-state";
 import { reexecUpdated } from "../core/update-reexec";
 import { WsClient } from "../core/ws-client";
 import { initCommandHistory } from "../core/exec/command-history";
@@ -55,6 +56,10 @@ import { stopCommandHistoryUpload } from "../core/exec/command-history";
 
 /** Drain bound for a stop signal / quit: short, so `docker stop`'s grace still covers the teardown. */
 const SIGNAL_DRAIN_MS = 10_000;
+/** Wait between checks while a mandatory update cannot run (the ADR-0547 cadence). @adr 0644 */
+const BLOCKED_RETRY_MIN = 10;
+/** Alive this long, a boot trial counts as healthy even without a session. @adr 0644 */
+const TRIAL_HEALTHY_MS = 5 * 60_000;
 
 /**
  * Resolve the log level: `--verbose` ⇒ debug (highest priority), else FOURPM_LOG_LEVEL,
@@ -118,7 +123,21 @@ export async function runStart(
   applyAiAccountMask(profileDir, config.maskAiAccounts === true);
   const autoUpdate =
     config.autoUpdate !== false && process.env.FOURPM_NO_UPDATE !== "1";
-  const result = await checkAndUpdate(credential.serverUrl, autoUpdate);
+  // Judge the boot trial a previous update left (ADR-0644) before deciding whether to update again, so a
+  // version that never became healthy is not reinstalled.
+  useUpdateStateDir(profileDir);
+  settleUpdateTrialAtBoot();
+  let result = await checkAndUpdate(credential.serverUrl, autoUpdate);
+  // A mandatory update that cannot run waits for a usable release instead of exiting — an exit made a
+  // container's restart policy loop on it (ADR-0644). Only an update-locked image stops below.
+  while (result.action === "blocked" && !result.locked) {
+    logger.warn("update.blocked.wait", { minSupported: result.minSupported, retryMin: BLOCKED_RETRY_MIN });
+    console.error(
+      t("start.updateBlockedWaiting", { current: CLI_VERSION, minSupported: result.minSupported, minutes: BLOCKED_RETRY_MIN }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, BLOCKED_RETRY_MIN * 60_000));
+    result = await checkAndUpdate(credential.serverUrl, autoUpdate);
+  }
   if (result.action === "blocked") {
     logger.error("update.blocked", { minSupported: result.minSupported });
     console.error(t("start.updateBlocked", { minSupported: result.minSupported }));
@@ -130,6 +149,7 @@ export async function runStart(
     // yet (lock, sockets, WS), so the child starts like a fresh `4pm start`.
     logger.info("update.updated", { version: result.version });
     console.log(t("start.restarting"));
+    beginTrialForAppliedUpdate();
     await reexecUpdated();
   }
 
@@ -159,6 +179,11 @@ export async function runStart(
   process.once("SIGTERM", exitOnSignal);
   // Set when the session asks to restart into an updated cli — re-exec after the teardown.
   let restarting = false;
+  let restartReason: string | null = null;
+  // A boot trial of this version (ADR-0644) also ends after a while alive, so a worker whose server is
+  // down does not blame the release.
+  const trialTimer = setTimeout(() => clearUpdateTrial(canonVersion(CLI_VERSION)), TRIAL_HEALTHY_MS);
+  trialTimer.unref();
 
   // Toolchain (ADR-0396): the self-installed release binaries (gh/glab) come first on PATH, for the cli
   // and every child it spawns — set before anything captures PATH (git-auth's base env, AI runs).
@@ -189,6 +214,7 @@ export async function runStart(
     // the session; the TUI exits once stopped, and the exec runs only after the teardown below.
     bus.onRestart(() => {
       restarting = true;
+      restartReason = bus.restartReason;
       void lifecycle.shutdown(bus.restartReason, { drainMs: drainTimeoutMs(profileDir) });
     });
     // Start-up self-heal (ADR-0396): install a missing gh/glab and the enabled profiles' AI CLIs in the
@@ -297,6 +323,8 @@ export async function runStart(
     process.off("SIGTERM", exitOnSignal);
     process.off("exit", release);
     console.log(t("start.restarting"));
+    // An operator restart re-execs the same version; only an update starts a boot trial (ADR-0644).
+    if (restartReason === "update") beginTrialForAppliedUpdate();
     await reexecUpdated();
   }
 }
