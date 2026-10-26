@@ -1,10 +1,12 @@
 /**
  * Marketing videos (Content ▸ Marketing ▸ Videos) — the pure `SCENES.md` codec shared by the server, the web and the
  * cli (front matter: size, fps, locales, soundtrack, audio, the photo run chosen per set; one `## SCENE-NNN` section per
- * scene), video output file names, caps, the Remotion license and the request / response types of the video API.
- * @adr 0646 @arch 0067
+ * scene; `tags:` = marketing tag codes for the AI), video output file names, caps, the Remotion license and the
+ * request / response types of the video API.
+ * @adr 0646 @adr 0648 @arch 0067
  */
 import { z } from "zod";
+import { TAG_CODE_RE, TAGS_PER_ITEM_MAX } from "@4pm/constants";
 import { MARKETING_LOCALE_RE, MARKETING_ROOT, MARKETING_SET_RE, MARKETING_SIZE_RE, MARKETING_SHOT_ID_RE, type MarketingStamp } from "./marketing";
 
 /** A video name: kebab-case, ≤ 40 (the same rule as a photo set). */
@@ -60,6 +62,8 @@ export interface MarketingVideoSettings {
   audio: string[];
   /** The photo run chosen per set (`set → runId`); a set absent here uses its newest succeeded run. */
   photos: Record<string, string>;
+  /** Marketing tag codes — instructions for the AI. @adr 0648 */
+  tags: string[];
 }
 
 /** One scene of a video. */
@@ -103,6 +107,7 @@ export const DEFAULT_MARKETING_VIDEO_SETTINGS: MarketingVideoSettings = {
   soundtrack: "synth",
   audio: [],
   photos: {},
+  tags: [],
 };
 
 /** Strip a ` #` comment and trim. */
@@ -137,7 +142,7 @@ function mapOf(v: string, line: number): Record<string, string> {
 
 /** Parse the front matter lines. */
 function parseSettings(lines: string[], firstLine: number): MarketingVideoSettings {
-  const out: MarketingVideoSettings = { ...DEFAULT_MARKETING_VIDEO_SETTINGS, audio: [], photos: {} };
+  const out: MarketingVideoSettings = { ...DEFAULT_MARKETING_VIDEO_SETTINGS, audio: [], photos: {}, tags: [] };
   lines.forEach((raw, k) => {
     const line = firstLine + k;
     const text = uncomment(raw);
@@ -164,6 +169,10 @@ function parseSettings(lines: string[], firstLine: number): MarketingVideoSettin
       const v = listOf(value);
       if (v.some((x) => !MARKETING_AUDIO_ID_RE.test(x))) throw new MarketingScenesError(line, "audio must be AUD-… ids");
       out.audio = v;
+    } else if (key === "tags") {
+      const v = listOf(value);
+      if (v.length > TAGS_PER_ITEM_MAX || v.some((x) => !TAG_CODE_RE.test(x))) throw new MarketingScenesError(line, "tags must be tag codes");
+      out.tags = v;
     } else if (key === "photos") {
       out.photos = mapOf(value, line);
     } else {
@@ -192,7 +201,7 @@ export function parseMarketingScenes(content: string): ParsedMarketingScenes {
   const lines = content.replace(/\r\n?/g, "\n").split("\n");
   let i = 0;
   let frontMatter = "";
-  let settings: MarketingVideoSettings = { ...DEFAULT_MARKETING_VIDEO_SETTINGS, audio: [], photos: {} };
+  let settings: MarketingVideoSettings = { ...DEFAULT_MARKETING_VIDEO_SETTINGS, audio: [], photos: {}, tags: [] };
   while (i < lines.length && !lines[i]!.trim()) i++;
   if (lines[i]?.trim() === "---") {
     const start = i + 1;
@@ -268,6 +277,7 @@ function settingsLines(s: MarketingVideoSettings): string[] {
     `locales: [${s.locales.join(", ")}]`,
     `soundtrack: ${s.soundtrack}`,
     ...(s.audio.length ? [`audio: [${s.audio.join(", ")}]`] : []),
+    ...(s.tags.length ? [`tags: [${s.tags.join(", ")}]`] : []),
     ...(photos.length ? [`photos: { ${photos.map(([k, v]) => `${k}: ${v}`).join(", ")} }`] : []),
   ];
 }
@@ -340,6 +350,8 @@ export type MarketingApproveScenesRequest = z.infer<typeof marketingApproveScene
 export const marketingComposeScenesSchema = z.object({
   base: baseField,
   brief: z.string().trim().min(1).max(4000),
+  /** The video's tags as in the editor (may be unsaved). @adr 0648 */
+  tags: z.array(z.string().regex(TAG_CODE_RE)).max(TAGS_PER_ITEM_MAX).default([]),
 });
 export type MarketingComposeScenesRequest = z.infer<typeof marketingComposeScenesSchema>;
 

@@ -5,6 +5,7 @@
  * @adr 0640 @arch 0067
  */
 import { z } from "zod";
+import { TAG_CODE_RE, TAGS_PER_ITEM_MAX } from "@4pm/constants";
 import { baseRequestSchema } from "./base";
 
 /** Root of every marketing file on the marketing branch. */
@@ -19,7 +20,7 @@ export const MARKETING_AUTHORS_PATH = `${MARKETING_ROOT}/authors.json`;
 /** Capture drivers of P3a. */
 export const MARKETING_DRIVERS = ["web", "electron", "terminal", "api"] as const;
 export type MarketingDriver = (typeof MARKETING_DRIVERS)[number];
-/** Themes a shot can be taken in. */
+/** Theme parts an older output file name may carry (themes were replaced by tags — ADR-0648). */
 export const MARKETING_THEMES = ["light", "dark"] as const;
 export type MarketingTheme = (typeof MARKETING_THEMES)[number];
 /** Run kinds. */
@@ -77,8 +78,9 @@ export function marketingShotKey(set: string, shotId: string): string {
 export interface MarketingSetSettings {
   driver: MarketingDriver;
   viewports: string[];
-  themes: MarketingTheme[];
   locales: string[];
+  /** Marketing tag codes — instructions for the AI. @adr 0648 */
+  tags: string[];
 }
 
 /** One shot of a set. */
@@ -111,8 +113,8 @@ export class MarketingShotsError extends Error {
 export const DEFAULT_MARKETING_SET_SETTINGS: MarketingSetSettings = {
   driver: "web",
   viewports: ["1440x900"],
-  themes: ["light"],
   locales: ["en"],
+  tags: [],
 };
 
 /** Strip a `#` comment and trim. */
@@ -149,9 +151,11 @@ function parseSettings(lines: string[], firstLine: number): MarketingSetSettings
       if (v.length === 0 || v.some((x) => !MARKETING_SIZE_RE.test(x))) throw new MarketingShotsError(line, "viewports must be WxH values");
       out.viewports = v;
     } else if (key === "themes") {
+      // Replaced by tags (ADR-0648): an older file's line is read and ignored.
+    } else if (key === "tags") {
       const v = listOf(value);
-      if (v.length === 0 || v.some((x) => !(MARKETING_THEMES as readonly string[]).includes(x))) throw new MarketingShotsError(line, "themes must be light / dark");
-      out.themes = v as MarketingTheme[];
+      if (v.length > TAGS_PER_ITEM_MAX || v.some((x) => !TAG_CODE_RE.test(x))) throw new MarketingShotsError(line, "tags must be tag codes");
+      out.tags = v;
     } else if (key === "locales") {
       const v = listOf(value);
       if (v.length === 0 || v.some((x) => !MARKETING_LOCALE_RE.test(x))) throw new MarketingShotsError(line, "locales must be language tags");
@@ -164,7 +168,7 @@ function parseSettings(lines: string[], firstLine: number): MarketingSetSettings
 }
 
 /**
- * Parse a `SHOTS.md`: an optional `---` front matter (driver / viewports / themes / locales), then one
+ * Parse a `SHOTS.md`: an optional `---` front matter (driver / viewports / locales / tags), then one
  * `## SHOT-NNN — Title` section per shot with `- field: value` lines. Text that is not a field line is kept in the
  * section (and the hash) but ignored. Throws `MarketingShotsError` on a malformed file.
  */
@@ -233,8 +237,8 @@ export function serializeMarketingShots(settings: MarketingSetSettings, shots: M
     "---",
     `driver: ${settings.driver}`,
     `viewports: [${settings.viewports.join(", ")}]`,
-    `themes: [${settings.themes.join(", ")}]`,
     `locales: [${settings.locales.join(", ")}]`,
+    ...(settings.tags.length ? [`tags: [${settings.tags.join(", ")}]`] : []),
     "---",
     "",
   ];
@@ -343,6 +347,8 @@ export const marketingComposeSchema = z.object({
   base: baseField,
   brief: z.string().trim().min(1).max(4000),
   driver: z.enum(MARKETING_DRIVERS),
+  /** The set's tags as in the editor (may be unsaved). @adr 0648 */
+  tags: z.array(z.string().regex(TAG_CODE_RE)).max(TAGS_PER_ITEM_MAX).default([]),
 });
 export type MarketingComposeRequest = z.infer<typeof marketingComposeSchema>;
 
@@ -369,13 +375,12 @@ export const MARKETING_LOCALE_SUGGESTIONS = ["en", "vi", "ja", "zh", "ko", "fr",
 /** Most languages a project can declare. */
 export const MARKETING_LOCALES_MAX = 20;
 
-/** Marketing settings; `themes` / `locales` are what the app supports. @api marketing-0015 @adr 0645 */
+/** Marketing settings; `locales` = the video subtitle languages (photos are taken in each). @api marketing-0015 @adr 0645 @adr 0648 */
 export const marketingSettingsSchema = z
   .object({
     keepRuns: z.number().int().min(1).max(20),
     captureTarget: z.enum(MARKETING_TARGETS),
     targetUrl: z.string().url().max(500).regex(/^https?:\/\//).nullable().default(null),
-    themes: z.array(z.enum(MARKETING_THEMES)).min(1).max(MARKETING_THEMES.length).default(["light"]),
     locales: z.array(z.string().regex(MARKETING_LOCALE_RE)).min(1).max(MARKETING_LOCALES_MAX).default(["en"]),
   });
 export type MarketingSettings = z.infer<typeof marketingSettingsSchema>;
@@ -385,7 +390,6 @@ export const DEFAULT_MARKETING_SETTINGS: MarketingSettings = {
   keepRuns: 3,
   captureTarget: "local",
   targetUrl: null,
-  themes: ["light"],
   locales: ["en"],
 };
 

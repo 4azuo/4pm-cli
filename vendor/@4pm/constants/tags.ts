@@ -1,7 +1,7 @@
 /**
  * Custom tags: the code format, the color palette a tag may use, and the book metadata cell formats
- * (`Tags` = comma-separated codes, `Due` = an ISO date).
- * @adr 0543
+ * (`Tags` = comma-separated codes, `Due` = an ISO date), and the areas a tag is offered in.
+ * @adr 0543 @adr 0648
  */
 
 /** A tag code: lowercase letters, digits and `-`, starting with a letter or digit, at most 32 chars. */
@@ -33,7 +33,21 @@ export const BOOK_TITLE_MAX = 80;
 
 /** Limits of the tag fields. */
 export const TAG_NAME_MAX = 40;
-export const TAG_DESCRIPTION_MAX = 200;
+export const TAG_GROUP_MAX = 40;
+/** The description is markdown (RichComposer). @adr 0648 */
+export const TAG_DESCRIPTION_MAX = 2000;
+
+/**
+ * The areas a tag is offered in: `work` — books, discussions, My work, Content Overview; `marketing` — photo sets and
+ * videos. Each picker offers only its area's tags. @adr 0648
+ */
+export const TAG_USAGES = ["work", "marketing"] as const;
+export type TagUsage = (typeof TAG_USAGES)[number];
+
+/** The label of a tag: `<group> - <name>`, or the name alone. @adr 0648 */
+export function tagLabel(tag: { name: string; group?: string | null }): string {
+  return tag.group ? `${tag.group} - ${tag.name}` : tag.name;
+}
 /** At most this many tags on one row / discussion. */
 export const TAGS_PER_ITEM_MAX = 10;
 

@@ -382,8 +382,8 @@ const PROMPT_META: PromptMeta[] = [
     title: "Marketing — propose shots",
     description:
       "Read-only agent: proposes marketing screenshots of the project's app as SHOTS.md sections in a <marketing-shots> block, from the repo and the user's brief (ADR-0640). Keep the section / field format.",
-    requiredVars: ["set", "driver", "existing", "brief"],
-    untrustedVars: { existing: "data", brief: "request" },
+    requiredVars: ["set", "driver", "existing", "brief", "tags"],
+    untrustedVars: { existing: "data", brief: "request", tags: "data" },
   },
   {
     key: "server.marketing.photosGenerate",
@@ -392,8 +392,8 @@ const PROMPT_META: PromptMeta[] = [
     title: "Marketing — write the capture code",
     description:
       "Write-capable agent of a photo run: writes run.yaml (first run) and the capture script for the set's driver under .4pm/marketing/ on the marketing branch; the worker appends the approved shots, commits and runs the capture (ADR-0640). Keep the MKT_* contract and file names.",
-    requiredVars: ["set", "driver", "target", "recipeState"],
-    untrustedVars: {},
+    requiredVars: ["set", "driver", "target", "recipeState", "tags"],
+    untrustedVars: { tags: "data" },
   },
   {
     key: "server.marketing.videoCompose",
@@ -402,8 +402,8 @@ const PROMPT_META: PromptMeta[] = [
     title: "Marketing — propose video scenes",
     description:
       "Read-only agent: proposes the scenes of a marketing video as SCENES.md sections in a <marketing-scenes> block, from the repo, the photo sets' shots and the user's brief (ADR-0646). Keep the section / field format.",
-    requiredVars: ["video", "locales", "shots", "existing", "brief"],
-    untrustedVars: { shots: "data", existing: "data", brief: "request" },
+    requiredVars: ["video", "locales", "shots", "existing", "brief", "tags"],
+    untrustedVars: { shots: "data", existing: "data", brief: "request", tags: "data" },
   },
   {
     key: "server.marketing.videoGenerate",
@@ -412,8 +412,8 @@ const PROMPT_META: PromptMeta[] = [
     title: "Marketing — adapt the video project",
     description:
       "Write-capable agent of a video run: adapts the Remotion project scaffolded from the video template (brand colours, font, logo, scene styling) under .4pm/marketing/videos/<video>/remotion/ on the marketing branch; the worker renders it (ADR-0646). Keep render.mjs, the props contract and file names.",
-    requiredVars: ["video", "templateState"],
-    untrustedVars: {},
+    requiredVars: ["video", "templateState", "tags"],
+    untrustedVars: { tags: "data" },
   },
   {
     key: "web.ciWorkflowGenerate",
