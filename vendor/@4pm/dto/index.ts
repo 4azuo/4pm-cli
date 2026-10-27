@@ -9,6 +9,7 @@ export * from "./autonomous-docs";
 export * from "./autonomous-pointers";
 export * from "./autonomous-policy";
 export * from "./base";
+export * from "./billing";
 export * from "./book-guards";
 export * from "./book-ids";
 export * from "./book-index";

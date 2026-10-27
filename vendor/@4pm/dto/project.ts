@@ -274,7 +274,7 @@ export type ProjectAlertRule = z.infer<typeof projectAlertRuleSchema>;
 
 /** The `alerts` block of `projects.settings`. @adr 0220 */
 export const projectAlertsSchema = z.object({
-  rules: z.array(projectAlertRuleSchema).max(20).default([]),
+  rules: z.array(projectAlertRuleSchema).max(100).default([]),
 });
 export type ProjectAlerts = z.infer<typeof projectAlertsSchema>;
 

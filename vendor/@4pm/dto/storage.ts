@@ -277,6 +277,14 @@ export interface PlanCapsResponse {
   autonomousBooks: Record<AutonomousBook, CapCounter>;
   /** Non-deleted automation rules (org + project) vs `automationRules`. @adr 0465 */
   automationRules: CapCounter;
+  /** Live users (MACHINE included) vs `maxUsers`. @adr 0656 */
+  users: CapCounter;
+  /** Live projects vs `maxProjects`. @adr 0656 */
+  projects: CapCounter;
+  /** Live teams vs `maxTeams`. @adr 0656 */
+  teams: CapCounter;
+  /** Live org-level tags vs `maxTags`. @adr 0656 */
+  orgTags: CapCounter;
   /** Start of the next UTC month — when the book counters reset. */
   resetAt: string;
 }

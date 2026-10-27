@@ -251,7 +251,7 @@ export type UsageAlertRule = z.infer<typeof usageAlertRuleSchema>;
 
 /** The `alerts` block of `users.settings`. @adr 0110 */
 export const userAlertsSchema = z.object({
-  rules: z.array(usageAlertRuleSchema).max(20).default([]),
+  rules: z.array(usageAlertRuleSchema).max(100).default([]),
 });
 export type UserAlerts = z.infer<typeof userAlertsSchema>;
 

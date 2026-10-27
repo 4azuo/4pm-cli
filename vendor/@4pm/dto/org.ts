@@ -12,6 +12,7 @@ import {
 import { z } from "zod";
 import { MfaPolicy, PaymentProvider } from "@4pm/constants";
 import { readOrgNetworkSettings, type OrgNetworkSettings } from "./network";
+import type { EntitlementOverrides, OrgEntitlementOverridesView } from "./billing";
 
 /**
  * Pending paid-plan checkout recorded at register, stored under
@@ -131,6 +132,23 @@ export interface OrgResourceCaps {
   checklistVersionsKept: number;
   workerConfigTemplatesMax: number;
   workerConfigVersionsKept: number;
+}
+
+/**
+ * admin-0107 answer: the ADR-0332 caps plus the org's entitlement overrides editor data. The `OrgResourceCaps`
+ * fields stay top-level so older callers keep working.
+ * @adr 0656
+ */
+export interface OrgCapsDetail extends OrgResourceCaps {
+  entitlements: OrgEntitlementOverridesView;
+}
+
+/** admin-0108 body: any ADR-0332 caps and/or the full overrides map, plus the reason sent to the org. @adr 0656 */
+export interface SetOrgCapsRequest extends Partial<OrgResourceCaps> {
+  /** The whole overrides map (replaces the stored one); omit to leave the overrides unchanged. */
+  overrides?: EntitlementOverrides;
+  /** Why the limits change — shown to the org's admins (required when `overrides` changes). */
+  reason?: string;
 }
 
 /** Bounds for the per-org resource caps (checklists / worker-config templates) — ADR-0332. */

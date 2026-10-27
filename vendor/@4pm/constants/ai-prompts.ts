@@ -543,6 +543,16 @@ const PROMPT_META: PromptMeta[] = [
     requiredVars: ["current", "instruction"],
     untrustedVars: { current: "data", instruction: "request" },
   },
+  // New with AI: a whole checklist drafted from a description. @adr 0653
+  {
+    key: "web.checklist.create",
+    ownerApp: "web",
+    phase: 2,
+    title: "Checklist creation",
+    description: "Drafts a whole new checklist (name, description, jobs, min %, items) from a description. Keep the JSON object output shape.",
+    requiredVars: ["jobs", "description"],
+    untrustedVars: { description: "request" },
+  },
   {
     key: "web.memo.compose",
     ownerApp: "web",

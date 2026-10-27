@@ -473,6 +473,13 @@ export const ErrorCode = {
   PLAN_PROJECT_LIMIT: "PLAN_PROJECT_LIMIT",
   // Plan memo-item cap reached (`maxMemoItems` — ADR-0365).
   PLAN_MEMO_LIMIT: "PLAN_MEMO_LIMIT",
+  // Count caps of ADR-0656: teams, tags (org / per project), API clients, usage-alert rules (project / user).
+  PLAN_TEAM_LIMIT: "PLAN_TEAM_LIMIT",
+  PLAN_TAG_LIMIT: "PLAN_TAG_LIMIT",
+  PLAN_API_CLIENT_LIMIT: "PLAN_API_CLIENT_LIMIT",
+  PLAN_ALERT_RULE_LIMIT: "PLAN_ALERT_RULE_LIMIT",
+  // Too many projects / users / teams created in the last 24 h (`dailyCreateLimit` — ADR-0656).
+  DAILY_CREATE_LIMIT: "DAILY_CREATE_LIMIT",
   // An autonomous book reached its monthly `autonomousRequestsPerMonth` cap (ADR-0365).
   AUTONOMOUS_BOOK_CAP_REACHED: "AUTONOMOUS_BOOK_CAP_REACHED",
   PLAN_FEATURE_UNAVAILABLE: "PLAN_FEATURE_UNAVAILABLE",
