@@ -17,6 +17,7 @@ export * from "./messages/er";
 export * from "./messages/external-service";
 export * from "./messages/faq-compose";
 export * from "./messages/git-token";
+export * from "./messages/hosting";
 export * from "./messages/marketing";
 export * from "./messages/memory";
 export * from "./messages/project-modes";

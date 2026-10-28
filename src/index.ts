@@ -100,7 +100,7 @@ async function main(): Promise<void> {
       // `||` not `??`: an empty `--server` / FOURPM_SERVER="" means "not given", and `??`
       // would keep the empty string and dial nowhere.
       const serverUrl =
-        flagValue(rest, "server") || process.env.FOURPM_SERVER || "http://localhost:42001";
+        flagValue(rest, "server") || process.env.FOURPM_SERVER || "http://localhost:42013";
       // Headless pairing token (ADR-0192 §6): `--token` or FOURPM_PAIR_TOKEN skips the interactive
       // hashcode dance (container/pool boot). `||` so an empty value means "not given".
       const pairToken = flagValue(rest, "token") || process.env.FOURPM_PAIR_TOKEN || null;
@@ -117,7 +117,7 @@ async function main(): Promise<void> {
       const bootToken = process.env.FOURPM_PAIR_TOKEN || null;
       if (bootToken && listProfiles().filter((p) => p.linked).length === 0) {
         const serverUrl =
-          flagValue(rest, "server") || process.env.FOURPM_SERVER || "http://localhost:42001";
+          flagValue(rest, "server") || process.env.FOURPM_SERVER || "http://localhost:42013";
         await runLink(serverUrl.replace(/\/$/, ""), explicitProfile, bootToken);
       }
       const name = await pickLinkedProfile(explicitProfile, "start");
@@ -246,13 +246,13 @@ async function main(): Promise<void> {
           "",
           "Environment:",
           "  FOURPM_SERVER     Default server URL when --server is omitted (link/version/",
-          "                    update). Fallback when unset: http://localhost:42001.",
+          "                    update). Fallback when unset: http://localhost:42013.",
           "  FOURPM_CREDENTIAL On start, restore a profile from a `credential-export` value",
           "                    when it has no .cre yet (no volume needed — ADR-0428).",
           "",
           "Profiles: named after the paired account (e.g. mcacc1); when several exist,",
           "start/unlink show a picker (↑↓ + Enter) — no --profile needed.",
-          "Server URL: --server > FOURPM_SERVER > default http://localhost:42001;",
+          "Server URL: --server > FOURPM_SERVER > default http://localhost:42013;",
           "once linked, the profile's saved serverUrl is reused.",
         ].join("\n"),
       );

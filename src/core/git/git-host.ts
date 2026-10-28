@@ -3,9 +3,9 @@
  * worker's authenticated `gh` (GitHub / GHE, incl. the GitHub-App shim) or `glab` (GitLab):
  * branch protection, the pull/merge-request state of a branch, opening a PR into an explicit base, and the
  * open PRs that conflict with their target, and the follow-up of a root PR that waits for submodule PRs (merge commit,
- * draft → ready, merge / auto-merge).
+ * draft → ready, merge / auto-merge), the repo visibility and the people of a PR (assignees, reviewers).
  * Every call is best-effort: an unknown host or a failing CLI yields `null` / an error string, never a throw.
- * @adr 0371 @adr 0356 @adr 0539 @adr 0579
+ * @adr 0371 @adr 0356 @adr 0539 @adr 0579 @adr 0671
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -297,4 +297,84 @@ export async function mergePullRequest(url: string, prUrl: string): Promise<{ re
   if (await attempt(["mr", "merge", n, "-R", h.slug, "--yes"])) return { result: "merged" };
   for (const flag of ["--auto-merge", "--when-pipeline-succeeds"]) if (await attempt(["mr", "merge", n, "-R", h.slug, "--yes", flag])) return { result: "auto" };
   return { error: last };
+}
+
+/**
+ * The repo's visibility on the host (`public` / `private` / `internal`), or null when unknown. Read through the
+ * host CLI. @adr 0671
+ */
+export async function repoVisibility(url: string): Promise<"public" | "private" | "internal" | null> {
+  const h = repoHost(url);
+  try {
+    if (h.provider === "gh") {
+      const { stdout } = await run("gh", ["repo", "view", ghRepo(h), "--json", "visibility", "-q", ".visibility"], { timeout: 30_000 });
+      const v = stdout.trim().toLowerCase();
+      return v === "public" || v === "private" || v === "internal" ? v : null;
+    }
+    if (h.provider === "glab") {
+      const { stdout } = await run("glab", ["api", `projects/${encodeURIComponent(h.slug)}`], { timeout: 30_000 });
+      const v = String((JSON.parse(stdout) as { visibility?: unknown }).visibility ?? "").toLowerCase();
+      return v === "public" || v === "private" || v === "internal" ? v : null;
+    }
+  } catch {
+    /* unknown */
+  }
+  return null;
+}
+
+/** The people to set on a PR / MR (logins already validated against the host's syntax). */
+export interface PrPeople {
+  assignees: string[];
+  reviewers: string[];
+}
+
+/** A GitHub App token for the people step (REST), when the project runs on the App. */
+export interface PeopleToken {
+  token: string;
+  apiBase: string;
+}
+
+/**
+ * Set a PR's assignees and requested reviewers, best-effort — each call on its own so one refused person (no
+ * repository access) never undoes the others. With a GitHub App `token` the REST API is used directly (the token
+ * never reaches a child process); otherwise the worker's `gh` / `glab`. Returns the error texts (empty = all set).
+ * @adr 0671
+ */
+export async function setPrPeople(url: string, prUrl: string, people: PrPeople, token?: PeopleToken | null): Promise<string[]> {
+  const h = repoHost(url);
+  const n = prNumber(prUrl);
+  const errors: string[] = [];
+  if (!h.provider || !n) return errors;
+  const step = async (what: string, fn: () => Promise<unknown>): Promise<void> => {
+    try {
+      await fn();
+    } catch (err) {
+      errors.push(`${what}: ${errText(err)}`);
+    }
+  };
+  if (h.provider === "gh" && token) {
+    const api = `${token.apiBase.replace(/\/+$/, "")}/repos/${h.slug}`;
+    if (people.assignees.length) await step("assignees", () => githubPost(`${api}/issues/${n}/assignees`, token.token, { assignees: people.assignees }));
+    if (people.reviewers.length) await step("reviewers", () => githubPost(`${api}/pulls/${n}/requested_reviewers`, token.token, { reviewers: people.reviewers }));
+    return errors;
+  }
+  if (h.provider === "gh") {
+    if (people.assignees.length) await step("assignees", () => run("gh", ["pr", "edit", n, "-R", ghRepo(h), "--add-assignee", people.assignees.join(",")], { timeout: 60_000 }));
+    if (people.reviewers.length) await step("reviewers", () => run("gh", ["pr", "edit", n, "-R", ghRepo(h), "--add-reviewer", people.reviewers.join(",")], { timeout: 60_000 }));
+    return errors;
+  }
+  if (people.assignees.length) await step("assignees", () => run("glab", ["mr", "update", n, "-R", h.slug, "--assignee", people.assignees.join(",")], { timeout: 60_000 }));
+  if (people.reviewers.length) await step("reviewers", () => run("glab", ["mr", "update", n, "-R", h.slug, "--reviewer", people.reviewers.join(",")], { timeout: 60_000 }));
+  return errors;
+}
+
+/** POST a JSON body to the GitHub REST API with `token`; throws on a non-2xx answer. */
+async function githubPost(endpoint: string, token: string, body: unknown): Promise<void> {
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { Authorization: `token ${token}`, Accept: "application/vnd.github+json", "User-Agent": "4pm-cli", "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${(await res.text().catch(() => "")).slice(0, 200)}`);
 }

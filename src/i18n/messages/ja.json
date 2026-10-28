@@ -5,6 +5,8 @@
   "error.sessionReplaced": "このプロファイルの別のセッションが引き継ぎました — このインスタンスを停止します。（同じプロファイルで `4pm start` を二重に実行していませんか？）",
   "error.accountPaused": "このアカウントは一時停止中です — 再開されるまで再試行します。",
   "error.platformIpBlocked": "このワーカーの IP（{ip}）はプラットフォームの CLI_IP_ALLOWLIST に含まれていません — 管理者に追加を依頼してください。5 分ごとに再試行します。",
+  "error.wsTooManyConnections": "この IP からの接続が多すぎます — サーバーから待機を求められました。{seconds} 秒後に再試行します。",
+  "error.wsHelloBlocked": "接続の失敗が続いたため、この IP は一時的にブロックされています。{seconds} 秒後に再試行します。",
   "error.serverError": "サーバーがエラーを報告しました: {code}",
   "error.linkInvalid": "リンクは無効になりました（{reason}）— .cre を削除しました。`4pm link` を実行して再ペアリングしてください。",
   "start.notLinked": "プロファイル「{profile}」はリンクされていません — まず `4pm link --server <URL>` を実行してください。",

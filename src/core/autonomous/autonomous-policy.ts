@@ -8,13 +8,14 @@
  * `machine.status.templateMarker`. The last check and the claim mirror are stamped with the served project and
  * dropped when the worker serves another one.
  * A leaf module (no autonomous imports) — the config reader merges the policy on top of the worker file.
- * Without a policy the worker runs no cycle (it serves no ready project).
- * @adr 0507 @adr 0511 @adr 0529 @adr 0550 @adr 0570
+ * Without a policy the worker runs no cycle (it serves no ready project). The members' git accounts and the PMs
+ * that come with it (who to name on commits / PRs) are kept in memory only — never written to the policy file.
+ * @adr 0507 @adr 0511 @adr 0529 @adr 0550 @adr 0570 @adr 0671
  */
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AutonomousCheckDetail, AutonomousLastCheck, AutonomousPolicy, AutonomousStep } from "@4pm/dto";
-import { readProjectAutonomousSettings } from "@4pm/dto";
+import type { AutonomousCheckDetail, AutonomousLastCheck, AutonomousPolicy, AutonomousStep, GitAccountRef } from "@4pm/dto";
+import { isValidGitAccountRef, readProjectAutonomousSettings } from "@4pm/dto";
 import { logger } from "../../common/logger/logger";
 
 /** The policy file name (profile dir). */
@@ -26,6 +27,8 @@ export const CLAIM_FILE = "autonomous-claim.json";
 
 let profileDir: string | null = null;
 let policy: AutonomousPolicy | null = null;
+/** The project's people for the host — memory only, refreshed with every policy. @adr 0671 */
+let people: HostPeople = { accounts: {}, pmUserIds: [] };
 let lastCheck: AutonomousLastCheck | null = null;
 let step: AutonomousStep | null = null;
 /** The served project (ws_token / project.tokens); undefined = not known yet in this process. @adr 0570 */
@@ -63,6 +66,7 @@ export function setAutonomousPolicy(raw: unknown): void {
   if (raw === undefined) return;
   const next = raw === null ? null : normalize(raw);
   policy = next;
+  people = readPeople(raw);
   if (profileDir) {
     try {
       writeFileSync(join(profileDir, POLICY_FILE), JSON.stringify(next) + "\n", { mode: 0o600 });
@@ -80,6 +84,33 @@ export function setAutonomousPolicy(raw: unknown): void {
   }
   // `effective` / `allowed` changed — report the snapshot now (ADR-0574).
   notifyAutonomousChanged();
+}
+
+/** The members' verified git accounts by user id + the PMs, as last pushed (empty after a restart until the next push). */
+export interface HostPeople {
+  accounts: Record<string, GitAccountRef[]>;
+  pmUserIds: string[];
+}
+
+/** The project's people for the host. @adr 0671 */
+export function hostPeople(): HostPeople {
+  return people;
+}
+
+/** Keep only well-formed accounts and uuid user ids from a policy payload (anything else is dropped). */
+function readPeople(raw: unknown): HostPeople {
+  const o = (raw && typeof raw === "object" ? raw : {}) as { gitAccounts?: unknown; pmUserIds?: unknown };
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const accounts: Record<string, GitAccountRef[]> = {};
+  if (o.gitAccounts && typeof o.gitAccounts === "object") {
+    for (const [userId, list] of Object.entries(o.gitAccounts as Record<string, unknown>)) {
+      if (!uuid.test(userId) || !Array.isArray(list)) continue;
+      const ok = list.filter((a): a is GitAccountRef => !!a && typeof a === "object" && isValidGitAccountRef(a as GitAccountRef));
+      if (ok.length) accounts[userId.toLowerCase()] = ok.map((a) => ({ provider: a.provider, host: a.host.toLowerCase(), login: a.login, providerUserId: a.providerUserId }));
+    }
+  }
+  const pmUserIds = Array.isArray(o.pmUserIds) ? o.pmUserIds.filter((id): id is string => typeof id === "string" && uuid.test(id)).map((id) => id.toLowerCase()) : [];
+  return { accounts, pmUserIds };
 }
 
 /** The current policy (null = none received yet ⇒ cycles are blocked). */
@@ -269,6 +300,7 @@ function normalize(raw: unknown): AutonomousPolicy | null {
 export function resetAutonomousPolicyForTest(): void {
   profileDir = null;
   policy = null;
+  people = { accounts: {}, pmUserIds: [] };
   lastCheck = null;
   lastCheckProject = undefined;
   servedProject = undefined;

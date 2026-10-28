@@ -590,6 +590,18 @@ export interface WorkerMachineLinkNode {
    */
   egress?: "container" | "none" | null;
   egressReason?: string | null;
+  /**
+   * Worker hosting (project clis only): the operator's *Allow hosting*, the run modes last reported, whether the
+   * switch applies (never for a rented / platform-pool machine) and the environments it serves now.
+   * @adr 0664
+   */
+  hosting?: {
+    allowed: boolean;
+    modes: ("process" | "compose")[];
+    hostable: boolean;
+    /** The worker environments it serves now (the *Hosting* badge). */
+    serving: { projectName: string; environmentName: string }[];
+  } | null;
 }
 
 /**

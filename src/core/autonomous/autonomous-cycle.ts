@@ -53,17 +53,18 @@ import { requestScopeTags, wrapUntrusted } from "@4pm/constants";
 import { cappedBookIds } from "./autonomous";
 import { isInQuietHours, readAutonomousConfig, pauseAutonomous, type AutonomousConfig } from "./autonomous-config";
 import { ensureLocalAutonomousFiles, pushRecord, readHistories, todayTickCount, writeHistories, type Histories } from "./autonomous-history";
+import { checkGitAccess, forgetGitAccess, isGitAccessError } from "./autonomous-git-access";
 import { AUTO_APPROVER, autoApproveWaiting } from "./autonomous-auto-approve";
 import { buildSecurityPrompt, findingsText, parseSecurityReply, securityMarkdown } from "./autonomous-security";
 import { AUTO_VERIFY_DONE_QUESTION, AUTO_VERIFY_QUESTION, applyVerifyAnswers, parseVerifyAnswers, parseVerifyFollowUps, verifyEntries } from "./autonomous-verify";
 import { DONE_REVIEWS_SIDECAR_REL, parseDoneReviews } from "@4pm/dto";
 import * as B from "./autonomous-books";
+import { deliverPrWithPeople, rowHostPeople, withCoAuthors, type PeopleSource } from "./autonomous-people";
 import {
   aheadOf,
   booksDirsNow,
   checkoutTaskBranch,
   currentBranch,
-  deliverPr,
   git,
   gitQuiet,
   hasRemoteBranch,
@@ -323,6 +324,9 @@ function parseJsonReply<T>(text: string): T | null {
 
 // ── Claim watch (during the run + on reconnect) ───────────────────────────────────────────────────
 
+/** Failed git credential pre-checks in a row after which the worker pauses itself. @adr 0661 */
+const GIT_ACCESS_PAUSE_AFTER = 3;
+
 /** The run currently working on a claimed row (one per daemon). */
 const watch: { commandId: string | null; claim: LocalClaim | null; root: string | null; lost: boolean; unapproved: boolean } = {
   commandId: null,
@@ -519,6 +523,16 @@ interface RunCtx {
   log: (line: string) => Promise<void>;
 }
 
+/** Where a delivered row's host people come from. @adr 0671 */
+function peopleOf(rc: RunCtx, id: string): PeopleSource {
+  return { root: rc.root, booksBase: rc.rootBase.base, id, mode: rc.cfg.hostPeople, log: (line) => void rc.log(line) };
+}
+
+/** The row's content-commit message with its co-author trailers (unchanged when the host people are off). @adr 0671 */
+async function contentMessage(rc: RunCtx, id: string, message: string): Promise<string> {
+  return withCoAuthors(message, await rowHostPeople(rc.root, rc.rootBase.base, rc.rootBase.url, id, rc.cfg.hostPeople));
+}
+
 /** The Last-check detail of the book caps that held an intake back. */
 type CapDetail = { capReached?: ("AI_TODO" | "USER_QA")[] };
 
@@ -633,6 +647,29 @@ export async function runAutonomousCycle(ctx: WsHandlerCtx): Promise<void> {
       await recordRun(root, hist, "skip", `books-protected: ${books}`, today()); // surfaced as status.booksProtected
       ctx.bus.autonomousDone(false, "books branch protected");
       return;
+    }
+    // The git credential must still read and push every repo (ADR-0661): a refusal stops the cycle before
+    // claiming — no claim, no attempt, `consecutiveFails` untouched; 3 failed checks in a row pause the worker.
+    const access = await checkGitAccess(root, [rootBase, ...bases.subs]);
+    if (access) {
+      const what = `${access.repo}: ${access.step === "push" ? "cannot push" : "cannot read"} — ${access.reason}`.slice(0, 300);
+      await log(`[stop] git credential check failed — ${what}`);
+      alert(ctx, { kind: "git-access", repo: access.repo, message: `The project's git credential failed the access check on ${what}` });
+      hist.gitAccessFails = (hist.gitAccessFails ?? 0) + 1;
+      await recordRun(root, hist, "skip", `git-access: ${what}`, today()); // surfaced as status.gitAccess
+      if (hist.gitAccessFails >= GIT_ACCESS_PAUSE_AFTER) {
+        await pauseAutonomous(profileDir, "auto", `${hist.gitAccessFails} failed git credential checks`);
+        await log(`[stop] ${hist.gitAccessFails} failed git credential checks → paused`);
+        alert(ctx, { kind: "auto-paused", message: `${worker} paused its autonomous mode after ${hist.gitAccessFails} failed git credential checks.` });
+        hist.gitAccessFails = 0;
+        await writeHistories(root, hist);
+      }
+      ctx.bus.autonomousDone(false, "git credential check failed");
+      return;
+    }
+    if (hist.gitAccessFails) {
+      hist.gitAccessFails = 0;
+      await writeHistories(root, hist);
     }
 
     // --- The repo lock (ADR-0506): from Sync to its last publish the cycle owns the working tree; Console
@@ -926,7 +963,7 @@ async function reopenDeliveries(rc: RunCtx): Promise<void> {
       continue;
     }
     const id = branch.split("/").pop() ?? branch;
-    const pr = await deliverPr(root, rootBase.url, branch, rootBase.base, `${id}: retry`, `${id} again after its earlier pull request was closed (4PM autonomous).`);
+    const pr = await deliverPrWithPeople(peopleOf(rc, id), root, rootBase.url, branch, rootBase.base, `${id}: retry`, `${id} again after its earlier pull request was closed (4PM autonomous).`);
     if (pr.error) {
       await log(`[retry] ${id}: PR failed: ${pr.error}`);
       continue;
@@ -1002,7 +1039,7 @@ async function openAcceptedDocPrs(rc: RunCtx): Promise<void> {
           continue;
         }
       }
-      const pr = await deliverPr(root, rootBase.url, e.branch, rootBase.base, `${id}: ${roundWhat(id)}`, `The accepted ${roundWhat(id)} of ${id} (4PM autonomous, ${e.round} review round(s)).${subPrsBody(sd)}`, sd.open.length > 0);
+      const pr = await deliverPrWithPeople(peopleOf(rc, id), root, rootBase.url, e.branch, rootBase.base, `${id}: ${roundWhat(id)}`, `The accepted ${roundWhat(id)} of ${id} (4PM autonomous, ${e.round} review round(s)).${subPrsBody(sd)}`, sd.open.length > 0);
       if (pr.error) {
         await log(`[${roundWhat(id)}] ${id}: PR failed: ${pr.error}`);
         continue;
@@ -1033,7 +1070,7 @@ async function openAcceptedDocPrs(rc: RunCtx): Promise<void> {
         continue;
       }
     }
-    const pr = await deliverPr(root, rootBase.url, e.branch, rootBase.base, `${id}: ${roundWhat(id)}`, `The accepted ${roundWhat(id)} of ${id} (4PM autonomous, ${e.round} review round(s)).`);
+    const pr = await deliverPrWithPeople(peopleOf(rc, id), root, rootBase.url, e.branch, rootBase.base, `${id}: ${roundWhat(id)}`, `The accepted ${roundWhat(id)} of ${id} (4PM autonomous, ${e.round} review round(s)).`);
     if (pr.error) {
       await log(`[${roundWhat(id)}] ${id}: PR failed: ${pr.error}`);
       continue;
@@ -1197,7 +1234,12 @@ async function runClaimed(rc: RunCtx, mine: LocalClaim, resumedClaim: boolean, c
     await repairSequenceFiles(root, seqs, sequenceFixer(rc, mine.id), log).catch((e) => log(`[warn] sequence check of ${mine.id}: ${String(e)}`));
   }
   // An intake keeps only its mockups / sequences on the branch (+ the WIP patch while unpublished).
-  if (intake) await commitIntakeOutput(root, mine, cfg, startHead, patch, kept || unapproved, subs, subStartHeads);
+  if (intake) {
+    const wip = kept || unapproved;
+    // The request's content commit names its people as co-authors (ADR-0671); a WIP commit never does.
+    const final = wip ? undefined : await contentMessage(rc, mine.id, `feat(${mine.id}): mockups and sequence diagrams`);
+    await commitIntakeOutput(root, mine, cfg, startHead, patch, wip, subs, subStartHeads, final);
+  }
   if (unapproved) {
     await stopUnapproved(rc, subs, mine);
     return;
@@ -1324,9 +1366,10 @@ async function commitIntakeOutput(
   wip: boolean,
   subs: readonly SubBranch[] = [],
   subStartHeads: ReadonlyMap<string, string> = new Map(),
+  finalMessage?: string,
 ): Promise<void> {
   const outDirs = [cfg.mockupDir, cfg.sequenceDir];
-  const message = wip ? `wip(${mine.id}): intake in progress` : `feat(${mine.id}): mockups and sequence diagrams`;
+  const message = wip ? `wip(${mine.id}): intake in progress` : (finalMessage ?? `feat(${mine.id}): mockups and sequence diagrams`);
   const touched: string[] = [];
   for (const s of subs) {
     const cwd = join(root, s.sub.dir);
@@ -1488,7 +1531,7 @@ async function deliverBranch(
   if (sd.fallbacks.length) {
     alert(ctx, { kind: "direct-merge-failed", task: mine.id, message: `${mine.id} could not be merged directly (${sd.fallbacks.join(", ")}) — a PR was opened instead.` });
   }
-  const pr = await deliverPr(root, rootBase.url, mine.branch, rootBase.base, title.slice(0, 100), body + subPrsBody(sd), sd.open.length > 0);
+  const pr = await deliverPrWithPeople(peopleOf(rc, mine.id), root, rootBase.url, mine.branch, rootBase.base, title.slice(0, 100), body + subPrsBody(sd), sd.open.length > 0);
   if (pr.error) throw new Error(pr.error);
   emitEvent(ctx, "pr.opened", mine.id, { repo: "root", prUrl: pr.url ?? "", branch: mine.branch, taskId: mine.id });
   return {
@@ -1569,7 +1612,7 @@ async function deliverSubs(
     }
     // A submodule on a PR ⇒ the root goes out as a PR too (its pointer would not be on the submodule's base).
     out.direct = false;
-    const pr = await deliverPr(abs, s.sub.url, s.branch, s.sub.base, opts.title.slice(0, 100), `${opts.body}\n\n${id} (4PM autonomous).`);
+    const pr = await deliverPrWithPeople(peopleOf(rc, id), abs, s.sub.url, s.branch, s.sub.base, opts.title.slice(0, 100), `${opts.body}\n\n${id} (4PM autonomous).`);
     if (pr.error) throw new Error(`submodule ${s.sub.dir} PR: ${pr.error}`);
     out.lines.push(`${s.sub.dir}: ${pr.url ?? s.branch}`);
     out.repos.push({ ...cap, ...(pr.url ? { pr: pr.url } : {}) });
@@ -1728,7 +1771,19 @@ async function deliverAndFinish(rc: RunCtx, subs: { sub: RepoBase; branch: strin
   try {
     delivered = await deliver(rc, subs, mine, summary);
   } catch (err) {
-    const reason = `delivery failed: ${String(err instanceof Error ? err.message : err)}`;
+    const message = String(err instanceof Error ? err.message : err);
+    if (isGitAccessError(message)) {
+      // The credential refused the push (ADR-0661): not the task's fault — the WIP stays on the local branch, the
+      // row goes back without an attempt, and the next cycle re-checks the credential before claiming again.
+      forgetGitAccess(root);
+      const reason = `push rejected (git credential): ${message}`.slice(0, 300);
+      await log(`[git] ${reason}`);
+      await releaseRow(rc, mine, reason, false);
+      alert(ctx, { kind: "git-access", task: mine.id, message: `${mine.id}: ${reason}` });
+      ctx.bus.autonomousDone(false, "push rejected — git credential");
+      return;
+    }
+    const reason = `delivery failed: ${message}`;
     await releaseRow(rc, mine, reason);
     emitEvent(ctx, "task.failed", mine.id, { taskId: mine.id, group: taskGroup(mine.id), reason: reason.slice(0, 300) });
     ctx.bus.autonomousDone(false, reason);
@@ -1812,8 +1867,10 @@ async function deliver(rc: RunCtx, subs: { sub: RepoBase; branch: string }[], mi
   const evRoot = cfg.evidenceDir;
   const title = `${mine.id}: ${mine.task.desc}`.replace(/\s+/g, " ").slice(0, 100);
   const mergeMessage = `Merge ${mine.id} (4PM autonomous): ${mine.task.desc}`.replace(/\s+/g, " ").slice(0, 200);
+  // The task's content commit names its people as co-authors (ADR-0671).
+  const featMessage = await contentMessage(rc, mine.id, `feat(${mine.id}): ${summary || mine.task.desc}`.slice(0, 200));
   // Submodules first (ADR-0579): merged directly, or PRs the root PR then waits for.
-  const sd = await deliverSubs(rc, subs, mine.id, { title, body: summary, message: mergeMessage, live: true, commit: `feat(${mine.id}): ${summary || mine.task.desc}`.slice(0, 200) });
+  const sd = await deliverSubs(rc, subs, mine.id, { title, body: summary, message: mergeMessage, live: true, commit: featMessage });
   const subPrs = sd.lines;
   const pointers = sd.pointers;
   // Conflicts with the base found just before delivery (ADR-0539 §3) — those repos go out as PRs.
@@ -1822,7 +1879,7 @@ async function deliver(rc: RunCtx, subs: { sub: RepoBase; branch: string }[], mi
   const fallbacks = sd.fallbacks;
   const direct = sd.direct;
   // Root: pointer bumps + any uncommitted leftovers, then push + PR / merge.
-  await wipCommit(root, `feat(${mine.id}): ${summary || mine.task.desc}`.slice(0, 200));
+  await wipCommit(root, featMessage);
   // The agent's change requests travel to the books, never to `<base>` (ADR-0453) — read them before the strip.
   const ercs = await captureAgentErcs(root, cfg.erDir);
   const sdcs = await captureAgentSdcs(root, cfg.diagramDir);
@@ -1881,7 +1938,7 @@ async function deliver(rc: RunCtx, subs: { sub: RepoBase; branch: string }[], mi
     alert(ctx, { kind: "direct-merge-failed", task: mine.id, message: `${mine.id} could not be merged directly (${fallbacks.join(", ")}) — a PR was opened instead.` });
   }
   const body = `${summary}\n\nTask ${mine.id} (4PM autonomous).${subPrsBody(sd)}`;
-  const pr = await deliverPr(root, rootBase.url, mine.branch, rootBase.base, title, body, sd.open.length > 0);
+  const pr = await deliverPrWithPeople(peopleOf(rc, mine.id), root, rootBase.url, mine.branch, rootBase.base, title, body, sd.open.length > 0);
   if (pr.error) throw new Error(`PR: ${pr.error}`);
   const notes = [
     `branch: ${mine.branch}; PR: ${pr.url ?? "opened"}`,
@@ -1999,7 +2056,7 @@ ${wrapUntrusted(conflicts.flatMap((c) => c.paths.map((p) => `- ${c.dir === "." ?
 async function finishDocRound(rc: RunCtx, mine: LocalClaim, subs: readonly SubBranch[], summary: string, extra: CapDetail = {}): Promise<void> {
   const { ctx, root, bdir, rootBase, cfg, log } = rc;
   const base = rootBase.base;
-  const commitMsg = `docs(${mine.id}): ${summary || "docs round"}`.replace(/\s+/g, " ").slice(0, 200);
+  const commitMsg = await contentMessage(rc, mine.id, `docs(${mine.id}): ${summary || "docs round"}`.replace(/\s+/g, " ").slice(0, 200));
   const live: SubBranch[] = [];
   for (const s of subs) {
     const abs = join(root, s.sub.dir);

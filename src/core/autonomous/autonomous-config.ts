@@ -15,7 +15,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { DIAGRAM_ROOT, ER_ROOT, EVIDENCE_ROOT, MOCKUP_ROOT, PROJECT_AUTONOMOUS_KEYS, SEQUENCE_ROOT, isSafeRepoDir, type AutonomousPausedBy } from "@4pm/dto";
+import { DIAGRAM_ROOT, ER_ROOT, EVIDENCE_ROOT, MOCKUP_ROOT, PROJECT_AUTONOMOUS_KEYS, SEQUENCE_ROOT, isSafeRepoDir, type AutonomousPausedBy, type HostPeopleMode } from "@4pm/dto";
 import { autonomousPolicy } from "./autonomous-policy";
 
 /** The autonomous knobs (parameters only — no logic). */
@@ -93,6 +93,8 @@ export interface AutonomousConfig {
   securityReview: boolean;
   evidencePhase: boolean;
   autoApprove: boolean;
+  /** Name people on the host — co-author trailers, PR assignees / reviewers (`auto` = private repos). @adr 0671 */
+  hostPeople: HostPeopleMode;
 }
 
 /** Lower bound of `runTimeoutMinutes`. @adr 0452 */
@@ -133,6 +135,7 @@ export const DEFAULT_AUTONOMOUS_CONFIG: AutonomousConfig = {
   securityReview: false,
   evidencePhase: true,
   autoApprove: false,
+  hostPeople: "auto",
 };
 
 /** The config file path under a profile dir. */
@@ -202,6 +205,7 @@ function coerce(raw: unknown): AutonomousConfig {
     securityReview: d.securityReview,
     evidencePhase: d.evidencePhase,
     autoApprove: d.autoApprove,
+    hostPeople: d.hostPeople,
   };
 }
 

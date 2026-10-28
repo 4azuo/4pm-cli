@@ -230,3 +230,38 @@ export const scaffoldPublishRequestSchema = z.object({
   machineLinkId: z.string().guid().optional(),
 });
 export type ScaffoldPublishRequest = z.infer<typeof scaffoldPublishRequestSchema>;
+
+/** One check of a repository in a credential health result. @api project-0144 @adr 0661 */
+export interface GitCredentialHealthCheck {
+  key: "clone" | "push" | "pullRequest" | "workflows" | "api";
+  ok: boolean;
+}
+
+/** One repository's credential health. @api project-0144 @adr 0661 */
+export interface GitCredentialHealthRepo {
+  /** "root" or the submodule folder. */
+  repo: string;
+  url: string;
+  checks: GitCredentialHealthCheck[];
+  /** ok · missing (a permission is missing) · unreachable (can't read / not installed / rejected). */
+  status: "ok" | "missing" | "unreachable";
+  /** True when the failure stops autonomous (read / push); a missing workflow or API permission does not. */
+  blocking: boolean;
+  /** The provider's message, when any. */
+  detail: string | null;
+}
+
+/**
+ * Data GET /projects/:id/git/credential-health — the last check of the project's git credential. `self` = the
+ * worker operator's own login, checked by each worker before its cycles (no server-side rows).
+ * @api project-0144 @adr 0661
+ */
+export interface GitCredentialHealth {
+  method: string | null;
+  checkedAt: string | null;
+  /** True when the method is checked by the workers themselves (Self-managed). */
+  checkedByWorkers: boolean;
+  repos: GitCredentialHealthRepo[];
+  /** A connect / authenticate failure that applies to every repo. */
+  error: string | null;
+}

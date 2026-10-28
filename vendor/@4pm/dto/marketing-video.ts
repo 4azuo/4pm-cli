@@ -1,7 +1,7 @@
 /**
  * Marketing videos (Content ▸ Marketing ▸ Videos) — the pure `SCENES.md` codec shared by the server, the web and the
  * cli (front matter: size, fps, locales, soundtrack, audio, the photo run chosen per set; one `## SCENE-NNN` section per
- * scene; `tags:` = marketing tag codes for the AI), video output file names, caps, the Remotion license and the
+ * scene; `tags:` = marketing tag codes for the AI), video output file names, caps, the project's Remotion state and the
  * request / response types of the video API.
  * @adr 0646 @adr 0648 @arch 0067
  */
@@ -363,15 +363,16 @@ export const marketingGenerateVideoSchema = z.object({
 });
 export type MarketingGenerateVideoRequest = z.infer<typeof marketingGenerateVideoSchema>;
 
-/** Set / clear the org's Remotion license key. @api marketing-0026 */
-export const marketingLicenseSchema = z.object({ key: z.string().trim().min(8).max(500).nullable() });
-export type MarketingLicenseRequest = z.infer<typeof marketingLicenseSchema>;
-
-/** The org's Remotion license key state (the key itself is never returned). @api marketing-0025 */
-export interface MarketingLicenseResponse {
-  set: boolean;
-  updatedAt: string | null;
-  updatedByLabel: string | null;
+/**
+ * The project's Remotion state for video Generate: switched on, terms accepted and current, key set, key required on
+ * the plan (`remotionLicenseRequired`). `ready` = Generate may render. @adr 0662
+ */
+export interface MarketingRemotionState {
+  enabled: boolean;
+  termsOk: boolean;
+  keySet: boolean;
+  keyRequired: boolean;
+  ready: boolean;
 }
 
 /** An uploaded audio file. @api marketing-0027 */
@@ -437,8 +438,8 @@ export interface MarketingVideoResponse {
   scenes: MarketingSceneView[];
   photos: MarketingVideoPhotoSource[];
   missing: MarketingVideoMissing[];
-  /** The org's Remotion license key is set. */
-  licenseSet: boolean;
+  /** The project's Remotion external service state. */
+  remotion: MarketingRemotionState;
   /** Every shot of the base's sets the scenes can use. */
   availableShots: { ref: string; title: string }[];
 }

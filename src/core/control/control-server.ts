@@ -18,7 +18,7 @@ import {
   type ControlSessionInfo,
 } from "./control-protocol";
 import { controlTokenPath, tokenMatches, writeControlToken } from "./control-token";
-import { issueGitToken } from "../git/git-auth";
+import { issueGitToken, socketMayServe } from "../git/git-auth";
 import { listenPrivateSocket } from "../../utils/private-socket";
 
 /** Start the control socket; returns a stop() that closes it + removes the socket file. */
@@ -110,7 +110,9 @@ export function startControlServer(
         else if (frame.t === "reconnect") bus.requestReconnect();
         else if (frame.t === "autonomousRun") bus.submitAutonomous();
         else if (frame.t === "gitToken") {
-          void issueGitToken(frame.scope, frame.host, frame.path).then((tok) => send(sock, { t: "gitToken", token: tok }));
+          // A privileged scope is served only while the cli itself runs it (ADR-0671, ADR-0672).
+          if (!socketMayServe(frame.scope)) send(sock, { t: "gitToken", token: null });
+          else void issueGitToken(frame.scope, frame.host, frame.path).then((tok) => send(sock, { t: "gitToken", token: tok }));
         }
       }
     });

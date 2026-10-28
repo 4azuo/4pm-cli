@@ -15,6 +15,7 @@
  * @adr 0356 @adr 0075 @adr 0467 @adr 0499 @arch 0049
  */
 import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { request as httpsRequest } from "node:https";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { githubHostKind, isGitLabMethod, type GitAuthMethod } from "@4pm/dto";
@@ -374,6 +375,56 @@ export async function issueGitToken(scope: string, host: string, path: string): 
     logger.warn("git.token.issue.failed", { error: String(err) });
     return null;
   }
+}
+
+/** The scope prefix of the cli's own PR-people token (assignees / reviewers) — never served to the agent. @adr 0671 */
+export const PR_PEOPLE_SCOPE_PREFIX = "pr-people:";
+/** The scope prefix of a CI proposal (server-chosen, minted with `workflows: write`). @adr 0606 */
+export const CI_PROPOSE_SCOPE_PREFIX = "ci-propose:";
+/** Privileged scopes: the token sockets serve one only while the cli itself runs that exact scope. */
+const PRIVILEGED_PREFIXES = [PR_PEOPLE_SCOPE_PREFIX, CI_PROPOSE_SCOPE_PREFIX] as const;
+/** The privileged scopes the cli is running right now (opened / closed around the run). */
+const openPrivileged = new Set<string>();
+
+/**
+ * Let the token sockets serve the privileged `scope` while the cli's own run of it lasts (a CI proposal's push goes
+ * through the git credential helper). Close it with `closePrivilegedScope`.
+ * @adr 0672
+ */
+export function openPrivilegedScope(scope: string): void {
+  openPrivileged.add(scope);
+}
+
+/** End the socket access of a privileged scope. @adr 0672 */
+export function closePrivilegedScope(scope: string): void {
+  openPrivileged.delete(scope);
+}
+
+/**
+ * May a token socket (the agent's helper / shim) be served `scope`? A normal job scope yes; a privileged one
+ * (`pr-people:`, `ci-propose:`) only while the cli runs that very scope — an agent naming one itself gets nothing.
+ * @adr 0671 @adr 0672
+ */
+export function socketMayServe(scope: string): boolean {
+  return !PRIVILEGED_PREFIXES.some((p) => scope.startsWith(p)) || openPrivileged.has(scope);
+}
+
+/**
+ * A short-lived GitHub App token with only `issues` + `pull_requests` write for the PR-people step, under its own
+ * `pr-people:<uuid>` scope (end it with `endGitScope`). Null off the App path (self-managed / GitLab use the
+ * worker's own `gh` / `glab`) or when the server declines (e.g. the installation lacks `issues`).
+ * @adr 0671
+ */
+export async function issuePeopleToken(host: string, path: string): Promise<{ token: string; apiBase: string; scope: string } | null> {
+  if (state.self || !state.host || host.toLowerCase() !== state.host) return null;
+  const scope = `${PR_PEOPLE_SCOPE_PREFIX}${randomUUID()}`;
+  const token = await issueGitToken(scope, host, path);
+  const apiBase = state.scopes.get(scope)?.find((t) => t.token === token)?.apiBase ?? "";
+  if (!token || !apiBase) {
+    await endGitScope(scope);
+    return null;
+  }
+  return { token, apiBase, scope };
 }
 
 /** `DELETE {apiBase}/installation/token` with the token itself — best-effort. */

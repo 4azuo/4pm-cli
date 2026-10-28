@@ -24,7 +24,8 @@ export type GitTokenRequest =
   | { op: "revoked"; scope: string };
 
 /** Why no token was issued — the helper then stays silent (git falls back to worker creds). */
-export type GitTokenDenyReason = "not_github_app" | "not_gitlab" | "not_covered" | "not_configured" | "mint_failed" | "key_unreadable";
+/** `scope_not_granted` — a privileged scope (`ci-propose:`) the server did not hand to this link. @adr 0672 */
+export type GitTokenDenyReason = "not_github_app" | "not_gitlab" | "not_covered" | "not_configured" | "mint_failed" | "key_unreadable" | "scope_not_granted";
 
 /** server → cli reply. `issue`: a token or `{token:null, reason}`; `revoked`: `{}`. */
 export interface GitTokenReply {

@@ -2,6 +2,7 @@
  * WS message envelope (cli-ws 0002): every bidirectional message carries a wsToken
  * (per-message auth) + an AES-256-GCM encrypted payload (with its own nonce).
  */
+import type { MachineHostingReport } from "./hosting";
 import type { WsChannelName } from "../channels";
 import type { RunQueueInfo } from "./run-slot";
 import type { MarketingRunSpec } from "./marketing";
@@ -62,7 +63,7 @@ export interface WsError {
   type: "error";
   errorCode: string;
   message: string;
-  /** Extra facts for the cli to show — `{ ip }` on PLATFORM_IP_NOT_ALLOWED. @adr 0519 */
+  /** Extra facts for the cli — `{ ip }` on PLATFORM_IP_NOT_ALLOWED, `{ reason, retryAfterSec }` on RATE_LIMITED. @adr 0519 @adr 0668 */
   meta?: Record<string, string>;
 }
 
@@ -142,6 +143,8 @@ export interface MachineStatusPayload {
   drainingFor?: string[];
   /** The worker's autonomous summary (switch, effective state, last tick, claim) — `MachineLink.autonomousSnapshot`. @adr 0507 */
   autonomous?: AutonomousSnapshotPayload;
+  /** Worker hosting: run modes this worker can serve and how many environments it serves. @adr 0664 */
+  hosting?: MachineHostingReport;
 }
 
 /** `machine.status.autonomous` — what the cli reports about its autonomous engine. @adr 0507 */
@@ -798,6 +801,12 @@ export interface AutonomousStatus {
    * @adr 0448
    */
   booksProtected?: string | null;
+  /**
+   * The last tick stopped before claiming because the project's git credential failed the access check —
+   * "<repo>: <reason>", else null.
+   * @adr 0661
+   */
+  gitAccess?: string | null;
   /**
    * The worker would run cycles now — "armed": project switch on ∧ the server's `allowed` ∧ its own
    * switch on.
@@ -2569,6 +2578,9 @@ export type AutonomousAlertKind =
   | "submodule-pr-closed"
   // A root PR that only moves submodule pointers could not be merged by the worker — merge it by hand (ADR-0579).
   | "pointer-pr-needs-merge"
+  // The project's git credential can't reach / push a repository — the cycle stopped before claiming, or a push was
+  // rejected mid-run (ADR-0661).
+  | "git-access"
   // An informational cycle event for automation rules (ADR-0458): no notification, `event` carries it.
   | "event";
 

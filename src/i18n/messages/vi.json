@@ -5,6 +5,8 @@
   "error.sessionReplaced": "Một phiên khác của hồ sơ này đã tiếp quản — tiến trình này đang dừng. (Bạn có đang chạy `4pm start` hai lần cho cùng một hồ sơ không?)",
   "error.accountPaused": "Tài khoản này đang tạm dừng — sẽ thử lại cho đến khi được kích hoạt lại.",
   "error.platformIpBlocked": "IP của worker này ({ip}) không nằm trong CLI_IP_ALLOWLIST của hệ thống — hãy nhờ quản trị viên thêm vào. Sẽ thử lại mỗi 5 phút.",
+  "error.wsTooManyConnections": "Có quá nhiều kết nối từ IP này — máy chủ yêu cầu chờ. Sẽ thử lại sau {seconds} giây.",
+  "error.wsHelloBlocked": "IP này đang bị chặn tạm thời do nhiều lần kết nối thất bại. Sẽ thử lại sau {seconds} giây.",
   "error.serverError": "Máy chủ báo lỗi: {code}",
   "error.linkInvalid": "Liên kết không còn hợp lệ ({reason}) — đã xóa .cre. Chạy `4pm link` để ghép nối lại.",
   "start.notLinked": "Hồ sơ \"{profile}\" chưa được liên kết — hãy chạy `4pm link --server <URL>` trước.",

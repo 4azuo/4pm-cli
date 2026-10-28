@@ -2,18 +2,21 @@
  * Issue links of book rows: the `Issue` cell ref format, the issue body layout 4PM manages
  * (the body, the GitHub `Due:` line, the `<!-- 4pm:status -->` block at the end), and the API shapes of the links
  * and their sync history. Pure — shared by the server, community and the web.
- * @adr 0544 @adr 0546
+ * @adr 0544 @adr 0546 @adr 0665
  */
 import { z } from "zod";
 
 /** The providers an issue ref may name. */
-export const ISSUE_PROVIDERS = ["jira", "backlog", "github"] as const;
+export const ISSUE_PROVIDERS = ["jira", "backlog", "github", "gitlab"] as const;
 export type IssueProvider = (typeof ISSUE_PROVIDERS)[number];
 
-/** `jira:KEY-12` · `backlog:KEY-3` · `github:owner/repo#12`. */
-export const ISSUE_REF_RE = /^(?:(jira|backlog):([A-Za-z][A-Za-z0-9_]*-\d+)|github:([\w.-]+\/[\w.-]+)#(\d+))$/;
+/** `jira:KEY-12` · `backlog:KEY-3` · `github:owner/repo#12` · `gitlab:group/sub/project#12`. */
+export const ISSUE_REF_RE = /^(?:(jira|backlog):([A-Za-z][A-Za-z0-9_]*-\d+)|(github):([\w.-]+\/[\w.-]+)#(\d+)|(gitlab):([\w.-]+(?:\/[\w.-]+)+)#(\d+))$/;
 
-/** A parsed issue ref; `key` is the provider's issue id (GitHub: the number), `repo` the GitHub `owner/repo`. */
+/**
+ * A parsed issue ref; `key` is the provider's issue id (GitHub: the number, GitLab: the iid), `repo` the GitHub
+ * `owner/repo` / GitLab project path.
+ */
 export interface IssueRef {
   provider: IssueProvider;
   key: string;
@@ -25,12 +28,21 @@ export function parseIssueRef(cell: string): IssueRef | null {
   const m = ISSUE_REF_RE.exec(cell.trim());
   if (!m) return null;
   if (m[1]) return { provider: m[1] as IssueProvider, key: m[2]!.toUpperCase() };
-  return { provider: "github", key: m[4]!, repo: m[3]! };
+  if (m[3]) return { provider: "github", key: m[5]!, repo: m[4]! };
+  return { provider: "gitlab", key: m[8]!, repo: m[7]! };
+}
+
+/** The display name of each issue provider (history `byLabel`, chips). */
+export const ISSUE_PROVIDER_LABEL: Record<IssueProvider, string> = { jira: "Jira", backlog: "Backlog", github: "GitHub", gitlab: "GitLab" };
+
+/** True for a provider whose refs carry a repo (`<provider>:<repo>#<n>`). */
+export function issueRefHasRepo(provider: IssueProvider): boolean {
+  return provider === "github" || provider === "gitlab";
 }
 
 /** Render a ref. */
 export function formatIssueRef(ref: IssueRef): string {
-  return ref.provider === "github" ? `github:${ref.repo ?? ""}#${ref.key}` : `${ref.provider}:${ref.key}`;
+  return issueRefHasRepo(ref.provider) ? `${ref.provider}:${ref.repo ?? ""}#${ref.key}` : `${ref.provider}:${ref.key}`;
 }
 
 /** The marker that starts the 4PM status block (everything after it is 4PM's). */

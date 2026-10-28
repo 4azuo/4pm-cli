@@ -236,6 +236,15 @@ export const WsChannels = {
   // row back to AI_TODO, no attempt) while the old project's git access still works, then clear the project-scoped
   // autonomous state (ADR-0570). Reply `AutonomousLeaveReply`; the server waits ≤ 60 s, then switches anyway.
   AUTONOMOUS_LEAVE: "autonomous.leave",
+  // Worker hosting (ADR-0664, arch 0070). server → cli (reply `{accepted}`): run a release of a worker environment;
+  // server → cli: stop an environment / start or stop its Cloudflare tunnel connector; server → cli (reply): tail the
+  // hosted app's log; cli → server (one-way): an environment's release / tunnel state, on each change and on connect.
+  HOST_DEPLOY: "host.deploy",
+  HOST_STOP: "host.stop",
+  HOST_TUNNEL_START: "host.tunnel.start",
+  HOST_TUNNEL_STOP: "host.tunnel.stop",
+  HOST_LOGS: "host.logs",
+  HOST_STATUS: "host.status",
   // cli → server (one-way): a batch of aggregated network egress decisions of the cli's egress proxy
   // (ADR-0439) — stored as NetworkEgressEvent rows (the Networks log).
   NETWORK_EVENTS: "network.events",

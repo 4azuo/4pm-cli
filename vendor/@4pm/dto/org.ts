@@ -172,19 +172,22 @@ export interface OrgCommandHistorySettings {
 /**
  * Per-org token lifetimes, stored under `settings.tokens`. Web uses
  * access + refresh JWT; cli maps `ws_token` → access and `hashcode3` → refresh
- * (the cli has no JWT). All values in **seconds**; `cli.hashcode3TtlSec = 0` means
+ * (the cli has no JWT); a native client (VS Code) keeps the web access TTL with its own
+ * refresh TTL. All values in **seconds**; `cli.hashcode3TtlSec = 0` means
  * "never expires". Empty/out-of-bound values fall back to the defaults below.
- * @adr 0056
+ * @adr 0056 @adr 0670
  */
 export interface OrgTokenSettings {
   web: { accessTtlSec: number; refreshTtlSec: number };
   cli: { wsTokenTtlSec: number; hashcode3TtlSec: number };
+  client: { refreshTtlSec: number };
 }
 
 /** Bounds (seconds) for token TTLs — values outside clamp to default. @adr 0056 */
 export const TOKEN_TTL_BOUNDS = {
   accessTtlSec: { min: 300, max: 86_400 },
   refreshTtlSec: { min: 3_600, max: 7_776_000 },
+  clientRefreshTtlSec: { min: 3_600, max: 15_552_000 },
   wsTokenTtlSec: { min: 300, max: 604_800 },
   // hashcode3 also accepts the special value 0 ("never expires").
   hashcode3TtlSec: { min: 86_400, max: 31_536_000 },
@@ -285,6 +288,7 @@ export const DEFAULT_ORG_SETTINGS: OrgSettings = {
   tokens: {
     web: { accessTtlSec: 3_600, refreshTtlSec: 604_800 },
     cli: { wsTokenTtlSec: 86_400, hashcode3TtlSec: 0 },
+    client: { refreshTtlSec: 2_592_000 },
   },
   cli: { reconnectMaxBackoffSec: 60, autoUpdateDaily: false, autoUpdateHour: 0 },
   storageAlerts: [],
@@ -329,6 +333,7 @@ export function readOrgSettings(settings: Record<string, unknown> | null | undef
   const tokens = (settings?.tokens ?? {}) as {
     web?: Partial<OrgTokenSettings["web"]>;
     cli?: Partial<OrgTokenSettings["cli"]>;
+    client?: Partial<OrgTokenSettings["client"]>;
   };
   const cli = (settings?.cli ?? {}) as Partial<OrgCliSettings>;
   const d = DEFAULT_ORG_SETTINGS;
@@ -435,6 +440,14 @@ export function readOrgSettings(settings: Record<string, unknown> | null | undef
           B.wsTokenTtlSec.max,
         ),
         hashcode3TtlSec: readHashcode3Ttl(tokens.cli?.hashcode3TtlSec, d.tokens.cli.hashcode3TtlSec),
+      },
+      client: {
+        refreshTtlSec: readTtl(
+          tokens.client?.refreshTtlSec,
+          d.tokens.client.refreshTtlSec,
+          B.clientRefreshTtlSec.min,
+          B.clientRefreshTtlSec.max,
+        ),
       },
     },
     cli: {

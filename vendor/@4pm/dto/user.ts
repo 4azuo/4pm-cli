@@ -32,6 +32,14 @@ export interface UserResponse {
   email: string | null;
   phone: string | null;
   roles: Role[];
+  /**
+   * The user's organization custom roles (`root` = the built-in role at the end of the chain, null when
+   * blank-rooted). Present on the user detail read.
+   * @adr 0658
+   */
+  customRoles?: { id: string; key: string; name: string; root: Role | null }[];
+  /** The user's linked GitHub / GitLab accounts (user detail read). @adr 0660 */
+  gitAccounts?: { id: string; provider: "github" | "gitlab"; host: string; login: string; status: "verified" | "email_match" | "admin_linked" }[];
   isRoot: boolean;
   /**
    * Rented (4PM-hosted pool) MACHINE user — surfaced into a customer org only
@@ -286,6 +294,20 @@ export const rolesSchema = z
     message: "ADMIN/MACHINE cannot be combined with other roles",
   });
 
+/**
+ * Built-in roles[] when custom roles may be held too — may be empty (the service requires at least one role
+ * overall, built-in or custom: ROLE_REQUIRED). ADMIN/MACHINE/CLIENT stay exclusive.
+ * @adr 0658
+ */
+export const builtInRolesSchema = z
+  .array(z.enum(ALL_ROLES as [Role, ...Role[]]))
+  .refine((roles) => roles.length === 0 || isValidRoleSet(roles), {
+    message: "ADMIN/MACHINE cannot be combined with other roles",
+  });
+
+/** Organization custom role ids held by a user. @adr 0658 */
+export const customRoleIdsSchema = z.array(z.string().uuid()).max(20);
+
 /** Query GET /users — BaseRequest + filter role. */
 export const listUsersQuerySchema = baseRequestSchema.extend({
   role: z.enum(ALL_ROLES as [Role, ...Role[]]).optional(),
@@ -300,7 +322,11 @@ export const createUserRequestSchema = z.object({
   password: passwordSchema,
   // optional — allowed only when the org enables it (ADR-0039); enforced server-side
   email: emailSchema.optional(),
-  roles: rolesSchema,
+  roles: builtInRolesSchema.default([]),
+  // Organization custom roles (ADR-0658) — with them `roles` may be empty.
+  customRoleIds: customRoleIdsSchema.optional(),
+  // Seen GitHub / GitLab accounts to link as admin-linked (ADR-0660).
+  gitAccountIds: z.array(z.string().uuid()).max(4).optional(),
   phone: phoneSchema.optional(),
   ipAllowlist: ipAllowlistSchema.optional(),
 });
@@ -310,7 +336,9 @@ export type CreateUserRequest = z.infer<typeof createUserRequestSchema>;
 export const updateUserRequestSchema = z.object({
   email: emailSchema.optional(),
   phone: phoneSchema.nullable().optional(),
-  roles: rolesSchema.optional(),
+  roles: builtInRolesSchema.optional(),
+  // Replace the organization custom roles — ADMIN only (ADR-0658).
+  customRoleIds: customRoleIdsSchema.optional(),
   ipAllowlist: ipAllowlistSchema.optional(),
   // Friendly display name (ADR-0200) — shown instead of the immutable username; blank ⇒ cleared.
   aliasName: z.string().trim().max(60).nullable().optional(),

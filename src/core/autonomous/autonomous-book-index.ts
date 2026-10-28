@@ -62,6 +62,19 @@ export async function buildServedBookIndex(root: string): Promise<BookIndexPaylo
   const commitSha = (await gitQuiet(root, ["rev-parse", ref]).catch(() => "")).trim();
   if (!commitSha || lastSent.get(root) === commitSha) return null;
   const committedAt = (await gitQuiet(root, ["show", "-s", "--format=%cI", ref]).catch(() => "")).trim() || new Date().toISOString();
+  const { rows, truncated } = await readBookIndexRows(root, base);
+  return { commitSha, committedAt, truncated, rows };
+}
+
+/**
+ * The index rows of the books branch of `base` (assignees, requester, approval…) plus the raw approvals map — also
+ * read by the delivery to name a row's people on the host.
+ * @adr 0671
+ */
+export async function readBookIndexRows(
+  root: string,
+  base: string,
+): Promise<{ rows: BookIndexPayload["rows"]; truncated: boolean; approvals: Record<string, unknown> }> {
   const read = async (rel: string): Promise<string> => (await readBooksFile(root, base, rel)) ?? "";
   const [userTodo, userQa, aiTodo, aiDone, aiProgress, approvalsText, authorsText, attemptsText, docsText, lineageText, doneReviewsText] = await Promise.all([
     read("USER_TODO.md"),
@@ -98,7 +111,7 @@ export async function buildServedBookIndex(root: string): Promise<BookIndexPaylo
     lineage: parseLineage(lineageText),
     doneReviews: parseDoneReviews(doneReviewsText),
   });
-  return { commitSha, committedAt, truncated, rows };
+  return { rows, truncated, approvals };
 }
 
 /** Build and send the index now (no-op when unchanged or not serving a project). */

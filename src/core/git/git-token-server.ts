@@ -4,13 +4,13 @@
  * prompts and commands. This second socket, in the agent-readable run dir and group-connectable, answers
  * ONLY `gitToken` requests — the short-lived token for the job scope / host / repo path the helper asks for —
  * and ignores every other frame. One request per connection. Started only while separation is on.
- * @adr 0430 phase 2 @adr 0356 @adr 0382
+ * @adr 0430 phase 2 @adr 0356 @adr 0382 @adr 0671 @adr 0672
  */
 import { chmodSync, rmSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { createFrameParser, encodeFrame, type ControlClientFrame, type ControlServerFrame } from "../control/control-protocol";
-import { issueGitToken } from "./git-auth";
+import { issueGitToken, socketMayServe } from "./git-auth";
 import { prepareAgentRunDir, readOnlyForAgent } from "../../utils/agent-user";
 import { logger } from "../../common/logger/logger";
 import { listenPrivateSocket } from "../../utils/private-socket";
@@ -55,7 +55,8 @@ export function startGitTokenServer(profileDir: string): () => void {
         // Only the token request is served here — never submit / reconnect / autonomous frames.
         if (frame.t !== "gitToken" || answered) continue;
         answered = true;
-        void issueGitToken(frame.scope, frame.host, frame.path)
+        // A privileged scope is served only while the cli itself runs it (ADR-0671, ADR-0672).
+        void (socketMayServe(frame.scope) ? issueGitToken(frame.scope, frame.host, frame.path) : Promise.resolve(null))
           .catch(() => null)
           .then((token) => {
             send(sock, { t: "gitToken", token });

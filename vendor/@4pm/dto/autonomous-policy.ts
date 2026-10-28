@@ -5,13 +5,26 @@
  * autonomous policy, and the worker snapshot each cli reports back (`machine.status.autonomous`).
  * `effective = projectEnabled ∧ allowed ∧ worker enabled`. The section also holds the switch that sends
  * every change of a ready project through autonomous (`enforceAutonomousPath`).
- * @adr 0507 @adr 0511 @adr 0563
+ * @adr 0507 @adr 0511 @adr 0563 @adr 0671
  */
 import { z } from "zod";
 import { EVIDENCE_ROOT, MOCKUP_ROOT, isSafeRepoDir, type MachineAiRun } from "./machine";
 import { ER_ROOT, SEQUENCE_ROOT } from "./er-model";
 import { DIAGRAM_ROOT } from "./diagram-model";
 import { DEFAULT_BRANCH_CLEANUP, type BranchCleanupSettings } from "./branch-cleanup";
+
+/** Whether the cli names people on the host (co-authors, PR assignees / reviewers): `auto` = private repos only. @adr 0671 */
+export type HostPeopleMode = "auto" | "on" | "off";
+export const HOST_PEOPLE_MODES = ["auto", "on", "off"] as const satisfies readonly HostPeopleMode[];
+
+/** One member's verified GitHub / GitLab account, as the cli needs it for trailers and PR people. @adr 0671 */
+export interface GitAccountRef {
+  provider: "github" | "gitlab";
+  host: string;
+  login: string;
+  /** The host's numeric user id (builds the noreply e-mail). */
+  providerUserId: string;
+}
 
 /** S/M task size hints for intake (indicative, not caps). */
 export interface AutonomousTaskSizeHints {
@@ -75,6 +88,8 @@ export interface ProjectAutonomousSettings {
   evidencePhase: boolean;
   /** New requests and intake rows are approved by the server as `auto`; AST rounds auto-accept (default off). @adr 0608 */
   autoApprove: boolean;
+  /** Name people on the host — co-author trailers, PR assignees / reviewers (default `auto`; ADMIN / PM only). @adr 0671 */
+  hostPeople: HostPeopleMode;
 }
 
 /** The project-scoped keys (a worker settings write carrying one is refused). */
@@ -104,6 +119,7 @@ export const PROJECT_AUTONOMOUS_KEYS = [
   "securityReview",
   "evidencePhase",
   "autoApprove",
+  "hostPeople",
 ] as const satisfies readonly (keyof ProjectAutonomousSettings)[];
 
 /** Lower bound of `runTimeoutMinutes`. */
@@ -136,6 +152,7 @@ export const DEFAULT_PROJECT_AUTONOMOUS_SETTINGS: ProjectAutonomousSettings = {
   securityReview: false,
   evidencePhase: true,
   autoApprove: false,
+  hostPeople: "auto",
 };
 
 /** Coerce an unknown object into full project-scoped settings (missing / invalid ⇒ default). */
@@ -187,6 +204,7 @@ export function readProjectAutonomousSettings(raw: unknown): ProjectAutonomousSe
     securityReview: bool(o.securityReview, d.securityReview),
     evidencePhase: bool(o.evidencePhase, d.evidencePhase),
     autoApprove: bool(o.autoApprove, d.autoApprove),
+    hostPeople: (HOST_PEOPLE_MODES as readonly unknown[]).includes(o.hostPeople) ? (o.hostPeople as HostPeopleMode) : d.hostPeople,
   };
 }
 
@@ -237,6 +255,13 @@ export interface AutonomousPolicy {
   settings: ProjectAutonomousSettings;
   /** Generator providers the project may use for its assets (org-connected and project-enabled). @adr 0615 */
   assetProviders?: string[];
+  /**
+   * The project members' verified git accounts by user id (no CLIENT / MACHINE) — the cli keeps it in memory only.
+   * @adr 0671
+   */
+  gitAccounts?: Record<string, GitAccountRef[]>;
+  /** The project's PMs — the reviewers of a PR whose row has no human approver. @adr 0671 */
+  pmUserIds?: string[];
 }
 
 /** Who / what paused a worker. */
@@ -375,6 +400,7 @@ export const projectAutonomousPolicyWriteSchema = z
         securityReview: z.boolean().optional(),
         evidencePhase: z.boolean().optional(),
         autoApprove: z.boolean().optional(),
+        hostPeople: z.enum(HOST_PEOPLE_MODES).optional(),
       })
       .strict()
       .optional(),

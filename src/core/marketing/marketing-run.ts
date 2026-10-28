@@ -41,6 +41,7 @@ import { watchRefusedEgress } from "../network/egress-events";
 import { readSecretValues } from "../worker/secrets";
 import type { AiRunOverrides } from "../ws-client/command-dispatch";
 import type { WsHandlerCtx } from "../ws-client/context";
+import { clientHeaders } from "../../services/api";
 import { marketingRef, mg, mgq, readMarketingFile } from "./marketing-git";
 import { runShell, runStep, startShell, stopGroup, withRenderSlot, type LineSink } from "./marketing-process";
 import { ensurePlaywright, ensureTerminalTools, hasCommand, marketingBinDir, playwrightEnv } from "./marketing-tools";
@@ -352,7 +353,7 @@ async function upload(ctx: WsHandlerCtx, p: Prepared, spec: MarketingRunSpec, lo
     }
     const res = await fetch(`${ctx.serverUrl}${spec.uploadPath}`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${spec.uploadToken}`, "Content-Type": "application/octet-stream", "X-Marketing-File": name },
+      headers: { Authorization: `Bearer ${spec.uploadToken}`, "Content-Type": "application/octet-stream", "X-Marketing-File": name, ...clientHeaders() },
       body: readFileSync(path),
       signal: AbortSignal.timeout(120_000),
     }).catch((err: unknown) => ({ ok: false, status: 0, statusText: String(err) }) as Response);
@@ -368,7 +369,7 @@ export async function sendReport(ctx: WsHandlerCtx, spec: MarketingRunSpec, repo
   try {
     const res = await fetch(`${ctx.serverUrl}${spec.uploadPath}/report`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${spec.uploadToken}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${spec.uploadToken}`, "Content-Type": "application/json", ...clientHeaders() },
       body: JSON.stringify(report),
       signal: AbortSignal.timeout(30_000),
     });

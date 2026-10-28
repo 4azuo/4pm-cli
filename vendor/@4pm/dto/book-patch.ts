@@ -72,7 +72,8 @@ interface BookTable {
   end: number;
   header: string[];
   idCol: number;
-  rows: { cells: string[]; line: string }[];
+  /** `at` = the row's 0-based line in the document. */
+  rows: { cells: string[]; line: string; at: number }[];
 }
 
 /** Split one table line into cells (`\|` is a literal pipe). */
@@ -107,10 +108,10 @@ function locate(md: string): BookTable | null {
     if (!h.trim().startsWith("|") || isSeparator(h) || !isSeparator(lines[i + 1]!)) continue;
     const header = splitRow(h);
     let j = i + 2;
-    const rows: { cells: string[]; line: string }[] = [];
+    const rows: { cells: string[]; line: string; at: number }[] = [];
     while (j < lines.length && lines[j]!.trim().startsWith("|") && !isSeparator(lines[j]!)) {
       const cells = splitRow(lines[j]!);
-      if (cells.some((c) => c.length > 0)) rows.push({ cells, line: lines[j]! });
+      if (cells.some((c) => c.length > 0)) rows.push({ cells, line: lines[j]!, at: j });
       j++;
     }
     const idCol = header.findIndex((x) => x.trim().toLowerCase() === "id");
@@ -191,6 +192,28 @@ export function bookRowHashes(md: string): Map<string, string> {
   if (!t) return out;
   for (const r of t.rows) out.set((r.cells[t.idCol] ?? "").trim(), bookRowHash(t.header, r.cells));
   return out;
+}
+
+/** A book's id table as read for display: header in order, rows with their id and 0-based line. */
+export interface BookTableView {
+  header: string[];
+  idCol: number;
+  rows: { id: string; cells: string[]; line: number }[];
+}
+
+/**
+ * The first table with an `ID` column — the same table `diffBook` / `applyBookPatch` work on — for a client
+ * that shows or edits a book (VS Code book editor). Null when the document has none.
+ * @adr 0674
+ */
+export function bookTable(md: string): BookTableView | null {
+  const t = locate(md);
+  if (!t) return null;
+  return {
+    header: t.header,
+    idCol: t.idCol,
+    rows: t.rows.map((r) => ({ id: (r.cells[t.idCol] ?? "").trim(), cells: r.cells, line: r.at })),
+  };
 }
 
 /** One row of a book as `column → cell` (header order), or null. */

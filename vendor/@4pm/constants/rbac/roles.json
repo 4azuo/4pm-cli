@@ -125,6 +125,10 @@
         "project.ci_read",
         "project.ci_run",
         "project.ci_edit",
+        "project.deploy_read",
+        "project.deploy_run",
+        "project.deploy_edit",
+        "project.deploy_approve",
         "project.marketing_read",
         "project.marketing_write",
         "project.marketing_generate",
@@ -164,6 +168,8 @@
         "integration.read",
         "project.ci_read",
         "project.ci_run",
+        "project.deploy_read",
+        "project.deploy_run",
         "project.marketing_read"
       ]
     },
@@ -189,6 +195,7 @@
         "integration.read",
         "project.ci_read",
         "project.ci_run",
+        "project.deploy_read",
         "project.marketing_read"
       ]
     },
@@ -217,6 +224,7 @@
         "research.read",
         "integration.read",
         "project.ci_read",
+        "project.deploy_read",
         "project.marketing_read",
         "project.marketing_write",
         "project.marketing_generate"

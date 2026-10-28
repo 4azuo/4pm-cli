@@ -12,6 +12,15 @@ import type {
 } from "@4pm/dto";
 import type { MachineFingerprint } from "../core/profile/fingerprint";
 import { assertSecureRemoteUrl } from "../utils/secure-url";
+import { CLI_VERSION } from "../version";
+
+/**
+ * Names this client on every REST call — the client gateway refuses a request without it.
+ * @adr 0669
+ */
+export function clientHeaders(): Record<string, string> {
+  return { "X-4PM-Client": `cli/${CLI_VERSION}` };
+}
 
 /** An error from the server carrying an errorCode. */
 export class CliApiError extends Error {
@@ -52,7 +61,7 @@ async function post<T>(serverUrl: string, path: string, body: unknown): Promise<
   assertSecureRemoteUrl(serverUrl);
   const res = await fetch(`${serverUrl}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...clientHeaders() },
     body: JSON.stringify(body),
   });
   return unwrap<T>(res);
@@ -128,7 +137,7 @@ export async function fetchCliVersion(serverUrl: string, version?: string): Prom
   const timer = setTimeout(() => ctrl.abort(), 20_000);
   try {
     const query = version ? `?version=${encodeURIComponent(version)}` : "";
-    const res = await fetch(`${serverUrl}/meta/cli-version${query}`, { signal: ctrl.signal });
+    const res = await fetch(`${serverUrl}/meta/cli-version${query}`, { headers: clientHeaders(), signal: ctrl.signal });
     return unwrap<CliVersionResponse>(res);
   } finally {
     clearTimeout(timer);

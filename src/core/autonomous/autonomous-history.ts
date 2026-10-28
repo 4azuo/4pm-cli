@@ -54,6 +54,8 @@ export interface HistoryRecord {
 export interface Histories {
   cronApplied: string;
   consecutiveFails: number;
+  /** Consecutive failed git credential pre-checks — the worker pauses itself at 3. @adr 0661 */
+  gitAccessFails?: number;
   ticks: { day: string; count: number };
   records: HistoryRecord[];
 }

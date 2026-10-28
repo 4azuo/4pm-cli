@@ -3,12 +3,13 @@
  * them on a new `4pm/ci/<slug>-<yyyymmddhhmm>` branch cut from the root repo's `origin/<base>` (a temporary index —
  * the working tree and `<base>` are never touched), push under the server-chosen `ci-propose:<uuid>` git-token scope
  * (the only scope minted with `workflows: write`), open the PR / MR into `<base>`, and end the scope (its tokens are
- * revoked). Never throws: a failure is a reply with `code` / `step`.
- * @adr 0606 @adr 0607 @api machine-0101
+ * revoked). The token sockets serve that scope only while this run lasts. Never throws: a failure is a reply with
+ * `code` / `step`.
+ * @adr 0606 @adr 0607 @adr 0672 @api machine-0101
  */
 import { CI_PROPOSE_MAX_FILE_BYTES, CI_PROPOSE_MAX_FILES, CI_PROPOSE_PATH, type CiProposeReply, type CiProposeRequest } from "@4pm/ws";
 import { commitToBranch, locateBase, type BaseEdit } from "./base-edit";
-import { endGitScope, JOB_ID_ENV } from "./git-auth";
+import { closePrivilegedScope, endGitScope, JOB_ID_ENV, openPrivilegedScope } from "./git-auth";
 import { openPullRequest } from "./git-host";
 import { git } from "../autonomous/autonomous-git";
 
@@ -50,6 +51,8 @@ export async function proposeCi(root: string, req: CiProposeRequest, machineUser
     f.content === null ? { op: "delete", path: f.path } : { op: "put", path: f.path, data: Buffer.from(f.content, "utf8") },
   );
   const message = `${req.title}\n\n4PM-Requested-By: ${req.byLabel.replace(/\s+/g, " ").slice(0, 200)}`;
+  // The push's credential helper asks through the token socket: let it serve this one scope for this run only.
+  openPrivilegedScope(req.scope);
   try {
     let commit: string | undefined;
     try {
@@ -63,6 +66,7 @@ export async function proposeCi(root: string, req: CiProposeRequest, machineUser
     if (pr.error) return { ok: false, code: "CI_PROPOSE_FAILED", step: "pr", branch, error: pr.error };
     return { ok: true, branch, prUrl: pr.url, number: prNumberOf(pr.url) };
   } finally {
+    closePrivilegedScope(req.scope);
     await endGitScope(req.scope);
   }
 }

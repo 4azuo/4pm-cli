@@ -157,7 +157,7 @@ export interface MarketingVideoRunSpec {
   /** The newest released template (`script:marketing-video-template`), scaffolded when the video has none (or on update). */
   template: { version: string; files: PackagePayloadFile[] } | null;
   updateTemplate: boolean;
-  /** The org's Remotion license key — only for the render step's env; never to the agent, never logged. */
+  /** The project's Remotion license key (null when none — allowed on Free) — only for the render step's env; never to the agent, never logged. */
   licenseKey: string | null;
 }
 

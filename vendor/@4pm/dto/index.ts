@@ -25,6 +25,7 @@ export * from "./discussion";
 export * from "./done-reviews";
 export * from "./er-change";
 export * from "./er-model";
+export * from "./git-attribution";
 export * from "./git-credential";
 export * from "./git-overview";
 export * from "./issue-sync";

@@ -197,6 +197,7 @@ export async function getAutonomousStatus(root: string, profileDir: string): Pro
     todayTicks: hist.ticks.day === today ? hist.ticks.count : 0,
     // The last tick stopped on a protected books branch (ADR-0448 phase 0) — "<branch>".
     booksProtected: /^books-protected: (.+)$/.exec(last?.note ?? "")?.[1] ?? null,
+    gitAccess: /^git-access: (.+)$/.exec(last?.note ?? "")?.[1] ?? null,
   };
 }
 

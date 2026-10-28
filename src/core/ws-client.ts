@@ -99,6 +99,9 @@ import { startAutonomousScheduler } from "./autonomous/autonomous-scheduler";
 import { handleFsChannels } from "./ws-client/handlers/fs";
 import { handleGitChannels } from "./ws-client/handlers/git";
 import { handleMarketingChannels } from "./ws-client/handlers/marketing";
+import { handleHostingChannels } from "./ws-client/handlers/hosting";
+import { HostingRunner } from "./hosting/hosting-runner";
+import type { MachineHostingReport } from "@4pm/ws";
 import { marketingFeatureTools } from "./marketing/marketing-tools";
 import { ragFeatureTool } from "./knowledge/rag";
 import { handleMiscChannels } from "./ws-client/handlers/misc";
@@ -233,6 +236,8 @@ export class WsClient {
   private platformIpBlocked = false;
   /** The worker IP the server reported on the last platform IP block ("" when unknown). */
   private platformBlockedIp = "";
+  /** Wait (ms) cli-server asked for when it refused the connection with RATE_LIMITED; 0 = none. @adr 0668 */
+  private rateLimitedWaitMs = 0;
   /** Set when the last handshake was refused with CLI_VERSION_UNSUPPORTED — run() self-updates. @adr 0547 */
   private versionRejected = false;
   /** Org-configured reconnect cap (seconds) from the last ws_token — overrides env. */
@@ -250,6 +255,9 @@ export class WsClient {
   /** The physic project folder root this cli serves (null = no project) — fs.list is
    *  scoped to it so the web FsPicker can only browse inward, never out. */
   private physicRootValue: string | null = null;
+  /** Worker hosting releases of this machine + the last hosting report for machine.status. @adr 0664 */
+  private hosting!: HostingRunner;
+  private hostingReport: MachineHostingReport | null = null;
   /** The served root; setting it also points the output-language spec-file fallback at it. @adr 0581 */
   private get physicRoot(): string | null {
     return this.physicRootValue;
@@ -399,6 +407,10 @@ export class WsClient {
       if (this.sessionKey) this.sendMachineStatus();
     });
     this.hctx = this.buildHandlerCtx();
+    // Worker hosting (ADR-0664): bring back the last live releases, then serve host.* (the processes run detached).
+    this.hosting = new HostingRunner(context.profileDir, () => this.physicRoot);
+    void this.hosting.start().catch((err: unknown) => logger.warn("hosting.start.failed", { error: String(err) }));
+    lifecycle.register("hosting.watch", "engine", () => this.hosting.stop());
     // The operator's local commands (TUI input box) run through the same executor.
     context.bus.onLocalSubmit((input) => void runLocalCommand(this.hctx, input));
     // Autonomous cycle (ADR-0319/0392): the scheduler (or a manual `4pm auto-run`) triggers ONE cycle through this live
@@ -798,10 +810,15 @@ export class WsClient {
       // A platform IP block waits a fixed, long interval instead of the normal backoff (ADR-0519).
       const ipBlocked = this.platformIpBlocked;
       this.platformIpBlocked = false;
+      // A per-IP limit at cli-server says how long to wait (ADR-0668).
+      const rateLimitedWait = this.rateLimitedWaitMs;
+      this.rateLimitedWaitMs = 0;
       const wait = versionRetry
         ? VERSION_REJECTED_RETRY_MS
         : ipBlocked
         ? PLATFORM_IP_BLOCKED_RETRY_MS
+        : rateLimitedWait > 0
+        ? rateLimitedWait
         : backoffJitterMs(
             Math.min(attempt, RECONNECT_BACKOFF_MAX_ATTEMPT),
             RECONNECT_BACKOFF_BASE_MS,
@@ -1002,6 +1019,7 @@ export class WsClient {
           lifecycle.setConnected(false); // session-scoped services stop until the next hello_ack
           setToolHealthSink(null); // stop tool-health reporting until the next session (ADR-0223)
           setAiRunSink(null); // live AI state resumes with the next session (ADR-0522)
+          this.hosting.setSender(null); // hosting states are re-sent on the next connect (ADR-0664)
           logger.debug("ws.close", { code });
           if (code === CLOSE_DRAINING) {
             // Server draining (rolling deploy) — reconnect to another instance
@@ -1059,6 +1077,8 @@ export class WsClient {
         });
         this.finishReconnect();
         this.sendMachineStatus();
+        // Every hosted environment's state, on each (re)connect (ADR-0664).
+        this.hosting.setSender((p) => this.send(WsChannels.HOST_STATUS, p, null));
         this.flushOfflineBuffer();
         this.settleUpdateTrial();
         // git.token `revoked` reports lost while offline — re-sent so the server drops dead tokens (ADR-0535).
@@ -1132,6 +1152,16 @@ export class WsClient {
           this.socket?.close();
           return;
         }
+        if (message.errorCode === "RATE_LIMITED") {
+          // cli-server limits this IP (ADR-0668) — reversible; keep `.cre`, wait what it asked (+ jitter).
+          const seconds = Number(message.meta?.retryAfterSec) > 0 ? Number(message.meta?.retryAfterSec) : 60;
+          this.rateLimitedWaitMs = seconds * 1000 + Math.floor(Math.random() * 5000);
+          const key = message.meta?.reason === "helloFailures" ? "error.wsHelloBlocked" : "error.wsTooManyConnections";
+          logger.warn("ws.rateLimited", { reason: message.meta?.reason ?? null, retryAfterSec: seconds });
+          this.bus.log(t(key, { seconds }), "warn");
+          this.socket?.close();
+          return;
+        }
         // WS_TOKEN_INVALID ⇒ close; the run() loop requests a new token then reconnects
         this.bus.log(t("error.serverError", { code: message.errorCode }), "warn");
         this.socket?.close();
@@ -1165,6 +1195,7 @@ export class WsClient {
     if (handleToolsChannels(this.hctx, message, payload)) return;
     if (handleGitChannels(this.hctx, message, payload)) return;
     if (handleMarketingChannels(this.hctx, message, payload)) return;
+    if (handleHostingChannels(this.hctx, this.hosting, message, payload)) return;
     if (handleSupportChannels(this.hctx, message, payload)) return;
     if (handleResearchChannels(this.hctx, message, payload)) return;
     if (handleMiscChannels(this.hctx, message, payload)) return;
@@ -1349,7 +1380,15 @@ export class WsClient {
       ...(this.physicRoot && templateMarkerOf(this.physicRoot) ? { templateMarker: templateMarkerOf(this.physicRoot)! } : {}),
       // The autonomous snapshot (ADR-0507).
       ...(this.physicRoot ? { autonomous: buildAutonomousSnapshot(this.physicRoot, this.context.profileDir) } : {}),
+      // Worker hosting (ADR-0664): run modes, served environments, free memory (refreshed after each send).
+      ...(this.hostingReport ? { hosting: this.hostingReport } : {}),
     });
+    void this.hosting
+      ?.machineReport()
+      .then((r) => {
+        this.hostingReport = r;
+      })
+      .catch(() => undefined);
   }
 
   /** Heartbeat every 30s: ping + periodically re-report machine.status. */

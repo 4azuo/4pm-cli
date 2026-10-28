@@ -35,6 +35,8 @@ export interface DerivedRoleMeta {
 export interface PermissionMeta {
   /** The resource family (prefix of the code). */
   group: string;
+  /** Where the code acts: `project` = on one project (exactly the project-grantable codes), `org` = outside. @adr 0659 */
+  level: "org" | "project";
   /** Always allowed for everyone; never offered as a grant. */
   selfService: boolean;
   /** Belongs to ADMIN only; never delegable. */
@@ -67,7 +69,7 @@ export const DERIVED_ROLE_CATALOG: Readonly<Record<string, DerivedRoleMeta>> = r
 export const ROLE_GROUPS: Readonly<Record<string, readonly string[]>> = rolesData.groups;
 
 /** Every permission code's flags, in catalog order. */
-export const PERMISSION_CATALOG: Readonly<Record<string, PermissionMeta>> = permissionsData.codes;
+export const PERMISSION_CATALOG: Readonly<Record<string, PermissionMeta>> = permissionsData.codes as Record<string, PermissionMeta>;
 
 /**
  * Expand a role's `defaults` entries in order: `*` adds every code, `@group` adds a group, `!code`
@@ -111,6 +113,9 @@ export function assertPermissionCatalog(allCodes: readonly string[]): void {
   }
   for (const [code, meta] of Object.entries(PERMISSION_CATALOG)) {
     if (!codes.has(code)) throw new Error(`RBAC catalog: permissions.json lists unknown code ${code}`);
+    if ((meta.level === "project") !== meta.projectGrantable) {
+      throw new Error(`RBAC catalog: ${code} level must be "project" exactly when it is projectGrantable`);
+    }
     if (meta.integrateApi !== meta.integrateScopes.length > 0) {
       throw new Error(`RBAC catalog: ${code} integrateApi must be true exactly when it has integrateScopes`);
     }

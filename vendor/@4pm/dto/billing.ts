@@ -97,10 +97,18 @@ export const planEntitlementsSchema = z.object({
   aiDocInsights: z.boolean().default(false),
   /** CI/CD Security: subtab, security templates, AI security workflows, finding import. @adr 0606 */
   ciSecurity: z.boolean().default(false),
-  /** Marketing photos: Generate + AI compose of shots (reading stays open). @adr 0640 */
-  marketingPhotos: z.boolean().default(false),
-  /** Marketing videos (P3b). @adr 0640 */
-  marketingVideo: z.boolean().default(false),
+  /** Deploy environments per project (Free 1 · Pro 5 · Max 20); null = unlimited. @adr 0663 */
+  maxDeployEnvironments: z.number().int().min(0).nullable().default(1),
+  /** Scheduled deploys (deploy schedules + the scheduler). @adr 0663 */
+  deploySchedules: z.boolean().default(false),
+  /** Worker hosting — the `worker` deploy target. @adr 0664 */
+  workerHosting: z.boolean().default(false),
+  /** Marketing photos: Generate + AI compose of shots (reading stays open). Every plan since ADR-0662. @adr 0640 @adr 0662 */
+  marketingPhotos: z.boolean().default(true),
+  /** Marketing videos (P3b). Every plan since ADR-0662. @adr 0640 @adr 0662 */
+  marketingVideo: z.boolean().default(true),
+  /** Video Generate needs the project's Remotion license key (paid plans). @adr 0662 */
+  remotionLicenseRequired: z.boolean().default(false),
   /** Created automation rules per org — org + project rules (0 = feature off); null = unlimited. @adr 0465 */
   automationRules: z.number().int().min(0).nullable().default(0),
   /** Automation rule runs per org per UTC day; null = unlimited. @adr 0458 */
@@ -155,9 +163,14 @@ export const DEFAULT_ENTITLEMENTS: PlanEntitlements = {
   aiDocInsights: false,
   // Free tier has no CI/CD Security (ADR-0606).
   ciSecurity: false,
-  // Free tier has no Marketing photos / videos (ADR-0640).
-  marketingPhotos: false,
-  marketingVideo: false,
+  // Free tier: one deploy environment, no schedules, no worker hosting (ADR-0663 / ADR-0664).
+  maxDeployEnvironments: 1,
+  deploySchedules: false,
+  workerHosting: false,
+  // Marketing photos / videos on every plan; Free renders without a Remotion key (ADR-0662).
+  marketingPhotos: true,
+  marketingVideo: true,
+  remotionLicenseRequired: false,
   // Free tier has no automation rules (ADR-0458).
   automationRules: 0,
   automationRunsPerDay: 0,
@@ -185,6 +198,8 @@ export type PlanFeature =
   | "aiResearch"
   | "aiDocInsights"
   | "ciSecurity"
+  | "deploySchedules"
+  | "workerHosting"
   | "marketingPhotos"
   | "marketingVideo";
 
@@ -244,8 +259,12 @@ export function readPlanEntitlements(
     aiResearch: bool(v.aiResearch, d.aiResearch),
     aiDocInsights: bool(v.aiDocInsights, d.aiDocInsights),
     ciSecurity: bool(v.ciSecurity, d.ciSecurity),
+    maxDeployEnvironments: num(v.maxDeployEnvironments, d.maxDeployEnvironments),
+    deploySchedules: bool(v.deploySchedules, d.deploySchedules),
+    workerHosting: bool(v.workerHosting, d.workerHosting),
     marketingPhotos: bool(v.marketingPhotos, d.marketingPhotos),
     marketingVideo: bool(v.marketingVideo, d.marketingVideo),
+    remotionLicenseRequired: bool(v.remotionLicenseRequired, d.remotionLicenseRequired),
     automationRules: num(v.automationRules, d.automationRules),
     automationRunsPerDay: num(v.automationRunsPerDay, d.automationRunsPerDay),
     maxTeams: num(v.maxTeams, d.maxTeams),

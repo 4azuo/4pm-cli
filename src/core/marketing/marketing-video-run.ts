@@ -31,6 +31,7 @@ import { execInProject } from "../agent/agent-spawn";
 import { watchRefusedEgress } from "../network/egress-events";
 import { makeAgentTempDir, removeSharedTree, shareWithAgent, unregisterAgentRoot } from "../../utils/agent-user";
 import type { WsHandlerCtx } from "../ws-client/context";
+import { clientHeaders } from "../../services/api";
 import { marketingRef, mg, mgq, readMarketingFile } from "./marketing-git";
 import { runShell, runStep, withRenderSlot, type LineSink } from "./marketing-process";
 import { RunFailure, capped, commitMarketingWork, netEnv, sendReport, sha256, type MarketingAgentRun } from "./marketing-run";
@@ -61,7 +62,7 @@ interface PreparedVideo {
 /** Download one file of the run (a picture / an audio) with the run token into `dest`. */
 async function download(ctx: WsHandlerCtx, spec: MarketingRunSpec, path: string, dest: string): Promise<void> {
   const res = await fetch(`${ctx.serverUrl}${path}`, {
-    headers: { Authorization: `Bearer ${spec.uploadToken}` },
+    headers: { Authorization: `Bearer ${spec.uploadToken}`, ...clientHeaders() },
     signal: AbortSignal.timeout(120_000),
   });
   if (!res.ok) throw new RunFailure("MARKETING_VIDEO_NO_PHOTOS", `Download of ${path.split("/").pop()} failed (${res.status}).`);
@@ -209,6 +210,7 @@ async function upload(ctx: WsHandlerCtx, p: PreparedVideo, spec: MarketingRunSpe
         "Content-Type": "application/octet-stream",
         "Content-Length": String(size),
         "X-Marketing-File": name,
+        ...clientHeaders(),
       },
       body: createReadStream(path) as unknown as RequestInit["body"],
       // Node's fetch needs `duplex` for a stream body.

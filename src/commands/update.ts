@@ -34,7 +34,7 @@ export async function runUpdate(
     serverUrlFlag ||
     readCredential(profileDir)?.serverUrl ||
     process.env.FOURPM_SERVER ||
-    "http://localhost:42001"
+    "http://localhost:42013"
   ).replace(/\/$/, "");
 
   // The profile's bad-version marks apply to a manual update too (ADR-0644).
