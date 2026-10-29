@@ -1,6 +1,7 @@
 {
   "error.serverDraining": "サーバーがドレイン中です — 再接続します（バックオフ + ジッター）。",
   "error.messageError": "メッセージエラー: {error}",
+  "error.handshakeUntrusted": "サーバーが 4PM cli-server であることを証明できませんでした（ハンドシェイク署名が無効）— 接続を切断し、再試行します。",
   "error.versionRejected": "サーバーが cli のバージョン（{version}）を拒否しました。",
   "error.sessionReplaced": "このプロファイルの別のセッションが引き継ぎました — このインスタンスを停止します。（同じプロファイルで `4pm start` を二重に実行していませんか？）",
   "error.accountPaused": "このアカウントは一時停止中です — 再開されるまで再試行します。",

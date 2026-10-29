@@ -1,6 +1,7 @@
 {
   "error.serverDraining": "服务器正在排空连接 — 将重新连接（退避 + 抖动）。",
   "error.messageError": "消息错误：{error}",
+  "error.handshakeUntrusted": "服务器无法证明自己是 4PM cli-server（握手签名无效）— 已断开连接，正在重试。",
   "error.versionRejected": "服务器拒绝了 cli 版本（{version}）。",
   "error.sessionReplaced": "该配置文件的另一个会话已接管 — 此实例正在停止。（您是否对同一配置文件运行了两次 `4pm start`？）",
   "error.accountPaused": "此账户已暂停 — 将在恢复前持续重试。",

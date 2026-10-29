@@ -2,17 +2,17 @@
  * Server-managed AI prompt overrides — the admin-edited templates for cli-built prompts,
  * delivered on each ws_token (`promptOverrides`) keyed by prompt key → per-locale content. A builder
  * calls `resolveCliPrompt(key, vars)`: it renders the admin override for the active locale (falling
- * back to the base `en`) when present, else the shared registry default (`@4pm/constants`
- * `AI_PROMPTS`, whose text lives in `ai-prompt-defaults.json`). Platform-wide; refreshed on each
+ * back to the base `en`) when present, else the built-in default (`@4pm/constants`
+ * `CLI_PROMPT_DEFAULTS` — the `cli.*` templates only). Platform-wide; refreshed on each
  * (re)connect, so an older server (no field) simply leaves the built-in default in place.
  *
  * The served project's output language (ws_token / project.tokens `outputLang`; an older server ⇒ the
  * `project.spec.json` of the project root) appends its directive to the repo-output prompts.
- * @adr 0381 @adr 0581
+ * @adr 0381 @adr 0581 @adr 0684
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { AI_PROMPTS, renderCatalogPrompt, specOutputLanguage } from "@4pm/constants";
+import { AI_PROMPT_META, CLI_PROMPT_DEFAULTS, renderCatalogPrompt, specOutputLanguage } from "@4pm/constants";
 import { getLocale } from "../../i18n";
 
 /** The current overrides map ({ "<key>": { "<locale>": "content" } }); empty until a ws_token sets it. */
@@ -68,8 +68,8 @@ export interface ResolveCliPromptOptions {
  * output-language directive.
  */
 export function resolveCliPrompt(key: string, vars: Record<string, string | number>, opts: ResolveCliPromptOptions = {}): string {
-  const template = getPromptOverride(key) ?? AI_PROMPTS[key]?.defaultTemplate ?? "";
+  const template = getPromptOverride(key) ?? CLI_PROMPT_DEFAULTS[key] ?? "";
   // Untrusted vars are wrapped per the registry (ADR-0421), override or default alike.
-  const outputLang = opts.outputLang !== undefined ? opts.outputLang : AI_PROMPTS[key]?.repoOutput ? projectOutputLanguage() : null;
+  const outputLang = opts.outputLang !== undefined ? opts.outputLang : AI_PROMPT_META[key]?.repoOutput ? projectOutputLanguage() : null;
   return renderCatalogPrompt(key, template, vars, { outputLang });
 }

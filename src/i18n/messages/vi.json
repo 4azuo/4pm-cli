@@ -1,6 +1,7 @@
 {
   "error.serverDraining": "Máy chủ đang rút kết nối — sẽ kết nối lại (backoff + jitter).",
   "error.messageError": "Lỗi thông điệp: {error}",
+  "error.handshakeUntrusted": "Server không chứng minh được nó là cli-server của 4PM (chữ ký bắt tay không hợp lệ) — đã ngắt kết nối, đang thử lại.",
   "error.versionRejected": "Máy chủ từ chối phiên bản cli ({version}).",
   "error.sessionReplaced": "Một phiên khác của hồ sơ này đã tiếp quản — tiến trình này đang dừng. (Bạn có đang chạy `4pm start` hai lần cho cùng một hồ sơ không?)",
   "error.accountPaused": "Tài khoản này đang tạm dừng — sẽ thử lại cho đến khi được kích hoạt lại.",

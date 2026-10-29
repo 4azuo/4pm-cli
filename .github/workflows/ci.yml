@@ -15,14 +15,19 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # The standalone pnpm settings + lockfile live under standalone/ so the monorepo stays one workspace
+      # when this repo is its 21-apps/31-cli submodule (ADR-0684); put them in place first.
+      - run: cp standalone/pnpm-workspace.yaml standalone/pnpm-lock.yaml .
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-      # No lockfile in this repo — the ranges in package.json resolve fresh on every run.
-      - run: npm install --no-audit --no-fund
+          cache: pnpm
+      # Frozen lockfile + the ADR-0677 policy (3-day release age, build allowlist, no exotic subdeps).
+      - run: pnpm install --frozen-lockfile
       # Fail only on high/critical, as in the monorepo (ADR-0136).
-      - run: npm audit --audit-level=high
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
+      - run: pnpm audit --audit-level=high
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build

@@ -112,6 +112,8 @@ import { handleToolsChannels } from "./ws-client/handlers/tools";
 import { handleWorkerChannels } from "./ws-client/handlers/worker";
 import { canonVersion, cliUpdateLocked } from "./update";
 import { clearUpdateTrial, takeUpdateReport } from "./update-state";
+import { selfGitLoginReports } from "./git/self-git-token-info";
+import { handshakeTrusted } from "./ws-handshake-trust";
 
 const HEARTBEAT_MS = 30_000;
 /** How often to poll the Claude subscription usage API. @adr 0072 */
@@ -1042,6 +1044,15 @@ export class WsClient {
   private handleMessage(message: WsControlMessage | WsEnvelope): void {
     if ("type" in message) {
       if (message.type === "hello_ack" && this.ecdh) {
+        // The server must have signed the handshake with a pinned key (ADR-0681) — else an interceptor may hold
+        // the session key: drop the socket, the normal back-off reconnects.
+        if (!handshakeTrusted(this.ecdh.publicKeyBase64, message)) {
+          logger.error("ws.handshake.untrusted", { kid: message.kid ?? null, signed: Boolean(message.sig) });
+          this.bus.log(t("error.handshakeUntrusted"), "error");
+          this.ecdh = null;
+          this.socket?.close(1008, "untrusted handshake");
+          return;
+        }
         // Handshake done ⇒ Connected: derive key + status + heartbeat
         this.sessionKey = deriveSessionKey(this.ecdh, message.pubkey);
         this.sessionEstablished = true; // a real session ⇒ safe to reset the backoff
@@ -1368,6 +1379,8 @@ export class WsClient {
         const cap = egressCapability();
         return { egress: cap.egress, ...(cap.reason ? { egressReason: cap.reason } : {}) };
       })(),
+      // Expiry + scopes of the worker's own gh / glab logins (ADR-0680) — never the tokens; refreshed every 6 h.
+      gitLogins: selfGitLoginReports(),
       // Process identity + lifecycle (ADR-0505): tells a restarted process from a lingering one and
       // lets the web show "Restarting" while a drain waits for running work.
       pid: process.pid,

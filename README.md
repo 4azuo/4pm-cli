@@ -22,8 +22,9 @@ Container images are published to `ghcr.io/4azuo/4pm-cli`. Configuration is via 
 [`.env.example`](./.env.example).
 
 > **Security note:** use an `https://` server URL in production. The WebSocket session
-> encryption (ephemeral ECDH) protects confidentiality but does **not** authenticate the
-> server — TLS does. Connecting over plaintext to a non-local host emits a warning.
+> encryption (ephemeral ECDH) is authenticated: the cli-server signs the handshake and the cli
+> checks the signature against the server keys pinned in `src/config/ws-server-keys.ts`, so an
+> intercepting proxy cannot read the session. Connecting over plaintext to a non-local host emits a warning.
 
 ## Build from source
 
@@ -31,11 +32,19 @@ The repository is standalone — it needs no other 4PM code. The `@4pm/*` shared
 provided as a trimmed, vendored subset under [`vendor/`](./vendor) (only the code the CLI
 actually uses; server-internal types are excluded).
 
+Needs Node 24 (its bundled corepack provides the pinned pnpm 12). The pnpm settings and lockfile of this
+standalone checkout live in [`standalone/`](./standalone) — copy them to the root first:
+
 ```bash
-pnpm install
+cp standalone/pnpm-workspace.yaml standalone/pnpm-lock.yaml .
+corepack enable
+pnpm install --frozen-lockfile
 pnpm build       # → dist/index.js (self-contained bundle)
 pnpm typecheck
 ```
+
+Dependencies only resolve to versions published at least 3 days ago, and only `esbuild` may run an install
+script. After changing `package.json`, regenerate the lockfile with `node scripts/standalone-lock.mjs`.
 
 ## How this repo relates to 4PM
 

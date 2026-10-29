@@ -1,10 +1,13 @@
 /**
  * WS session encryption: ephemeral ECDH x25519 ⇒ HKDF ⇒
  * AES-256-GCM, a nonce per message, forward secrecy. Used only on server & cli
- * (node:crypto) — the web does not import this file.
- * @adr 0002 @arch 0004
+ * (node:crypto) — the web does not import this file. The server's ephemeral key is signed by the cli-server's
+ * long-term ed25519 handshake key and checked by the cli against its pinned keys, so an intermediary that terminates
+ * TLS cannot substitute its own key.
+ * @adr 0002 @adr 0681 @arch 0004
  */
 import {
+  createHash,
   createCipheriv,
   createDecipheriv,
   createPrivateKey,
@@ -13,6 +16,8 @@ import {
   generateKeyPairSync,
   hkdfSync,
   randomBytes,
+  sign,
+  verify,
   type KeyObject,
 } from "node:crypto";
 
@@ -101,4 +106,40 @@ export function decryptPayload<T>(
  */
 export function privateKeyFromDer(der: Buffer): KeyObject {
   return createPrivateKey({ key: der, type: "pkcs8", format: "der" });
+}
+
+/** The bytes both sides sign / verify for a handshake: a domain tag + the cli's and the server's ephemeral keys. @adr 0681 */
+export function handshakeTranscript(clientPubBase64: string, serverPubBase64: string): Buffer {
+  return createHash("sha256")
+    .update("4pm-ws-hello\n")
+    .update(Buffer.from(clientPubBase64, "base64"))
+    .update(Buffer.from(serverPubBase64, "base64"))
+    .digest();
+}
+
+/** The key id of an ed25519 public key: the first 16 hex chars of sha256 over its SPKI DER. @adr 0681 */
+export function handshakeKeyId(publicKey: KeyObject): string {
+  return createHash("sha256").update(publicKey.export({ type: "spki", format: "der" })).digest("hex").slice(0, 16);
+}
+
+/** Sign a handshake with the cli-server's ed25519 private key (PEM); returns `{ kid, sig }`. @adr 0681 */
+export function signHandshake(privateKeyPem: string, clientPubBase64: string, serverPubBase64: string): { kid: string; sig: string } {
+  const key = createPrivateKey(privateKeyPem);
+  if (key.asymmetricKeyType !== "ed25519") throw new Error("the handshake signing key must be ed25519");
+  const sig = sign(null, handshakeTranscript(clientPubBase64, serverPubBase64), key).toString("base64");
+  return { kid: handshakeKeyId(createPublicKey(key)), sig };
+}
+
+/**
+ * Verify a handshake signature against pinned ed25519 public keys (PEM SPKI). True when one of them verifies it — the
+ * `kid` only picks the key first; a missing signature is false.
+ * @adr 0681
+ */
+export function verifyHandshake(pinnedPem: readonly string[], clientPubBase64: string, serverPubBase64: string, kid: string | undefined, sig: string | undefined): boolean {
+  if (!sig) return false;
+  const message = handshakeTranscript(clientPubBase64, serverPubBase64);
+  const signature = Buffer.from(sig, "base64");
+  const keys = pinnedPem.map((pem) => createPublicKey(pem)).filter((k) => k.asymmetricKeyType === "ed25519");
+  keys.sort((a, b) => Number(handshakeKeyId(b) === kid) - Number(handshakeKeyId(a) === kid));
+  return keys.some((k) => verify(null, message, k, signature));
 }

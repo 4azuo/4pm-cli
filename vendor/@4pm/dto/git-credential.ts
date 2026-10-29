@@ -251,6 +251,73 @@ export interface GitCredentialHealthRepo {
   detail: string | null;
 }
 
+/** A warning about a long-lived git token. @adr 0680 */
+export type GitTokenWarning = "long-lived" | "expiring" | "expired" | "over-scoped";
+
+/**
+ * Expiry + scopes of one long-lived git token behind the project: the stored GitLab group / project token or
+ * service-account PAT (`stored`), or a worker's own gh / glab login (`worker`, Self-managed). Never the token.
+ * @api project-0144 @adr 0680
+ */
+export interface GitTokenHealth {
+  source: "stored" | "worker";
+  /** `group-token @ gitlab.com`, or the worker's name + `gh @ github.com`. */
+  label: string;
+  host: string;
+  /** Known = the provider reported the expiry (`expiresAt` null then means "never expires"). */
+  expiryKnown: boolean;
+  expiresAt: string | null;
+  /** Granted scopes, when the provider lists them. */
+  scopes: string[] | null;
+  warnings: GitTokenWarning[];
+}
+
+/** A token living longer than this (or forever) is `long-lived`. @adr 0680 */
+export const GIT_TOKEN_LONG_LIVED_DAYS = 90;
+/** A token expiring within this is `expiring`. @adr 0680 */
+export const GIT_TOKEN_EXPIRING_DAYS = 14;
+/**
+ * Scopes wider than any git-auth method needs (clone / push / merge requests / CI read): admin, impersonation,
+ * runner and package / org administration rights.
+ * @adr 0680
+ */
+export const OVERBROAD_GIT_SCOPES: readonly string[] = [
+  // GitLab
+  "sudo",
+  "admin_mode",
+  "create_runner",
+  "manage_runner",
+  "k8s_proxy",
+  // GitHub classic / OAuth
+  "admin:org",
+  "admin:enterprise",
+  "delete_repo",
+  "admin:repo_hook",
+  "admin:org_hook",
+  "admin:public_key",
+  "admin:gpg_key",
+  "write:packages",
+  "delete:packages",
+  "site_admin",
+];
+
+/** The warnings of a token from its expiry (`expiryKnown` false ⇒ none on expiry) and scopes. @adr 0680 */
+export function gitTokenWarnings(expiryKnown: boolean, expiresAt: string | null, scopes: string[] | null, now: Date = new Date()): GitTokenWarning[] {
+  const out: GitTokenWarning[] = [];
+  if (expiryKnown) {
+    const at = expiresAt ? Date.parse(expiresAt) : NaN;
+    if (Number.isNaN(at)) out.push("long-lived");
+    else {
+      const days = (at - now.getTime()) / 86_400_000;
+      if (days < 0) out.push("expired");
+      else if (days <= GIT_TOKEN_EXPIRING_DAYS) out.push("expiring");
+      else if (days > GIT_TOKEN_LONG_LIVED_DAYS) out.push("long-lived");
+    }
+  }
+  if (scopes?.some((s) => OVERBROAD_GIT_SCOPES.includes(s))) out.push("over-scoped");
+  return out;
+}
+
 /**
  * Data GET /projects/:id/git/credential-health — the last check of the project's git credential. `self` = the
  * worker operator's own login, checked by each worker before its cycles (no server-side rows).
@@ -264,4 +331,6 @@ export interface GitCredentialHealth {
   repos: GitCredentialHealthRepo[];
   /** A connect / authenticate failure that applies to every repo. */
   error: string | null;
+  /** The long-lived tokens behind it — stored GitLab token, or the serving workers' own logins. @adr 0680 */
+  tokens?: GitTokenHealth[];
 }

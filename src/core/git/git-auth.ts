@@ -211,6 +211,16 @@ function selfToken(login: SelfLogin): string | null {
   return real ? readSelfToken(login, real, basePath) : null;
 }
 
+/** The worker's own logins that yield a token, with it — for the expiry / scope report (never sent). @adr 0680 */
+export function selfLoginTokens(): { login: SelfLogin; token: string }[] {
+  const out: { login: SelfLogin; token: string }[] = [];
+  for (const login of discoverSelfLogins()) {
+    const token = selfToken(login);
+    if (token) out.push({ login, token });
+  }
+  return out;
+}
+
 /** Warn once per host when a login lists it but yields no token (keyring storage, or the tool is missing). */
 function warnMissingToken(login: SelfLogin): void {
   if (state.warned.has(login.host)) return;

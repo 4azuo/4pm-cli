@@ -1,6 +1,7 @@
 {
   "error.serverDraining": "Server draining — will reconnect (backoff + jitter).",
   "error.messageError": "Message error: {error}",
+  "error.handshakeUntrusted": "The server could not prove it is the 4PM cli-server (handshake signature invalid) — connection dropped; retrying.",
   "error.versionRejected": "Server rejected the cli version ({version}).",
   "error.sessionReplaced": "Another session for this profile took over — this instance is stopping. (Are you running `4pm start` twice for the same profile?)",
   "error.accountPaused": "This account is paused — retrying until it is resumed.",

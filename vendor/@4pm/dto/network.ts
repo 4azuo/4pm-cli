@@ -11,11 +11,11 @@ import { baseRequestSchema } from "./base";
 /** Policy modes: off (no filter, no log) · audit (log, block only denylisted) · enforce (allowlist only). */
 export const NETWORK_MODES = ["off", "audit", "enforce"] as const;
 export type NetworkMode = (typeof NETWORK_MODES)[number];
-/** Mode of a project that never saved a policy. */
-export const DEFAULT_NETWORK_MODE: NetworkMode = "audit";
+/** Mode of a project that never saved a policy — allowlist only, so a hijacked agent cannot send data anywhere. @adr 0677 */
+export const DEFAULT_NETWORK_MODE: NetworkMode = "enforce";
 
-/** Where a rule came from. */
-export const NETWORK_RULE_SOURCES = ["manual", "log", "request"] as const;
+/** Where a rule came from (`default` = seeded from {@link DEFAULT_NETWORK_ALLOW}). */
+export const NETWORK_RULE_SOURCES = ["manual", "log", "request", "default"] as const;
 export type NetworkRuleSource = (typeof NETWORK_RULE_SOURCES)[number];
 
 /** Max rules per list (project allow, project deny, org deny). */
@@ -261,12 +261,48 @@ function readRules(raw: unknown): NetworkRule[] {
   return out;
 }
 
-/** Read `project.settings.network` with defaults (mode `audit`). */
+/**
+ * Public package registries a project's agents may reach before anyone edits the policy, so a default
+ * `enforce` project can still install dependencies. Seeded as ordinary, removable rules. @adr 0677
+ */
+export const DEFAULT_NETWORK_ALLOW: readonly { target: string; port: number; note: string }[] = [
+  { target: "registry.npmjs.org", port: 443, note: "npm" },
+  { target: "registry.yarnpkg.com", port: 443, note: "Yarn" },
+  { target: "pypi.org", port: 443, note: "PyPI" },
+  { target: "files.pythonhosted.org", port: 443, note: "PyPI files" },
+  { target: "index.crates.io", port: 443, note: "crates.io" },
+  { target: "static.crates.io", port: 443, note: "crates.io files" },
+  { target: "proxy.golang.org", port: 443, note: "Go modules" },
+  { target: "sum.golang.org", port: 443, note: "Go checksums" },
+  { target: "repo.maven.apache.org", port: 443, note: "Maven Central" },
+  { target: "repo1.maven.org", port: 443, note: "Maven Central" },
+  { target: "rubygems.org", port: 443, note: "RubyGems" },
+  { target: "api.nuget.org", port: 443, note: "NuGet" },
+];
+
+/** The default allow rules as stored rules (system-authored, `source: "default"`). */
+export function defaultNetworkAllowRules(): NetworkRule[] {
+  return DEFAULT_NETWORK_ALLOW.map((r) => ({
+    id: `${r.target}:${r.port}`,
+    target: r.target,
+    port: r.port,
+    note: r.note,
+    source: "default",
+    addedBy: "",
+    addedByName: "",
+    addedAt: "",
+  }));
+}
+
+/**
+ * Read `project.settings.network` with defaults: a project that never saved an allowlist gets
+ * {@link DEFAULT_NETWORK_MODE} and the {@link DEFAULT_NETWORK_ALLOW} registries.
+ */
 export function readProjectNetworkSettings(raw: unknown): ProjectNetworkSettings {
   const n = (raw ?? {}) as Partial<Record<keyof ProjectNetworkSettings, unknown>>;
   return {
     mode: NETWORK_MODES.includes(n.mode as NetworkMode) ? (n.mode as NetworkMode) : DEFAULT_NETWORK_MODE,
-    allow: readRules(n.allow),
+    allow: Array.isArray(n.allow) ? readRules(n.allow) : defaultNetworkAllowRules(),
     deny: readRules(n.deny),
   };
 }

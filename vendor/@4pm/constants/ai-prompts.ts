@@ -5,22 +5,21 @@
  * text lives in exactly one place. The live content is the server DB prompt catalog, keyed by each
  * entry's `key`; these defaults are the **fill-only seed default + forward-safe fallback**.
  *
- * The default **template text** lives in the sibling `ai-prompt-defaults.json` (one string per key,
- * `{{var}}` placeholders); this file holds only each prompt's metadata (owner app, title,
- * description, required variables) and wires it to its default. Editing a prompt's wording = editing
- * the JSON (seed) or, at runtime, the admin DB catalog.
+ * The default **template text** lives in `ai-prompt-defaults/<owner>.json` (one string per key,
+ * `{{var}}` placeholders; `shared.json` = web prompts the cli also builds), split by owner app so each
+ * surface bundles only its own prompts: the cli
+ * reads {@link CLI_PROMPT_DEFAULTS}, the web {@link WEB_PROMPT_DEFAULTS}, and only the server the full
+ * {@link AI_PROMPTS} (`ai-prompts-catalog.ts`). This file holds each prompt's metadata (owner app,
+ * title, description, required variables) and the render helpers — no template text. Editing a
+ * prompt's wording = editing its JSON (seed) or, at runtime, the admin DB catalog.
  *
  * Templating: a template may contain `{{var}}` placeholders; the builder substitutes them with
  * `renderPrompt`. `requiredVars` lists the placeholders a builder depends on — admin edits are
  * validated against this so a save can never drop a variable the builder needs.
- * @adr 0381 @arch 0047
+ * @adr 0381 @adr 0684 @arch 0047
  */
-import defaultTemplates from "./ai-prompt-defaults.json";
 import { wrapUntrusted, type UntrustedKind } from "./untrusted-content";
 import { withOutputLanguage, type RepoOutputKind } from "./output-language";
-
-/** The seed/fallback template per prompt key (from `ai-prompt-defaults.json`). */
-const DEFAULTS = defaultTemplates as Record<string, string>;
 
 /** Which app builds + dispatches the prompt. */
 export type PromptOwnerApp = "server" | "cli" | "web";
@@ -91,7 +90,7 @@ export function renderCatalogPrompt(
   vars: Record<string, string | number>,
   opts: RenderCatalogOptions = {},
 ): string {
-  const untrusted = AI_PROMPTS[key]?.untrustedVars ?? {};
+  const untrusted = AI_PROMPT_META[key]?.untrustedVars ?? {};
   const wrapped: Record<string, string | number> = { ...vars };
   for (const [name, kind] of Object.entries(untrusted)) {
     const value = vars[name];
@@ -101,7 +100,7 @@ export function renderCatalogPrompt(
   }
   const rendered = renderPrompt(template, wrapped);
   // The project output language rides after the (possibly admin-overridden) template (ADR-0581).
-  const repoOutput = AI_PROMPTS[key]?.repoOutput;
+  const repoOutput = AI_PROMPT_META[key]?.repoOutput;
   return repoOutput ? withOutputLanguage(rendered, opts.outputLang, repoOutput) : rendered;
 }
 
@@ -115,8 +114,8 @@ export function promptTemplateVars(template: string): string[] {
   return seen;
 }
 
-/** One registry entry's metadata (its default text is looked up from the JSON by key). */
-type PromptMeta = Omit<PromptDef, "defaultTemplate">;
+/** One registry entry's metadata (its default text is looked up from its owner's JSON by key). */
+export type PromptMeta = Omit<PromptDef, "defaultTemplate">;
 
 /** The prompt metadata, in catalog order. New prompts are added here + to the defaults JSON. */
 const PROMPT_META: PromptMeta[] = [
@@ -772,22 +771,14 @@ const REPO_OUTPUT: Readonly<Record<string, RepoOutputKind>> = {
 };
 
 /**
- * The server-managed prompt catalog, keyed by `key` — metadata + its default template. The DB is
- * seeded fill-only from these defaults.
+ * The prompt metadata keyed by `key` (no template text) — what every surface needs to render a prompt
+ * (`untrustedVars`, `repoOutput`). The full catalog with defaults is {@link AI_PROMPTS} (server only).
  */
-export const AI_PROMPTS: Readonly<Record<string, PromptDef>> = Object.fromEntries(
-  PROMPT_META.map((m) => [
-    m.key,
-    { ...m, ...(REPO_OUTPUT[m.key] ? { repoOutput: REPO_OUTPUT[m.key] } : {}), defaultTemplate: DEFAULTS[m.key] ?? "" },
-  ]),
+export const AI_PROMPT_META: Readonly<Record<string, PromptMeta>> = Object.fromEntries(
+  PROMPT_META.map((m) => [m.key, { ...m, ...(REPO_OUTPUT[m.key] ? { repoOutput: REPO_OUTPUT[m.key] } : {}) }]),
 );
 
 /** All catalog keys (stable order). */
 export function listPromptKeys(): string[] {
   return PROMPT_META.map((m) => m.key);
-}
-
-/** Look up a prompt definition by key, or `undefined` if the key is not in the catalog. */
-export function getPromptDef(key: string): PromptDef | undefined {
-  return AI_PROMPTS[key];
 }

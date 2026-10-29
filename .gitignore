@@ -3,6 +3,10 @@ dist/
 dist-standalone/
 node_modules/
 
+# Standalone pnpm settings copied to the root by CI (the sources live in standalone/ — ADR-0684)
+/pnpm-workspace.yaml
+/pnpm-lock.yaml
+
 # Turborepo task logs / cache
 .turbo/
 

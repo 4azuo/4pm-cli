@@ -9,7 +9,7 @@ import { baseRequestSchema, deletedFilterSchema, pinnedFilterSchema } from "./ba
 import type { UserResponse } from "./user";
 import { TEMPLATE_KINDS, type ProjectTemplateSelection } from "./template";
 import { readMcpServers, type McpApprovedServer } from "./mcp";
-import { readProjectNetworkSettings, DEFAULT_NETWORK_MODE, type ProjectNetworkSettings } from "./network";
+import { readProjectNetworkSettings, DEFAULT_NETWORK_MODE, defaultNetworkAllowRules, type ProjectNetworkSettings } from "./network";
 import { classifyProjectFailure, type ProjectFailCode } from "./project-failure";
 import { DEFAULT_PROJECT_MODES, projectModesSchema, readProjectModes, type ProjectModes } from "./project-modes";
 
@@ -513,7 +513,7 @@ export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
   gitAuth: { method: "self" },
   alerts: [],
   mcp: { servers: [] },
-  network: { mode: DEFAULT_NETWORK_MODE, allow: [], deny: [] },
+  network: { mode: DEFAULT_NETWORK_MODE, allow: defaultNetworkAllowRules(), deny: [] },
   modes: DEFAULT_PROJECT_MODES,
   outboundReview: {
     enabled: false,

@@ -17,6 +17,20 @@ export interface AiMountReport {
   account?: string;
 }
 
+/**
+ * The expiry and scopes of one token the worker's own gh / glab login holds (`machine.status.gitLogins`) — read by
+ * the cli from the provider API, never the token itself. @adr 0680
+ */
+export interface GitLoginReport {
+  tool: "gh" | "glab";
+  /** Lower-cased host the login covers. */
+  host: string;
+  /** ISO expiry; null = the provider says it never expires. Absent = the provider does not say. */
+  expiresAt?: string | null;
+  /** Granted scopes when the provider lists them (GitHub classic / OAuth tokens, GitLab tokens). */
+  scopes?: string[];
+}
+
 /** Standard envelope for every message after the handshake. */
 export interface WsEnvelope {
   /** message id — correlation for the reply. */
@@ -56,6 +70,13 @@ export interface WsHelloAck {
   /** Name of the logical project this (project-scope) cli serves, if any — shown in
    *  the cli TUI header scope line. */
   projectName?: string;
+  /** Id of the server key that signed this handshake (`sha256(SPKI)` prefix). @adr 0681 */
+  kid?: string;
+  /**
+   * Ed25519 signature (base64) of the handshake transcript — the cli's and the server's ephemeral keys — by the
+   * cli-server's handshake key; the cli verifies it against its pinned keys before using the session. @adr 0681
+   */
+  sig?: string;
 }
 
 /** Control error message (server → CLI): WS_TOKEN_INVALID / LINK_REVOKED… */
@@ -133,6 +154,8 @@ export interface MachineStatusPayload {
    */
   egress?: "container" | "none";
   egressReason?: string;
+  /** Expiry + scopes of the worker's own gh / glab login tokens (Self-managed git auth); `MachineLink.gitLogins`. @adr 0680 */
+  gitLogins?: GitLoginReport[];
   /** The cli's process id — with `startedAt`, tells a restarted process from a lingering one. @adr 0505 */
   pid?: number;
   /** When this cli process started (ISO). @adr 0505 */

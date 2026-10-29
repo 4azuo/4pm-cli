@@ -1,0 +1,17 @@
+# pnpm settings of the STANDALONE 4pm-cli checkout (ADR-0684) — CI copies this file and its sibling
+# pnpm-lock.yaml to the repo root before `pnpm install --frozen-lockfile`. Kept out of the root so the
+# monorepo (where this repo is the 21-apps/31-cli submodule) stays one pnpm workspace. Same supply-chain
+# policy as the monorepo (ADR-0677). Regenerate the lockfile with `node scripts/standalone-lock.mjs`.
+
+# A version must be public for 3 days before pnpm resolves it.
+minimumReleaseAge: 4320
+# Only these packages may run install scripts; any other one fails the install until added here.
+allowBuilds:
+  esbuild: true
+strictDepBuilds: true
+# Transitive git / tarball-URL dependencies are refused (only registry versions).
+blockExoticSubdeps: true
+
+# ---- Security overrides (kept in step with the monorepo's, ADR-0136) ----
+overrides:
+  "esbuild@0.27": "^0.28.1"

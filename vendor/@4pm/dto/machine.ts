@@ -409,6 +409,37 @@ export interface MachineAiRun {
   startedAt: string;
 }
 
+/** The expiry + scopes of one token of a worker's own gh / glab login (`MachineLink.gitLogins`). @adr 0680 */
+export interface WorkerGitLogin {
+  tool: "gh" | "glab";
+  host: string;
+  /** True when the provider reported the expiry (`expiresAt` null then = never expires). */
+  expiryKnown: boolean;
+  expiresAt: string | null;
+  scopes: string[] | null;
+}
+
+/** Sanitize a stored/reported `gitLogins` JSON (drops malformed entries; ≤ 20, strings capped). @adr 0680 */
+export function readWorkerGitLogins(value: unknown): WorkerGitLogin[] {
+  if (!Array.isArray(value)) return [];
+  const out: WorkerGitLogin[] = [];
+  for (const v of value) {
+    if (!v || typeof v !== "object") continue;
+    const r = v as Record<string, unknown>;
+    if ((r.tool !== "gh" && r.tool !== "glab") || typeof r.host !== "string" || !r.host.trim()) continue;
+    const expiryKnown = "expiresAt" in r && (r.expiresAt === null || typeof r.expiresAt === "string");
+    out.push({
+      tool: r.tool,
+      host: r.host.trim().toLowerCase().slice(0, 255),
+      expiryKnown,
+      expiresAt: typeof r.expiresAt === "string" && !Number.isNaN(Date.parse(r.expiresAt)) ? new Date(r.expiresAt).toISOString() : null,
+      scopes: Array.isArray(r.scopes) ? r.scopes.filter((s): s is string => typeof s === "string").map((s) => s.slice(0, 64)).slice(0, 50) : null,
+    });
+    if (out.length >= 20) break;
+  }
+  return out;
+}
+
 /** One host-mounted AI login a worker reported (`MachineLink.aiMounts`). @adr 0479 */
 export interface AiMount {
   /** AI provider (`claude` / `codex`). */
