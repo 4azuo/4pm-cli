@@ -513,7 +513,7 @@ export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
   gitAuth: { method: "self" },
   alerts: [],
   mcp: { servers: [] },
-  network: { mode: DEFAULT_NETWORK_MODE, allow: defaultNetworkAllowRules(), deny: [] },
+  network: { mode: DEFAULT_NETWORK_MODE, allow: defaultNetworkAllowRules(), deny: [], requireEnforcedWorker: false },
   modes: DEFAULT_PROJECT_MODES,
   outboundReview: {
     enabled: false,

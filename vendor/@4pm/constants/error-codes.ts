@@ -56,7 +56,7 @@ export const ErrorCode = {
   MFA_METHOD_UNAVAILABLE: "MFA_METHOD_UNAVAILABLE",
   /** The passkey assertion/registration did not verify. @adr 0446 */
   MFA_PASSKEY_INVALID: "MFA_PASSKEY_INVALID",
-  /** TOTP needs the server secret box (`SECRETS_ENC_KEY`), which is not configured. @adr 0446 */
+  /** TOTP needs the server secret box (`SECRETS_KEK`), which is not configured. @adr 0446 */
   MFA_TOTP_UNAVAILABLE: "MFA_TOTP_UNAVAILABLE",
   /** No pending TOTP setup to confirm (expired or never started). @adr 0446 */
   MFA_TOTP_NOT_PENDING: "MFA_TOTP_NOT_PENDING",
@@ -350,6 +350,8 @@ export const ErrorCode = {
   CLI_UPDATE_LOCKED: "CLI_UPDATE_LOCKED",
   // The serving worker cli is draining for a restart / update and accepts no new work (ADR-0505).
   CLI_RESTARTING: "CLI_RESTARTING",
+  // The project requires workers that enforce its network policy, and the chosen one can only audit (ADR-0683).
+  WORKER_EGRESS_NOT_ENFORCED: "WORKER_EGRESS_NOT_ENFORCED",
   // The worker's repo queue for the project is full while its working tree is held (ADR-0506).
   REPO_BUSY: "REPO_BUSY",
   // A queued job waited past `repoQueueTimeoutMin` for the project's working tree (ADR-0506).
@@ -453,6 +455,14 @@ export const ErrorCode = {
   BATCH_JOB_NOT_RUNNABLE: "BATCH_JOB_NOT_RUNNABLE",
   BATCH_JOB_DISABLED: "BATCH_JOB_DISABLED",
   BATCH_SERVICE_NOT_DEPLOYED: "BATCH_SERVICE_NOT_DEPLOYED",
+  // Secret keys (ADR-0687): unknown key / kind, the key is active (rotate first), values are still sealed with it,
+  // it was retired too recently to destroy, or the service has no KEK configured.
+  SECRET_KEY_NOT_FOUND: "SECRET_KEY_NOT_FOUND",
+  SECRET_KEY_KIND_UNKNOWN: "SECRET_KEY_KIND_UNKNOWN",
+  SECRET_KEY_ACTIVE: "SECRET_KEY_ACTIVE",
+  SECRET_KEY_IN_USE: "SECRET_KEY_IN_USE",
+  SECRET_KEY_GRACE: "SECRET_KEY_GRACE",
+  SECRET_KEK_UNSET: "SECRET_KEK_UNSET",
   ORCHESTRATOR_OFFLINE: "ORCHESTRATOR_OFFLINE",
   WS_TOKEN_INVALID: "WS_TOKEN_INVALID",
   // A newer cli session for the same link took over ⇒ the older one stops (ADR-0047).
@@ -601,7 +611,7 @@ export const ErrorCode = {
   HELP_DISABLED: "HELP_DISABLED",
   // Project GitHub-App git-auth (ADR-0356): method set without a credential; a rejected credential
   // (App ID / PEM / host / CA); an ssh repo URL under the App method; the primary repo's host differs
-  // from the credential host; the server has no SECRETS_ENC_KEY to store/read secrets.
+  // from the credential host; the server has no secret keys (SECRETS_KEK) to store/read secrets.
   GIT_CREDENTIAL_MISSING: "GIT_CREDENTIAL_MISSING",
   GIT_CREDENTIAL_INVALID: "GIT_CREDENTIAL_INVALID",
   GIT_AUTH_REQUIRES_HTTPS: "GIT_AUTH_REQUIRES_HTTPS",
@@ -609,7 +619,7 @@ export const ErrorCode = {
   /** An origin commit cannot be read server-side (no GitHub App / not GitHub / GitHub refused) — project-0083/0084, ADR-0397. */
   GIT_ORIGIN_UNAVAILABLE: "GIT_ORIGIN_UNAVAILABLE",
   SECRETS_KEY_NOT_CONFIGURED: "SECRETS_KEY_NOT_CONFIGURED",
-  /** The stored GitHub App private key can't be decrypted (SECRETS_ENC_KEY changed since it was saved) — upload the .pem again. */
+  /** The stored GitHub App private key can't be decrypted (its secret key was lost since it was saved) — upload the .pem again. */
   GIT_APP_KEY_UNREADABLE: "GIT_APP_KEY_UNREADABLE",
   // Git tab Configuration (ADR-0441): another git-config job is running; the requested branch is missing or
   // protected on the host; a serving worker has a dirty tree (branch switch); the path isn't a declared submodule.

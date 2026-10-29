@@ -40,6 +40,12 @@ export interface ProjectNetworkSettings {
   mode: NetworkMode;
   allow: NetworkRule[];
   deny: NetworkRule[];
+  /**
+   * In `enforce` mode, only workers that enforce the policy (`egress: container`) may run the project's work — an
+   * Audit-only worker (e.g. ECS Fargate) is skipped / refused (`WORKER_EGRESS_NOT_ENFORCED`). Default false.
+   * @adr 0683
+   */
+  requireEnforcedWorker: boolean;
 }
 
 /** The org part (`organizations.settings.network`). */
@@ -304,7 +310,18 @@ export function readProjectNetworkSettings(raw: unknown): ProjectNetworkSettings
     mode: NETWORK_MODES.includes(n.mode as NetworkMode) ? (n.mode as NetworkMode) : DEFAULT_NETWORK_MODE,
     allow: Array.isArray(n.allow) ? readRules(n.allow) : defaultNetworkAllowRules(),
     deny: readRules(n.deny),
+    requireEnforcedWorker: n.requireEnforcedWorker === true,
   };
+}
+
+/** Whether a dispatch of a project with `network` may run on a worker whose egress is `egress`. @adr 0683 */
+export function workerEgressAllowed(network: ProjectNetworkSettings, egress: string | null | undefined): boolean {
+  return !(network.mode === "enforce" && network.requireEnforcedWorker && egress !== "container");
+}
+
+/** Whether a run of a project with `network` on a worker with `egress` ran unenforced (Enforce policy, Audit-only worker). @adr 0683 */
+export function egressAudited(network: ProjectNetworkSettings, egress: string | null | undefined): boolean {
+  return network.mode === "enforce" && egress === "none";
 }
 
 /** Read `organizations.settings.network`. */
@@ -348,6 +365,8 @@ export const putProjectNetworkRequestSchema = z.object({
   mode: z.enum(NETWORK_MODES),
   allow: ruleListSchema,
   deny: ruleListSchema,
+  /** @adr 0683 */
+  requireEnforcedWorker: z.boolean().default(false),
 });
 export type PutProjectNetworkRequest = z.infer<typeof putProjectNetworkRequestSchema>;
 

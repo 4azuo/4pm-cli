@@ -858,6 +858,8 @@ export interface CommandHistoryItem {
   projectId: string | null;
   startedAt: string;
   finishedAt: string | null;
+  /** The project enforced its network policy but this run's worker could only audit egress. @adr 0683 */
+  egressAudited?: boolean;
 }
 
 /** GET /machine-links/:id/usage — status + subscription + per-project usage. @adr 0072 */
