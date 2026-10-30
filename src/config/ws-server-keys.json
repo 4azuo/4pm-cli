@@ -1,0 +1,33 @@
+[
+  {
+    "label": "staging",
+    "since": "2026-10-30",
+    "kid": "141aa5efb2d5ee3b",
+    "hosts": [
+      "cli.fourpm-test.uk",
+      "cli.localhost"
+    ],
+    "publicKey": "MCowBQYDK2VwAyEA6h6QrHG7KcZB19EnESw3Crcbd5p1LHsqe5zgvLOT8Tw="
+  },
+  {
+    "label": "local",
+    "since": "2026-10-30",
+    "kid": "92cf7d6ecbe25aae",
+    "hosts": [
+      "localhost",
+      "cli.localhost",
+      "127.0.0.1"
+    ],
+    "publicKey": "MCowBQYDK2VwAyEA4qtheK/aYKqgjzLoLv5keNibZCb39/9692w4TMZeRoI="
+  },
+  {
+    "label": "staging",
+    "since": "2026-10-28",
+    "kid": "439b04b6acba2c38",
+    "hosts": [
+      "cli.fourpm-test.uk",
+      "cli.localhost"
+    ],
+    "publicKey": "MCowBQYDK2VwAyEAJc9vXdhLr7EflPY9zgAJ73dmog7RJ1xAtvWr2KiYBSg="
+  }
+]

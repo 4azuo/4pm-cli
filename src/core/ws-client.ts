@@ -113,7 +113,7 @@ import { handleWorkerChannels } from "./ws-client/handlers/worker";
 import { canonVersion, cliUpdateLocked } from "./update";
 import { clearUpdateTrial, takeUpdateReport } from "./update-state";
 import { selfGitLoginReports } from "./git/self-git-token-info";
-import { handshakeTrusted } from "./ws-handshake-trust";
+import { handshakeTrusted, wsHost } from "./ws-handshake-trust";
 
 const HEARTBEAT_MS = 30_000;
 /** How often to poll the Claude subscription usage API. @adr 0072 */
@@ -197,6 +197,8 @@ export class WsClient {
   // instead of hammering the server every ~1s.
   private sessionEstablished = false;
   private ecdh: EcdhSession | null = null;
+  /** Hostname of the WS URL dialed — picks the pinned handshake keys. @adr 0700 */
+  private dialedHost = "";
   private wsToken = "";
   /** Warn about a plaintext-remote server URL only once per process (ADR-0194 finding #1). */
   private heartbeat: NodeJS.Timeout | null = null;
@@ -970,6 +972,7 @@ export class WsClient {
         // `replace(/^http/,"ws")` maps http→ws / https→wss and is a no-op on a ws(s):// base.
         const wsBase = this.credential.wsUrl ?? this.credential.serverUrl;
         const wsUrl = wsBase.replace(/^http/, "ws") + "/ws";
+        this.dialedHost = wsHost(wsUrl);
         setEgressEndpoints([this.credential.serverUrl, wsBase]);
         // Plaintext WS to a non-local host ⇒ the ws_token + session travel unauthenticated
         // (the ECDH handshake doesn't authenticate the server — ADR-0194 finding #1). Hard-block
@@ -1044,10 +1047,10 @@ export class WsClient {
   private handleMessage(message: WsControlMessage | WsEnvelope): void {
     if ("type" in message) {
       if (message.type === "hello_ack" && this.ecdh) {
-        // The server must have signed the handshake with a pinned key (ADR-0681) — else an interceptor may hold
-        // the session key: drop the socket, the normal back-off reconnects.
-        if (!handshakeTrusted(this.ecdh.publicKeyBase64, message)) {
-          logger.error("ws.handshake.untrusted", { kid: message.kid ?? null, signed: Boolean(message.sig) });
+        // The server must have signed the handshake with a key pinned for the host we dialed (ADR-0681, ADR-0700)
+        // — else an interceptor may hold the session key: drop the socket, the normal back-off reconnects.
+        if (!handshakeTrusted(this.dialedHost, this.ecdh.publicKeyBase64, message)) {
+          logger.error("ws.handshake.untrusted", { host: this.dialedHost, kid: message.kid ?? null, signed: Boolean(message.sig) });
           this.bus.log(t("error.handshakeUntrusted"), "error");
           this.ecdh = null;
           this.socket?.close(1008, "untrusted handshake");

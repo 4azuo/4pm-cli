@@ -1,32 +1,34 @@
 /**
- * Handshake trust — verifies the cli-server's signature on `hello_ack` against the pinned keys (+ the dev key and
- * `FOURPM_WS_SERVER_KEYS` on a `0.0.0` build). A failure means the session key may come from an interceptor: the cli
- * closes the socket and retries with its normal back-off.
- * @adr 0681
+ * Handshake trust — verifies the cli-server's signature on `hello_ack` against the keys pinned for the host the cli
+ * dialed. A failure means the session key may come from an interceptor: the cli closes the socket and retries with its
+ * normal back-off.
+ * @adr 0681 @adr 0700
  */
 import { verifyHandshake } from "@4pm/ws";
-import { WS_DEV_SERVER_PUBLIC_KEY, WS_SERVER_PUBLIC_KEYS } from "../config/ws-server-keys";
-import { CLI_VERSION } from "../version";
+import { WS_SERVER_PUBLIC_KEYS, type PinnedServerKey } from "../config/ws-server-keys";
 
-/** Whether this is a dev build (workspace version) — only then the env override counts. */
-export function isDevBuild(version: string = CLI_VERSION): boolean {
-  return version === "0.0.0";
+/** The hostname of a WS URL (lower-case, no port); "" when the URL does not parse. */
+export function wsHost(wsUrl: string): string {
+  try {
+    return new URL(wsUrl).hostname.toLowerCase().replace(/^\[(.*)\]$/, "$1");
+  } catch {
+    return "";
+  }
 }
 
-/** The keys this cli trusts: the pinned ones, plus the dev key and the env ones on a dev build. */
-export function trustedServerKeys(env: NodeJS.ProcessEnv = process.env, version: string = CLI_VERSION): string[] {
-  const extra = isDevBuild(version)
-    ? [WS_DEV_SERVER_PUBLIC_KEY, ...(env.FOURPM_WS_SERVER_KEYS ?? "")
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .map((b64) => `-----BEGIN PUBLIC KEY-----\n${b64}\n-----END PUBLIC KEY-----\n`)]
-    : [];
-  return [...WS_SERVER_PUBLIC_KEYS, ...extra];
+/** The public keys (PEM) pinned for `host`. */
+export function trustedServerKeys(host: string, pins: readonly PinnedServerKey[] = WS_SERVER_PUBLIC_KEYS): string[] {
+  return pins.filter((k) => k.hosts.includes(host)).map((k) => k.pem);
 }
 
-/** True when `hello_ack`'s signature over (our key, its key) verifies with a trusted key. */
-export function handshakeTrusted(clientPub: string, ack: { pubkey: string; kid?: string; sig?: string }, keys: readonly string[] = trustedServerKeys()): boolean {
+/** True when `hello_ack`'s signature over (our key, its key) verifies with a key pinned for `host`. */
+export function handshakeTrusted(
+  host: string,
+  clientPub: string,
+  ack: { pubkey: string; kid?: string; sig?: string },
+  keys: readonly string[] = trustedServerKeys(host),
+): boolean {
+  if (keys.length === 0) return false;
   try {
     return verifyHandshake(keys, clientPub, ack.pubkey, ack.kid, ack.sig);
   } catch {
