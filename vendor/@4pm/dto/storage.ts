@@ -29,6 +29,8 @@ export const STORAGE_KINDS = [
   "marketMedia",
   // Marketing photos / videos of a project (ADR-0640) — metered, cleared by run retention.
   "marketing",
+  // Flow-map versions (model JSON) of a project (ADR-0698) — metered, pruned by `settings.flowMaps.keepVersions`.
+  "flowMaps",
 ] as const;
 export type StorageKind = (typeof STORAGE_KINDS)[number];
 
@@ -57,6 +59,7 @@ export const STORAGE_KIND_COLOUR: Record<StorageKind, StorageColour> = {
   marketPackages: "files",
   marketMedia: "files",
   marketing: "marketing",
+  flowMaps: "messages",
 };
 
 /** Kinds owned (stored + cleared) by `@4pm/community`. */

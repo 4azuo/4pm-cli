@@ -205,13 +205,15 @@ export type PlanFeature =
 
 /**
  * AI jobs (`AiJob` wire values) that need a plan feature — checked on `POST /commands` with `ai:true`.
- * @adr 0488 @adr 0489 @adr 0491
+ * @adr 0488 @adr 0489 @adr 0491 @adr 0698
  */
 export const AI_JOB_PLAN_FEATURE: Readonly<Record<string, PlanFeature>> = {
   "graph-suggest": "aiDocInsights",
   "doc-find": "aiDocInsights",
   "er-draft": "aiDocInsights",
   "diagram-draft": "aiDocInsights",
+  "flow-map": "aiDocInsights",
+  "flow-map-update": "aiDocInsights",
   "marketing-photos-generate": "marketingPhotos",
   "marketing-scenes-compose": "marketingPhotos",
   "marketing-video-compose": "marketingVideo",

@@ -125,6 +125,8 @@ export const commandResultSinkSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("checklist-ai"), runId: z.string().guid() }),
   // A marketing photo run (ADR-0640): the sink closes the run from the worker's `<marketing-run>` report. Server-only.
   z.object({ kind: z.literal("marketing-run"), runId: z.string().guid() }),
+  // A flow-map generate / update run (ADR-0698): the sink stores the model as the map's first / draft version. Server-only.
+  z.object({ kind: z.literal("flow-map"), mapId: z.string().guid(), mode: z.enum(["generate", "update"]) }),
 ]);
 export type CommandResultSink = z.infer<typeof commandResultSinkSchema>;
 

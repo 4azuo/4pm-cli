@@ -347,6 +347,36 @@ const PROMPT_META: PromptMeta[] = [
     untrustedVars: { eventJson: "data" },
   },
   {
+    key: "server.automation.audit",
+    ownerApp: "server",
+    phase: 2,
+    title: "Rule action — AI audit",
+    description:
+      "Read-only audit of chosen repo folders against the rule's description: a report in the template file's sections, then a JSON verdict (checklist items + findings). Keep the final audit-verdict block intact.",
+    requiredVars: ["ruleName", "description", "folders", "exclude", "sections", "checklistBlock", "eventJson"],
+    untrustedVars: { eventJson: "data", sections: "data", checklistBlock: "data" },
+  },
+  {
+    key: "server.flowMap.generate",
+    ownerApp: "server",
+    phase: 2,
+    title: "Flow map — generate",
+    description:
+      "Read-only: draws a business / sequence / data-flow diagram of a topic from the project's docs and code, citing the source files of every node. Keep the final json 4pm-flow block and its shape intact.",
+    requiredVars: ["typeLabel", "type", "description", "lanesHint", "detail", "language", "languageCode", "sources"],
+    untrustedVars: { description: "request", lanesHint: "request" },
+  },
+  {
+    key: "server.flowMap.update",
+    ownerApp: "server",
+    phase: 2,
+    title: "Flow map — update with AI",
+    description:
+      "Read-only: updates a flow map from the diffs of its changed source files (and an optional instruction), keeping node ids. Keep the final json 4pm-flow block intact.",
+    requiredVars: ["typeLabel", "model", "diffs", "instructionBlock", "language"],
+    untrustedVars: { model: "data", diffs: "data", instructionBlock: "request" },
+  },
+  {
     key: "server.generators",
     ownerApp: "server",
     phase: 1,

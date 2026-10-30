@@ -1,10 +1,12 @@
 /**
  * The autonomous **books set** — every path that lives on the books branch `autonomous-books/<base>` and nowhere
  * else in the working flow: the five books, the cli-owned sidecars under `.4pm/` and its layout guide `INDEX.md`,
- * the discussions, the ER and the system diagram, the files people attach to book rows and the archive. A REQ / DOC / TSK branch only ever sees
- * them as a never-committed overlay; `<base>` gets them only through the books sync.
- * @adr 0563 @adr 0565
+ * the discussions, the ER and the system diagram, the files people attach to book rows, the archive and the AI audit
+ * reports. A REQ / DOC / TSK branch only ever sees them as a never-committed overlay; `<base>` gets them only through
+ * the books sync.
+ * @adr 0563 @adr 0565 @adr 0699
  */
+import { AUDITS_DIR } from "./audit";
 import { DISCUSSIONS_DIR } from "./discussion";
 
 /** The layout guide of the books set, kept current by the cli on the books branch (synced to `<base>`). @adr 0565 */
@@ -94,7 +96,7 @@ function evidenceRoots(dirs: BooksSetDirs, defaultEvidenceRoot: string): string[
 
 /** Folder prefixes whose every file is in the books set. */
 export function booksSetDirs(dirs: BooksSetDirs): string[] {
-  return [DISCUSSIONS_DIR, ARCHIVE_DIR, dirs.erDir, dirs.diagramDir];
+  return [DISCUSSIONS_DIR, ARCHIVE_DIR, AUDITS_DIR, dirs.erDir, dirs.diagramDir];
 }
 
 /** True when `p` is `dir` or below it. */

@@ -30,6 +30,10 @@ export const AiJob = {
   ER_DRAFT: "er-draft",
   /** System-diagram AI draft — module draw.io files drafted from the code (read-only agent; `aiDocInsights`). @adr 0530 */
   DIAGRAM_DRAFT: "diagram-draft",
+  /** Flow map — a business / sequence / data-flow diagram built from the project's docs and code (read-only agent; `aiDocInsights`). @adr 0698 */
+  FLOW_MAP: "flow-map",
+  /** Flow map update — the current model + source diffs → a draft version (read-only agent; `aiDocInsights`). @adr 0698 */
+  FLOW_MAP_UPDATE: "flow-map-update",
   /** CI workflow AI authoring — the YAML returned for review (read-only agent; `ciSecurity` for a security workflow). @adr 0607 */
   CI_GENERATE: "ci-generate",
   /** Marketing shots proposed from the repo docs + a brief (read-only agent; `marketingPhotos`). @adr 0640 */

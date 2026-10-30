@@ -8,7 +8,9 @@
  * The project ER (`er.read` / `er.write` — ADR-0453) and the system diagram (`diagram.read` / `diagram.write` —
  * ADR-0530) ride here too.
  * Book / ER writes are WorkTracker leases and are refused while the daemon drains.
- * @adr 0152 @adr 0153 @adr 0154 @adr 0183 @adr 0185 @adr 0155 @adr 0156 @adr 0157 @adr 0141 @adr 0394 @adr 0453 @adr 0505
+ * Flow maps (`flowmap.*` — ADR-0698): candidate sources, source changes on the base, save as a PR. AI audits
+ * (`audit.*` — ADR-0699): the repo folder tree, a report committed on the books branch, a report read back.
+ * @adr 0152 @adr 0153 @adr 0154 @adr 0183 @adr 0185 @adr 0155 @adr 0156 @adr 0157 @adr 0141 @adr 0394 @adr 0453 @adr 0505 @adr 0698 @adr 0699
  */
 import { lifecycle } from "../../session/lifecycle";
 import { work } from "../../session/work-tracker";
@@ -36,6 +38,13 @@ import {
   type DiagramWriteRequest,
   type ErReadRequest,
   type ErWriteRequest,
+  type AuditReadReportRequest,
+  type AuditSaveReportRequest,
+  type AuditScopeRequest,
+  type FlowMapContextRequest,
+  type FlowMapSavePlanRequest,
+  type FlowMapSaveRequest,
+  type FlowMapStaleCheckRequest,
   type GraphBuildRequest,
   type McpScanReply,
   type PackagesInstallRequest,
@@ -47,6 +56,11 @@ import {
   type SecretsWriteRequest,
   type WsEnvelope,
 } from "@4pm/ws";
+import { flowMapContext } from "../../knowledge/flowmap/flowmap-context";
+import { flowMapSave, flowMapSavePlan } from "../../knowledge/flowmap/flowmap-save";
+import { flowMapStaleCheck } from "../../knowledge/flowmap/flowmap-stale";
+import { readAuditReport, saveAuditReport } from "../../knowledge/audit/audit-report";
+import { auditScope } from "../../knowledge/audit/audit-scope";
 import { readAutonomous,
   readAutonomousArchive, readAutonomousEvidence, readAutonomousEvidenceHistory, readAutonomousLogs, writeAutonomous } from "../../autonomous/autonomous";
 import { readDiscussions } from "../../autonomous/autonomous-discussions";
@@ -339,6 +353,70 @@ export function handleWorkerChannels(
         void buildGraph(ctx.physicRoot, req.mode).then((reply) =>
           ctx.send(WsChannels.GRAPH_BUILD, reply, message.id),
         );
+      }
+      return true;
+    }
+    case WsChannels.FLOWMAP_CONTEXT: {
+      // Request/reply (project-0166): candidate sources of a flow map — graph walk + RAG hits (ADR-0698).
+      const req = payload as unknown as FlowMapContextRequest;
+      if (ctx.physicRoot) {
+        void flowMapContext(ctx.physicRoot, req).then((reply) => ctx.send(WsChannels.FLOWMAP_CONTEXT, reply, message.id));
+      }
+      return true;
+    }
+    case WsChannels.FLOWMAP_STALE_CHECK: {
+      // Request/reply (project-0163 / project-0159): sources changed on origin/<base> since their pins (+ diffs).
+      const req = payload as unknown as FlowMapStaleCheckRequest;
+      if (ctx.physicRoot) {
+        void flowMapStaleCheck(ctx.physicRoot, req).then((reply) => ctx.send(WsChannels.FLOWMAP_STALE_CHECK, reply, message.id));
+      }
+      return true;
+    }
+    case WsChannels.FLOWMAP_SAVE_PLAN: {
+      // Request/reply (project-0164): preview the save PR — base folder tree + every changed file with its diff.
+      const req = payload as unknown as FlowMapSavePlanRequest;
+      if (ctx.physicRoot) {
+        void flowMapSavePlan(ctx.physicRoot, req).then((reply) => ctx.send(WsChannels.FLOWMAP_SAVE_PLAN, reply, message.id));
+      }
+      return true;
+    }
+    case WsChannels.FLOWMAP_SAVE: {
+      // Request/reply (project-0165): commit the diagram + back-refs on a new branch and open the PR (never <base>).
+      const req = payload as unknown as FlowMapSaveRequest;
+      const root = ctx.physicRoot;
+      if (root) {
+        void work
+          .track("bookWrite", "flowmap.save", () => flowMapSave(root, req))
+          .catch((err: unknown) => ({ ok: false, code: "FLOWMAP_SAVE_FAILED", step: "push" as const, error: err instanceof Error ? err.message : String(err) }))
+          .then((reply) => ctx.send(WsChannels.FLOWMAP_SAVE, reply, message.id));
+      }
+      return true;
+    }
+    case WsChannels.AUDIT_SCOPE: {
+      // Request/reply (rule-0012): the repo folder tree + the selected scope size for the run_audit editor (ADR-0699).
+      const req = payload as unknown as AuditScopeRequest;
+      if (ctx.physicRoot) {
+        void auditScope(ctx.physicRoot, req).then((reply) => ctx.send(WsChannels.AUDIT_SCOPE, reply, message.id));
+      }
+      return true;
+    }
+    case WsChannels.AUDIT_SAVE_REPORT: {
+      // Request/reply (run_audit sink): commit a report under .4pm/audits/ on the books branch — a books write lease.
+      const req = payload as unknown as AuditSaveReportRequest;
+      const root = ctx.physicRoot;
+      if (root) {
+        void work
+          .track("bookWrite", "audit.saveReport", () => saveAuditReport(root, req))
+          .catch((err: unknown) => ({ ok: false, code: "AUDIT_REPORT_SAVE_FAILED", error: err instanceof Error ? err.message : String(err) }))
+          .then((reply) => ctx.send(WsChannels.AUDIT_SAVE_REPORT, reply, message.id));
+      }
+      return true;
+    }
+    case WsChannels.AUDIT_READ_REPORT: {
+      // Request/reply (project-0168): one report, books branch → origin/<base>.
+      const req = payload as unknown as AuditReadReportRequest;
+      if (ctx.physicRoot) {
+        void readAuditReport(ctx.physicRoot, req).then((reply) => ctx.send(WsChannels.AUDIT_READ_REPORT, reply, message.id));
       }
       return true;
     }

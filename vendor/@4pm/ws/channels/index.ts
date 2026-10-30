@@ -119,6 +119,15 @@ export const WsChannels = {
   RAG_QUERY: "rag.query",
   // RAG search settings per machine user (ADR-0496)
   RAG_SETTINGS: "rag.settings",
+  /** Flow maps: candidate sources, source changes since the pins, save as a PR with back-refs. @adr 0698 @arch 0076 */
+  FLOWMAP_CONTEXT: "flowmap.context",
+  FLOWMAP_STALE_CHECK: "flowmap.staleCheck",
+  FLOWMAP_SAVE_PLAN: "flowmap.savePlan",
+  FLOWMAP_SAVE: "flowmap.save",
+  /** AI audits: the repo folder tree for the action editor, a report committed on the books branch, a report read back. @adr 0699 @arch 0077 */
+  AUDIT_SCOPE: "audit.scope",
+  AUDIT_SAVE_REPORT: "audit.saveReport",
+  AUDIT_READ_REPORT: "audit.readReport",
   // git history browse (read-through cli — ADR-0089): repos on the physic project,
   // commit log, changed files of a commit, parent↔commit diff of one file.
   GIT_REPOS: "git.repos",
