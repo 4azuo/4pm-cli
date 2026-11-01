@@ -23,6 +23,8 @@ import { CLI_VERSION } from "../version";
 import { readableInstallTree } from "../utils/agent-user";
 import { fetchCliVersion } from "../services/api";
 import { checkReleaseLoads, ReleaseLoadError } from "./update-load-check";
+import { CliUpdateFailure, cliUpdateErrorCode } from "./update-errors";
+import type { CliUpdateErrorCode } from "@4pm/dto";
 import {
   activeBadVersion,
   beginUpdateTrial,
@@ -165,8 +167,8 @@ const DOWNLOAD_TIMEOUT_MS = 60_000;
  * @adr 0508
  */
 export function verifyTarballSignature(buf: Buffer, signature: string | undefined, keys: readonly string[] = CLI_SIGNING_PUBLIC_KEYS): void {
-  if (keys.length === 0) throw new Error("No release signing key is embedded — refusing to update (ADR-0508).");
-  if (!signature) throw new Error("Missing tarball signature — aborting update (ADR-0508).");
+  if (keys.length === 0) throw new CliUpdateFailure("noSigningKey", "No release signing key is embedded — refusing to update.");
+  if (!signature) throw new CliUpdateFailure("signatureMissing", "Missing tarball signature — aborting update.");
   const sig = Buffer.from(signature, "base64");
   for (const key of keys) {
     // Accept the key as PEM (`-----BEGIN…`) or raw base64 SPKI (DER).
@@ -180,7 +182,7 @@ export function verifyTarballSignature(buf: Buffer, signature: string | undefine
       /* a malformed key never verifies — try the next one */
     }
   }
-  throw new Error("Invalid tarball signature — aborting update (ADR-0508).");
+  throw new CliUpdateFailure("signatureInvalid", "Invalid tarball signature — aborting update.");
 }
 
 async function updateViaDownload(
@@ -195,21 +197,19 @@ async function updateViaDownload(
   let buf: Buffer;
   try {
     const res = await fetch(tarballUrl, { signal: controller.signal });
-    if (!res.ok) throw new Error(`Failed to download tarball: HTTP ${res.status}`);
+    if (!res.ok) throw new CliUpdateFailure("downloadFailed", `Failed to download tarball: HTTP ${res.status}`);
     buf = Buffer.from(await res.arrayBuffer());
   } catch (err) {
-    throw new Error(
-      controller.signal.aborted
-        ? `Downloading the update tarball timed out after ${DOWNLOAD_TIMEOUT_MS / 1000}s.`
-        : `Failed to download tarball: ${String(err)}`,
-      { cause: err },
-    );
+    if (err instanceof CliUpdateFailure) throw err;
+    throw controller.signal.aborted
+      ? new CliUpdateFailure("downloadTimeout", `Downloading the update tarball timed out after ${DOWNLOAD_TIMEOUT_MS / 1000}s.`, { cause: err })
+      : new CliUpdateFailure("downloadFailed", `Failed to download tarball: ${String(err)}`, { cause: err });
   } finally {
     clearTimeout(timer);
   }
   const actual = createHash("sha256").update(buf).digest("hex");
   if (actual !== checksum) {
-    throw new Error("Tarball checksum mismatch — aborting update (ADR-0015).");
+    throw new CliUpdateFailure("checksumMismatch", "Tarball checksum mismatch — aborting update.");
   }
   // Mandatory ed25519 signature over the raw tarball bytes (ADR-0508): a missing / invalid one aborts.
   verifyTarballSignature(buf, signature);
@@ -229,7 +229,7 @@ async function updateViaDownload(
       mkdirSync(installRoot, { recursive: true });
       cpSync(runningInstallRoot(), installRoot, { recursive: true });
     } catch (err) {
-      throw new Error(`Failed to stage the update in ${installRoot}: ${String(err)}`, { cause: err });
+      throw new CliUpdateFailure("stageFailed", `Failed to stage the update in ${installRoot}: ${String(err)}`, { cause: err });
     }
   }
   // Extract in-process with the bundled `tar` library (ADR-0305) instead of shelling out to the
@@ -239,7 +239,7 @@ async function updateViaDownload(
   try {
     await extract({ file: tmp, cwd: installRoot, strip: 1 });
   } catch (err) {
-    throw new Error(`Failed to extract the update tarball into ${installRoot}: ${String(err)}`, { cause: err });
+    throw new CliUpdateFailure("extractFailed", `Failed to extract the update tarball into ${installRoot}: ${String(err)}`, { cause: err });
   }
   // The copy + extract ran under the cli's `umask 077`: give the staged tree the image's `/app` modes, so
   // nothing that reads the cli's code as another uid finds it locked (ADR-0499).
@@ -295,6 +295,7 @@ export function settleUpdateTrialAtBoot(): void {
     const reason = `it did not start — the worker came back on ${CLI_VERSION}`;
     markBadVersion(trial.to, reason);
     queueUpdateReport({
+      code: "didNotStart",
       message: `${trial.to} ${reason}; skipped for 24 h. Check the worker's log for the crash.`,
       fromVersion: CLI_VERSION,
       toVersion: trial.to,
@@ -311,9 +312,9 @@ export type ManualUpdateResult =
   | { action: "locked"; version: string; latest: string | null }
   | { action: "already-latest"; version: string }
   | { action: "updated"; version: string }
-  // `toVersion` (the resolved latest we tried to reach) is carried so the caller can report the
-  // failed attempt back to the server (ADR-0305); null when the version wasn't resolved.
-  | { action: "failed"; error: string; toVersion: string | null };
+  // `toVersion` (the resolved latest we tried to reach) and `code` are carried so the caller can report the
+  // failed attempt back to the server (ADR-0305); `toVersion` is null when the version wasn't resolved.
+  | { action: "failed"; code: CliUpdateErrorCode; error: string; toVersion: string | null };
 
 /**
  * Manual update (`4pm update`) / operator "Update" push: install the server's latest version. Reuses
@@ -338,13 +339,13 @@ export async function updateToLatest(serverUrl: string, force = false): Promise<
   if (cliUpdateLocked()) return { action: "locked", version: CLI_VERSION, latest: meta.latest };
   // A version that failed to load or start here is skipped on every path, a forced push too (ADR-0644).
   const bad = badMarkOf(meta.latest);
-  if (bad) return { action: "failed", error: badVersionReason(meta.latest, bad), toVersion: meta.latest };
+  if (bad) return { action: "failed", code: "badVersion", error: badVersionReason(meta.latest, bad), toVersion: meta.latest };
   console.log(t("update.updating", { from: CLI_VERSION, to: meta.latest }));
   try {
     await updateViaDownload(meta.source.tarballUrl, meta.source.checksum, meta.source.signature);
   } catch (err) {
     noteLoadFailure(meta.latest, err);
-    return { action: "failed", error: String(err), toVersion: meta.latest };
+    return { action: "failed", code: cliUpdateErrorCode(err), error: String(err), toVersion: meta.latest };
   }
   // Verify the update actually landed on the running install — the same
   // check startup does. Prevents `4pm update` from claiming success while the running
@@ -353,6 +354,7 @@ export async function updateToLatest(serverUrl: string, force = false): Promise<
   if (shouldUpdateTo(installed, meta.latest)) {
     return {
       action: "failed",
+      code: "notApplied",
       error:
         `update ran but the installed version is still ${installed} (expected ${meta.latest}) — ` +
         `it did not apply to the running install at ${appliedRoot ?? runningInstallRoot()}.`,

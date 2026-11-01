@@ -46,6 +46,15 @@ pnpm typecheck
 Dependencies only resolve to versions published at least 3 days ago, and only `esbuild` may run an install
 script. After changing `package.json`, regenerate the lockfile with `node scripts/standalone-lock.mjs`.
 
+## Run a worker on AWS ECS
+
+[`deploy/aws/ecs-worker.yaml`](./deploy/aws/ecs-worker.yaml) runs one worker as an ECS service in your own AWS
+account and VPC (cluster, logs, an execution role that reads only your secrets, an egress-only security group, a
+hardened task). Pair once with Docker, store `4pm credential-export` in Secrets Manager, then
+`aws cloudformation deploy --template-file ecs-worker.yaml --capabilities CAPABILITY_IAM --parameter-overrides …`.
+`LaunchType=EC2` (default) enforces the project's network egress policy; `FARGATE` only audits it. The 4PM web
+CLI guide (Container ▸ AWS ECS) fills in the commands for you.
+
 ## How this repo relates to 4PM
 
 The 4PM CLI is developed inside the private 4PM monorepo and embedded there as a git

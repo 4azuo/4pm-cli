@@ -8,6 +8,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { logger } from "../common/logger/logger";
+import type { CliUpdateErrorCode } from "@4pm/dto";
 
 /** How long a bad version is skipped before one new attempt is allowed. */
 export const BAD_VERSION_TTL_MS = 24 * 60 * 60 * 1000;
@@ -30,6 +31,8 @@ export interface BadVersion {
 
 /** A failure to report over `cli.update-result` once a session is up. */
 export interface PendingUpdateReport {
+  /** Why it failed (absent in a report queued by an older cli). */
+  code?: CliUpdateErrorCode;
   message: string;
   fromVersion: string;
   toVersion: string;

@@ -299,6 +299,12 @@ export interface CommandDispatchPayload {
    */
   aiOneShot?: boolean;
   /**
+   * The AI tools (`claude` / `codex`) the platform admin has locked: the profile failover skips their attempts, and a
+   * run with no allowed tool left ends at once with `SERVICE_LOCKED`. Absent ⇒ none locked.
+   * @adr 0707
+   */
+  lockedAiClis?: string[];
+  /**
    * Read-only agent AI run: a task that must **read + inspect the repo but write
    * nothing** (project-template "Analyze impact"). The cli keeps the read/search tools (`Read`/
    * `Glob`/`Grep`/`Bash`) and runs multi-turn under `--permission-mode plan` (codex `--sandbox
@@ -1979,7 +1985,9 @@ export interface ToolHealthReport {
 export interface CliUpdateResultReport {
   /** Did the self-update succeed? Practically always false on the wire (success re-execs). */
   ok: boolean;
-  /** Short human reason when `ok` is false (e.g. the tar/download error); null on success. */
+  /** Why it failed (`CliUpdateErrorCode` of `@4pm/dto`) — clients translate it; absent from an older cli. */
+  code?: string | null;
+  /** Short English reason when `ok` is false (e.g. the tar/download error) — a log / fallback, not UI text; null on success. */
   message: string | null;
   /** Version the cli was running when it attempted the update. */
   fromVersion: string;

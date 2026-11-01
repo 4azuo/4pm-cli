@@ -709,7 +709,7 @@ export async function scaffoldProject(
     mkdirShared(target);
     // Every project declares exactly one repo (ADR-0314); the spec schema enforces it — guard here too.
     const repo = singleRepo(reposOf(payload.spec));
-    if (!repo) throw new Error("A project must declare one repo (ADR-0314).");
+    if (!repo) throw new Error("A project must declare one repo.");
     // Clone + push must use the project's CURRENT git-auth (ADR-0368): the App may have been set up after
     // this cli connected, so re-apply the method carried by project.create (idempotent when unchanged).
     if (payload.gitAuth !== undefined) applyGitAuth?.(payload.gitAuth ?? null, payload.gitAuthHost ?? null);

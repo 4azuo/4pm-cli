@@ -34,6 +34,12 @@ export class CliApiError extends Error {
     super(message);
     this.name = "CliApiError";
   }
+
+  /** Print the code, HTTP status and `meta` too — a bare `HTTP 400` tells the operator nothing. */
+  override toString(): string {
+    const meta = this.meta && Object.keys(this.meta).length > 0 ? ` ${JSON.stringify(this.meta)}` : "";
+    return `${this.name} [${this.errorCode}, HTTP ${this.status}]: ${this.message}${meta}`;
+  }
 }
 
 /**

@@ -104,7 +104,7 @@
     {
       "version": "1.1.1",
       "date": "2026-10-06",
-      "summary": "The default AI model is chosen per project instead of being hard-coded in .claude/settings.json (ADR-0394).",
+      "summary": "The default AI model is chosen per project instead of being hard-coded in .claude/settings.json.",
       "notes": [
         ".claude/settings.json no longer pins \"model\": \"claude-opus-4-8\". Remove the key to follow the AI CLI's default model, or set it to the model the project should use.",
         ".claude/agents/<name>.md frontmatter may carry description: and model: (a subagent without model: inherits the session model)."
@@ -116,7 +116,7 @@
     {
       "version": "1.1.0",
       "date": "2026-09-30",
-      "summary": "Multi-worker autonomous books: multi-row AI_PROGRESS claims, QA-gated task Depends, attempts sidecar (ADR-0371).",
+      "summary": "Multi-worker autonomous books: multi-row AI_PROGRESS claims, QA-gated task Depends, attempts sidecar.",
       "notes": [
         "AI_PROGRESS.md holds one row per claimed task: | Started | ID | Worker | Claim | Attempt | Task description | (was a single | Started | ID | Task description | row). Convert an existing single row into the new columns (Worker/Claim empty, Attempt 1).",
         "AI_TODO.md Depends may list QA-… ids (the task waits for that USER_QA answer); two or more TSK dependencies require their PRs to be merged into the base branch; Notes may carry size: S|M and from: <branch>.",

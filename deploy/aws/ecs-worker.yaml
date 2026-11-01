@@ -1,0 +1,268 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  4PM cli worker on Amazon ECS, in your own AWS account and VPC. One stack = one worker identity: an ECS cluster,
+  a log group, an execution role that reads only the given secrets, a security group with no ingress and egress
+  TCP 443/22 only, a hardened task (read-only root, no task role, node/agent uid split) and a 0/1 service.
+  LaunchType EC2 (default) runs on an ECS-optimised Auto Scaling group and ENFORCES the project's Networks egress
+  policy; FARGATE cannot add NET_ADMIN, so the worker is Audit only. Pair once, store the `4pm credential-export`
+  value in Secrets Manager, then deploy this template (see the CLI guide ▸ Container ▸ AWS ECS).
+
+Parameters:
+  WorkerName:
+    Type: String
+    Default: 4pm-worker
+    AllowedPattern: "^[a-zA-Z0-9][a-zA-Z0-9-]{0,39}$"
+    Description: "Names the cluster, log group and service (letters, digits, '-'). One stack per worker identity."
+  FourpmServer:
+    Type: String
+    AllowedPattern: "^https://.+"
+    Description: "The 4PM server URL the cli connects to (FOURPM_SERVER), e.g. https://gw.4pm.app."
+  Image:
+    Type: String
+    Default: ghcr.io/4azuo/4pm-cli:full
+    Description: "The worker image. Pin a release tag for repeatable deploys; :full bakes the AI CLIs + git/gh/glab."
+  CredentialSecretArn:
+    Type: String
+    AllowedPattern: "^arn:aws[A-Za-z-]*:secretsmanager:.+"
+    Description: "Secrets Manager secret holding the `4pm credential-export` value (FOURPM_CREDENTIAL)."
+  AnthropicKeySecretArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^arn:aws[A-Za-z-]*:secretsmanager:.+"
+    Description: "Optional: Secrets Manager secret holding an Anthropic API key (ANTHROPIC_API_KEY)."
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: "The VPC to run the worker in."
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: >-
+      Subnets for the worker. EC2: private subnets with a NAT gateway (tasks on EC2 never get a public IP).
+      FARGATE: private subnets with NAT, or public subnets with AssignPublicIp=ENABLED.
+  AssignPublicIp:
+    Type: String
+    Default: DISABLED
+    AllowedValues: [DISABLED, ENABLED]
+    Description: "FARGATE only: give the task a public IP (public subnets without NAT). Ignored on EC2."
+  LaunchType:
+    Type: String
+    Default: EC2
+    AllowedValues: [EC2, FARGATE]
+    Description: >-
+      EC2 (default): runs on an ECS capacity provider and adds NET_ADMIN, so the project's Networks egress policy is
+      enforced. FARGATE: no NET_ADMIN, so the worker is Audit only (traffic is logged, a tool can bypass the proxy).
+  InstanceType:
+    Type: String
+    Default: m6i.xlarge
+    Description: "EC2 only: the instance type (must fit Cpu / Memory plus the ECS agent)."
+  Ami:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id
+    Description: "EC2 only: the ECS-optimised AMI (SSM public parameter)."
+  Cpu:
+    Type: String
+    Default: "2048"
+    Description: "Task vCPU units (2048 = 2 vCPU)."
+  Memory:
+    Type: String
+    Default: "8192"
+    Description: "Task memory MiB (8192 = 8 GB)."
+  StorageGiB:
+    Type: Number
+    Default: 50
+    MinValue: 30
+    MaxValue: 200
+    Description: "Disk for $HOME, /tmp and the project clone (encrypted, deleted with the task). EC2: the instance root volume."
+  DesiredCount:
+    Type: Number
+    Default: 1
+    AllowedValues: [0, 1]
+    Description: "1 = running, 0 = stopped. One identity must never run twice."
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 180, 365]
+    Description: "CloudWatch log retention."
+
+Conditions:
+  OnEc2: !Equals [!Ref LaunchType, EC2]
+  HasAnthropicKey: !Not [!Equals [!Ref AnthropicKeySecretArn, ""]]
+  PublicIp: !And [!Not [!Condition OnEc2], !Equals [!Ref AssignPublicIp, ENABLED]]
+
+Resources:
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref WorkerName
+      CapacityProviders: !If [OnEc2, [!Ref CapacityProvider], !Ref AWS::NoValue]
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${WorkerName}"
+      RetentionInDays: !Ref LogRetentionDays
+
+  # Pulls the image, writes logs and reads ONLY the worker's secrets. The task itself has no role (no AWS
+  # credentials inside the container).
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement: [{ Effect: Allow, Principal: { Service: ecs-tasks.amazonaws.com }, Action: sts:AssumeRole }]
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy]
+      Policies:
+        - PolicyName: read-worker-secrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue]
+                Resource: !If [HasAnthropicKey, [!Ref CredentialSecretArn, !Ref AnthropicKeySecretArn], [!Ref CredentialSecretArn]]
+
+  # No ingress; egress HTTPS (AI providers, git, registries, 4PM) and SSH (git over ssh) only.
+  TaskSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: 4PM cli worker (no ingress; egress 443/22 only)
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: "HTTPS - AI providers, git, registries, 4PM" }
+        - { IpProtocol: tcp, FromPort: 22, ToPort: 22, CidrIp: 0.0.0.0/0, Description: "SSH - git over ssh" }
+      Tags: [{ Key: Name, Value: !Sub "${WorkerName}-task" }]
+
+  # ---- EC2 capacity (LaunchType=EC2) ----
+  # An ECS-optimised Auto Scaling group (0..1, managed scaling); IMDSv2 only and blocked for awsvpc tasks, so the
+  # agent cannot reach the instance role.
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Condition: OnEc2
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement: [{ Effect: Allow, Principal: { Service: ec2.amazonaws.com }, Action: sts:AssumeRole }]
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role]
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Condition: OnEc2
+    Properties: { Roles: [!Ref InstanceRole] }
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Condition: OnEc2
+    Properties:
+      LaunchTemplateData:
+        ImageId: !Ref Ami
+        InstanceType: !Ref InstanceType
+        IamInstanceProfile: { Arn: !GetAtt InstanceProfile.Arn }
+        SecurityGroupIds: [!Ref TaskSg]
+        MetadataOptions: { HttpTokens: required, HttpPutResponseHopLimit: 1 }
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs: { VolumeSize: !Ref StorageGiB, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true }
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            echo "ECS_CLUSTER=${WorkerName}" >> /etc/ecs/ecs.config
+            echo "ECS_AWSVPC_BLOCK_IMDS=true" >> /etc/ecs/ecs.config
+  Asg:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Condition: OnEc2
+    Properties:
+      MinSize: "0"
+      MaxSize: "1"
+      VPCZoneIdentifier: !Ref SubnetIds
+      LaunchTemplate: { LaunchTemplateId: !Ref LaunchTemplate, Version: !GetAtt LaunchTemplate.LatestVersionNumber }
+      Tags: [{ Key: Name, Value: !Ref WorkerName, PropagateAtLaunch: true }]
+  CapacityProvider:
+    Type: AWS::ECS::CapacityProvider
+    Condition: OnEc2
+    Properties:
+      AutoScalingGroupProvider:
+        AutoScalingGroupArn: !Ref Asg
+        ManagedScaling: { Status: ENABLED, TargetCapacity: 100 }
+        ManagedTerminationProtection: DISABLED
+
+  # ---- The worker ----
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref WorkerName
+      RequiresCompatibilities: !If [OnEc2, [EC2], [FARGATE]]
+      NetworkMode: awsvpc
+      Cpu: !Ref Cpu
+      Memory: !Ref Memory
+      EphemeralStorage: !If [OnEc2, !Ref AWS::NoValue, { SizeInGiB: !Ref StorageGiB }]
+      RuntimePlatform: { OperatingSystemFamily: LINUX, CpuArchitecture: X86_64 }
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      Volumes: [{ Name: cli-home }, { Name: cli-tmp }, { Name: cli-agent-home }]
+      ContainerDefinitions:
+        # Prepares the empty task volumes for the node / agent users, then exits.
+        - Name: volume-init
+          Image: !Ref Image
+          Essential: false
+          User: "0"
+          ReadonlyRootFilesystem: true
+          EntryPoint: ["/bin/sh", "-c"]
+          Command:
+            - "mkdir -p /home/node/.4pm /home/node/.npm-global/bin && chown -R 1000:0 /home/node && chmod -R g=u /home/node && chmod 1777 /tmp && chown 1001:1001 /home/agent && chmod 0700 /home/agent"
+          MountPoints:
+            - { SourceVolume: cli-home, ContainerPath: /home/node }
+            - { SourceVolume: cli-tmp, ContainerPath: /tmp }
+            - { SourceVolume: cli-agent-home, ContainerPath: /home/agent }
+          LogConfiguration: { LogDriver: awslogs, Options: { awslogs-group: !Ref LogGroup, awslogs-region: !Ref AWS::Region, awslogs-stream-prefix: init } }
+        # Starts as root so the launcher drops the cli to `node` (keeping only SETUID/SETGID) and runs the AI CLIs /
+        # project processes as `agent` with no capabilities. EC2 also gets NET_ADMIN (the agent-uid egress rules,
+        # dropped before the cli starts), no-new-privileges and a root-owned /run/4pm; Fargate supports neither.
+        - Name: cli
+          Image: !Ref Image
+          Essential: true
+          DependsOn: [{ ContainerName: volume-init, Condition: SUCCESS }]
+          User: "0"
+          ReadonlyRootFilesystem: true
+          DockerSecurityOptions: !If [OnEc2, ["no-new-privileges"], !Ref AWS::NoValue]
+          LinuxParameters:
+            InitProcessEnabled: true
+            Capabilities: !If
+              - OnEc2
+              - { Drop: [ALL], Add: [SETUID, SETGID, NET_ADMIN] }
+              - { Drop: [AUDIT_WRITE, CHOWN, DAC_OVERRIDE, FOWNER, FSETID, KILL, MKNOD, NET_BIND_SERVICE, NET_RAW, SETFCAP, SETPCAP, SYS_CHROOT] }
+            Tmpfs: !If [OnEc2, [{ ContainerPath: /run/4pm, Size: 1, MountOptions: [nosuid, noexec, "mode=0755"] }], !Ref AWS::NoValue]
+          MountPoints:
+            - { SourceVolume: cli-home, ContainerPath: /home/node }
+            - { SourceVolume: cli-tmp, ContainerPath: /tmp }
+            - { SourceVolume: cli-agent-home, ContainerPath: /home/agent }
+          Environment:
+            - { Name: FOURPM_SERVER, Value: !Ref FourpmServer }
+            - { Name: GH_CONFIG_DIR, Value: /home/node/.4pm/gh }
+            - { Name: GLAB_CONFIG_DIR, Value: /home/node/.4pm/glab }
+          Secrets: !If
+            - HasAnthropicKey
+            - - { Name: FOURPM_CREDENTIAL, ValueFrom: !Ref CredentialSecretArn }
+              - { Name: ANTHROPIC_API_KEY, ValueFrom: !Ref AnthropicKeySecretArn }
+            - - { Name: FOURPM_CREDENTIAL, ValueFrom: !Ref CredentialSecretArn }
+          LogConfiguration: { LogDriver: awslogs, Options: { awslogs-group: !Ref LogGroup, awslogs-region: !Ref AWS::Region, awslogs-stream-prefix: cli } }
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Ref WorkerName
+      Cluster: !Ref Cluster
+      LaunchType: !If [OnEc2, !Ref AWS::NoValue, FARGATE]
+      CapacityProviderStrategy: !If [OnEc2, [{ CapacityProvider: !Ref CapacityProvider, Weight: 1 }], !Ref AWS::NoValue]
+      DesiredCount: !Ref DesiredCount
+      TaskDefinition: !Ref TaskDefinition
+      # Stop the old task before starting the new one — one identity must never be connected twice.
+      DeploymentConfiguration: { MinimumHealthyPercent: 0, MaximumPercent: 100 }
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: !If [OnEc2, !Ref AWS::NoValue, !If [PublicIp, ENABLED, DISABLED]]
+          Subnets: !Ref SubnetIds
+          SecurityGroups: [!Ref TaskSg]
+
+Outputs:
+  ClusterName:
+    Value: !Ref Cluster
+  ServiceName:
+    Value: !GetAtt Service.Name
+  LogGroupName:
+    Value: !Ref LogGroup
+  EgressEnforcement:
+    Description: "Enforced on EC2; Audit only on Fargate."
+    Value: !If [OnEc2, Enforced, Audit only]

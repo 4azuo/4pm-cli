@@ -515,16 +515,48 @@ export function readFailingTools(usageSnapshot: unknown): WorkerFailingTool[] {
  */
 export interface WorkerCliUpdateEntry {
   ok: boolean;
+  /** Why it failed — a client maps it to its own (i18n) text; absent from an older cli. */
+  code?: CliUpdateErrorCode | null;
   message: string | null;
   fromVersion: string;
   toVersion: string | null;
   at: string;
 }
 
-/** A failed cli self-update projected for the web — reason + when it happened. */
+/**
+ * Why a cli self-update failed. The cli sends it with the English `message`; the web / admin show the
+ * translated text for the code and fall back to `message` when a code is absent or unknown.
+ * @adr 0305
+ */
+export const CLI_UPDATE_ERROR_CODES = [
+  "noSigningKey",
+  "signatureMissing",
+  "signatureInvalid",
+  "checksumMismatch",
+  "downloadFailed",
+  "downloadTimeout",
+  "stageFailed",
+  "extractFailed",
+  "loadFailed",
+  "notApplied",
+  "badVersion",
+  "didNotStart",
+  "locked",
+  "unknown",
+] as const;
+export type CliUpdateErrorCode = (typeof CLI_UPDATE_ERROR_CODES)[number];
+
+/** A failed cli self-update projected for the web — reason code + English reason + when it happened. */
 export interface WorkerCliUpdateError {
+  /** Null when the cli sent none (an older cli) or one this build does not know. */
+  code: CliUpdateErrorCode | null;
   message: string;
   at: string;
+}
+
+/** Is `value` a known cli self-update error code? */
+export function isCliUpdateErrorCode(value: unknown): value is CliUpdateErrorCode {
+  return typeof value === "string" && (CLI_UPDATE_ERROR_CODES as readonly string[]).includes(value);
 }
 
 /** One worker a bulk cli update pushed `cli.update` to. @adr 0413 */
@@ -582,7 +614,12 @@ export interface AutonomousAllResponse {
 export function readCliUpdateError(usageSnapshot: unknown): WorkerCliUpdateError | null {
   const cu = (usageSnapshot as { cliUpdate?: WorkerCliUpdateEntry } | null | undefined)?.cliUpdate;
   if (!cu || typeof cu !== "object" || cu.ok !== false) return null;
-  return { message: cu.message ?? "", at: cu.at };
+  return {
+    code: isCliUpdateErrorCode(cu.code) ? cu.code : null,
+    // An older cli wrote doc references into its reasons ("… (ADR-0508).") — drop them for display.
+    message: (cu.message ?? "").replace(/\s*(?:\(ADR-\d+(?:\/\d+)*\)|— ADR-\d+)/g, ""),
+    at: cu.at,
+  };
 }
 
 /** Physic project — a project folder on the worker served by one cli. */

@@ -84,7 +84,7 @@ export async function syncBooksToBase(
       sync,
       base,
       `4PM: sync the autonomous books into ${base}`,
-      "The books, records, discussions, ER, system diagram and archive of 4PM autonomous, as on the books branch. Only books paths change (ADR-0563).",
+      "The books, records, discussions, ER, system diagram and archive of 4PM autonomous, as on the books branch. Only books paths change.",
     );
     if (pr.error) {
       await log(`[books-sync] PR: ${pr.error}`);

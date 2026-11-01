@@ -14,6 +14,7 @@ import { readProfileConfig } from "../config/profile";
 import { CLI_UPDATE_LOCKED_REASON, updateToLatest } from "./update";
 import { autoUpdateFlaggedTools, resolveInstallTimeoutMs } from "./worker/worker-tools";
 import type { SessionBus } from "./session/session-bus";
+import type { CliUpdateErrorCode } from "@4pm/dto";
 import { t } from "../i18n";
 import { work } from "./session/work-tracker";
 
@@ -57,6 +58,7 @@ export class UpdateScheduler {
      */
     private readonly onUpdateResult?: (result: {
       ok: boolean;
+      code: CliUpdateErrorCode | null;
       message: string | null;
       fromVersion: string;
       toVersion: string | null;
@@ -190,6 +192,7 @@ export class UpdateScheduler {
           this.bus.log(t("update.scheduledFailed", { error: CLI_UPDATE_LOCKED_REASON }), "warn");
           this.onUpdateResult?.({
             ok: false,
+            code: "locked",
             message: CLI_UPDATE_LOCKED_REASON,
             fromVersion: CLI_VERSION,
             toVersion: result.latest,
@@ -209,6 +212,7 @@ export class UpdateScheduler {
         // instead of spinning forever (the cli stays connected on the old version, so this sends).
         this.onUpdateResult?.({
           ok: false,
+          code: result.code,
           message: result.error ?? null,
           fromVersion: CLI_VERSION,
           toVersion: result.toVersion,
@@ -230,6 +234,7 @@ export class UpdateScheduler {
       // modal (ADR-0305) — best-effort; harmless if the WS is down (the report just won't send).
       this.onUpdateResult?.({
         ok: false,
+        code: "unknown",
         message: String(err),
         fromVersion: CLI_VERSION,
         toVersion: null,

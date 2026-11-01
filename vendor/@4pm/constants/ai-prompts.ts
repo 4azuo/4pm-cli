@@ -233,7 +233,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 1,
     title: "Scaffold — evidence guide author",
     description:
-      "Writes the project's EVIDENCE_GUIDE.md (how the analysis evidences — mockups, sequence diagrams, ER, system diagram, task evidence — should look) from its spec JSON on project create (ADR-0532). Keep the six fixed section headings.",
+      "Writes the project's EVIDENCE_GUIDE.md (how the analysis evidences — mockups, sequence diagrams, ER, system diagram, task evidence — should look) from its spec JSON on project create. Keep the six fixed section headings.",
     requiredVars: ["specJson"],
     untrustedVars: { specJson: "data", instructionsBlock: "request" },
   },
@@ -243,7 +243,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 1,
     title: "Autonomous — intake",
     description:
-      "Analyses ONE approved request (or answered intake question) on its own branch into sized AI tasks, and writes UI mockups (ADR-0418), sequence diagrams and ER change requests (ADR-0453) and system-diagram change requests (ADR-0530), following the project evidence guide (ADR-0532). Its context — books, discussions, ER, diagram, evidence guide — is read from the working tree, never pasted in (ADR-0563), starting from the run's context manifest `.4pm/context/<ID>.md` (ADR-0565); books + mockups + sequences + change requests only; no git/code.",
+      "Analyses ONE approved request (or answered intake question) on its own branch into sized AI tasks, and writes UI mockups, sequence diagrams and ER change requests and system-diagram change requests, following the project evidence guide. Its context — books, discussions, ER, diagram, evidence guide — is read from the working tree, never pasted in, starting from the run's context manifest `.4pm/context/<ID>.md`; books + mockups + sequences + change requests only; no git/code.",
     requiredVars: ["booksIntro", "groupIds", "sMaxFiles", "sMaxLines", "mMaxFiles", "mMaxLines"],
     // Every repo text the agent reads (books, discussions, evidence guide) is named as data by the prompt itself (ADR-0563).
     untrustedVars: {},
@@ -253,7 +253,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 1,
     title: "Autonomous — intake (no evidence)",
     description:
-      "The intake prompt for projects whose evidence phase is off (Rigor · Best performance, ADR-0616): books only — no mockups, sequences or change requests.",
+      "The intake prompt for projects whose evidence phase is off (Rigor · Best performance): books only — no mockups, sequences or change requests.",
     requiredVars: ["booksIntro", "groupIds", "sMaxFiles", "sMaxLines", "mMaxFiles", "mMaxLines"],
     // Every repo text the agent reads (books, discussions, evidence guide) is named as data by the prompt itself (ADR-0563).
     untrustedVars: {},
@@ -264,7 +264,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 1,
     title: "Autonomous — implement",
     description:
-      "Implements exactly one task on the prepared branches (commit only); may add an ER change request (ADR-0453). Its context — mockups, sequence, ER, diagram, answers, discussions, accepted docs, evidence guide — is read from the working tree (ADR-0563), starting from the run's context manifest (ADR-0565). Keep the final JSON status block intact.",
+      "Implements exactly one task on the prepared branches (commit only); may add an ER change request. Its context — mockups, sequence, ER, diagram, answers, discussions, accepted docs, evidence guide — is read from the working tree, starting from the run's context manifest. Keep the final JSON status block intact.",
     requiredVars: ["taskId", "desc", "branch", "subLines"],
     untrustedVars: { desc: "request", notes: "request", previousTask: "request", conflictPaths: "data" },
   },  {
@@ -273,7 +273,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 1,
     title: "Autonomous — implement (no evidence)",
     description:
-      "The implement prompt for projects whose evidence phase is off (Rigor · Best performance, ADR-0616): code and tests only — no evidence files or change requests. Keep the final JSON status block intact.",
+      "The implement prompt for projects whose evidence phase is off (Rigor · Best performance): code and tests only — no evidence files or change requests. Keep the final JSON status block intact.",
     requiredVars: ["taskId", "desc", "branch", "subLines"],
     untrustedVars: { desc: "request", notes: "request", previousTask: "request", conflictPaths: "data" },
   },
@@ -283,7 +283,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 1,
     title: "Autonomous — docs round",
     description:
-      "Writes / updates the project documentation of ONE request on its DOC branch, following the spec's doc types and docs organization (ADR-0536) and the mirrored doc templates `.4pm/doc-templates/` (ADR-0564): new numbered files named `NEW-<n>-<slug>.md` (the cli numbers them), the review opinions of earlier rounds applied, evidences updated only when a review asks; context from the run's manifest (ADR-0565). Docs only — no application code. Keep the final JSON status block intact.",
+      "Writes / updates the project documentation of ONE request on its DOC branch, following the spec's doc types and docs organization and the mirrored doc templates `.4pm/doc-templates/`: new numbered files named `NEW-<n>-<slug>.md` (the cli numbers them), the review opinions of earlier rounds applied, evidences updated only when a review asks; context from the run's manifest. Docs only — no application code. Keep the final JSON status block intact.",
     requiredVars: ["docId", "group", "round", "request", "docTypes", "branch"],
     // The request / notes / review opinions are people's text; the docs organization and evidence guide are repo text.
     untrustedVars: { request: "request", desc: "request", notes: "request", reviewNote: "request", docsOrg: "data" },
@@ -303,7 +303,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 1,
     title: "Autonomous — security review",
     description:
-      "Read-only (Rigor · Full power, ADR-0608): reviews one finished task's diff against AI_SECURITY.md before delivery; a high / critical finding fails the attempt. Keep the final JSON verdict block intact.",
+      "Read-only (Rigor · Full power): reviews one finished task's diff against AI_SECURITY.md before delivery; a high / critical finding fails the attempt. Keep the final JSON verdict block intact.",
     requiredVars: ["taskId", "desc", "diff", "security"],
     untrustedVars: { desc: "request", diff: "data", security: "data" },
   },
@@ -313,7 +313,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 1,
     title: "Autonomous — fix a sequence diagram",
     description:
-      "One-shot (no tools): given ONE sequence diagram Mermaid's parser rejected (written by an intake or returned with a question) and the parse error, returns the diagram with only its syntax fixed (ADR-0580). The cli parses the reply again before writing it. Keep the reply a single mermaid block.",
+      "One-shot (no tools): given ONE sequence diagram Mermaid's parser rejected (written by an intake or returned with a question) and the parse error, returns the diagram with only its syntax fixed. The cli parses the reply again before writing it. Keep the reply a single mermaid block.",
     requiredVars: ["file", "diagram", "error"],
     // `file` is a cli-built `<sequenceDir>/<ID>.md` path; the diagram and its parse error are AI-written text.
     untrustedVars: { diagram: "data", error: "data" },
@@ -400,7 +400,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "Evidence guide (EVIDENCE_GUIDE.md)",
     description:
-      "Writes/refines the project's evidence guide from the spec and the user's description (ADR-0532). Keep the six fixed section headings; output the whole Markdown document only.",
+      "Writes/refines the project's evidence guide from the spec and the user's description. Keep the six fixed section headings; output the whole Markdown document only.",
     requiredVars: ["specContext"],
     untrustedVars: { baseBlock: "request", extraBlock: "request", specContext: "data" },
   },
@@ -410,7 +410,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "Marketing — propose shots",
     description:
-      "Read-only agent: proposes marketing screenshots of the project's app as SHOTS.md sections in a <marketing-shots> block, from the repo and the user's brief (ADR-0640). Keep the section / field format.",
+      "Read-only agent: proposes marketing screenshots of the project's app as SHOTS.md sections in a <marketing-shots> block, from the repo and the user's brief. Keep the section / field format.",
     requiredVars: ["set", "driver", "existing", "brief", "tags"],
     untrustedVars: { existing: "data", brief: "request", tags: "data" },
   },
@@ -420,7 +420,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "Marketing — write the capture code",
     description:
-      "Write-capable agent of a photo run: writes run.yaml (first run) and the capture script for the set's driver under .4pm/marketing/ on the marketing branch; the worker appends the approved shots, commits and runs the capture (ADR-0640). Keep the MKT_* contract and file names.",
+      "Write-capable agent of a photo run: writes run.yaml (first run) and the capture script for the set's driver under .4pm/marketing/ on the marketing branch; the worker appends the approved shots, commits and runs the capture. Keep the MKT_* contract and file names.",
     requiredVars: ["set", "driver", "target", "recipeState", "tags"],
     untrustedVars: { tags: "data" },
   },
@@ -430,7 +430,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "Marketing — propose video scenes",
     description:
-      "Read-only agent: proposes the scenes of a marketing video as SCENES.md sections in a <marketing-scenes> block, from the repo, the photo sets' shots and the user's brief (ADR-0646). Keep the section / field format.",
+      "Read-only agent: proposes the scenes of a marketing video as SCENES.md sections in a <marketing-scenes> block, from the repo, the photo sets' shots and the user's brief. Keep the section / field format.",
     requiredVars: ["video", "locales", "shots", "existing", "brief", "tags"],
     untrustedVars: { shots: "data", existing: "data", brief: "request", tags: "data" },
   },
@@ -440,7 +440,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "Marketing — adapt the video project",
     description:
-      "Write-capable agent of a video run: adapts the Remotion project scaffolded from the video template (brand colours, font, logo, scene styling) under .4pm/marketing/videos/<video>/remotion/ on the marketing branch; the worker renders it (ADR-0646). Keep render.mjs, the props contract and file names.",
+      "Write-capable agent of a video run: adapts the Remotion project scaffolded from the video template (brand colours, font, logo, scene styling) under .4pm/marketing/videos/<video>/remotion/ on the marketing branch; the worker renders it. Keep render.mjs, the props contract and file names.",
     requiredVars: ["video", "templateState", "tags"],
     untrustedVars: { tags: "data" },
   },
@@ -450,7 +450,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "CI/CD workflow generate (GitHub Actions / GitLab CI)",
     description:
-      "Read-only agent: reads the repo, writes the workflow YAML for the request, lints it (actionlint / glab ci lint) and returns it in a <ci-workflows> JSON block for the user to review and save as a PR (ADR-0606/0607). It never edits or pushes.",
+      "Read-only agent: reads the repo, writes the workflow YAML for the request, lints it (actionlint / glab ci lint) and returns it in a <ci-workflows> JSON block for the user to review and save as a PR. It never edits or pushes.",
     requiredVars: ["provider", "kind", "request", "existing"],
     untrustedVars: { request: "request", existing: "data" },
   },
@@ -459,7 +459,7 @@ const PROMPT_META: PromptMeta[] = [
     ownerApp: "web",
     phase: 2,
     title: "Evidence guide — one section",
-    description: "Rewrites ONE section of EVIDENCE_GUIDE.md from the user's description (ADR-0532); returns the section body only, without its heading.",
+    description: "Rewrites ONE section of EVIDENCE_GUIDE.md from the user's description; returns the section body only, without its heading.",
     requiredVars: ["section", "specContext"],
     untrustedVars: { current: "request", guide: "data", extraBlock: "request", specContext: "data" },
   },
@@ -606,7 +606,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "AI Verify (AI Done + follow-ups)",
     description:
-      "Read-only: verdict per completed task + optional follow-up proposals (ADR-0400). Keep the `[<ID>]` verdict and `FOLLOWUP [<ID>]` line formats.",
+      "Read-only: verdict per completed task + optional follow-up proposals. Keep the `[<ID>]` verdict and `FOLLOWUP [<ID>]` line formats.",
     requiredVars: ["entries", "question"],
     untrustedVars: { entries: "data", question: "request" },
   },
@@ -616,7 +616,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "AI generate — AI_TODO tasks",
     description:
-      "Read-only: drafts AI_TODO engineering tasks from the user's description (ADR-0408). Keep the JSON array output shape ({key, title, priority, group, depends, description, notes}).",
+      "Read-only: drafts AI_TODO engineering tasks from the user's description. Keep the JSON array output shape ({key, title, priority, group, depends, description, notes}).",
     requiredVars: ["entries", "description"],
     untrustedVars: { entries: "data", description: "request" },
   },
@@ -626,7 +626,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "AI generate — USER_TODO requests",
     description:
-      "Read-only: drafts USER_TODO requests from the user's description (ADR-0408). Keep the JSON array output shape ({key, title, group, depends, request}).",
+      "Read-only: drafts USER_TODO requests from the user's description. Keep the JSON array output shape ({key, title, group, depends, request}).",
     requiredVars: ["entries", "description"],
     untrustedVars: { entries: "data", description: "request" },
   },
@@ -636,7 +636,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "AI generate — USER_QA questions",
     description:
-      "Read-only: drafts USER_QA questions from the user's description (ADR-0408). Keep the JSON array output shape ({key, title, group, depends, original, question}).",
+      "Read-only: drafts USER_QA questions from the user's description. Keep the JSON array output shape ({key, title, group, depends, original, question}).",
     requiredVars: ["entries", "description"],
     untrustedVars: { entries: "data", description: "request" },
   },
@@ -646,7 +646,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "AI edit — AI_TODO tasks",
     description:
-      "Read-only: rewrites the selected AI_TODO tasks from the user's instruction (ADR-0417). Keep the JSON array output shape ({id, title, priority, group, depends, description, notes}).",
+      "Read-only: rewrites the selected AI_TODO tasks from the user's instruction. Keep the JSON array output shape ({id, title, priority, group, depends, description, notes}).",
     requiredVars: ["entries", "context", "instruction"],
     untrustedVars: { entries: "data", context: "data", instruction: "request" },
   },
@@ -656,7 +656,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "AI edit — USER_TODO requests",
     description:
-      "Read-only: rewrites the selected USER_TODO requests from the user's instruction (ADR-0417). Keep the JSON array output shape ({id, title, group, depends, request}).",
+      "Read-only: rewrites the selected USER_TODO requests from the user's instruction. Keep the JSON array output shape ({id, title, group, depends, request}).",
     requiredVars: ["entries", "context", "instruction"],
     untrustedVars: { entries: "data", context: "data", instruction: "request" },
   },
@@ -666,7 +666,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "AI edit — USER_QA questions",
     description:
-      "Read-only: rewrites the selected USER_QA questions from the user's instruction (ADR-0417). Keep the JSON array output shape ({id, title, group, depends, original, question}).",
+      "Read-only: rewrites the selected USER_QA questions from the user's instruction. Keep the JSON array output shape ({id, title, group, depends, original, question}).",
     requiredVars: ["entries", "context", "instruction"],
     untrustedVars: { entries: "data", context: "data", instruction: "request" },
   },
@@ -676,7 +676,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "AI verify book — AI_TODO structure",
     description:
-      "Read-only: checks Group / Depends / Priority of every AI_TODO task against its content (ADR-0417). Keep the JSON array output shape ({id, issue, group, depends, priority}).",
+      "Read-only: checks Group / Depends / Priority of every AI_TODO task against its content. Keep the JSON array output shape ({id, issue, group, depends, priority}).",
     requiredVars: ["entries", "focus"],
     untrustedVars: { entries: "data", focus: "request" },
   },
@@ -686,7 +686,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "AI suggest dependencies (draft)",
     description:
-      "Read-only: proposes the Depends of the target rows from every book (USER_TODO, AI_TODO, USER_QA, recent AI_DONE) — written into the grid draft for review, never saved (ADR-0613). Keep the JSON array output shape ({id, depends[], reason}).",
+      "Read-only: proposes the Depends of the target rows from every book (USER_TODO, AI_TODO, USER_QA, recent AI_DONE) — written into the grid draft for review, never saved. Keep the JSON array output shape ({id, depends[], reason}).",
     requiredVars: ["targets", "books"],
     untrustedVars: { targets: "data", books: "data" },
   },
@@ -696,7 +696,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "AI verify book — USER_TODO structure",
     description:
-      "Read-only: checks Group / Depends of every USER_TODO request against its content (ADR-0417). Keep the JSON array output shape ({id, issue, group, depends}).",
+      "Read-only: checks Group / Depends of every USER_TODO request against its content. Keep the JSON array output shape ({id, issue, group, depends}).",
     requiredVars: ["entries", "focus"],
     untrustedVars: { entries: "data", focus: "request" },
   },
@@ -706,7 +706,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "AI verify book — USER_QA structure",
     description:
-      "Read-only: checks Group / Depends of every USER_QA question against its content (ADR-0417). Keep the JSON array output shape ({id, issue, group, depends}).",
+      "Read-only: checks Group / Depends of every USER_QA question against its content. Keep the JSON array output shape ({id, issue, group, depends}).",
     requiredVars: ["entries", "focus"],
     untrustedVars: { entries: "data", focus: "request" },
   },
@@ -725,7 +725,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "Graph — AI structure review",
     description:
-      "Read-only review of the docs/code structure from the deterministic metrics, lint issues and a tree outline (ADR-0488). Keep the Markdown sections.",
+      "Read-only review of the docs/code structure from the deterministic metrics, lint issues and a tree outline. Keep the Markdown sections.",
     requiredVars: ["mode", "metrics", "issues", "outline"],
     untrustedVars: { issues: "data", outline: "data" },
   },
@@ -735,7 +735,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "RAG — AI doc finder",
     description:
-      "Read-only agent: reads the repo and lists the documents to read for a question (ADR-0489). Keep the fenced JSON {summary, docs[{path, why, priority}]} output.",
+      "Read-only agent: reads the repo and lists the documents to read for a question. Keep the fenced JSON {summary, docs[{path, why, priority}]} output.",
     requiredVars: ["question", "hints"],
     untrustedVars: { question: "request", hints: "data" },
   },
@@ -745,7 +745,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "ER — AI draft",
     description:
-      "Read-only agent: drafts the project data model (module erDiagrams) from the schema in the code (ADR-0491). Keep the fenced JSON {title, rationale, modules[{name, description, diagram}]} output.",
+      "Read-only agent: drafts the project data model (module erDiagrams) from the schema in the code. Keep the fenced JSON {title, rationale, modules[{name, description, diagram}]} output.",
     requiredVars: ["existing"],
     untrustedVars: { existing: "data" },
   },
@@ -755,7 +755,7 @@ const PROMPT_META: PromptMeta[] = [
     phase: 2,
     title: "System diagram — AI draft",
     description:
-      "Read-only agent: drafts the project system diagram (module draw.io files: components + links) from the code (ADR-0530). Keep the fenced JSON {title, rationale, modules[{name, description, xml}]} output.",
+      "Read-only agent: drafts the project system diagram (module draw.io files: components + links) from the code. Keep the fenced JSON {title, rationale, modules[{name, description, xml}]} output.",
     requiredVars: ["existing"],
     untrustedVars: { existing: "data" },
   },

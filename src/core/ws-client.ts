@@ -789,6 +789,13 @@ export class WsClient {
             // The account is paused (ADR-0093) — reversible. Keep `.cre` and back off
             // until an ADMIN/PM resumes it; never logout.
             reconnectDetail = "This account is paused — retrying until it is resumed";
+          } else if (err.errorCode === "SERVICE_LOCKED") {
+            // The platform admin locked the platform (maintenance / outage — ADR-0706): keep `.cre`, show the
+            // admin's reason and wait until the expected end (min 30 s, else 60 s) before trying again.
+            const reason = typeof err.meta?.reason === "string" ? err.meta.reason : "";
+            const until = typeof err.meta?.until === "string" ? Date.parse(err.meta.until) : NaN;
+            this.rateLimitedWaitMs = Number.isFinite(until) ? Math.max(30_000, until - Date.now()) : 60_000;
+            reconnectDetail = t("error.serviceLocked", { reason });
           } else if (err.errorCode === "PLATFORM_IP_NOT_ALLOWED") {
             // Outside the platform's CLI_IP_ALLOWLIST (ADR-0519) — reversible: keep `.cre`, say which
             // IP to allow, and retry slowly so the worker reconnects once an operator adds it.
@@ -1163,6 +1170,14 @@ export class WsClient {
           // Outside the platform's CLI_IP_ALLOWLIST (ADR-0519) — keep `.cre`; run() retries in 5 min.
           this.notePlatformIpBlocked(message.meta?.ip ?? "");
           this.bus.log(t("error.platformIpBlocked", { ip: this.platformBlockedIp || "?" }), "error");
+          this.socket?.close();
+          return;
+        }
+        if (message.errorCode === "SERVICE_LOCKED") {
+          // The platform admin locked cli-server (ADR-0707) — reversible; keep `.cre`, wait until the expected end.
+          const until = Date.parse(String(message.meta?.until ?? ""));
+          this.rateLimitedWaitMs = Number.isFinite(until) ? Math.max(30_000, until - Date.now()) : 60_000;
+          this.bus.log(t("error.serviceLocked", { reason: String(message.meta?.reason ?? "") }), "warn");
           this.socket?.close();
           return;
         }

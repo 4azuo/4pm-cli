@@ -298,6 +298,7 @@ export function handleCommandChannels(
           dispatch.aiConfig,
           dispatch.aiReadOnly ?? false,
           dispatch.aiBypass ?? false,
+          dispatch.lockedAiClis?.length ? { lockedAiClis: dispatch.lockedAiClis } : undefined,
         );
       // A one-shot run has no tools (text in → text out), so it never touches the tree; every agent
       // run (full, read-only, bypass) reads or writes it ⇒ take the repo lock (ADR-0506).
@@ -442,6 +443,8 @@ export interface AiRunOverrides {
    * @adr 0640
    */
   finish?: (agent: { exitCode: number; cancelled: boolean; neverStarted: boolean }, emit: (line: string) => void) => Promise<number>;
+  /** The AI tools the platform admin locked — their failover attempts are skipped. @adr 0707 */
+  lockedAiClis?: readonly string[];
 }
 
 /** The outcome of a prompt refused before it ran (token cap / outbound review). */
@@ -619,6 +622,17 @@ async function runAiPromptInner(
     effectivePrompt = `${MEMORY_SEED_HEADER}\n${memoryBlock}\n\n${guardedPrompt}`;
   }
   const plan = planAiRun(effectivePrompt, config, hint, resume, oneShot, aiConfig, readOnly, bypass);
+  // Locked AI tools (ADR-0707): drop their attempts; with none left, end the run before anything spawns.
+  const locked = overrides?.lockedAiClis ?? [];
+  if (locked.length > 0) {
+    plan.attempts = plan.attempts.filter((a) => !locked.includes(a.cmd));
+    const first = plan.attempts[0];
+    if (!first) {
+      rejectLockedTools(ctx, commandId, origin, prompt, locked);
+      return REFUSED;
+    }
+    plan.cmd = first.cmd;
+  }
   // The account lease (ADR-0518) or a failover may run an attempt whose account holds no session of
   // its own: seed that attempt with the memory, as a fresh session.
   if (resumeId && ctx.aiMemory) {
@@ -1218,6 +1232,19 @@ function rejectPromptOverLimit(
  * (never secret values); a "unavailable" reason maps to no-outbound-available.
  * @adr 0082
  */
+/** End a run whose every AI tool is locked by the platform admin (no attempt left to spawn). @adr 0707 */
+function rejectLockedTools(ctx: WsHandlerCtx, commandId: string, origin: CommandOrigin, prompt: string, locked: readonly string[]): void {
+  const message = `[SERVICE_LOCKED] Every AI tool of this worker is locked by the platform admin (${locked.join(", ")}).`;
+  logger.warn("command.ai.locked", { commandId, origin, locked });
+  ctx.bus.push({ source: origin, kind: "log", text: message, level: "error" });
+  if (origin === "local") {
+    ctx.send(WsChannels.COMMAND_ANNOUNCE, { commandId, cmd: locked[0] ?? "claude", args: [], prompt, origin: "local" } satisfies CommandAnnouncePayload);
+  }
+  ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: 0, chunk: message });
+  ctx.send(WsChannels.COMMAND_OUTPUT, { commandId, seq: 1, chunk: "", done: true, exitCode: 1 });
+  ctx.bus.push({ source: origin, kind: "exit", text: "✗ AI tools locked", level: "error" });
+}
+
 function rejectByReview(
   ctx: WsHandlerCtx,
   commandId: string,

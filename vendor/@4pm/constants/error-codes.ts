@@ -8,6 +8,8 @@ export const ErrorCode = {
   // Common
   VALIDATION_FAILED: "VALIDATION_FAILED",
   UNAUTHORIZED: "UNAUTHORIZED",
+  // BFF: a downstream service refused the access token while the server session is live (ADR-0702); `meta.service`.
+  UPSTREAM_AUTH_REJECTED: "UPSTREAM_AUTH_REJECTED",
   FORBIDDEN: "FORBIDDEN",
   IP_NOT_ALLOWED: "IP_NOT_ALLOWED",
   // The caller's IP is outside the deployment's platform allowlist (APP_/ADMIN_/CLI_IP_ALLOWLIST —
@@ -26,6 +28,9 @@ export const ErrorCode = {
   FEATURE_NOT_AVAILABLE: "FEATURE_NOT_AVAILABLE",
   // Request body exceeded the HTTP gateway's JSON size limit (see HTTP_JSON_BODY_LIMIT_BYTES).
   PAYLOAD_TOO_LARGE: "PAYLOAD_TOO_LARGE",
+  // Gateways: the platform admin locked the target service (or `server`) — maintenance / outage (ADR-0706);
+  // `meta { service, reason, since, until }`, with `Retry-After`.
+  SERVICE_LOCKED: "SERVICE_LOCKED",
   // Unified composer attachments (ADR-0388): an upload over ATTACHMENT_MAX_BYTES, a MIME outside the
   // image + file lists, or a submit carrying more than ATTACHMENT_MAX_COUNT refs.
   ATTACHMENT_TOO_LARGE: "ATTACHMENT_TOO_LARGE",
@@ -470,6 +475,12 @@ export const ErrorCode = {
   BATCH_SERVICE_NOT_DEPLOYED: "BATCH_SERVICE_NOT_DEPLOYED",
   // Secret keys (ADR-0687): unknown key / kind, the key is active (rotate first), values are still sealed with it,
   // it was retired too recently to destroy, or the service has no KEK configured.
+  // Service locks (admin-0166..0170, ADR-0706).
+  SERVICE_LOCK_UNKNOWN_SERVICE: "SERVICE_LOCK_UNKNOWN_SERVICE",
+  SERVICE_ALREADY_LOCKED: "SERVICE_ALREADY_LOCKED",
+  SERVICE_NOT_LOCKED: "SERVICE_NOT_LOCKED",
+  SERVICE_NOTICE_NOT_FOUND: "SERVICE_NOTICE_NOT_FOUND",
+  SERVICE_NOTICE_INVALID_WINDOW: "SERVICE_NOTICE_INVALID_WINDOW",
   SECRET_KEY_NOT_FOUND: "SECRET_KEY_NOT_FOUND",
   SECRET_KEY_KIND_UNKNOWN: "SECRET_KEY_KIND_UNKNOWN",
   SECRET_KEY_ACTIVE: "SECRET_KEY_ACTIVE",
