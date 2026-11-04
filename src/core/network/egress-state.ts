@@ -8,7 +8,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { EGRESS_GIT_EXTRA_HOSTS, EGRESS_GIT_PORTS, EGRESS_PROVIDER_HOSTS, EGRESS_RAG_HOSTS } from "@4pm/constants";
+import { EGRESS_GIT_EXTRA_HOSTS, EGRESS_GIT_PORTS, EGRESS_PROVIDER_HOSTS, EGRESS_RAG_HOSTS } from "@4pm/shared-constants";
 import { parseRepoUrl, type NetworkPolicy, type NetworkPolicyRule } from "@4pm/dto";
 import type { NetworkPolicyPush } from "@4pm/ws";
 import { agentUser } from "../../utils/agent-user";

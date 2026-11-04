@@ -1,560 +1,250 @@
 /**
- * DTO for the console command domain (command-0001/0002): dispatch a command to
- * a worker cli and read its status. Output streams over SSE (command.output), not
- * in these responses.
+ * Vendored from @4pm/dto (command.ts) by scripts/vendor-shared.mjs — do not edit.
  */
 import { z } from "zod";
-import { AI_JOBS, type AiJob } from "@4pm/constants";
+import { AI_JOBS, type AiJob } from "@4pm/shared-constants";
 import { baseRequestSchema } from "./base";
 import { timeZoneSchema } from "./time-zone";
 import { ATTACHMENT_FILE_MIME_TYPES, ATTACHMENT_ID_EXT_PATTERN, ATTACHMENT_IMAGE_MIME_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENT_MAX_COUNT, attachmentExt } from "./attachment";
-
-/**
- * Max `command` length for an executable command vs an AI prompt.
- * The AI-prompt cap was raised 200k → 500k: the whole-spec review/compose prompts
- * embed the full self-describing envelope (+ `_aiReview`/`_aiTree` meta for compose), and a
- * genuinely large spec pushes that past 200k chars — which the dispatch pipe rejected as a
- * confusing `VALIDATION_FAILED` before the AI ever ran. 500k (~125k tokens) leaves ample
- * headroom while staying well within the model context window.
- * @adr 0106 @adr 0255
- */
-export const COMMAND_MAX_LEN = 8_000;
-export const AI_PROMPT_MAX_LEN = 500_000;
-
-/**
- * Console prompt attachments (ADR-0257; images **and files** since ADR-0388): allowed MIME types,
- * per-item byte cap, and the max number per prompt — the unified attachment limits. Shared by the
- * upload endpoint (server validation) and the web.
- */
+export const COMMAND_MAX_LEN = 8000;
+export const AI_PROMPT_MAX_LEN = 500000;
 export const COMMAND_IMAGE_MAX_BYTES = ATTACHMENT_MAX_BYTES;
 export const COMMAND_IMAGE_MAX_COUNT = ATTACHMENT_MAX_COUNT;
 export const COMMAND_IMAGE_MIME_TYPES = [...ATTACHMENT_IMAGE_MIME_TYPES, ...ATTACHMENT_FILE_MIME_TYPES] as const;
 export type CommandImageMime = (typeof COMMAND_IMAGE_MIME_TYPES)[number];
-
-/**
- * The exact shape of a stored command-image id: `<uuidv4>.<ext>`, the only form the server
- * ever mints (`randomUUID()` + `commandImageExt`). A dispatch's `images[].id` and the preview/gRPC
- * fetch key are checked against this so a client-supplied id can never carry `/` or `..` path
- * separators into a storage key (path-traversal guard — the id becomes `command-images/{orgId}/{id}`).
- * @adr 0257
- */
-export const COMMAND_IMAGE_ID_RE = new RegExp(
-  `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.(${ATTACHMENT_ID_EXT_PATTERN})$`,
-);
-
-/** True when `id` is a well-formed command-image id (`<uuidv4>.<ext>`) — see COMMAND_IMAGE_ID_RE. */
+export const COMMAND_IMAGE_ID_RE = new RegExp(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.(${ATTACHMENT_ID_EXT_PATTERN})$`);
 export function isCommandImageId(id: string): boolean {
-  return COMMAND_IMAGE_ID_RE.test(id);
+    return COMMAND_IMAGE_ID_RE.test(id);
 }
-
-/** The file extension for a stored command-image MIME — drives the storage key + on-disk name. @adr 0257 */
 export function commandImageExt(mime: string): string {
-  return attachmentExt(mime) ?? "bin";
+    return attachmentExt(mime) ?? "bin";
 }
-
-/** Response of POST /commands/images — the stored image's id + metadata. @api command-0008 */
 export interface CommandImageUploadResponse {
-  /** Opaque image id (`<uuid>.<ext>`) — reference it from a dispatch `images[].id`. */
-  id: string;
-  mime: string;
-  name: string;
-  bytes: number;
-  /** Image (`[Image#N]`) or file (`[File#N]`) — ADR-0388. */
-  category: "image" | "file";
+    id: string;
+    mime: string;
+    name: string;
+    bytes: number;
+    category: "image" | "file";
 }
-
-/**
- * One image attachment on a Console dispatch: a prompt placeholder `[Image#N]` bound to an
- * uploaded image id + its display name/MIME. The serving cli rewrites `placeholder` to the on-disk path.
- * @adr 0257
- */
 export const commandImageRefSchema = z.object({
-  // Constrained to `<uuidv4>.<ext>` (the only id the upload mints) so a client-supplied id can never
-  // inject `/` or `..` into the `command-images/{orgId}/{id}` storage key (path-traversal guard).
-  id: z.string().regex(COMMAND_IMAGE_ID_RE),
-  placeholder: z.string().min(1).max(40),
-  name: z.string().max(255),
-  mime: z.enum(COMMAND_IMAGE_MIME_TYPES),
-  /** Image or file; omitted by older clients ⇒ derived from `mime`. @adr 0388 */
-  category: z.enum(["image", "file"]).optional(),
+    id: z.string().regex(COMMAND_IMAGE_ID_RE),
+    placeholder: z.string().min(1).max(40),
+    name: z.string().max(255),
+    mime: z.enum(COMMAND_IMAGE_MIME_TYPES),
+    category: z.enum(["image", "file"]).optional(),
 });
 export type CommandImageRef = z.infer<typeof commandImageRefSchema>;
-
-/** Where a command was initiated: `web` (dispatch) vs `local` (cli TUI) — ADR-0107. */
 export type CommandOrigin = "web" | "local";
-
-/**
- * Per-run AI execution overrides — the web "AI settings" modal (Project setup tab) lets
- * the operator temporarily override, for THIS user's browser only, a few commonly-tuned knobs on top
- * of the machine profile's default AI config. Every field is optional; an unset field ⇒ the profile
- * default wins. Layered over the cli profile by the worker (`buildRunArgs`); knobs a provider can't
- * express are ignored (`thinking` maps to claude `MAX_THINKING_TOKENS` env / codex reasoning-effort;
- * `temperature` is codex-only). Only meaningful with `ai:true`.
- * @adr 0261
- */
 export const aiRunConfigSchema = z.object({
-  /** `--model` override for this run (must match the resolved provider's model id). */
-  model: z.string().trim().max(120).optional(),
-  /** Coarse reasoning-budget level, mapped to the provider's own mechanism. */
-  thinking: z.enum(["off", "low", "medium", "high"]).optional(),
-  /** Sampling temperature 0..1 (best-effort per provider). */
-  temperature: z.number().min(0).max(1).optional(),
+    model: z.string().trim().max(120).optional(),
+    thinking: z.enum(["off", "low", "medium", "high"]).optional(),
+    temperature: z.number().min(0).max(1).optional(),
 });
 export type AiRunConfig = z.infer<typeof aiRunConfigSchema>;
-
-/**
- * A dispatch's server-side result sink. `template-update` carries the version pair and
- * custom instruction the saved `TemplateUpdateResult` records; `doc-generation` names the run whose
- * artifact the server stores.
- * @adr 0407 @adr 0457
- */
 export const commandResultSinkSchema = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("template-update"),
-    fromVersion: z.string().max(64).nullable(),
-    toVersion: z.string().min(1).max(64),
-    instruction: z.string().nullable(),
-  }),
-  // A server-side doc generation (ADR-0457): the sink stores the artifact of this run. Only the server
-  // sets it (its own dispatch); a client-sent one is rejected at dispatch.
-  z.object({ kind: z.literal("doc-generation"), runId: z.string().guid() }),
-  // A rule's AI action (ADR-0458): the sink records the output on that run's action. Server-only too.
-  z.object({ kind: z.literal("automation-action"), runId: z.string().guid(), index: z.number().int().min(0).max(20) }),
-  // A checklist run with AI started through the public API (ADR-0482): the sink records the verdicts as a
-  // checklist run. Server-only too.
-  z.object({ kind: z.literal("checklist-ai"), runId: z.string().guid() }),
-  // A marketing photo run (ADR-0640): the sink closes the run from the worker's `<marketing-run>` report. Server-only.
-  z.object({ kind: z.literal("marketing-run"), runId: z.string().guid() }),
-  // A flow-map generate / update run (ADR-0698): the sink stores the model as the map's first / draft version. Server-only.
-  z.object({ kind: z.literal("flow-map"), mapId: z.string().guid(), mode: z.enum(["generate", "update"]) }),
+    z.object({
+        kind: z.literal("template-update"),
+        fromVersion: z.string().max(64).nullable(),
+        toVersion: z.string().min(1).max(64),
+        instruction: z.string().nullable(),
+    }),
+    z.object({ kind: z.literal("doc-generation"), runId: z.string().guid() }),
+    z.object({ kind: z.literal("automation-action"), runId: z.string().guid(), index: z.number().int().min(0).max(20) }),
+    z.object({ kind: z.literal("checklist-ai"), runId: z.string().guid() }),
+    z.object({ kind: z.literal("marketing-run"), runId: z.string().guid() }),
+    z.object({ kind: z.literal("flow-map"), mapId: z.string().guid(), mode: z.enum(["generate", "update"]) }),
 ]);
 export type CommandResultSink = z.infer<typeof commandResultSinkSchema>;
-
-/** Body POST /commands — dispatch a command to the project's cli. */
 export const dispatchCommandRequestSchema = z
-  .object({
+    .object({
     projectId: z.string().guid(),
-    // Target cli. Required unless `pick` is set — with `pick:"idle"` the server chooses the
-    // target from the project's pool, so the client omits it (ADR-0171).
     machineLinkId: z.string().guid().optional(),
-    /**
-     * Server-side idle-cli pick: `"idle"` ⇒ omit `machineLinkId` and let the server
-     * select + atomically claim an idle cli from the project's pool (machine-users + org
-     * orchestrator). Used by the wizard's AI ops so parallel suggests spread across the pool
-     * without double-booking a busy cli; no idle cli ⇒ `ALL_CLIS_BUSY`.
-     * @adr 0171
-     */
     pick: z.enum(["idle"]).optional(),
-    // In AI mode `command` carries the raw prompt (can be long — the spec-assist prompts
-    // embed the whole self-describing spec envelope, ADR-0106), else an executable name.
     command: z.string().min(1).max(AI_PROMPT_MAX_LEN),
     args: z.array(z.string().max(1000)).max(50).optional(),
-    /**
-     * AI prompt mode: run `command` as a prompt through the cli's AI CLI (profile
-     * failover) instead of spawning it verbatim (mirrors a locally-typed prompt).
-     */
     ai: z.boolean().optional(),
-    /**
-     * Short human label shown to OTHER tabs watching this cli's activity feed:
-     * e.g. "AI review" so the Console shows a friendly line instead of the raw prompt.
-     * @adr 0101
-     */
     label: z.string().max(120).optional(),
-    /**
-     * Git tab: when set, `command` is a `git`/`gh`/`glab` command run on the
-     * worker for the Git tab. The server routes the permission to `project.git` (`read`) /
-     * `project.git_write` (`write`) instead of `command.execute`, and validates `command`
-     * against the git allowlist (`isGitCommandAllowed`). Absent ⇒ normal console dispatch.
-     * @adr 0151
-     */
     gitOp: z.enum(["read", "write"]).optional(),
-    /**
-     * Console image attachments: up to `COMMAND_IMAGE_MAX_COUNT` uploaded images the
-     * prompt references by `[Image#N]` placeholders. Only meaningful with `ai:true` on a full agent
-     * run (one-shot spec-assist disallows `Read`). Rejected with `IMAGE_UPLOAD_BLOCKED` when the
-     * project has `outboundReview.blockImages`.
-     * @adr 0257
-     */
     images: z.array(commandImageRefSchema).max(COMMAND_IMAGE_MAX_COUNT).optional(),
-    /**
-     * One-shot AI mode: the prompt is a text-in → text-out task (spec review /
-     * compose / suggest / generators) that must NOT trigger the AI CLI's agentic tool loop.
-     * The cli caps such a run (`--max-turns 1` + disallowed agentic tools) so it can't wander
-     * the repo / edit files / loop forever. Only meaningful with `ai:true`; absent ⇒ a full
-     * agent run (the Console tab + Git merge, which legitimately use tools).
-     * @adr 0249
-     */
     aiOneShot: z.boolean().optional(),
-    /**
-     * Read-only agent AI mode: the prompt is a task that must **read + inspect the repo
-     * but write nothing** (the project-template "Analyze impact"). Unlike `aiOneShot` it keeps the
-     * read/search tools (`Read`/`Glob`/`Grep`/`Bash`) and runs multi-turn, but the cli blocks the
-     * write/orchestration tools and runs claude under `--permission-mode plan` (codex `--sandbox
-     * read-only`) so it can diff files without editing them. Only meaningful with `ai:true`;
-     * **mutually exclusive with `aiOneShot`** (a run is one-shot | read-only | full-agent).
-     * @adr 0265
-     */
     aiReadOnly: z.boolean().optional(),
-    /**
-     * Write-capable agent AI mode: a full agent that must run file + git/`gh`/`glab`
-     * writes **headless without approval prompts** (the project-template "Update", which creates a
-     * branch and opens a PR). The cli runs claude under `--permission-mode bypassPermissions` (codex
-     * full-auto) so the run doesn't stall on an interactive approval it can't answer. Still bounded by
-     * the folder-scope guard. Only meaningful with `ai:true`; **mutually exclusive with
-     * `aiOneShot`/`aiReadOnly`** (a run is one-shot | read-only | full-agent [| write-capable]).
-     * @adr 0271 @adr 0181
-     */
     aiBypass: z.boolean().optional(),
-    /**
-     * Only with `job: "ci-generate"`: the kind of workflow the AI writes — `security` needs the `ciSecurity` plan
-     * feature. The run must be `aiReadOnly` (the YAML comes back for review; the user saves it as a PR).
-     * @adr 0606 @adr 0607
-     */
     ciKind: z.enum(["ci", "security"]).optional(),
-    /**
-     * Per-run AI execution overrides: model/thinking/temperature chosen in the web
-     * "AI settings" modal (per-user localStorage), layered over the profile default by the cli.
-     * Only meaningful with `ai:true`.
-     * @adr 0261
-     */
     aiConfig: aiRunConfigSchema.optional(),
-    /**
-     * AI job: which of the 15 AI functions this dispatch is — the caller stamps it (the
-     * end user never picks). With `pick:"idle"` it drives the job-aware routing over the project's
-     * worker-routing table (pools before lone machines → job priority → member index, with
-     * exhaustion failover). Absent ⇒ the flat idle pool (the default). Ignored with an
-     * explicit `machineLinkId`.
-     * @adr 0284
-     */
-    job: z.enum(AI_JOBS as [AiJob, ...AiJob[]]).optional(),
-    /**
-     * Server-side result sink: when the command finishes (`done`, not cancelled) the server
-     * hands its transcript to the sink of this `kind` — `template-update` parses the Update agent's
-     * result and saves `Project.templateUpdate`, so the result is kept even when no tab re-attaches.
-     * Requires `ai:true`.
-     * @adr 0407
-     */
+    job: z.enum(AI_JOBS as [
+        AiJob,
+        ...AiJob[]
+    ]).optional(),
     resultSink: commandResultSinkSchema.optional(),
-  })
-  // A plain executable command stays tightly capped; only AI prompts may be large.
-  .superRefine((v, ctx) => {
-    // Exactly one target selector: an explicit `machineLinkId` (Console/Git) XOR `pick` (ADR-0171).
+})
+    .superRefine((v, ctx) => {
     if ((v.machineLinkId == null) === (v.pick == null)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["machineLinkId"],
-        message: "Provide exactly one of machineLinkId or pick.",
-      });
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["machineLinkId"],
+            message: "Provide exactly one of machineLinkId or pick.",
+        });
     }
-    // A run is one-shot | read-only | full-agent | write-capable — the mode flags are exclusive.
     if (v.aiOneShot && v.aiReadOnly) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["aiReadOnly"],
-        message: "aiOneShot and aiReadOnly are mutually exclusive.",
-      });
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["aiReadOnly"],
+            message: "aiOneShot and aiReadOnly are mutually exclusive.",
+        });
     }
     if (v.aiBypass && (v.aiOneShot || v.aiReadOnly)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["aiBypass"],
-        message: "aiBypass is mutually exclusive with aiOneShot and aiReadOnly.",
-      });
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["aiBypass"],
+            message: "aiBypass is mutually exclusive with aiOneShot and aiReadOnly.",
+        });
     }
     if (v.resultSink && !v.ai) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["resultSink"],
-        message: "resultSink requires ai:true.",
-      });
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["resultSink"],
+            message: "resultSink requires ai:true.",
+        });
     }
     if (!v.ai && v.command.length > COMMAND_MAX_LEN) {
-      ctx.addIssue({
-        code: "too_big",
-        maximum: COMMAND_MAX_LEN,
-        origin: "string",
-        inclusive: true,
-        path: ["command"],
-        message: `command too long (max ${COMMAND_MAX_LEN})`,
-      });
+        ctx.addIssue({
+            code: "too_big",
+            maximum: COMMAND_MAX_LEN,
+            origin: "string",
+            inclusive: true,
+            path: ["command"],
+            message: `command too long (max ${COMMAND_MAX_LEN})`,
+        });
     }
-  });
+});
 export type DispatchCommandRequest = z.infer<typeof dispatchCommandRequestSchema>;
-
-/** Executables allowed for a Git-tab dispatch (`gitOp` set) — ADR-0151. */
 export const GIT_COMMAND_ALLOWLIST = ["git", "gh", "glab"] as const;
-
-/**
- * Guard a Git-tab command (`gitOp` set): the first token must be `git`/`gh`/`glab` and the
- * string must not contain shell control operators that could chain/redirect another command
- * (`;` `|` `&` `$` backtick `>` `<` newline). Quotes are allowed so a commit message can carry
- * spaces. Returns true when the command is safe to dispatch as a Git op.
- */
 export function isGitCommandAllowed(command: string): boolean {
-  const trimmed = command.trim();
-  const first = trimmed.split(/\s+/)[0] ?? "";
-  if (!(GIT_COMMAND_ALLOWLIST as readonly string[]).includes(first)) return false;
-  // Reject shell control/redirection/substitution operators + newlines.
-  if (/[;|&$`><\n\r]/.test(trimmed)) return false;
-  return true;
+    const trimmed = command.trim();
+    const first = trimmed.split(/\s+/)[0] ?? "";
+    if (!(GIT_COMMAND_ALLOWLIST as readonly string[]).includes(first))
+        return false;
+    if (/[;|&$`><\n\r]/.test(trimmed))
+        return false;
+    return true;
 }
-
-/** Status of a command on the activity feed (ADR-0101; `queued` + `cancelled`). @adr 0362 */
 export type CommandActivityStatus = "queued" | "running" | "done" | "failed" | "cancelled";
-
-/** Where an AI run waiting for an org run slot stands. @adr 0359 @adr 0362 */
 export interface CommandQueueInfo {
-  /** Runs ahead of it in the org's FIFO queue (0 = next). */
-  position: number;
-  /** The org plan's `maxConcurrentRuns` (0 for a repo wait). */
-  limit: number;
-  /** Runs currently holding a slot (0 for a repo wait). */
-  running: number;
-  /** Why it waits: the org's run slots (default) or the project's working tree. @adr 0506 */
-  reason?: "slot" | "repo";
-  /** `reason: repo` — who holds the working tree. */
-  holder?: "autonomous" | "command" | "git" | "project";
-  /** `reason: repo` — the task the autonomous holder works on, when known. */
-  task?: string;
+    position: number;
+    limit: number;
+    running: number;
+    reason?: "slot" | "repo";
+    holder?: "autonomous" | "command" | "git" | "project";
+    task?: string;
 }
-
-/**
- * One command-activity event on the per-cli feed (`GET /commands/activity/stream` —
- * ADR-0101): a command started/finished on `machineLinkId`, so any tab of the same org
- * can show it + stream its output. `status`: `queued` (waiting for a run slot — with `queue`) |
- * `running` | `done` | `failed` | `cancelled` (stopped).
- * @adr 0362
- */
 export interface CommandActivityEvent {
-  commandId: string;
-  machineLinkId: string;
-  projectId: string;
-  /** Caller's org — used server-side to scope the feed (never cross-org). */
-  orgId: string;
-  /** Friendly label (dispatch `label`, or the command/prompt text when absent). */
-  label: string;
-  /**
-   * The full command/prompt text — lets a watching Console tab render the real
-   * prompt (spec-context collapsed) like the cli TUI, instead of only the short `label`.
-   * @adr 0108
-   */
-  command?: string;
-  /** True when it was an AI prompt run (`ai:true`). */
-  ai: boolean;
-  /**
-   * Where the command was initiated: `local` = typed in the cli TUI, `web` =
-   * dispatched from the browser/server. The Console maps it to the cli-style source tag
-   * (`local` cyan / `server` magenta) so the two transcripts read the same.
-   * @adr 0149
-   */
-  origin?: "web" | "local";
-  status: CommandActivityStatus;
-  /** Queue position while `status` is `queued`. */
-  queue?: CommandQueueInfo;
-  exitCode?: number | null;
-  startedAt: string;
-  /**
-   * Display name of the user who dispatched this command — `web` dispatches carry
-   * the authenticated caller so the Console header can show "last run by <name>"; absent for a
-   * `local` (cli-typed) run or when the name is unknown.
-   * @adr 0249
-   */
-  initiatedByName?: string;
+    commandId: string;
+    machineLinkId: string;
+    projectId: string;
+    orgId: string;
+    label: string;
+    command?: string;
+    ai: boolean;
+    origin?: "web" | "local";
+    status: CommandActivityStatus;
+    queue?: CommandQueueInfo;
+    exitCode?: number | null;
+    startedAt: string;
+    initiatedByName?: string;
 }
-
-/**
- * Origin/kind of a transcript entry — the cli's `SessionBus` entry shape,
- * shared so the web Console renders it verbatim instead of re-deriving it.
- * @adr 0107 @adr 0108 @adr 0150
- */
 export type TranscriptSource = "server" | "local" | "system";
 export type TranscriptKind = "log" | "cmd" | "out" | "exit" | "aireq" | "aires" | "result";
-
-/**
- * Structured metadata of an AI run, carried on its `aireq` marker entry so the web Console
- * can show the exact prompt + resolved CLI flags in a details modal when the CLI name is clicked.
- * `args` is the representative resolved argv (metering + mode flags — `--max-turns`, `--permission-mode`,
- * …), `cmd` the provider command, `prompt` the verbatim prompt, `model` the effective model if pinned.
- * @adr 0265
- */
 export interface AiRunMeta {
-  cmd: string;
-  args: string[];
-  prompt: string;
-  model?: string;
+    cmd: string;
+    args: string[];
+    prompt: string;
+    model?: string;
 }
-
-/** One line/block of the cli transcript, streamed over `console.sync` / command-0007. */
 export interface TranscriptEntry {
-  /** Stable entry id (uuid) — the render key; a `console.sync` `update` targets it. */
-  id: string;
-  source: TranscriptSource;
-  kind: TranscriptKind;
-  /** The line/block text; for a `result` it is the FULL body (the fold opens it, no fetch). */
-  text: string;
-  level: "info" | "warn" | "error";
-  /** For a `result` entry — whether the body is json or code (drives the marker + pretty-print). */
-  resultKind?: "json" | "code";
-  /**
-   * Processing time in milliseconds — set on the terminal `exit` entry of a run
-   * (wall-clock from its `cmd`/`aireq` echo to completion) so the Console can show how long each
-   * command/AI prompt took. Absent on non-terminal entries and on entries the cli can't time.
-   * @adr 0249
-   */
-  durationMs?: number;
-  /**
-   * For an `aireq` marker — the run's prompt + resolved flags, so the web can open a
-   * details modal from the clickable CLI name. Absent on every other entry.
-   * @adr 0265
-   */
-  aiMeta?: AiRunMeta;
+    id: string;
+    source: TranscriptSource;
+    kind: TranscriptKind;
+    text: string;
+    level: "info" | "warn" | "error";
+    resultKind?: "json" | "code";
+    durationMs?: number;
+    aiMeta?: AiRunMeta;
 }
-
-/**
- * One event on the per-cli console-sync feed (`GET /console/stream`):
- * the cli's authoritative transcript streamed so the web renders it 1:1. `rev` increases
- * monotonically; a client that sees a gap waits for the next `snapshot` rather than rendering
- * out of order. Discriminated by `kind`:
- * - `snapshot` — the full current transcript (cap 500), replayed on subscribe + re-sent by the
- *   cli on the first viewer + a low-frequency timer to self-heal any drift.
- * - `add` — one new entry was pushed.
- * - `update` — an entry's `text` grew in place (a streaming `result` block); replace by `id`.
- * - `clear` — the transcript was wiped (`/clear` or the idle auto-clear).
- * @api command-0007 @adr 0150
- */
-export type ConsoleSyncEvent =
-  | { kind: "snapshot"; rev: number; entries: TranscriptEntry[] }
-  | { kind: "add"; rev: number; entry: TranscriptEntry }
-  | { kind: "update"; rev: number; entry: TranscriptEntry }
-  | { kind: "clear"; rev: number };
-
-/**
- * Query GET /commands?projectId= — project-scoped command history:
- * `BaseRequest` (page/size) plus the required project filter.
- * @api command-0005 @adr 0107
- */
+export type ConsoleSyncEvent = {
+    kind: "snapshot";
+    rev: number;
+    entries: TranscriptEntry[];
+} | {
+    kind: "add";
+    rev: number;
+    entry: TranscriptEntry;
+} | {
+    kind: "update";
+    rev: number;
+    entry: TranscriptEntry;
+} | {
+    kind: "clear";
+    rev: number;
+};
 export const listCommandsQuerySchema = baseRequestSchema.extend({
-  projectId: z.string().guid(),
-  // Optional search filters: `search` (from BaseRequest) matches the command
-  // text/status; `from`/`to` are an inclusive `YYYY-MM-DD` date range over `startedAt`, as days in
-  // `tz` (the viewer's zone, default UTC — ADR-0526); `machineLinkId` (ADR-0249) filters to one
-  // machine-user's commands (absent ⇒ all).
-  from: z.string().optional(),
-  to: z.string().optional(),
-  tz: timeZoneSchema.optional(),
-  machineLinkId: z.string().guid().optional(),
+    projectId: z.string().guid(),
+    from: z.string().optional(),
+    to: z.string().optional(),
+    tz: timeZoneSchema.optional(),
+    machineLinkId: z.string().guid().optional(),
 });
 export type ListCommandsQuery = z.infer<typeof listCommandsQuerySchema>;
-
-/** Data 202 of POST /commands. */
 export interface CommandDispatchResponse {
-  commandId: string;
-  /** `queued` | `dispatched`. */
-  status: string;
-  /**
-   * AI dispatch (`ai:true`) only — the client-side SSE re-attach/backstop timeout (ms) the web
-   * should use for this command, derived from the effective AI-run timeout
-   * (`max(evict×1.5, effective×profileCount×1.2)`, `0`/unlimited ⇒ 1500s). Absent for a
-   * non-AI dispatch; the web falls back to its default when unset.
-   * @adr 0256
-   */
-  reattachCapMs?: number;
+    commandId: string;
+    status: string;
+    reattachCapMs?: number;
 }
-
-/**
- * Derive the SSE reply windows for an AI dispatch from the **effective** AI-run timeout:
- * the server's finished-buffer eviction and the client's re-attach/backstop cap. `effectiveSec` is
- * the project override else the machine-user value (`0`/absent = unlimited); `profileCount` is the
- * configured failover profile count (the cap-floor factor). Both returned in **ms**.
- *
- *   evict = effective × 1.5            (0/unlimited ⇒ 1000s)
- *   cap   = max(evict × 1.5, effective × profileCount × 1.2)   (0 ⇒ 1500s)
- * @adr 0256
- */
-export function deriveAiReplyWindows(
-  effectiveSec: number,
-  profileCount: number,
-): { evictMs: number; reattachCapMs: number } {
-  const eff = Number.isFinite(effectiveSec) && effectiveSec > 0 ? Math.floor(effectiveSec) : 0;
-  const profiles = Number.isFinite(profileCount) && profileCount > 0 ? Math.floor(profileCount) : 1;
-  const evictMs = eff > 0 ? eff * 1500 : 1_000_000;
-  const reattachCapMs = Math.max(Math.round(evictMs * 1.5), eff * profiles * 1200);
-  return { evictMs, reattachCapMs };
+export function deriveAiReplyWindows(effectiveSec: number, profileCount: number): {
+    evictMs: number;
+    reattachCapMs: number;
+} {
+    const eff = Number.isFinite(effectiveSec) && effectiveSec > 0 ? Math.floor(effectiveSec) : 0;
+    const profiles = Number.isFinite(profileCount) && profileCount > 0 ? Math.floor(profileCount) : 1;
+    const evictMs = eff > 0 ? eff * 1500 : 1000000;
+    const reattachCapMs = Math.max(Math.round(evictMs * 1.5), eff * profiles * 1200);
+    return { evictMs, reattachCapMs };
 }
-
-/** Data POST /commands/:id/cancel. @api command-0010 @adr 0362 */
 export interface CancelCommandResponse {
-  cancelled: true;
+    cancelled: true;
 }
-
-/** Data GET /commands/:id — command status/result (output via SSE). */
 export interface CommandStatusResponse {
-  id: string;
-  /** `dispatched` | `running` | `done` | `failed`. */
-  status: string;
-  exitCode: number | null;
-  createdAt: string;
-  finishedAt: string | null;
+    id: string;
+    status: string;
+    exitCode: number | null;
+    createdAt: string;
+    finishedAt: string | null;
 }
-
-/**
- * Why a command's output blob is absent — lets the web show an honest, actionable
- * message instead of always blaming retention. `store-disabled`: the org never enabled
- * command-output storage, so it was never captured (the common default); `pruned`: it was stored
- * then swept by retention; `null`: output is present (or the command is otherwise fine).
- * @adr 0176
- */
 export type CommandOutputUnavailableReason = "store-disabled" | "pruned" | null;
-
-/**
- * REST response of `GET /commands/:id/output`. Reads the stored transcript
- * blob; `output`/`input` are `null` when the org disabled command-history storage or the blob was
- * pruned/never captured. `input` is the command's stored prompt blob so the console
- * backfill can echo `❯ <prompt>` exactly like the cli TUI — same availability/gating as `output`.
- * `unavailableReason` disambiguates *why* `output` is `null`.
- * @adr 0115 @adr 0122 @adr 0176 @adr 0149
- */
 export interface CommandOutputResponse {
-  output: string | null;
-  input: string | null;
-  unavailableReason: CommandOutputUnavailableReason;
+    output: string | null;
+    input: string | null;
+    unavailableReason: CommandOutputUnavailableReason;
 }
-
-/** Metadata for one 4pm-cli slash command — name · usage · description. @adr 0249 */
 export interface CliSlashCommandMeta {
-  /** Command word without the leading `/` (e.g. "clear"). */
-  name: string;
-  /** Usage hint (e.g. "/history [N]"). */
-  usage: string;
-  /** One-line description. */
-  description: string;
+    name: string;
+    usage: string;
+    description: string;
 }
-
-/**
- * The 4pm-cli slash commands — the **shared** source of truth for both the web Console
- * autocomplete and the Worker-config allow/deny group, kept here so the cli, web and config UI never
- * drift. The cli owns the actual handlers (`src/ui/slash-commands.ts`) and maps them by `name`; from
- * the web Console a `/name` line runs the matching command on the worker unless an operator blocked it
- * via `webBlockedCommands`. Keep this list in sync with the cli's command registry.
- * @adr 0249
- */
 export const CLI_SLASH_COMMANDS: CliSlashCommandMeta[] = [
-  { name: "help", usage: "/help", description: "List slash commands" },
-  { name: "version", usage: "/version", description: "Show the cli version" },
-  { name: "status", usage: "/status", description: "Show connection + profile + session status" },
-  { name: "history", usage: "/history [N]", description: "List the last N executed commands (+ time)" },
-  { name: "output", usage: "/output <n>", description: "Replay a command's output (n from /history)" },
-  { name: "logs", usage: "/logs [N]", description: "Tail the profile's structured log" },
-  { name: "expand", usage: "/expand [N]", description: "Expand a collapsed ▸[N] block" },
-  { name: "collapse", usage: "/collapse [N]", description: "Collapse an expanded ▸[N] block" },
-  { name: "reconnect", usage: "/reconnect", description: "Reconnect to the server now (skip the backoff)" },
-  { name: "whoami", usage: "/whoami", description: "Show this machine account + its teams & projects" },
-  { name: "ai-profile", usage: "/ai-profile [list|use <n>|reset]", description: "List AI profiles / switch which one runs" },
-  { name: "config", usage: "/config [show|init|set <k> <v>|delete <k>]", description: "View / init / update / delete profile config" },
-  { name: "claude-cmd", usage: "/claude-cmd /context", description: "Run an AI-CLI slash command (e.g. /context, /usage)" },
-  { name: "clear", usage: "/clear", description: "Clear the transcript" },
-  { name: "quit", usage: "/quit", description: "Quit the cli (also /exit)" },
+    { name: "help", usage: "/help", description: "List slash commands" },
+    { name: "version", usage: "/version", description: "Show the cli version" },
+    { name: "status", usage: "/status", description: "Show connection + profile + session status" },
+    { name: "history", usage: "/history [N]", description: "List the last N executed commands (+ time)" },
+    { name: "output", usage: "/output <n>", description: "Replay a command's output (n from /history)" },
+    { name: "logs", usage: "/logs [N]", description: "Tail the profile's structured log" },
+    { name: "expand", usage: "/expand [N]", description: "Expand a collapsed ▸[N] block" },
+    { name: "collapse", usage: "/collapse [N]", description: "Collapse an expanded ▸[N] block" },
+    { name: "reconnect", usage: "/reconnect", description: "Reconnect to the server now (skip the backoff)" },
+    { name: "whoami", usage: "/whoami", description: "Show this machine account + its teams & projects" },
+    { name: "ai-profile", usage: "/ai-profile [list|use <n>|reset]", description: "List AI profiles / switch which one runs" },
+    { name: "config", usage: "/config [show|init|set <k> <v>|delete <k>]", description: "View / init / update / delete profile config" },
+    { name: "claude-cmd", usage: "/claude-cmd /context", description: "Run an AI-CLI slash command (e.g. /context, /usage)" },
+    { name: "clear", usage: "/clear", description: "Clear the transcript" },
+    { name: "quit", usage: "/quit", description: "Quit the cli (also /exit)" },
 ];
-
-/** The slash-command names, for building an allow/deny set. @adr 0249 */
 export const CLI_SLASH_COMMAND_NAMES: string[] = CLI_SLASH_COMMANDS.map((c) => c.name);

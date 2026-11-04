@@ -20,7 +20,7 @@ import type {
   ProjectProgressPayload,
   ScaffoldPublishResult,
 } from "@4pm/ws";
-import { PROJECT_TEMPLATE, specOutputLanguage, type AiGuideFile } from "@4pm/constants";
+import { PROJECT_TEMPLATE, specOutputLanguage, type AiGuideFile } from "@4pm/shared-constants";
 import { SCAFFOLD_TRACKING_FILES } from "@4pm/dto";
 import type { AiTaskRunner } from "../ai/ai-task";
 import { resolveCliPrompt } from "../ai/prompt-overrides";
@@ -855,7 +855,7 @@ async function resetTrackingFiles(target: string, emit: (step: string, message: 
 
 /**
  * Write `<target>/.4pm/.4pm.json` with the template version this project was scaffolded from.
- * The version comes from the vendored `@4pm/constants` PROJECT_TEMPLATE, so a created
+ * The version comes from the vendored `@4pm/shared-constants` PROJECT_TEMPLATE, so a created
  * project's stamped version can't drift from the server's "latest". Best-effort within the scaffold.
  * @adr 0262
  */

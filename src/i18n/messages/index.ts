@@ -5,7 +5,7 @@
  * JSON files into the single bundle, so no runtime file reads are needed.
  * @adr 0276
  */
-import { Locale } from "@4pm/constants";
+import { Locale } from "@4pm/shared-constants";
 import en from "./en.json";
 import vi from "./vi.json";
 import ja from "./ja.json";

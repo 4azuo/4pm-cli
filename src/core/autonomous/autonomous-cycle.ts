@@ -49,7 +49,7 @@ import {
   type PointerEntry,
   type SubmodulePr,
 } from "@4pm/dto";
-import { requestScopeTags, wrapUntrusted } from "@4pm/constants";
+import { requestScopeTags, wrapUntrusted } from "@4pm/shared-constants";
 import { cappedBookIds } from "./autonomous";
 import { isInQuietHours, readAutonomousConfig, pauseAutonomous, type AutonomousConfig } from "./autonomous-config";
 import { ensureLocalAutonomousFiles, pushRecord, readHistories, todayTickCount, writeHistories, type Histories } from "./autonomous-history";

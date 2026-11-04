@@ -18,7 +18,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import type { Locale } from "@4pm/constants";
+import type { Locale } from "@4pm/shared-constants";
 import { ensureDir } from "../common/io/ensure-dir";
 import type { AiCredential } from "../utils/ai-cli";
 import { agentUser, registerAgentRoot, repairWorkspaceProjects, shareWithAgent, traversableByAgent } from "../utils/agent-user";

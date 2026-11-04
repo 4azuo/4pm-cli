@@ -32,7 +32,7 @@ import type { NewSdcFile } from "./autonomous-diagram-store";
 import { dropClaim, type LocalClaim } from "./autonomous-tasks";
 import { servedTeams } from "./autonomous-teams";
 import { readFileInRoot, writeFileInRoot } from "../../utils/safe-path";
-import { requestScopeTags } from "@4pm/constants";
+import { requestScopeTags } from "@4pm/shared-constants";
 
 /** The books state of an overlay before the intake agent ran. */
 export interface IntakeBefore {

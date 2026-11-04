@@ -15,7 +15,7 @@ import {
   type UsageReportPayload,
   type WsEnvelope,
 } from "@4pm/ws";
-import { UsageMetric } from "@4pm/constants";
+import { UsageMetric } from "@4pm/shared-constants";
 import { runChecklistAuthor, runSupportAnswer } from "../../knowledge/support-answer";
 import { runFaqCompose } from "../../knowledge/faq-compose";
 import { aiProviderOf } from "../../ai/ai-stream";

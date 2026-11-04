@@ -21,7 +21,7 @@
     "jsx": "react-jsx",
 
     "paths": {
-      "@4pm/constants": ["./vendor/@4pm/constants"],
+      "@4pm/shared-constants": ["./vendor/@4pm/shared-constants"],
       "@4pm/dto": ["./vendor/@4pm/dto"],
       "@4pm/validation": ["./vendor/@4pm/validation"],
       "@4pm/utils": ["./vendor/@4pm/utils"],

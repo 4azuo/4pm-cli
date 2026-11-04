@@ -12,7 +12,7 @@ import {
   WORKER_TOOL_CATALOG,
   WORKER_TOOL_PREREQUISITE_IDS,
   type WorkerToolManager,
-} from "@4pm/constants";
+} from "@4pm/shared-constants";
 import type { ToolRestoreFailureItem, ToolStatus, ToolsAutoUpdateReply, ToolsListReply } from "@4pm/ws";
 import { readProfileConfig, writeProfileConfig } from "../../config/profile";
 import { asToolInstall } from "../../utils/agent-user";

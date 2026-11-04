@@ -1,145 +1,83 @@
 /**
- * WS session encryption: ephemeral ECDH x25519 ⇒ HKDF ⇒
- * AES-256-GCM, a nonce per message, forward secrecy. Used only on server & cli
- * (node:crypto) — the web does not import this file. The server's ephemeral key is signed by the cli-server's
- * long-term ed25519 handshake key and checked by the cli against its pinned keys, so an intermediary that terminates
- * TLS cannot substitute its own key.
- * @adr 0002 @adr 0681 @arch 0004
+ * Vendored from @4pm/ws (crypto.ts) by scripts/vendor-shared.mjs — do not edit.
  */
-import {
-  createHash,
-  createCipheriv,
-  createDecipheriv,
-  createPrivateKey,
-  createPublicKey,
-  diffieHellman,
-  generateKeyPairSync,
-  hkdfSync,
-  randomBytes,
-  sign,
-  verify,
-  type KeyObject,
-} from "node:crypto";
-
-/** An ephemeral ECDH key pair for one session. */
+import { createHash, createCipheriv, createDecipheriv, createPrivateKey, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, sign, verify, type KeyObject, } from "node:crypto";
 export interface EcdhSession {
-  /** Raw public key (base64) sent to the other side. */
-  publicKeyBase64: string;
-  privateKey: KeyObject;
+    publicKeyBase64: string;
+    privateKey: KeyObject;
 }
-
 const X25519_SPKI_PREFIX = Buffer.from("302a300506032b656e032100", "hex");
-
-/**
- * Generate an ephemeral x25519 key pair for the handshake.
- */
 export function createEcdhSession(): EcdhSession {
-  const { publicKey, privateKey } = generateKeyPairSync("x25519");
-  const spki = publicKey.export({ type: "spki", format: "der" });
-  // the last 32 bytes of the SPKI = the raw public key
-  return {
-    publicKeyBase64: Buffer.from(spki.subarray(spki.length - 32)).toString("base64"),
-    privateKey,
-  };
+    const { publicKey, privateKey } = generateKeyPairSync("x25519");
+    const spki = publicKey.export({ type: "spki", format: "der" });
+    return {
+        publicKeyBase64: Buffer.from(spki.subarray(spki.length - 32)).toString("base64"),
+        privateKey,
+    };
 }
-
-/**
- * Derive the AES-256 session key from our private key + the other side's public key
- * (ECDH ⇒ HKDF-SHA256).
- */
-export function deriveSessionKey(
-  session: EcdhSession,
-  peerPublicKeyBase64: string,
-): Buffer {
-  const peerRaw = Buffer.from(peerPublicKeyBase64, "base64");
-  const peerKey = createPublicKey({
-    key: Buffer.concat([X25519_SPKI_PREFIX, peerRaw]),
-    type: "spki",
-    format: "der",
-  });
-  const shared = diffieHellman({ privateKey: session.privateKey, publicKey: peerKey });
-  return Buffer.from(
-    hkdfSync("sha256", shared, Buffer.alloc(0), Buffer.from("4pm-ws-session"), 32),
-  );
+export function deriveSessionKey(session: EcdhSession, peerPublicKeyBase64: string): Buffer {
+    const peerRaw = Buffer.from(peerPublicKeyBase64, "base64");
+    const peerKey = createPublicKey({
+        key: Buffer.concat([X25519_SPKI_PREFIX, peerRaw]),
+        type: "spki",
+        format: "der",
+    });
+    const shared = diffieHellman({ privateKey: session.privateKey, publicKey: peerKey });
+    return Buffer.from(hkdfSync("sha256", shared, Buffer.alloc(0), Buffer.from("4pm-ws-session"), 32));
 }
-
-/** Result of encrypting one payload. */
 export interface EncryptedPayload {
-  payload: string;
-  nonce: string;
+    payload: string;
+    nonce: string;
 }
-
-/**
- * Encrypt a JSON payload with the session key (AES-256-GCM, authTag appended after the ciphertext).
- */
 export function encryptPayload(key: Buffer, data: unknown): EncryptedPayload {
-  const nonce = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", key, nonce, { authTagLength: 16 });
-  const plaintext = Buffer.from(JSON.stringify(data), "utf8");
-  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-  const withTag = Buffer.concat([encrypted, cipher.getAuthTag()]);
-  return { payload: withTag.toString("base64"), nonce: nonce.toString("base64") };
+    const nonce = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", key, nonce, { authTagLength: 16 });
+    const plaintext = Buffer.from(JSON.stringify(data), "utf8");
+    const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+    const withTag = Buffer.concat([encrypted, cipher.getAuthTag()]);
+    return { payload: withTag.toString("base64"), nonce: nonce.toString("base64") };
 }
-
-/**
- * Decrypt a payload from an envelope (throws if the authTag does not match).
- */
-export function decryptPayload<T>(
-  key: Buffer,
-  payloadBase64: string,
-  nonceBase64: string,
-): T {
-  const raw = Buffer.from(payloadBase64, "base64");
-  const nonce = Buffer.from(nonceBase64, "base64");
-  if (raw.length < 16) throw new Error("payload too short");
-  const tag = raw.subarray(raw.length - 16);
-  const ciphertext = raw.subarray(0, raw.length - 16);
-  // Full 16-byte tag only — a truncated tag would weaken the integrity check. @adr 0447
-  const decipher = createDecipheriv("aes-256-gcm", key, nonce, { authTagLength: 16 });
-  decipher.setAuthTag(tag);
-  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-  return JSON.parse(plaintext.toString("utf8")) as T;
+export function decryptPayload<T>(key: Buffer, payloadBase64: string, nonceBase64: string): T {
+    const raw = Buffer.from(payloadBase64, "base64");
+    const nonce = Buffer.from(nonceBase64, "base64");
+    if (raw.length < 16)
+        throw new Error("payload too short");
+    const tag = raw.subarray(raw.length - 16);
+    const ciphertext = raw.subarray(0, raw.length - 16);
+    const decipher = createDecipheriv("aes-256-gcm", key, nonce, { authTagLength: 16 });
+    decipher.setAuthTag(tag);
+    const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    return JSON.parse(plaintext.toString("utf8")) as T;
 }
-
-/**
- * Keep the API to build a private key from DER (for tests / session recreation).
- */
 export function privateKeyFromDer(der: Buffer): KeyObject {
-  return createPrivateKey({ key: der, type: "pkcs8", format: "der" });
+    return createPrivateKey({ key: der, type: "pkcs8", format: "der" });
 }
-
-/** The bytes both sides sign / verify for a handshake: a domain tag + the cli's and the server's ephemeral keys. @adr 0681 */
 export function handshakeTranscript(clientPubBase64: string, serverPubBase64: string): Buffer {
-  return createHash("sha256")
-    .update("4pm-ws-hello\n")
-    .update(Buffer.from(clientPubBase64, "base64"))
-    .update(Buffer.from(serverPubBase64, "base64"))
-    .digest();
+    return createHash("sha256")
+        .update("4pm-ws-hello\n")
+        .update(Buffer.from(clientPubBase64, "base64"))
+        .update(Buffer.from(serverPubBase64, "base64"))
+        .digest();
 }
-
-/** The key id of an ed25519 public key: the first 16 hex chars of sha256 over its SPKI DER. @adr 0681 */
 export function handshakeKeyId(publicKey: KeyObject): string {
-  return createHash("sha256").update(publicKey.export({ type: "spki", format: "der" })).digest("hex").slice(0, 16);
+    return createHash("sha256").update(publicKey.export({ type: "spki", format: "der" })).digest("hex").slice(0, 16);
 }
-
-/** Sign a handshake with the cli-server's ed25519 private key (PEM); returns `{ kid, sig }`. @adr 0681 */
-export function signHandshake(privateKeyPem: string, clientPubBase64: string, serverPubBase64: string): { kid: string; sig: string } {
-  const key = createPrivateKey(privateKeyPem);
-  if (key.asymmetricKeyType !== "ed25519") throw new Error("the handshake signing key must be ed25519");
-  const sig = sign(null, handshakeTranscript(clientPubBase64, serverPubBase64), key).toString("base64");
-  return { kid: handshakeKeyId(createPublicKey(key)), sig };
+export function signHandshake(privateKeyPem: string, clientPubBase64: string, serverPubBase64: string): {
+    kid: string;
+    sig: string;
+} {
+    const key = createPrivateKey(privateKeyPem);
+    if (key.asymmetricKeyType !== "ed25519")
+        throw new Error("the handshake signing key must be ed25519");
+    const sig = sign(null, handshakeTranscript(clientPubBase64, serverPubBase64), key).toString("base64");
+    return { kid: handshakeKeyId(createPublicKey(key)), sig };
 }
-
-/**
- * Verify a handshake signature against pinned ed25519 public keys (PEM SPKI). True when one of them verifies it — the
- * `kid` only picks the key first; a missing signature is false.
- * @adr 0681
- */
 export function verifyHandshake(pinnedPem: readonly string[], clientPubBase64: string, serverPubBase64: string, kid: string | undefined, sig: string | undefined): boolean {
-  if (!sig) return false;
-  const message = handshakeTranscript(clientPubBase64, serverPubBase64);
-  const signature = Buffer.from(sig, "base64");
-  const keys = pinnedPem.map((pem) => createPublicKey(pem)).filter((k) => k.asymmetricKeyType === "ed25519");
-  keys.sort((a, b) => Number(handshakeKeyId(b) === kid) - Number(handshakeKeyId(a) === kid));
-  return keys.some((k) => verify(null, message, k, signature));
+    if (!sig)
+        return false;
+    const message = handshakeTranscript(clientPubBase64, serverPubBase64);
+    const signature = Buffer.from(sig, "base64");
+    const keys = pinnedPem.map((pem) => createPublicKey(pem)).filter((k) => k.asymmetricKeyType === "ed25519");
+    keys.sort((a, b) => Number(handshakeKeyId(b) === kid) - Number(handshakeKeyId(a) === kid));
+    return keys.some((k) => verify(null, message, k, signature));
 }

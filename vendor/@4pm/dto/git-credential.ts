@@ -1,336 +1,234 @@
 /**
- * DTOs + pure helpers for a project's GitHub-App git-auth credential: the credential status
- * (never the private key), the set/test requests, and the repo-URL helpers shared by web + server
- * (https check, ssh→https rewrite, host/owner/name parsing, API base + host kind from a host).
- * @adr 0356
+ * Vendored from @4pm/dto (git-credential.ts) by scripts/vendor-shared.mjs — do not edit.
  */
 import { z } from "zod";
-
-/** Per-repo coverage status of the project's GitHub App (from the last resolve/test). */
 export const GIT_CREDENTIAL_REPO_STATUSES = [
-  "ok",
-  "not_installed",
-  "no_access",
-  "insufficient_permissions",
-  "host_mismatch",
-  "ssh_url",
-  "unchecked",
+    "ok",
+    "not_installed",
+    "no_access",
+    "insufficient_permissions",
+    "host_mismatch",
+    "ssh_url",
+    "unchecked",
 ] as const;
 export type GitCredentialRepoStatus = (typeof GIT_CREDENTIAL_REPO_STATUSES)[number];
-
-/** Kind of GitHub host — decides the API base and the `gh` token env. */
 export type GithubHostKind = "github" | "ghe-cloud" | "ghes";
-
-/** One declared repo (primary + submodules) and whether the App covers it. */
 export interface GitCredentialRepo {
-  /** Folder the repo lives in (`root` for the primary, else the submodule path). */
-  folder: string;
-  url: string;
-  owner: string;
-  name: string;
-  primary: boolean;
-  installationId: string | null;
-  installationSource: "auto" | "manual";
-  status: GitCredentialRepoStatus;
-  checkedAt: string | null;
+    folder: string;
+    url: string;
+    owner: string;
+    name: string;
+    primary: boolean;
+    installationId: string | null;
+    installationSource: "auto" | "manual";
+    status: GitCredentialRepoStatus;
+    checkedAt: string | null;
 }
-
-/** Data — GET /projects/:id/git-credential; `null` when none is saved. @api project-0070 */
 export interface GitCredentialResponse {
-  provider: "github-app";
-  enterprise: boolean;
-  host: string;
-  apiBaseUrl: string | null;
-  hasCaCert: boolean;
-  appId: string;
-  keyFingerprint: string;
-  /** The stored private key can't be decrypted any more (the server lost its secret key) — upload the .pem again. */
-  keyUnreadable: boolean;
-  /** Whether `settings.gitAuth.method` is `github-app`. */
-  active: boolean;
-  repos: GitCredentialRepo[];
-  updatedAt: string;
-  updatedBy: string | null;
+    provider: "github-app";
+    enterprise: boolean;
+    host: string;
+    apiBaseUrl: string | null;
+    hasCaCert: boolean;
+    appId: string;
+    keyFingerprint: string;
+    keyUnreadable: boolean;
+    active: boolean;
+    repos: GitCredentialRepo[];
+    updatedAt: string;
+    updatedBy: string | null;
 }
-
-/** A bare hostname (no scheme/path/port-less check beyond the basic shape). */
 const hostSchema = z
-  .string()
-  .trim()
-  .toLowerCase()
-  .regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\d{1,5})?$/, "invalid host");
-
-/**
- * A declared repo passed by the caller (the wizard's in-progress list before the spec is saved); the
- * server otherwise reads the project's spec / draft repos.
- */
+    .string()
+    .trim()
+    .toLowerCase()
+    .regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\d{1,5})?$/, "invalid host");
 export const gitCredentialRepoInputSchema = z.object({
-  url: z.string().trim().max(500),
-  subdir: z.string().trim().max(120).optional().default(""),
-  primary: z.boolean().optional().default(false),
+    url: z.string().trim().max(500),
+    subdir: z.string().trim().max(120).optional().default(""),
+    primary: z.boolean().optional().default(false),
 });
 export type GitCredentialRepoInput = z.infer<typeof gitCredentialRepoInputSchema>;
-
-/** Body — POST /projects/:id/git-credential/test; `repos` optional (wizard). @api project-0073 */
 export const testGitCredentialRequestSchema = z.object({
-  repos: z.array(gitCredentialRepoInputSchema).max(50).optional(),
+    repos: z.array(gitCredentialRepoInputSchema).max(50).optional(),
 });
 export type TestGitCredentialRequest = z.infer<typeof testGitCredentialRequestSchema>;
-
-/** Body — PUT /projects/:id/git-credential. @api project-0071 */
 export const putGitCredentialRequestSchema = z
-  .object({
+    .object({
     appId: z.string().trim().regex(/^\d{1,20}$/, "App ID must be numeric"),
-    /** PEM; omit to keep the stored key (required on first save — enforced server-side). */
-    privateKey: z.string().trim().max(16_384).optional(),
+    privateKey: z.string().trim().max(16384).optional(),
     enterprise: z.boolean().default(false),
     host: hostSchema.optional(),
     apiBaseUrl: z.string().trim().url().startsWith("https://").max(500).nullable().optional(),
-    caCert: z.string().trim().max(32_768).nullable().optional(),
+    caCert: z.string().trim().max(32768).nullable().optional(),
     installationOverrides: z
-      .array(z.object({ url: z.string().trim().max(500), installationId: z.string().trim().regex(/^\d{1,20}$/).nullable() }))
-      .max(50)
-      .optional(),
-    /** The wizard's in-progress repos (else the project's spec / draft repos are used). */
+        .array(z.object({ url: z.string().trim().max(500), installationId: z.string().trim().regex(/^\d{1,20}$/).nullable() }))
+        .max(50)
+        .optional(),
     repos: z.array(gitCredentialRepoInputSchema).max(50).optional(),
-  })
-  .superRefine((v, ctx) => {
+})
+    .superRefine((v, ctx) => {
     if (v.enterprise && !v.host) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["host"], message: "host is required for GitHub Enterprise" });
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["host"], message: "host is required for GitHub Enterprise" });
     }
-  });
+});
 export type PutGitCredentialRequest = z.infer<typeof putGitCredentialRequestSchema>;
-
-// ── GitLab group/project access token (ADR-0382) / service account (ADR-0435) ─────────────────────
-
-/**
- * What the stored GitLab token is: a group/project access token served as-is, or a service
- * account's PAT the server creates per-job project access tokens with.
- * @adr 0382 @adr 0435
- */
 export const GITLAB_CREDENTIAL_KINDS = ["group-token", "service-account"] as const;
 export type GitLabCredentialKind = (typeof GITLAB_CREDENTIAL_KINDS)[number];
-
-/** Data — GET /projects/:id/gitlab-credential; `null` when none is saved. @api project-0078 */
 export interface GitLabCredentialResponse {
-  provider: "gitlab-token";
-  /** `group-token` (served as-is) or `service-account` (per-job tokens). @adr 0382 @adr 0435 */
-  kind: GitLabCredentialKind;
-  host: string;
-  group: string;
-  apiBaseUrl: string | null;
-  hasCaCert: boolean;
-  /** SHA-256 of the token ("SHA256:<base64>") — shown instead of the token. */
-  tokenFingerprint: string;
-  /** Whether `settings.gitAuth.method` is the GitLab method matching `kind`. */
-  active: boolean;
-  updatedAt: string;
-  updatedBy: string | null;
+    provider: "gitlab-token";
+    kind: GitLabCredentialKind;
+    host: string;
+    group: string;
+    apiBaseUrl: string | null;
+    hasCaCert: boolean;
+    tokenFingerprint: string;
+    active: boolean;
+    updatedAt: string;
+    updatedBy: string | null;
 }
-
-/** Body — PUT /projects/:id/gitlab-credential. @api project-0079 */
 export const putGitLabCredentialRequestSchema = z.object({
-  /** Default `group-token`; changing the kind requires a new token. */
-  kind: z.enum(GITLAB_CREDENTIAL_KINDS).optional(),
-  host: hostSchema.optional(),
-  group: z.string().trim().min(1).max(200),
-  /** The access token; omit to keep the stored one (required on first save — enforced server-side). */
-  token: z.string().trim().min(1).max(512).optional(),
-  apiBaseUrl: z.string().trim().url().startsWith("https://").max(500).nullable().optional(),
-  caCert: z.string().trim().max(32_768).nullable().optional(),
+    kind: z.enum(GITLAB_CREDENTIAL_KINDS).optional(),
+    host: hostSchema.optional(),
+    group: z.string().trim().min(1).max(200),
+    token: z.string().trim().min(1).max(512).optional(),
+    apiBaseUrl: z.string().trim().url().startsWith("https://").max(500).nullable().optional(),
+    caCert: z.string().trim().max(32768).nullable().optional(),
 });
 export type PutGitLabCredentialRequest = z.infer<typeof putGitLabCredentialRequestSchema>;
-
-/** One step of a GitLab connection test. @api project-0081 */
 export interface GitLabCredentialTestStep {
-  /** `api` — the primary repo read through the REST API (`read_api`); `mint` — a service
-   * account created + revoked a project access token on the primary repo.
-   * @adr 0435 @adr 0398
-   */
-  step: "connect" | "authenticate" | "scope" | "api" | "mint";
-  ok: boolean;
-  message: string | null;
+    step: "connect" | "authenticate" | "scope" | "api" | "mint";
+    ok: boolean;
+    message: string | null;
 }
-
-/** Data — POST /projects/:id/gitlab-credential/test. @api project-0081 */
 export interface GitLabCredentialTestResponse {
-  steps: GitLabCredentialTestStep[];
+    steps: GitLabCredentialTestStep[];
 }
-
-/** One step of a connection test. @api project-0073 */
 export interface GitCredentialTestStep {
-  step: "connect" | "authenticate" | "installations" | "permissions";
-  ok: boolean;
-  message: string | null;
+    step: "connect" | "authenticate" | "installations" | "permissions";
+    ok: boolean;
+    message: string | null;
 }
-
-/** Data — POST /projects/:id/git-credential/test. @api project-0073 */
 export interface GitCredentialTestResponse {
-  steps: GitCredentialTestStep[];
-  repos: GitCredentialRepo[];
-  /** GitHub App permissions CI/CD needs but the installation lacks (`actions:write`, …) — informational. @adr 0606 */
-  ciMissing?: string[];
+    steps: GitCredentialTestStep[];
+    repos: GitCredentialRepo[];
+    ciMissing?: string[];
 }
-
-/** Parsed pieces of a git remote URL (https or scp-like ssh). */
 export interface ParsedRepoUrl {
-  protocol: "https" | "http" | "ssh";
-  host: string;
-  owner: string;
-  name: string;
+    protocol: "https" | "http" | "ssh";
+    host: string;
+    owner: string;
+    name: string;
 }
-
-/**
- * Parse a git remote URL — `https://host/owner/name(.git)`, `ssh://git@host/owner/name`, or scp-like
- * `git@host:owner/name(.git)`. Returns null for anything else. Host is lower-cased; `name` drops `.git`.
- */
 export function parseRepoUrl(url: string): ParsedRepoUrl | null {
-  const raw = url.trim();
-  const scp = /^[\w.-]+@([^:/\s]+):([^/\s]+)\/(.+?)(?:\.git)?\/?$/.exec(raw);
-  if (scp) return { protocol: "ssh", host: scp[1]!.toLowerCase(), owner: scp[2]!, name: scp[3]! };
-  const std = /^(https?|ssh):\/\/(?:[^@/\s]+@)?([^/\s]+)\/([^/\s]+)\/(.+?)(?:\.git)?\/?$/.exec(raw);
-  if (std) {
-    return { protocol: std[1] as ParsedRepoUrl["protocol"], host: std[2]!.toLowerCase(), owner: std[3]!, name: std[4]! };
-  }
-  return null;
+    const raw = url.trim();
+    const scp = /^[\w.-]+@([^:/\s]+):([^/\s]+)\/(.+?)(?:\.git)?\/?$/.exec(raw);
+    if (scp)
+        return { protocol: "ssh", host: scp[1]!.toLowerCase(), owner: scp[2]!, name: scp[3]! };
+    const std = /^(https?|ssh):\/\/(?:[^@/\s]+@)?([^/\s]+)\/([^/\s]+)\/(.+?)(?:\.git)?\/?$/.exec(raw);
+    if (std) {
+        return { protocol: std[1] as ParsedRepoUrl["protocol"], host: std[2]!.toLowerCase(), owner: std[3]!, name: std[4]! };
+    }
+    return null;
 }
-
-/** Whether a remote URL uses ssh (scp-like or `ssh://`) — the GitHub App token needs https. */
 export function isSshRepoUrl(url: string): boolean {
-  return parseRepoUrl(url)?.protocol === "ssh";
+    return parseRepoUrl(url)?.protocol === "ssh";
 }
-
-/** Rewrite an ssh remote to its https form (`https://host/owner/name.git`); other URLs unchanged. */
 export function toHttpsRepoUrl(url: string): string {
-  const p = parseRepoUrl(url);
-  if (!p || p.protocol !== "ssh") return url;
-  return `https://${p.host}/${p.owner}/${p.name}.git`;
+    const p = parseRepoUrl(url);
+    if (!p || p.protocol !== "ssh")
+        return url;
+    return `https://${p.host}/${p.owner}/${p.name}.git`;
 }
-
-/** Host kind: github.com, a GHE Cloud data-residency host (`*.ghe.com`), or a GHE Server. */
 export function githubHostKind(host: string): GithubHostKind {
-  const h = host.toLowerCase();
-  if (h === "github.com") return "github";
-  if (h.endsWith(".ghe.com")) return "ghe-cloud";
-  return "ghes";
+    const h = host.toLowerCase();
+    if (h === "github.com")
+        return "github";
+    if (h.endsWith(".ghe.com"))
+        return "ghe-cloud";
+    return "ghes";
 }
-
-/** REST API base for a GitHub host (an explicit override wins). */
 export function githubApiBase(host: string, override?: string | null): string {
-  if (override) return override.replace(/\/+$/, "");
-  const h = host.toLowerCase();
-  const kind = githubHostKind(h);
-  if (kind === "github") return "https://api.github.com";
-  if (kind === "ghe-cloud") return `https://api.${h}`;
-  return `https://${h}/api/v3`;
+    if (override)
+        return override.replace(/\/+$/, "");
+    const h = host.toLowerCase();
+    const kind = githubHostKind(h);
+    if (kind === "github")
+        return "https://api.github.com";
+    if (kind === "ghe-cloud")
+        return `https://api.${h}`;
+    return `https://${h}/api/v3`;
 }
-
-/** Body — POST /projects/:id/scaffold/publish: optionally pick the worker. @api project-0074 @adr 0368 */
 export const scaffoldPublishRequestSchema = z.object({
-  machineLinkId: z.string().guid().optional(),
+    machineLinkId: z.string().guid().optional(),
 });
 export type ScaffoldPublishRequest = z.infer<typeof scaffoldPublishRequestSchema>;
-
-/** One check of a repository in a credential health result. @api project-0144 @adr 0661 */
 export interface GitCredentialHealthCheck {
-  key: "clone" | "push" | "pullRequest" | "workflows" | "api";
-  ok: boolean;
+    key: "clone" | "push" | "pullRequest" | "workflows" | "api";
+    ok: boolean;
 }
-
-/** One repository's credential health. @api project-0144 @adr 0661 */
 export interface GitCredentialHealthRepo {
-  /** "root" or the submodule folder. */
-  repo: string;
-  url: string;
-  checks: GitCredentialHealthCheck[];
-  /** ok · missing (a permission is missing) · unreachable (can't read / not installed / rejected). */
-  status: "ok" | "missing" | "unreachable";
-  /** True when the failure stops autonomous (read / push); a missing workflow or API permission does not. */
-  blocking: boolean;
-  /** The provider's message, when any. */
-  detail: string | null;
+    repo: string;
+    url: string;
+    checks: GitCredentialHealthCheck[];
+    status: "ok" | "missing" | "unreachable";
+    blocking: boolean;
+    detail: string | null;
 }
-
-/** A warning about a long-lived git token. @adr 0680 */
 export type GitTokenWarning = "long-lived" | "expiring" | "expired" | "over-scoped";
-
-/**
- * Expiry + scopes of one long-lived git token behind the project: the stored GitLab group / project token or
- * service-account PAT (`stored`), or a worker's own gh / glab login (`worker`, Self-managed). Never the token.
- * @api project-0144 @adr 0680
- */
 export interface GitTokenHealth {
-  source: "stored" | "worker";
-  /** `group-token @ gitlab.com`, or the worker's name + `gh @ github.com`. */
-  label: string;
-  host: string;
-  /** Known = the provider reported the expiry (`expiresAt` null then means "never expires"). */
-  expiryKnown: boolean;
-  expiresAt: string | null;
-  /** Granted scopes, when the provider lists them. */
-  scopes: string[] | null;
-  warnings: GitTokenWarning[];
+    source: "stored" | "worker";
+    label: string;
+    host: string;
+    expiryKnown: boolean;
+    expiresAt: string | null;
+    scopes: string[] | null;
+    warnings: GitTokenWarning[];
 }
-
-/** A token living longer than this (or forever) is `long-lived`. @adr 0680 */
 export const GIT_TOKEN_LONG_LIVED_DAYS = 90;
-/** A token expiring within this is `expiring`. @adr 0680 */
 export const GIT_TOKEN_EXPIRING_DAYS = 14;
-/**
- * Scopes wider than any git-auth method needs (clone / push / merge requests / CI read): admin, impersonation,
- * runner and package / org administration rights.
- * @adr 0680
- */
 export const OVERBROAD_GIT_SCOPES: readonly string[] = [
-  // GitLab
-  "sudo",
-  "admin_mode",
-  "create_runner",
-  "manage_runner",
-  "k8s_proxy",
-  // GitHub classic / OAuth
-  "admin:org",
-  "admin:enterprise",
-  "delete_repo",
-  "admin:repo_hook",
-  "admin:org_hook",
-  "admin:public_key",
-  "admin:gpg_key",
-  "write:packages",
-  "delete:packages",
-  "site_admin",
+    "sudo",
+    "admin_mode",
+    "create_runner",
+    "manage_runner",
+    "k8s_proxy",
+    "admin:org",
+    "admin:enterprise",
+    "delete_repo",
+    "admin:repo_hook",
+    "admin:org_hook",
+    "admin:public_key",
+    "admin:gpg_key",
+    "write:packages",
+    "delete:packages",
+    "site_admin",
 ];
-
-/** The warnings of a token from its expiry (`expiryKnown` false ⇒ none on expiry) and scopes. @adr 0680 */
 export function gitTokenWarnings(expiryKnown: boolean, expiresAt: string | null, scopes: string[] | null, now: Date = new Date()): GitTokenWarning[] {
-  const out: GitTokenWarning[] = [];
-  if (expiryKnown) {
-    const at = expiresAt ? Date.parse(expiresAt) : NaN;
-    if (Number.isNaN(at)) out.push("long-lived");
-    else {
-      const days = (at - now.getTime()) / 86_400_000;
-      if (days < 0) out.push("expired");
-      else if (days <= GIT_TOKEN_EXPIRING_DAYS) out.push("expiring");
-      else if (days > GIT_TOKEN_LONG_LIVED_DAYS) out.push("long-lived");
+    const out: GitTokenWarning[] = [];
+    if (expiryKnown) {
+        const at = expiresAt ? Date.parse(expiresAt) : NaN;
+        if (Number.isNaN(at))
+            out.push("long-lived");
+        else {
+            const days = (at - now.getTime()) / 86400000;
+            if (days < 0)
+                out.push("expired");
+            else if (days <= GIT_TOKEN_EXPIRING_DAYS)
+                out.push("expiring");
+            else if (days > GIT_TOKEN_LONG_LIVED_DAYS)
+                out.push("long-lived");
+        }
     }
-  }
-  if (scopes?.some((s) => OVERBROAD_GIT_SCOPES.includes(s))) out.push("over-scoped");
-  return out;
+    if (scopes?.some((s) => OVERBROAD_GIT_SCOPES.includes(s)))
+        out.push("over-scoped");
+    return out;
 }
-
-/**
- * Data GET /projects/:id/git/credential-health — the last check of the project's git credential. `self` = the
- * worker operator's own login, checked by each worker before its cycles (no server-side rows).
- * @api project-0144 @adr 0661
- */
 export interface GitCredentialHealth {
-  method: string | null;
-  checkedAt: string | null;
-  /** True when the method is checked by the workers themselves (Self-managed). */
-  checkedByWorkers: boolean;
-  repos: GitCredentialHealthRepo[];
-  /** A connect / authenticate failure that applies to every repo. */
-  error: string | null;
-  /** The long-lived tokens behind it — stored GitLab token, or the serving workers' own logins. @adr 0680 */
-  tokens?: GitTokenHealth[];
+    method: string | null;
+    checkedAt: string | null;
+    checkedByWorkers: boolean;
+    repos: GitCredentialHealthRepo[];
+    error: string | null;
+    tokens?: GitTokenHealth[];
 }

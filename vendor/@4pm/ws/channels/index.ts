@@ -1,325 +1,140 @@
 /**
- * Catalog of WS channels server ↔ cli (cli-ws 0002) — the source of truth at
- * implementation time; the 3 base channels come from @4pm/constants.
+ * Vendored from @4pm/ws (channels/index.ts) by scripts/vendor-shared.mjs — do not edit.
  */
-import { WsChannel } from "@4pm/constants";
-
-/** All channels (project cli + orchestrator cli). */
+import { WsChannel } from "@4pm/shared-constants";
 export const WsChannels = {
-  ...WsChannel,
-  FS_LIST: "fs.list",
-  FS_READ: "fs.read",
-  // server → cli (reply): write a file, path-clamped to the physic root (machine-0027,
-  // ADR-0151) — the Git tab's manual conflict resolution (`project.git_write`); the only
-  // git-tab write not carried by a git command over command dispatch.
-  FS_WRITE: "fs.write",
-  // server → cli (reply): create/rename/move/delete a file or folder in the project tree,
-  // each op path-clamped to the physic root (machine-0059, ADR-0260, `project.files_write`).
-  FS_MUTATE: "fs.mutate",
-  // server → cli (reply): move file bytes between browser and worker as base64, root-clamped +
-  // size-capped (machine-0061/0062, ADR-0278). `fs.upload` writes an uploaded/pasted file into the
-  // tree (`project.files_write`); `fs.download` reads a file's raw bytes for the browser to save
-  // (`project.read`). Binary transfer the text-only fs.read/fs.write can't carry.
-  FS_UPLOAD: "fs.upload",
-  FS_DOWNLOAD: "fs.download",
-  GIT_DIFF: "git.diff",
-  GIT_ENV: "git.env",
-  // server → cli (reply): read/write the paired profile's config.json (machine-0025/0026,
-  // ADR-0141) — the machine-user Settings tab syncs the worker cli's config.
-  CONFIG_READ: "config.read",
-  CONFIG_WRITE: "config.write",
-  // worker tools management (ADR-0206) — the Tools tab. `tools.list` probes the default
-  // catalog + extra globals (reply); `tools.install`/`tools.uninstall` start a streamed op
-  // (reply = accepted/rejected), then the cli pushes `tools.progress` lines and one
-  // `tools.done` per opId back to the server (relayed to the browser over SSE).
-  TOOLS_LIST: "tools.list",
-  TOOLS_INSTALL: "tools.install",
-  TOOLS_UNINSTALL: "tools.uninstall",
-  // update-to-latest of an npm-distributed catalog tool or an extra (ADR-0252): same streamed
-  // shape as install/uninstall — the cli reinstalls the package at `@latest`.
-  TOOLS_UPDATE: "tools.update",
-  TOOLS_PROGRESS: "tools.progress",
-  TOOLS_DONE: "tools.done",
-  // toggle per-tool auto-update (ADR-0253): request/reply — the cli persists the flag in
-  // config.json (`autoUpdateTools`); the ADR-0074 idle daily tick later runs the flagged tools.
-  // (ADR-0254: the flag is now persisted to the DB `toolSnapshot`; this channel is repurposed —
-  // machine-0056 forwards it to an ONLINE worker only, to update its local config.json mirror
-  // immediately instead of waiting for the next ws_token seed.)
-  TOOLS_AUTOUPDATE: "tools.autoUpdate",
-  // cli → server one-way (ADR-0254): report the worker's detected tool snapshot — the server
-  // persists it to `MachineLink.toolSnapshot` for the DB-backed Tools panel + restore-on-boot.
-  // Sent on the ADR-0074 daily idle tick, after each install/uninstall/update op, and on boot
-  // AFTER restore completes. The read/restore direction rides `ws_token` (seeds the cli).
-  TOOLS_REPORT: "tools.report",
-  // server → cli (reply, ADR-0254): push a tool manifest to reconcile NOW — used by "copy tools"
-  // to apply immediately to an online target (the offline path rides `ws_token.toolRestore` on the
-  // next connect). The cli installs each missing/mismatched `name@version`, then reports; the reply
-  // says whether it applied so the server can clear the pending manifest.
-  TOOLS_RESTORE: "tools.restore",
-  // autonomous mode control (ADR-0152): read settings+status+books+approvals, tail logs, and
-  // write {settings|approvals|userTodo|cron} — the dashboard drives the worker's autonomous engine.
-  AUTONOMOUS_READ: "autonomous.read",
-  AUTONOMOUS_WRITE: "autonomous.write",
-  // Discussion files on the books branch (ADR-0454): list blobs / read files / find a batch commit.
-  DISCUSSIONS_READ: "discussions.read",
-  AUTONOMOUS_LOGS: "autonomous.logs",
-  // search the archived book rows (`.4pm/archive/<YYYY-MM>/` on the books branch — ADR-0563)
-  AUTONOMOUS_ARCHIVE: "autonomous.archive",
-  // read one committed book evidence file (ADR-0404): origin/<base> → task branch → working tree
-  AUTONOMOUS_EVIDENCE: "autonomous.evidence",
-  // the versions (commits) of one mockup / sequence file (ADR-0515)
-  AUTONOMOUS_EVIDENCE_HISTORY: "autonomous.evidenceHistory",
-  /** The files of one AI Done row per repo + the ref each is read from. @api machine-0098 @adr 0582 */
-  AUTONOMOUS_DONE_FILES: "autonomous.doneFiles",
-  /** One file of an AI Done row at its resolved ref, or a folder's children. @api machine-0099 @adr 0582 */
-  AUTONOMOUS_DONE_FILE: "autonomous.doneFile",
-  // Project ER on the books branch (ADR-0453): read modules / change requests / history (optionally at a
-  // version); save / withdraw / approve-and-apply / reject a change request.
-  ER_READ: "er.read",
-  ER_WRITE: "er.write",
-  // Project system diagram (draw.io) on the books branch (ADR-0530): read modules / change requests / history;
-  // save / withdraw / approve-and-apply / reject a change request.
-  DIAGRAM_READ: "diagram.read",
-  DIAGRAM_WRITE: "diagram.write",
-  /** CI workflow files proposed as a PR / MR from the worker. @api machine-0101 @adr 0606 */
-  CI_PROPOSE: "ci.propose",
-  /** Marketing scenes on `4pm/marketing/<base>`: read the overview / a set; write a file; approve shots. @adr 0640 */
-  MARKETING_READ: "marketing.read",
-  MARKETING_WRITE: "marketing.write",
-  MARKETING_APPROVE: "marketing.approve",
-  /** Create `4pm/marketing/<to>` from another base's scenes (approvals / authors reset). @adr 0646 */
-  MARKETING_COPY: "marketing.copy",
-  // subagents & skills management (ADR-0153): list/read/write .claude/agents + .claude/skills
-  AGENTS_LIST: "agents.list",
-  AGENTS_READ: "agents.read",
-  AGENTS_WRITE: "agents.write",
-  // skill/subagent marketplace (ADR-0185): pack a project artifact into a zip (publish),
-  // install a package version into .claude/agents|skills + .4pm-packages.json, list installed
-  // (with on-disk sha256 for drift), remove an installed package.
-  PACKAGES_PACK: "packages.pack",
-  PACKAGES_INSTALL: "packages.install",
-  PACKAGES_LIST: "packages.list",
-  PACKAGES_REMOVE: "packages.remove",
-  // security & placeholder management (ADR-0154): AI_SECURITY/AI_PLACEHOLDER + write-only secrets
-  SECRETS_READ: "secrets.read",
-  SECRETS_WRITE: "secrets.write",
-  // agent tool-permission editor (ADR-0183): read/write the `permissions` block of
-  // .claude/settings.json (shared) or .claude/settings.local.json (per-cli local)
-  AGENT_TOOLS_READ: "agentTools.read",
-  AGENT_TOOLS_WRITE: "agentTools.write",
-  // MCP server allowlist (ADR-0427): parse the repo `.mcp.json` files for the approve/drift view
-  MCP_SCAN: "mcp.scan",
-  // docs & code dependency graph (ADR-0155): build a {nodes,edges,orphans} graph per mode
-  GRAPH_BUILD: "graph.build",
-  // RAG capability + install (ADR-0156): probe the worker + install a worker-tuned model
-  RAG_STATUS: "rag.status",
-  RAG_INSTALL: "rag.install",
-  // RAG index + query (ADR-0157): reindex docs into sqlite-vec, semantic query
-  RAG_REINDEX: "rag.reindex",
-  RAG_QUERY: "rag.query",
-  // RAG search settings per machine user (ADR-0496)
-  RAG_SETTINGS: "rag.settings",
-  /** Flow maps: candidate sources, source changes since the pins, save as a PR with back-refs. @adr 0698 @arch 0076 */
-  FLOWMAP_CONTEXT: "flowmap.context",
-  FLOWMAP_STALE_CHECK: "flowmap.staleCheck",
-  FLOWMAP_SAVE_PLAN: "flowmap.savePlan",
-  FLOWMAP_SAVE: "flowmap.save",
-  /** AI audits: the repo folder tree for the action editor, a report committed on the books branch, a report read back. @adr 0699 @arch 0077 */
-  AUDIT_SCOPE: "audit.scope",
-  AUDIT_SAVE_REPORT: "audit.saveReport",
-  AUDIT_READ_REPORT: "audit.readReport",
-  // git history browse (read-through cli — ADR-0089): repos on the physic project,
-  // commit log, changed files of a commit, parent↔commit diff of one file.
-  GIT_REPOS: "git.repos",
-  GIT_LOG: "git.log",
-  GIT_COMMIT: "git.commit",
-  GIT_COMMIT_DIFF: "git.commit-diff",
-  // server → cli (reply): manage the rented worker's ssh deploy key (ADR-0173) — generate
-  // (ed25519, on the worker) / get / delete. The private key never leaves the worker.
-  GIT_SSH_KEY: "git.ssh-key",
-  // cli → server (reply): a short-lived GitHub-App installation token for the served project's repo,
-  // per job scope; also the cli's "scope revoked" report (ADR-0356). The App key stays on the server.
-  GIT_TOKEN: "git.token",
-  // cli → server (one-way): the worker's per-repo git state of the served project (ADR-0369) — head,
-  // branches + tracking, remote, dirty, worker-only commits, origin window. Latest kept per physic × repo.
-  GIT_SNAPSHOT: "git.snapshot",
-  PROJECT_CREATE: "project.create",
-  PROJECT_ADD: "project.add",
-  PROJECT_PROGRESS: "project.progress",
-  // server → cli (reply): retry the scaffold commit → push → PR in the project folder (ADR-0368,
-  // project-0074); the reply carries the new outcome, stored on `projects.scaffold_publish`.
-  PROJECT_PUBLISH: "project.publish",
-  // server → cli (reply): probe a repo branch before creating a project (ADR-0370, project-0076) —
-  // branch existence, remote branches, and whether the source ref already holds a 4PM scaffold.
-  REPO_PROBE: "repo.probe",
-  // server → cli (reply): may the project credential push the primary repo's `<base>`? — before Delivery · Auto
-  // is accepted (ADR-0608)
-  REPO_PUSH_PROBE: "repo.pushProbe",
-  // server → cli (request / reply): let the AI resolve a pull request's conflicts — merge the target into the
-  // head branch on the worker, resolve, push (never forced). The reply only says whether it started (ADR-0539).
-  GIT_PR_RESOLVE: "git.prResolve",
-  // server → cli (request / reply): branch cleanup of one repo — list the dead branches, delete some (remote +
-  // local, logged on the books branch), read the deletion log, restore a logged branch (ADR-0540).
-  GIT_BRANCH_CLEANUP: "git.branchCleanup",
-  // server → cli (reply): list the models the worker's AI CLI supports (ADR-0394; template-0013,
-  // machine-0071, project-0082) — claude via its stream-json `initialize` handshake (no tokens).
-  AI_MODELS: "ai.models",
-  // server → cli: keep the physic folder name in sync with the project (folder =
-  // project name — ADR-0064) when the project is renamed.
-  PHYSIC_SYNC: "physic.sync",
-  // server → cli: the project was deleted ⇒ delete the physic folder; the cli keeps
-  // its pairing and goes idle (ADR-0068).
-  PHYSIC_DELETE: "physic.delete",
-  // server → cli (ADR-0256): a project's token settings were saved ⇒ push the fresh knobs to every
-  // serving cli so a change (e.g. aiRunTimeoutSec) applies on the next run, not only after a
-  // reconnect. `ws_token` seeds these on connect; this channel only carries updates.
-  PROJECT_TOKENS: "project.tokens",
-  // server → cli (ADR-0289): update the cli to the latest version now (idle-aware self-update +
-  // re-exec). Sent by the manual operator "Update" action and the update-on-connect hook when the
-  // connecting cli is outdated. No payload; honours the machine's local autoUpdate opt-out.
-  CLI_UPDATE: "cli.update",
-  // cli → server (ADR-0305): result of a cli self-update attempt. On SUCCESS the cli re-execs and
-  // reconnects on the new version (the version report is the "done" signal), so this channel carries
-  // FAILURES — the server persists the reason on `MachineLink.usageSnapshot.cliUpdate` so the web
-  // "Update" modal shows why instead of waiting forever. One-way, no reply.
-  CLI_UPDATE_RESULT: "cli.update-result",
-  // server → cli (ADR-0497): restart the cli — at its first idle moment (no busy command, no queued /
-  // running AI run) it re-execs the same binary through the ADR-0473 handoff (keeps `.cre`/profile,
-  // reconnects). Sent by the operator "Restart" action (machine-0084). No payload, no reply.
-  CLI_RESTART: "cli.restart",
-  // command lifecycle
-  COMMAND_ANNOUNCE: "command.announce",
-  // server → cli (reply): stop an AI run (ADR-0362) — queued ⇒ leave the run-slot queue, running ⇒ kill
-  // the AI process with no failover; the cli then ends the stream with `command.output {done, cancelled}`.
-  COMMAND_CANCEL: "command.cancel",
-  // cli → server (reply, ADR-0506): before a job that waited in the project's repo queue runs, the server
-  // re-checks its dispatcher's permission + the project status; a refusal ends the job with that code.
-  COMMAND_RECHECK: "command.recheck",
-  // console transcript sync (ADR-0150): the cli streams its authoritative SessionBus
-  // transcript so the web Console renders it verbatim; gated by console.watch (server → cli:
-  // whether a web viewer is attached) so an unwatched cli syncs nothing.
-  CONSOLE_SYNC: "console.sync",
-  CONSOLE_WATCH: "console.watch",
-  // worker resource live-metrics (ADR-0214): the cli streams live CPU/RAM/disk (cgroup-accurate)
-  // only while `metrics.watch` (server → cli: whether a web viewer has the Workers tab open) is on,
-  // so an unwatched cli samples nothing. Buffered ephemerally in Redis (never the DB), separate from
-  // the low-frequency, DB-authoritative `machine.status`.
-  METRICS_WATCH: "metrics.watch",
-  MACHINE_METRICS: "machine.metrics",
-  // AI spec-assist (suggest/review/compose) moved off dedicated ai.* channels to
-  // command.dispatch({ ai:true }) → the profile-failover AI path (ADR-0100).
-  // quota & usage (ADR-0020)
-  QUOTA_CHECK: "quota.check",
-  // cli → server (reply): per-org concurrent AI-run slot — acquire / renew / release (ADR-0359)
-  RUN_SLOT: "run.slot",
-  // cli → server (reply): cross-worker AI account lease — acquire (pick + lease) / renew / release /
-  // exhausted (ADR-0518)
-  AI_ACCOUNT: "ai.account",
-  // cli → server (reply): read / add the org's monthly autonomous-book counters — USER_TODO / USER_QA /
-  // AI_TODO rows vs `autonomousRequestsPerMonth` (ADR-0365)
-  AUTONOMOUS_BOOK_USAGE: "autonomous.bookUsage",
-  // cli → server (reply): allocate fresh book group numbers for an intake run — the AI may use only those for
-  // its new TSK / QA groups (ADR-0455)
-  AUTONOMOUS_BOOK_GROUPS: "autonomous.bookGroups",
-  // cli → server (reply): generate project assets through the org's external service — start a generation, poll its
-  // job, fetch one finished image (ADR-0614). The provider token stays on the server.
-  EXTERNAL_SERVICE_RUN: "externalService.run",
-  EXTERNAL_SERVICE_POLL: "externalService.poll",
-  EXTERNAL_SERVICE_IMAGE: "externalService.image",
-  // cli → server (reply): sign approvals as the actor `auto` for rows the cli just published — only while the
-  // project's rigor is Best performance (ADR-0608)
-  AUTONOMOUS_AUTO_APPROVE: "autonomous.autoApprove",
-  // cli → server (one-way): an autonomous condition the project's managers must see (ADR-0371) —
-  // protected base, lost claim, attempt limit, task split, task question. The server notifies them.
-  AUTONOMOUS_ALERT: "autonomous.alert",
-  // cli → server (one-way): the compact index of the books branch for Home ▸ My work (ADR-0545) — sent on connect,
-  // after each books push and when the books ref moved.
-  AUTONOMOUS_BOOK_INDEX: "autonomous.bookIndex",
-  // server → cli (one-way): the project's autonomous policy — the project switch, the server's `allowed`
-  // verdict for this worker and the project-scoped settings; persisted by the cli (ADR-0507).
-  AUTONOMOUS_POLICY: "autonomous.policy",
-  // server → cli (one-way): re-verify the held claim now — sent after a task is unapproved, so the worker
-  // running it stops at once instead of at its next claim check (ADR-0538). Payload `{ taskIds }`.
-  AUTONOMOUS_VERIFY: "autonomous.verify",
-  // server → cli (with reply): the link is about to leave its served project — release the held claim (WIP pushed,
-  // row back to AI_TODO, no attempt) while the old project's git access still works, then clear the project-scoped
-  // autonomous state (ADR-0570). Reply `AutonomousLeaveReply`; the server waits ≤ 60 s, then switches anyway.
-  AUTONOMOUS_LEAVE: "autonomous.leave",
-  // Worker hosting (ADR-0664, arch 0070). server → cli (reply `{accepted}`): run a release of a worker environment;
-  // server → cli: stop an environment / start or stop its Cloudflare tunnel connector; server → cli (reply): tail the
-  // hosted app's log; cli → server (one-way): an environment's release / tunnel state, on each change and on connect.
-  HOST_DEPLOY: "host.deploy",
-  HOST_STOP: "host.stop",
-  HOST_TUNNEL_START: "host.tunnel.start",
-  HOST_TUNNEL_STOP: "host.tunnel.stop",
-  HOST_LOGS: "host.logs",
-  HOST_STATUS: "host.status",
-  // cli → server (one-way): a batch of aggregated network egress decisions of the cli's egress proxy
-  // (ADR-0439) — stored as NetworkEgressEvent rows (the Networks log).
-  NETWORK_EVENTS: "network.events",
-  // server → cli (one-way): the published approval-signing public keys changed (rotate / revoke / resync —
-  // ADR-0440); the cli replaces its trusted list at once instead of waiting for its next ws_token.
-  APPROVAL_KEYS: "approval.keys",
-  USAGE_REPORT: "usage.report",
-  // cli → server: Claude subscription usage snapshot (5h / weekly — ADR-0072)
-  MACHINE_USAGE: "machine.usage",
-  // cli → server: last-run result of an external tool (claude/codex/gh/glab/git — ADR-0223).
-  // One-way, sent immediately after each direct tool invocation (last-wins per tool); the
-  // server merges it into `MachineLink.usageSnapshot.toolHealth` for the admin pool lists.
-  TOOL_HEALTH: "tool.health",
-  // cli → server (one-way): the AI attempts running on the cli right now — full list on every start /
-  // end; kept on the link's presence (ADR-0522)
-  AI_RUN_STATE: "ai.run.state",
-  // cli → server: durable per-command history record on finish (ADR-0072)
-  COMMAND_HISTORY: "command.history",
-  // cli → server: periodic upload of the cli's own JSONL log file (ADR-0122) — stored
-  // server-side + counted in the machine user's storage footprint.
-  MACHINE_LOG: "machine.log",
-  // server → cli (reply): tail the cli's own JSONL logs on demand (ADR-0072)
-  LOG_READ: "log.read",
-  // server → cli (reply): read a finished command's captured output on demand (ADR-0115) —
-  // cli stores command-output/{commandId}.log; returns null when pruned/unavailable.
-  COMMAND_OUTPUT_READ: "command.output-read",
-  // server → cli (reply): flush pending data before a rented machine is scrubbed (ADR-0210) —
-  // the worker uploads its pending log tail (+ any queued history) then acks, so the release
-  // sweep can finalise without waiting the full 5-minute timeout when the worker is online.
-  RENTAL_FLUSH: "rental.flush",
-  // cli → server (reply): fetch a Console prompt image blob to materialize on the worker before
-  // spawning the AI CLI (ADR-0257) — the server reads it from @4pm/storage (org-scoped by link).
-  IMAGE_FETCH: "image.fetch",
-  // outbound review (ADR-0082): machine→server request, server→outbound evaluate, result back
-  REVIEW_REQUEST: "review.request",
-  REVIEW_EVALUATE: "review.evaluate",
-  REVIEW_RESULT: "review.result",
-  // AI support answer (ADR-0170): server → support-agent cli request–reply. The dispatcher
-  // sends the question + asker role + the shared docs/FAQ repo config; the worker clones/pulls
-  // the repo, runs `claude` grounded in its docs+FAQ, and replies with the composed answer.
-  SUPPORT_ANSWER: "support.answer",
-  // Ticket → FAQ synthesis (ADR-0333): server (platform-pool dispatcher) → platform-pool cli
-  // request–reply. The dispatcher sends the selected support tickets + the 4pm-faq repo with a
-  // short-lived WRITE token; the worker runs an agent-write that distils the tickets into FAQ
-  // entries, commits, pushes a branch, opens a PR, then wipes the token/clone, and replies with the
-  // PR URL. The write token never persists on the worker (leak-safety on release/reassign).
-  FAQ_COMPOSE: "faq.compose",
-  // Org-level "AI author checklist items" (ADR-0376): server (picks an idle cli of the org AI pool) →
-  // cli request–reply. The server forwards a ready-built prompt; the worker runs claude one-shot (no
-  // tools, empty dir — like support-answer) and replies with the raw output for the web to parse. No
-  // project is involved (checklists are org-scoped).
-  CHECKLIST_AUTHOR: "checklist.author",
-  // Org-level "AI Research" (ADR-0380): server (picks an idle cli of the org AI pool) → cli
-  // request–reply. The server forwards the user's question; the worker runs a one-shot research agent
-  // (read-only web/search tools) under a content policy + a research-guard post-check, and replies with
-  // the markdown answer (or a structured refusal) plus the run's token usage so the server meters it to
-  // the org (projectId=null). No project is involved.
-  RESEARCH_ASK: "research.ask",
-  // Org AI Research live progress (ADR-0380): cli → server one-way stream of answer chunks / status for
-  // a running research question, keyed by the query id, relayed to the web over SSE.
-  RESEARCH_PROGRESS: "research.progress",
-  // Shared AI memory (ADR-0245): cli → server one-way write-back of the compacted rolling memory for
-  // the project it serves (persisted per project × machine-user link). The read direction rides
-  // `ws_token` (seeds the cli cache on connect); this channel only carries updates.
-  MEMORY_UPDATE: "memory.update",
+    ...WsChannel,
+    FS_LIST: "fs.list",
+    FS_READ: "fs.read",
+    FS_WRITE: "fs.write",
+    FS_MUTATE: "fs.mutate",
+    FS_UPLOAD: "fs.upload",
+    FS_DOWNLOAD: "fs.download",
+    GIT_DIFF: "git.diff",
+    GIT_ENV: "git.env",
+    CONFIG_READ: "config.read",
+    CONFIG_WRITE: "config.write",
+    TOOLS_LIST: "tools.list",
+    TOOLS_INSTALL: "tools.install",
+    TOOLS_UNINSTALL: "tools.uninstall",
+    TOOLS_UPDATE: "tools.update",
+    TOOLS_PROGRESS: "tools.progress",
+    TOOLS_DONE: "tools.done",
+    TOOLS_AUTOUPDATE: "tools.autoUpdate",
+    TOOLS_REPORT: "tools.report",
+    TOOLS_RESTORE: "tools.restore",
+    AUTONOMOUS_READ: "autonomous.read",
+    AUTONOMOUS_WRITE: "autonomous.write",
+    DISCUSSIONS_READ: "discussions.read",
+    AUTONOMOUS_LOGS: "autonomous.logs",
+    AUTONOMOUS_ARCHIVE: "autonomous.archive",
+    AUTONOMOUS_EVIDENCE: "autonomous.evidence",
+    AUTONOMOUS_EVIDENCE_HISTORY: "autonomous.evidenceHistory",
+    AUTONOMOUS_DONE_FILES: "autonomous.doneFiles",
+    AUTONOMOUS_DONE_FILE: "autonomous.doneFile",
+    ER_READ: "er.read",
+    ER_WRITE: "er.write",
+    DIAGRAM_READ: "diagram.read",
+    DIAGRAM_WRITE: "diagram.write",
+    CI_PROPOSE: "ci.propose",
+    MARKETING_READ: "marketing.read",
+    MARKETING_WRITE: "marketing.write",
+    MARKETING_APPROVE: "marketing.approve",
+    MARKETING_COPY: "marketing.copy",
+    AGENTS_LIST: "agents.list",
+    AGENTS_READ: "agents.read",
+    AGENTS_WRITE: "agents.write",
+    PACKAGES_PACK: "packages.pack",
+    PACKAGES_INSTALL: "packages.install",
+    PACKAGES_LIST: "packages.list",
+    PACKAGES_REMOVE: "packages.remove",
+    SECRETS_READ: "secrets.read",
+    SECRETS_WRITE: "secrets.write",
+    AGENT_TOOLS_READ: "agentTools.read",
+    AGENT_TOOLS_WRITE: "agentTools.write",
+    MCP_SCAN: "mcp.scan",
+    GRAPH_BUILD: "graph.build",
+    RAG_STATUS: "rag.status",
+    RAG_INSTALL: "rag.install",
+    RAG_REINDEX: "rag.reindex",
+    RAG_QUERY: "rag.query",
+    RAG_SETTINGS: "rag.settings",
+    FLOWMAP_CONTEXT: "flowmap.context",
+    FLOWMAP_STALE_CHECK: "flowmap.staleCheck",
+    FLOWMAP_SAVE_PLAN: "flowmap.savePlan",
+    FLOWMAP_SAVE: "flowmap.save",
+    AUDIT_SCOPE: "audit.scope",
+    AUDIT_SAVE_REPORT: "audit.saveReport",
+    AUDIT_READ_REPORT: "audit.readReport",
+    GIT_REPOS: "git.repos",
+    GIT_LOG: "git.log",
+    GIT_COMMIT: "git.commit",
+    GIT_COMMIT_DIFF: "git.commit-diff",
+    GIT_SSH_KEY: "git.ssh-key",
+    GIT_TOKEN: "git.token",
+    GIT_SNAPSHOT: "git.snapshot",
+    PROJECT_CREATE: "project.create",
+    PROJECT_ADD: "project.add",
+    PROJECT_PROGRESS: "project.progress",
+    PROJECT_PUBLISH: "project.publish",
+    REPO_PROBE: "repo.probe",
+    REPO_PUSH_PROBE: "repo.pushProbe",
+    GIT_PR_RESOLVE: "git.prResolve",
+    GIT_BRANCH_CLEANUP: "git.branchCleanup",
+    AI_MODELS: "ai.models",
+    PHYSIC_SYNC: "physic.sync",
+    PHYSIC_DELETE: "physic.delete",
+    PROJECT_TOKENS: "project.tokens",
+    CLI_UPDATE: "cli.update",
+    CLI_UPDATE_RESULT: "cli.update-result",
+    CLI_RESTART: "cli.restart",
+    COMMAND_ANNOUNCE: "command.announce",
+    COMMAND_CANCEL: "command.cancel",
+    COMMAND_RECHECK: "command.recheck",
+    CONSOLE_SYNC: "console.sync",
+    CONSOLE_WATCH: "console.watch",
+    METRICS_WATCH: "metrics.watch",
+    MACHINE_METRICS: "machine.metrics",
+    QUOTA_CHECK: "quota.check",
+    RUN_SLOT: "run.slot",
+    AI_ACCOUNT: "ai.account",
+    AUTONOMOUS_BOOK_USAGE: "autonomous.bookUsage",
+    AUTONOMOUS_BOOK_GROUPS: "autonomous.bookGroups",
+    EXTERNAL_SERVICE_RUN: "externalService.run",
+    EXTERNAL_SERVICE_POLL: "externalService.poll",
+    EXTERNAL_SERVICE_IMAGE: "externalService.image",
+    AUTONOMOUS_AUTO_APPROVE: "autonomous.autoApprove",
+    AUTONOMOUS_ALERT: "autonomous.alert",
+    AUTONOMOUS_BOOK_INDEX: "autonomous.bookIndex",
+    AUTONOMOUS_POLICY: "autonomous.policy",
+    AUTONOMOUS_VERIFY: "autonomous.verify",
+    AUTONOMOUS_LEAVE: "autonomous.leave",
+    HOST_DEPLOY: "host.deploy",
+    HOST_STOP: "host.stop",
+    HOST_TUNNEL_START: "host.tunnel.start",
+    HOST_TUNNEL_STOP: "host.tunnel.stop",
+    HOST_LOGS: "host.logs",
+    HOST_STATUS: "host.status",
+    NETWORK_EVENTS: "network.events",
+    APPROVAL_KEYS: "approval.keys",
+    USAGE_REPORT: "usage.report",
+    MACHINE_USAGE: "machine.usage",
+    TOOL_HEALTH: "tool.health",
+    AI_RUN_STATE: "ai.run.state",
+    COMMAND_HISTORY: "command.history",
+    MACHINE_LOG: "machine.log",
+    LOG_READ: "log.read",
+    COMMAND_OUTPUT_READ: "command.output-read",
+    RENTAL_FLUSH: "rental.flush",
+    IMAGE_FETCH: "image.fetch",
+    REVIEW_REQUEST: "review.request",
+    REVIEW_EVALUATE: "review.evaluate",
+    REVIEW_RESULT: "review.result",
+    SUPPORT_ANSWER: "support.answer",
+    FAQ_COMPOSE: "faq.compose",
+    CHECKLIST_AUTHOR: "checklist.author",
+    RESEARCH_ASK: "research.ask",
+    RESEARCH_PROGRESS: "research.progress",
+    MEMORY_UPDATE: "memory.update",
 } as const;
-
-/** Union type of channel names. */
 export type WsChannelName = (typeof WsChannels)[keyof typeof WsChannels];

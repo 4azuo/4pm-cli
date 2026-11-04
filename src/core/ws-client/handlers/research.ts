@@ -14,7 +14,7 @@ import {
   type UsageReportPayload,
   type WsEnvelope,
 } from "@4pm/ws";
-import { UsageMetric } from "@4pm/constants";
+import { UsageMetric } from "@4pm/shared-constants";
 import { readProfileConfig } from "../../../config/profile";
 import { aiProviderOf } from "../../ai/ai-stream";
 import { createAiTextRunner } from "../../ai/ai-text-run";

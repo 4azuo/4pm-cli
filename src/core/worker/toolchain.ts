@@ -23,7 +23,7 @@ import { pipeline } from "node:stream/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { WORKER_TOOL_CATALOG } from "@4pm/constants";
+import { WORKER_TOOL_CATALOG } from "@4pm/shared-constants";
 import { readProfileConfig } from "../../config/profile";
 import { logger } from "../../common/logger/logger";
 import { agentCanRun } from "../../utils/agent-user";

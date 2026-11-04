@@ -13,7 +13,7 @@
 import { basename } from "node:path";
 import { randomUUID as randomCommandId } from "node:crypto";
 import { looksLikeJsonOrCode } from "@4pm/utils";
-import { UsageMetric, wrapUntrusted } from "@4pm/constants";
+import { UsageMetric, wrapUntrusted } from "@4pm/shared-constants";
 import {
   COMMAND_CANCELLED_EXIT_CODE,
   WsChannels,

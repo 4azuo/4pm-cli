@@ -15,7 +15,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@4pm/constants": vendor("constants"),
+      "@4pm/shared-constants": vendor("constants"),
       "@4pm/dto": vendor("dto"),
       "@4pm/validation": vendor("validation"),
       "@4pm/utils": vendor("utils"),

@@ -15,7 +15,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
-import { wrapUntrusted } from "@4pm/constants";
+import { wrapUntrusted } from "@4pm/shared-constants";
 import {
   MARKETING_ASSET_MAX_BYTES,
   MARKETING_REF_RE,

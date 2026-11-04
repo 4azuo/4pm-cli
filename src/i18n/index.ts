@@ -3,10 +3,10 @@
  * user-facing errors. Locale precedence: the worker `config.json` `locale` (set from the
  * Worker configs form via config-sync) → `FOURPM_LOCALE` / `LANG` / `LC_ALL` →
  * English. The catalog is self-contained (no next-intl); server-error text is keyed by the
- * shared `@4pm/constants` ErrorCode tokens where it maps a server code.
+ * shared `@4pm/shared-constants` ErrorCode tokens where it maps a server code.
  * @adr 0276 @adr 0141
  */
-import { normalizeLocale, type Locale } from "@4pm/constants";
+import { normalizeLocale, type Locale } from "@4pm/shared-constants";
 import { catalogs, en, type CliMessageKey } from "./messages";
 
 export type { CliMessageKey } from "./messages";

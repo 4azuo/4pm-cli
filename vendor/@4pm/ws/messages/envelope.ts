@@ -1,2651 +1,1535 @@
 /**
- * WS message envelope (cli-ws 0002): every bidirectional message carries a wsToken
- * (per-message auth) + an AES-256-GCM encrypted payload (with its own nonce).
+ * Vendored from @4pm/ws (messages/envelope.ts) by scripts/vendor-shared.mjs — do not edit.
  */
 import type { MachineHostingReport } from "./hosting";
 import type { WsChannelName } from "../channels";
 import type { RunQueueInfo } from "./run-slot";
 import type { MarketingRunSpec } from "./marketing";
-
-/** One host-mounted AI login the cli found (`machine.status.aiMounts`). @adr 0479 */
 export interface AiMountReport {
-  /** AI provider the folder holds a login for (`claude` / `codex`). */
-  provider: string;
-  /** The profile path a credential uses for it (`ai-creds/<folder>`). */
-  profile: string;
-  /** Signed-in account email when readable. */
-  account?: string;
+    provider: string;
+    profile: string;
+    account?: string;
 }
-
-/**
- * The expiry and scopes of one token the worker's own gh / glab login holds (`machine.status.gitLogins`) — read by
- * the cli from the provider API, never the token itself. @adr 0680
- */
 export interface GitLoginReport {
-  tool: "gh" | "glab";
-  /** Lower-cased host the login covers. */
-  host: string;
-  /** ISO expiry; null = the provider says it never expires. Absent = the provider does not say. */
-  expiresAt?: string | null;
-  /** Granted scopes when the provider lists them (GitHub classic / OAuth tokens, GitLab tokens). */
-  scopes?: string[];
+    tool: "gh" | "glab";
+    host: string;
+    expiresAt?: string | null;
+    scopes?: string[];
 }
-
-/** Standard envelope for every message after the handshake. */
 export interface WsEnvelope {
-  /** message id — correlation for the reply. */
-  id: string;
-  /** id of the request message when this is a reply. */
-  replyTo: string | null;
-  channel: WsChannelName;
-  /** Per-message authentication. @arch 0004 */
-  wsToken: string;
-  /** AES-256-GCM encrypted content (base64). */
-  payload: string;
-  /** A per-message nonce (base64). */
-  nonce: string;
+    id: string;
+    replyTo: string | null;
+    channel: WsChannelName;
+    wsToken: string;
+    payload: string;
+    nonce: string;
 }
-
-/** Session-opening handshake message (CLI → server, payload not yet encrypted). */
 export interface WsHello {
-  type: "hello";
-  wsToken: string;
-  /** Public key ECDH ephemeral (base64, x25519 raw). */
-  pubkey: string;
-  /** cli version (semver) — the server rejects it if < minSupported. @adr 0015 */
-  cliVersion?: string;
-  /** Physical-machine fingerprint — the server matches/creates a worker. */
-  fingerprint?: string;
-  /** Hostname — the default worker name on creation. */
-  hostname?: string;
+    type: "hello";
+    wsToken: string;
+    pubkey: string;
+    cliVersion?: string;
+    fingerprint?: string;
+    hostname?: string;
 }
-
-/** Reply handshake (server → CLI). */
 export interface WsHelloAck {
-  type: "hello_ack";
-  pubkey: string;
-  /** Name of the worker (physical machine) this cli is grouped under, if any —
-   *  shown in the cli TUI header. */
-  workerName?: string;
-  /** Name of the logical project this (project-scope) cli serves, if any — shown in
-   *  the cli TUI header scope line. */
-  projectName?: string;
-  /** Id of the server key that signed this handshake (`sha256(SPKI)` prefix). @adr 0681 */
-  kid?: string;
-  /**
-   * Ed25519 signature (base64) of the handshake transcript — the cli's and the server's ephemeral keys — by the
-   * cli-server's handshake key; the cli verifies it against its pinned keys before using the session. @adr 0681
-   */
-  sig?: string;
+    type: "hello_ack";
+    pubkey: string;
+    workerName?: string;
+    projectName?: string;
+    kid?: string;
+    sig?: string;
 }
-
-/** Control error message (server → CLI): WS_TOKEN_INVALID / LINK_REVOKED… */
 export interface WsError {
-  type: "error";
-  errorCode: string;
-  message: string;
-  /** Extra facts for the cli — `{ ip }` on PLATFORM_IP_NOT_ALLOWED, `{ reason, retryAfterSec }` on RATE_LIMITED. @adr 0519 @adr 0668 */
-  meta?: Record<string, string>;
+    type: "error";
+    errorCode: string;
+    message: string;
+    meta?: Record<string, string>;
 }
-
-/** Union of control messages (not channel envelopes). */
 export type WsControlMessage = WsHello | WsHelloAck | WsError;
-
-// ---------- Per-channel payload (after decryption) ----------
-
-/** machine.status (cli → server) — includes the physic project state
- *  (path being served, does the folder exist?, autonomous?). */
 export interface MachineStatusPayload {
-  status: string;
-  projects?: string[];
-  version: string;
-  /** The physic project folder the cli is serving (null = not attached). */
-  physicPath?: string | null;
-  /** Does the physic project folder still exist on the machine? (A configured `config.physicPath` only.) */
-  physicPathExists?: boolean;
-  /**
-   * The served root holds every declared repo (`.git` in place; no repo declared ⇒ the folder exists) and
-   * the last clone-on-connect raised no error. Sent once a clone-on-connect for the current root settled;
-   * absent before that and when idle. `true` lets the server promote the physic to active (never demotes).
-   * @adr 0528
-   */
-  reposReady?: boolean;
-  /**
-   * The project-template marker on the served root's `origin/<base>` (`version` = `.4pm/.4pm.json`
-   * `templateVersion`, null = no marker). Sent once read; absent before that and when idle. The server
-   * stores it per project and gates autonomous on a required update.
-   * @adr 0550
-   */
-  templateMarker?: { version: string | null };
-  /** The machine-user's own AI-run wall-clock limit in seconds (`ProfileConfig.aiRunTimeoutSec`;
-   *  `0` = unlimited) — persisted on `MachineLink` so a dispatch can resolve the **effective**
-   * timeout (project override else this) and derive the SSE reply windows.
-   * @adr 0256
-   */
-  aiRunTimeoutSec?: number;
-  /** Number of configured AI credentials (the failover profile count) — the floor factor for the
-   * derived re-attach cap (`effective × profileCount × 1.2`).
-   * @adr 0256
-   */
-  aiProfileCount?: number;
-  /** Labels of the configured, usable AI credentials (all providers) — the signed-in account email
-   *  when readable, else the credential label / folder name. Persisted on `MachineLink.aiAccounts` so
-   * platform admins can see which AI account a rented machine uses.
-   * @adr 0354
-   */
-  aiAccounts?: string[];
-  /** The global `accountKey` (sha256) of every usable credential — kept on the link's presence so the idle
-   *  pick prefers a cli that still has an idle account. @adr 0518 @adr 0522 */
-  aiAccountKeys?: string[];
-  /** Host logins mounted under `~/ai-creds/<provider>[-*]` that hold a login — persisted on
-   * `MachineLink.aiMounts`; the Worker configs Form suggests them as profile dirs.
-   * @adr 0479
-   */
-  aiMounts?: AiMountReport[];
-  /** True when the cli runs an update-locked image (`:full-locked`): it never updates
-   *  itself; persisted on `MachineLink.cliUpdateLocked` (the web Locked badge + the server's update gate).
-   * @adr 0432 @adr 0434
-   */
-  cliUpdateLocked?: boolean;
-  /**
-   * Egress enforcement of this cli: `container` = the launcher installed the agent-uid firewall
-   * rules (the proxy is the agent's only way out); `none` = proxy environment only (Audit only), with
-   * `egressReason` (e.g. `no NET_ADMIN`). Persisted on `MachineLink.egress` / `egressReason`.
-   */
-  egress?: "container" | "none";
-  egressReason?: string;
-  /** Expiry + scopes of the worker's own gh / glab login tokens (Self-managed git auth); `MachineLink.gitLogins`. @adr 0680 */
-  gitLogins?: GitLoginReport[];
-  /** The cli's process id — with `startedAt`, tells a restarted process from a lingering one. @adr 0505 */
-  pid?: number;
-  /** When this cli process started (ISO). @adr 0505 */
-  startedAt?: string;
-  /** Lifecycle state: `connected`, or `draining` while a restart / update waits for running work. @adr 0505 */
-  lifecycle?: "connected" | "draining";
-  /** While draining: the kinds of work still running (`command`, `aiRun`, `autonomousCycle`…). @adr 0505 */
-  drainingFor?: string[];
-  /** The worker's autonomous summary (switch, effective state, last tick, claim) — `MachineLink.autonomousSnapshot`. @adr 0507 */
-  autonomous?: AutonomousSnapshotPayload;
-  /** Worker hosting: run modes this worker can serve and how many environments it serves. @adr 0664 */
-  hosting?: MachineHostingReport;
+    status: string;
+    projects?: string[];
+    version: string;
+    physicPath?: string | null;
+    physicPathExists?: boolean;
+    reposReady?: boolean;
+    templateMarker?: {
+        version: string | null;
+    };
+    aiRunTimeoutSec?: number;
+    aiProfileCount?: number;
+    aiAccounts?: string[];
+    aiAccountKeys?: string[];
+    aiMounts?: AiMountReport[];
+    cliUpdateLocked?: boolean;
+    egress?: "container" | "none";
+    egressReason?: string;
+    gitLogins?: GitLoginReport[];
+    pid?: number;
+    startedAt?: string;
+    lifecycle?: "connected" | "draining";
+    drainingFor?: string[];
+    autonomous?: AutonomousSnapshotPayload;
+    hosting?: MachineHostingReport;
 }
-
-/** `machine.status.autonomous` — what the cli reports about its autonomous engine. @adr 0507 */
 export interface AutonomousSnapshotPayload {
-  /** The worker switch (`!paused`). */
-  enabled: boolean;
-  /** `projectEnabled ∧ allowed ∧ enabled` as the cli sees it. */
-  effective: boolean;
-  pausedBy?: "user" | "auto" | "projectDeleted" | "migration";
-  pausedReason?: string;
-  pausedAt?: string;
-  /** The last tick, skips included; `detail` names what the cycle did / waits for. @adr 0529 */
-  lastCheck?: { at: string; outcome: "run" | "skip" | "error" | "running"; reason: string; detail?: AutonomousCheckDetailPayload } | null;
-  /** The task this worker holds. */
-  claim?: { id: string; since: string } | null;
-  /** What the running cycle does right now (absent / null = no cycle running). @adr 0529 */
-  step?: { kind: "cycle" | "intake" | "implement" | "docs" | "deliver"; ids: string[]; since: string } | null;
-  consecutiveFails: number;
+    enabled: boolean;
+    effective: boolean;
+    pausedBy?: "user" | "auto" | "projectDeleted" | "migration";
+    pausedReason?: string;
+    pausedAt?: string;
+    lastCheck?: {
+        at: string;
+        outcome: "run" | "skip" | "error" | "running";
+        reason: string;
+        detail?: AutonomousCheckDetailPayload;
+    } | null;
+    claim?: {
+        id: string;
+        since: string;
+    } | null;
+    step?: {
+        kind: "cycle" | "intake" | "implement" | "docs" | "deliver";
+        ids: string[];
+        since: string;
+    } | null;
+    consecutiveFails: number;
 }
-
-/** `lastCheck.detail` — structurally mirrors `@4pm/dto` `AutonomousCheckDetail`. @adr 0529 */
 export interface AutonomousCheckDetailPayload {
-  /** What an intake of this cycle produced. */
-  intake?: { tasks: number; questions: number; changeRequests: number };
-  /** Rows waiting on people (served teams only). */
-  /** `blocked` = approved tasks blocked by a merge conflict with their base. @adr 0539 */
-  /** `merge` = approved DOC / task rows waiting for their request / DOC PR to merge into `<base>`. @adr 0563 */
-  waiting?: { approval: number; changeRequests: number; answers: number; dependencies: number; blocked?: number; merge?: number };
-  /** The task this cycle worked on. */
-  taskId?: string;
-  /** The worker holding the intake ids (`intake taken`). */
-  by?: string;
-  /** The books whose monthly new-row limit is reached (intake skipped). @adr 0541 */
-  capReached?: ("USER_TODO" | "USER_QA" | "AI_TODO")[];
+    intake?: {
+        tasks: number;
+        questions: number;
+        changeRequests: number;
+    };
+    waiting?: {
+        approval: number;
+        changeRequests: number;
+        answers: number;
+        dependencies: number;
+        blocked?: number;
+        merge?: number;
+    };
+    taskId?: string;
+    by?: string;
+    capReached?: ("USER_TODO" | "USER_QA" | "AI_TODO")[];
 }
-
-/**
- * `autonomous.policy` (server → cli, one-way) and `ws_token.autonomousPolicy`: the project switch, the
- * server's verdict for this worker and the project-scoped knobs every worker shares.
- * @adr 0507
- */
 export interface AutonomousPolicyPayload {
-  projectEnabled: boolean;
-  allowed: boolean;
-  reason?: string;
-  settings: Record<string, unknown>;
+    projectEnabled: boolean;
+    allowed: boolean;
+    reason?: string;
+    settings: Record<string, unknown>;
 }
-
-/** Where a command originated: server-dispatched (web) or cli-local (TUI). @adr 0057 */
 export type CommandOrigin = "server" | "local";
-
-/**
- * One Console prompt image attachment referenced by a dispatch. `placeholder` is the
- * `[Image#N]` token in the prompt the cli rewrites to the materialized file path; `id` addresses the
- * uploaded blob (`FetchCommandImage`); `mime` picks the on-disk extension. Web/REST carry the same
- * shape (`@4pm/dto`).
- * @adr 0257
- */
 export interface CommandImageRef {
-  id: string;
-  placeholder: string;
-  name: string;
-  mime: string;
+    id: string;
+    placeholder: string;
+    name: string;
+    mime: string;
 }
-
-/**
- * image.fetch request (cli → server) — ask for one prompt image blob. `commandId` scopes
- * the fetch to the in-flight dispatch (the server resolves the storing org from that command record,
- * which also covers rented machines whose link org differs from the renter's).
- * @adr 0257
- */
 export interface ImageFetchRequest {
-  commandId: string;
-  imageId: string;
+    commandId: string;
+    imageId: string;
 }
-
-/**
- * image.fetch reply (server → cli) — the image bytes as base64 + its content type, or
- * `error` when the id is unknown / swept by retention / blocked. `dataBase64` is absent on error.
- * @adr 0257
- */
 export interface ImageFetchReply {
-  mime?: string;
-  dataBase64?: string;
-  error?: string;
+    mime?: string;
+    dataBase64?: string;
+    error?: string;
 }
-
-/**
- * Per-run AI execution overrides carried on a dispatch — structurally mirrors `@4pm/dto`
- * `AiRunConfig` (kept local so `@4pm/ws` stays dep-free). Chosen in the web "AI settings" modal and
- * layered over the cli profile by the worker; every field optional (unset ⇒ the profile default).
- * @adr 0261
- */
 export interface AiRunConfig {
-  model?: string;
-  thinking?: "off" | "low" | "medium" | "high";
-  temperature?: number;
+    model?: string;
+    thinking?: "off" | "low" | "medium" | "high";
+    temperature?: number;
 }
-
-/** command.dispatch (server → cli). */
 export interface CommandDispatchPayload {
-  commandId: string;
-  projectId?: string;
-  path?: string;
-  cmd: string;
-  args: string[];
-  env?: Record<string, string>;
-  /**
-   * Console prompt image attachments — only on a full agent AI run (`ai:true`,
-   * `aiOneShot` unset). The cli fetches each blob (`FetchCommandImage`), materializes it inside the
-   * served project folder, and rewrites its `[Image#N]` placeholder to the on-disk path before
-   * spawning. Absent/empty ⇒ no images.
-   * @adr 0257
-   */
-  images?: CommandImageRef[];
-  /**
-   * AI prompt mode: when true, `cmd` holds the **raw prompt** (not an
-   * executable) and the cli runs it through the same AI-CLI profile-failover path as a
-   * locally-typed prompt — instead of spawning `cmd` verbatim. `args` is ignored.
-   * @adr 0057
-   */
-  ai?: boolean;
-  /**
-   * One-shot AI run: a text-in → text-out prompt (spec review/compose/suggest/
-   * generators) the cli must run WITHOUT its agentic tool loop — `--max-turns 1` + disallowed
-   * agentic tools — so it can't wander the repo / edit files / loop forever. Only meaningful
-   * with `ai:true`; absent ⇒ a full agent run (Console tab, Git merge).
-   * @adr 0249
-   */
-  aiOneShot?: boolean;
-  /**
-   * The AI tools (`claude` / `codex`) the platform admin has locked: the profile failover skips their attempts, and a
-   * run with no allowed tool left ends at once with `SERVICE_LOCKED`. Absent ⇒ none locked.
-   * @adr 0707
-   */
-  lockedAiClis?: string[];
-  /**
-   * Read-only agent AI run: a task that must **read + inspect the repo but write
-   * nothing** (project-template "Analyze impact"). The cli keeps the read/search tools (`Read`/
-   * `Glob`/`Grep`/`Bash`) and runs multi-turn under `--permission-mode plan` (codex `--sandbox
-   * read-only`) with only the write/orchestration tools disallowed. Only meaningful with `ai:true`;
-   * **mutually exclusive with `aiOneShot`**; absent ⇒ one-shot (if set) or a full agent run.
-   * @adr 0265
-   */
-  aiReadOnly?: boolean;
-  /**
-   * Write-capable agent AI run: a full agent that must run file + git/`gh`/`glab` writes
-   * **headless without approval prompts** (project-template "Update" → branch + PR). The cli runs
-   * claude under `--permission-mode bypassPermissions` (codex full-auto) so it never stalls on an
-   * interactive approval. Still folder-scoped. Only meaningful with `ai:true`; **mutually
-   * exclusive with `aiOneShot`/`aiReadOnly`**; absent ⇒ the normal full-agent permission behavior.
-   * @adr 0271 @adr 0181
-   */
-  aiBypass?: boolean;
-  /**
-   * Per-run AI execution overrides: model/thinking/temperature chosen in the web
-   * "AI settings" modal (per-user localStorage), layered over the cli profile default by the
-   * worker (`buildRunArgs`). Only present on an `ai:true` dispatch; absent ⇒ the profile default.
-   * @adr 0261
-   */
-  aiConfig?: AiRunConfig;
-  /**
-   * A marketing photo run: the cli prepares the scene + source worktrees, runs the agent there, commits the capture
-   * code on `4pm/marketing/<base>`, shoots, uploads the files and prints a `<marketing-run>` report. Only with
-   * `ai:true` + `aiBypass` (`job: marketing-photos-generate`).
-   * @adr 0640
-   */
-  marketing?: MarketingRunSpec;
+    commandId: string;
+    projectId?: string;
+    path?: string;
+    cmd: string;
+    args: string[];
+    env?: Record<string, string>;
+    images?: CommandImageRef[];
+    ai?: boolean;
+    aiOneShot?: boolean;
+    lockedAiClis?: string[];
+    aiReadOnly?: boolean;
+    aiBypass?: boolean;
+    aiConfig?: AiRunConfig;
+    marketing?: MarketingRunSpec;
 }
-
-/**
- * command.announce (cli → server) — a command initiated locally in the cli TUI
- * so the server can create a tracking record + persist history before the
- * command.output chunks arrive. Server-dispatched commands do not need this (the
- * server already has a record).
- * @adr 0057
- */
 export interface CommandAnnouncePayload {
-  commandId: string;
-  projectId?: string;
-  cmd: string;
-  args: string[];
-  /**
-   * The operator's raw prompt text (AI runs) so the web console echoes it like the cli TUI
-   * (`❯ <prompt>`) rather than the CLI binary name. Optional — falls back to `cmd`.
-   * @adr 0108
-   */
-  prompt?: string;
-  /** Always "local" — server-dispatched commands are not announced. */
-  origin: CommandOrigin;
+    commandId: string;
+    projectId?: string;
+    cmd: string;
+    args: string[];
+    prompt?: string;
+    origin: CommandOrigin;
 }
-
-/**
- * console.watch (server → cli): whether a web Console viewer is attached to this
- * link. `on:true` on the first viewer ⇒ the cli starts emitting `console.sync` + pushes a fresh
- * snapshot; `on:false` on the last viewer leaving ⇒ the cli stops. The `console.sync` payload
- * itself is the `ConsoleSyncEvent` shared response type in `@4pm/dto` (also an SSE contract).
- * @adr 0150
- */
 export interface ConsoleWatchPayload {
-  on: boolean;
+    on: boolean;
 }
-
-/**
- * metrics.watch (server → cli): a renewable lease telling the cli a web viewer has the
- * Machines→Workers tab open. `on:true` (re-asserted ~every 15s while a viewer is present) ⇒ the cli
- * samples + emits `machine.metrics` (~every 5s); no renewal within the lease window ⇒ it stops. The
- * `machine.metrics` payload is the `MachineMetricsPayload` type in `@4pm/dto` (also used server-side).
- * @adr 0214
- */
 export interface MetricsWatchPayload {
-  on: boolean;
+    on: boolean;
 }
-
-/** command.output (cli → server — batch, cli-ws 0003). */
 export interface CommandOutputPayload {
-  commandId: string;
-  seq: number;
-  chunk: string;
-  truncated?: boolean;
-  done?: boolean;
-  exitCode?: number;
-  /**
-   * Set on a **synthesized** terminal `done` the server emits for a command that finished but
-   * whose replay buffer was already evicted: the real output is gone, so a late SSE
-   * subscriber must treat this as "reply unavailable" (surface a re-run notice) rather than
-   * parsing the empty chunk as the actual reply.
-   * @adr 0165
-   */
-  unavailable?: boolean;
-  /**
-   * Status/meta line (e.g. "→ trying claude profile … (1/3)"), not part of the command's
-   * real output: streamed to the web console for visibility but excluded from the persisted
-   * transcript, and rendered directly (bypassing the json/code result-collapse detector) so
-   * it can't poison mode detection of the AI result that follows.
-   * @adr 0108
-   */
-  log?: boolean;
-  /**
-   * Discard everything streamed for this command so far (ADR-0322 area): a profile-failover retry
-   * starts a fresh attempt, so the RESULT stream + persisted transcript must drop the previous
-   * (failed/partial) attempt and keep only the attempt that ultimately succeeds. Without it a
-   * compose whose first profile times out mid-spec then succeeds on the next would concatenate two
-   * partial specs into one buffer, which the client then fails to parse as JSON. Carries no chunk;
-   * the live console view is unaffected (it has its own `console.sync` transcript).
-   */
-  reset?: boolean;
-  /**
-   * Run-slot queue status: `{position, limit, running}` while this AI run waits for an org
-   * run slot (sent on each position change), `null` once the slot is granted. A status frame — never part
-   * of the command's result; the server flips the command status `queued` ⇄ `running`.
-   * @adr 0362
-   */
-  queue?: RunQueueInfo | null;
-  /**
-   * Set on the terminal `done` of a run stopped via `command.cancel` — exit code
-   * {@link COMMAND_CANCELLED_EXIT_CODE}. The client applies nothing for a cancelled run.
-   * @adr 0362
-   */
-  cancelled?: boolean;
+    commandId: string;
+    seq: number;
+    chunk: string;
+    truncated?: boolean;
+    done?: boolean;
+    exitCode?: number;
+    unavailable?: boolean;
+    log?: boolean;
+    reset?: boolean;
+    queue?: RunQueueInfo | null;
+    cancelled?: boolean;
 }
-
-/** Status of one worker tool on the machine (worker tools). @adr 0206 */
 export interface ToolStatus {
-  /** Catalog id or npm package name. */
-  id: string;
-  /** Human label (catalog entry's label; the package name for an extra global). */
-  label: string;
-  /** Category badge (`runtime`/`ai-cli`/`vcs`; `runtime` for an extra global). */
-  category: "runtime" | "ai-cli" | "vcs";
-  /** Whether the tool resolves on the worker's PATH. */
-  installed: boolean;
-  /** The detected `--version` output (first line), or null when not installed. */
-  version: string | null;
-  /** False for a detect-only prerequisite (no install/uninstall button). */
-  installable: boolean;
-  /** True when the tool offers update-to-latest (npm-distributed catalog tool or extra). @adr 0252 */
-  updatable: boolean;
-  /** True when this tool is flagged for per-tool auto-update in `config.json`. @adr 0253 */
-  autoUpdate: boolean;
+    id: string;
+    label: string;
+    category: "runtime" | "ai-cli" | "vcs";
+    installed: boolean;
+    version: string | null;
+    installable: boolean;
+    updatable: boolean;
+    autoUpdate: boolean;
 }
-
-/** tools.list request/reply — probe the catalog + extra globals. @api machine-0050 @adr 0206 */
 export interface ToolsListRequest {
-  _?: never;
+    _?: never;
 }
 export interface ToolsListReply {
-  /** One row per `WORKER_TOOL_CATALOG` entry. */
-  catalog: ToolStatus[];
-  /** Extra globally installed npm packages found on the worker (operator-added). */
-  extras: ToolStatus[];
+    catalog: ToolStatus[];
+    extras: ToolStatus[];
 }
-
-/**
- * tools.install / tools.uninstall / tools.update request (machine-0051/0052/0055) —
- * start a streamed op. The op is derived from the WS channel; this payload is shared by all three.
- * @adr 0206 @adr 0252
- */
 export interface ToolsMutateRequest {
-  /** Correlates the streamed `tools.progress`/`tools.done` frames back to this op. */
-  opId: string;
-  /** Catalog id or npm package name. */
-  name: string;
-  /** Package manager to run the global install/uninstall/update with. */
-  manager: "npm" | "pnpm";
+    opId: string;
+    name: string;
+    manager: "npm" | "pnpm";
 }
-/** Immediate ack: whether the cli accepted the op (else `error`, e.g. bad name / prerequisite). */
 export interface ToolsMutateReply {
-  started: boolean;
-  error?: string;
+    started: boolean;
+    error?: string;
 }
-
-/** cli → server push: one stdout/stderr line of a running install/uninstall. @adr 0206 */
 export interface ToolsProgressPayload {
-  opId: string;
-  line: string;
+    opId: string;
+    line: string;
 }
-/** cli → server push: the terminal frame of an install/uninstall op. @adr 0206 */
 export interface ToolsDonePayload {
-  opId: string;
-  /** True when the manager exited 0. */
-  ok: boolean;
-  exitCode: number;
-  error?: string;
+    opId: string;
+    ok: boolean;
+    exitCode: number;
+    error?: string;
 }
-
-/**
- * tools.autoUpdate request/reply — toggle per-tool auto-update. The cli
- * merges/removes `name` in `config.json` `autoUpdateTools` and replies `ok`; the ADR-0074 idle daily
- * tick later runs `@latest` for each flagged tool.
- * @api machine-0056 @adr 0253
- */
 export interface ToolsAutoUpdateRequest {
-  /** Catalog id or npm package name. */
-  name: string;
-  /** true = flag for auto-update; false = clear the flag. */
-  enabled: boolean;
+    name: string;
+    enabled: boolean;
 }
 export interface ToolsAutoUpdateReply {
-  /** True when the flag was persisted; false with `error` when the name is a prerequisite / invalid. */
-  ok: boolean;
-  error?: string;
+    ok: boolean;
+    error?: string;
 }
-
-/**
- * tools.report payload (cli → server one-way) — the worker's detected tool snapshot,
- * persisted to `MachineLink.toolSnapshot`. Same shape as `ToolsListReply`; sent on the ADR-0074 daily
- * idle tick, after each install/uninstall/update op, and on boot AFTER restore-on-boot completes (the
- * load-bearing ordering: a post-recreate image baseline must never overwrite the snapshot pre-restore).
- * @adr 0254
- */
-/** Why a tool stayed missing/mismatched after a restore reconcile — mirrors `@4pm/dto`. @adr 0258 */
 export interface ToolRestoreFailureItem {
-  name: string;
-  version: string;
-  reason: "timeout" | "network" | "not-found" | "engine" | "other";
-  retryable: boolean;
+    name: string;
+    version: string;
+    reason: "timeout" | "network" | "not-found" | "engine" | "other";
+    retryable: boolean;
 }
-
-/** A feature tool (RAG runtime, marketing capture tools) — mirrors `@4pm/dto` `WorkerFeatureToolStatus`. @adr 0641 */
 export interface FeatureToolItem {
-  id: "rag" | "playwright" | "chromium" | "vhs" | "ttyd" | "ffmpeg" | "xvfb";
-  feature: "rag" | "marketing";
-  label: string;
-  installed: boolean;
-  version: string | null;
-  source: "auto" | "system" | "detect";
-  detail?: string | null;
+    id: "rag" | "playwright" | "chromium" | "vhs" | "ttyd" | "ffmpeg" | "xvfb";
+    feature: "rag" | "marketing";
+    label: string;
+    installed: boolean;
+    version: string | null;
+    source: "auto" | "system" | "detect";
+    detail?: string | null;
 }
-
 export interface ToolsReportPayload {
-  catalog: ToolStatus[];
-  extras: ToolStatus[];
-  /** Feature tools, read-only in the Tools tab; absent from an older cli. @adr 0641 */
-  features?: FeatureToolItem[];
-  /**
-   * Tools that failed the last restore reconcile — transient, empty when the reported set
-   * satisfies the manifest. Persisted to `toolSnapshot.restoreFailed`; drives the server re-drive.
-   * @adr 0258
-   */
-  restoreFailed?: ToolRestoreFailureItem[];
-  /**
-   * What triggered this report: `op` after an install/uninstall/update, `boot` after
-   * restore-on-boot, `daily` on the idle maintenance tick, `manual` after a machine-0058 restore. The
-   * server re-drives a still-failing restore ONLY on `daily` (spaced, stateless). Absent ⇒ treat as `op`.
-   * @adr 0258
-   */
-  trigger?: "op" | "boot" | "daily" | "manual";
+    catalog: ToolStatus[];
+    extras: ToolStatus[];
+    features?: FeatureToolItem[];
+    restoreFailed?: ToolRestoreFailureItem[];
+    trigger?: "op" | "boot" | "daily" | "manual";
 }
-
-/** One tool to reconcile to an exact version — mirrors `@4pm/dto` `ToolManifestEntry`. @adr 0254 */
 export interface ToolManifestItem {
-  name: string;
-  version: string;
-  manager: "npm" | "pnpm";
+    name: string;
+    version: string;
+    manager: "npm" | "pnpm";
 }
-
-/**
- * tools.restore request/reply (server → cli) — push a manifest to reconcile NOW (a copy-apply
- * to an online target). The cli installs each missing/mismatched `name@version`, reports its new
- * snapshot, and replies whether it applied (so the server can clear the pending manifest).
- * @adr 0254
- */
 export interface ToolsRestoreRequest {
-  manifest: ToolManifestItem[];
-  /**
-   * What issued this restore: `boot` = the connect-hook self/pending push or the daily
-   * re-drive; `manual` = a machine-0058 operator retry. The cli echoes it as the `trigger` of the
-   * follow-up `tools.report` so that restore-completion report is never itself treated as `daily`
-   * (which would loop the server re-drive). Absent ⇒ `boot`.
-   * @adr 0258
-   */
-  trigger?: "boot" | "manual";
-  /**
-   * Present for a **manual** streamed restore: the cli acks immediately, then
-   * streams `tools.progress`/`tools.done` frames keyed by this `opId` (relayed over the machine-0053
-   * SSE, exactly like install/update). Absent ⇒ the connect-hook/copy/re-drive path, where the reply is
-   * the terminal reconcile result (used to clear the pending copy pointer).
-   * @api machine-0058 @adr 0258
-   */
-  opId?: string;
+    manifest: ToolManifestItem[];
+    trigger?: "boot" | "manual";
+    opId?: string;
 }
 export interface ToolsRestoreReply {
-  /** True when the reconcile ran (per-tool failures are non-fatal); false with `error` otherwise. */
-  ok: boolean;
-  error?: string;
+    ok: boolean;
+    error?: string;
 }
-
-/** config.read request/reply — the paired profile's config.json. @api machine-0025 @adr 0141 */
 export interface ConfigReadRequest {
-  /** No parameters — the cli reads its own paired profile's config.json. */
-  _?: never;
+    _?: never;
 }
 export interface ConfigReadReply {
-  /** The config.json file content as text (pretty-printed; empty-defaults when absent). */
-  config: string;
+    config: string;
 }
-
-/** config.write request/reply — replace the profile's config.json. @api machine-0026 @adr 0141 */
 export interface ConfigWriteRequest {
-  /** The new config.json content (raw text; validated + parsed on the cli). */
-  config: string;
+    config: string;
 }
 export interface ConfigWriteReply {
-  /** True when written; false with `error` when the text is invalid JSON / bad shape. */
-  ok: boolean;
-  error?: string;
+    ok: boolean;
+    error?: string;
 }
-
-/**
- * Who reads a worker file: `client` = a customer account — the cli hides `.git` and every gitignored
- * path (local secrets such as `.env` may sit in the checkout). Absent = an internal member.
- * @adr 0449
- */
 export type FsViewer = "client";
-
-/**
- * Where a web file request acts: `base` = the remote base branch (`origin/<base>` — reads via `git show` /
- * `ls-tree`, writes as a plumbing commit pushed to `<base>`, no working tree); `worktree` = the worker's
- * checkout. Absent ⇒ `worktree`. A `base` request without a remote falls back to `worktree`; every reply
- * names the target actually used.
- * @adr 0511
- */
 export type FsTarget = "base" | "worktree";
-
-/** The web user a `base` write is committed for (trailer `4PM-Edited-By`). @adr 0511 */
 export interface FsEditor {
-  /** Display name / username of the editing user (server-filled). */
-  by?: string;
+    by?: string;
 }
-
-/** fs.list request/reply. @api machine-0007 */
 export interface FsListRequest {
-  path: string;
-  /** `client` ⇒ `.git` + gitignored entries are left out. @adr 0449 */
-  viewer?: FsViewer;
-  target?: FsTarget;
+    path: string;
+    viewer?: FsViewer;
+    target?: FsTarget;
 }
 export interface FsListReply {
-  path: string;
-  entries: { name: string; type: "dir" | "file" }[];
-  /** The target actually used. */
-  target?: FsTarget;
-  /** `base`: the remote-tracking ref listed (`origin/<base>`, a submodule's own for a path inside it). */
-  ref?: string;
-  /** `base`: the commit sha of `ref` that was listed. */
-  commit?: string;
+    path: string;
+    entries: {
+        name: string;
+        type: "dir" | "file";
+    }[];
+    target?: FsTarget;
+    ref?: string;
+    commit?: string;
 }
-
-/**
- * fs.write request/reply — write a file on the worker, clamped to
- * the physic-project root. The single Git-tab write not carried by a git command over
- * dispatch; used by manual merge-conflict resolution (`project.git_write`).
- * @api machine-0027 @adr 0151
- */
 export interface FsWriteRequest extends FsEditor {
-  /** File path relative to the physic-project root; anything escaping the root is clamped. */
-  path: string;
-  /** Full new UTF-8 content (replaces the file wholesale). */
-  content: string;
-  target?: FsTarget;
-  /**
-   * `base` only: the blob the edit was based on (`fs.read` `blob`); `null` = the file must not exist yet.
-   * Absent ⇒ no check. A different blob on the remote ⇒ `FILE_CHANGED_UPSTREAM`.
-   */
-  expectBlob?: string | null;
+    path: string;
+    content: string;
+    target?: FsTarget;
+    expectBlob?: string | null;
 }
-/** Who holds a project's working tree while a file is read / written from the web. @adr 0506 */
 export interface RepoBusyInfo {
-  holder: "autonomous" | "command" | "git" | "project";
-  /** The task the autonomous cycle works on, when known. */
-  task?: string;
-  /** The branch checked out in the working tree right now. */
-  branch?: string;
+    holder: "autonomous" | "command" | "git" | "project";
+    task?: string;
+    branch?: string;
 }
-
 export interface FsWriteReply {
-  /** True when written; false with `error` on a bad path / write failure. */
-  ok: boolean;
-  /** The resolved (clamped) path actually written. */
-  path: string;
-  /** Bytes written (0 when `ok` is false). */
-  bytes: number;
-  error?: string;
-  /**
-   * Set when the project's working tree was held by another job (the autonomous cycle on a task branch,
-   * a Console run, a git write) at the time of this request — the web warns that the file belongs to
-   * that job's branch / may change under it. @adr 0506
-   */
-  repoBusy?: RepoBusyInfo;
-  /** The target actually used. @adr 0511 */
-  target?: FsTarget;
-  /** `base`: the commit pushed (absent when nothing changed). @adr 0511 */
-  commit?: string;
+    ok: boolean;
+    path: string;
+    bytes: number;
+    error?: string;
+    repoBusy?: RepoBusyInfo;
+    target?: FsTarget;
+    commit?: string;
 }
-
-/** The fs-mutation operations. @api machine-0059 @adr 0260 */
 export type FsMutateOp = "mkdir" | "create" | "move" | "delete";
-
-/**
- * fs.mutate request/reply — create/rename/move/delete a file or folder in
- * the project tree, each op clamped to the physic-project root (`project.files_write`). `rename` is a
- * `move` within the same folder. Paths are relative to the root; anything escaping it is refused.
- * @api machine-0059 @adr 0260
- */
 export interface FsMutateRequest extends FsEditor {
-  op: FsMutateOp;
-  target?: FsTarget;
-  /** Target path for `mkdir` / `create` / `delete`. */
-  path?: string;
-  /** Optional seed content for `create` (empty file when absent). */
-  content?: string;
-  /** Source path for `move` (also used as the rename source). */
-  from?: string;
-  /** Destination path for `move` (the new path, or a folder to move into). */
-  to?: string;
+    op: FsMutateOp;
+    target?: FsTarget;
+    path?: string;
+    content?: string;
+    from?: string;
+    to?: string;
 }
 export interface FsMutateReply {
-  /** True when applied; false with `error` on a bad path / name / fs failure. */
-  ok: boolean;
-  /** The resolved (clamped) path acted on. */
-  path: string;
-  error?: string;
-  /**
-   * Set when the project's working tree was held by another job (the autonomous cycle on a task branch,
-   * a Console run, a git write) at the time of this request — the web warns that the file belongs to
-   * that job's branch / may change under it. @adr 0506
-   */
-  repoBusy?: RepoBusyInfo;
-  /** The target actually used. @adr 0511 */
-  target?: FsTarget;
-  /** `base`: the commit pushed (absent when nothing changed). @adr 0511 */
-  commit?: string;
+    ok: boolean;
+    path: string;
+    error?: string;
+    repoBusy?: RepoBusyInfo;
+    target?: FsTarget;
+    commit?: string;
 }
-
-/**
- * fs.upload request/reply — write an uploaded/pasted file's bytes into the
- * project tree, clamped to the physic-project root (`project.files_write`). The bytes ride as base64
- * (binary the text-only fs.write can't carry); a path escaping the root is refused outright.
- * @api machine-0061 @adr 0278
- */
 export interface FsUploadRequest extends FsEditor {
-  target?: FsTarget;
-  /** Destination path relative to the physic-project root; anything escaping the root is refused. */
-  path: string;
-  /** File bytes, base64-encoded. */
-  contentBase64: string;
-  /** Optional MIME type from the browser (informational; not trusted for the write). */
-  contentType?: string;
+    target?: FsTarget;
+    path: string;
+    contentBase64: string;
+    contentType?: string;
 }
 export interface FsUploadReply {
-  /** True when written; false with `error` on a bad path / oversize / write failure. */
-  ok: boolean;
-  /** The resolved (clamped) path actually written. */
-  path: string;
-  /** Bytes written (0 when `ok` is false). */
-  bytes: number;
-  error?: string;
-  /**
-   * Set when the project's working tree was held by another job (the autonomous cycle on a task branch,
-   * a Console run, a git write) at the time of this request — the web warns that the file belongs to
-   * that job's branch / may change under it. @adr 0506
-   */
-  repoBusy?: RepoBusyInfo;
-  /** The target actually used. @adr 0511 */
-  target?: FsTarget;
-  /** `base`: the commit pushed (absent when nothing changed). @adr 0511 */
-  commit?: string;
+    ok: boolean;
+    path: string;
+    bytes: number;
+    error?: string;
+    repoBusy?: RepoBusyInfo;
+    target?: FsTarget;
+    commit?: string;
 }
-
-/**
- * fs.download request/reply — read a file's raw bytes for the browser to
- * save. `contentBase64` carries the bytes; a file over the transfer cap (or unreadable) replies with
- * `error` and no payload (never a silent truncation, unlike fs.read).
- * @api machine-0062 @adr 0278
- */
 export interface FsDownloadRequest {
-  /** File path relative to the physic-project root; anything escaping the root is refused. */
-  path: string;
-  target?: FsTarget;
-  /** `client` ⇒ a `.git` / gitignored path is refused (`error`). @adr 0449 */
-  viewer?: FsViewer;
+    path: string;
+    target?: FsTarget;
+    viewer?: FsViewer;
 }
 export interface FsDownloadReply {
-  /** File bytes, base64-encoded (absent on error). */
-  contentBase64?: string;
-  /** Best-effort MIME type guessed from the extension. */
-  contentType?: string;
-  /** The file's basename (for the browser's save dialog). */
-  name?: string;
-  /** Raw byte size. */
-  size?: number;
-  /** Set when the file is unreadable / over the transfer cap / path escapes the root. */
-  error?: string;
+    contentBase64?: string;
+    contentType?: string;
+    name?: string;
+    size?: number;
+    error?: string;
 }
-
-/**
- * Autonomous mode — the dashboard controls the worker's headless autonomous engine
- * (`.claude/.autonomous.settings.json` + `auto-cycle`), reached over these channels via the cli.
- * @adr 0152
- */
-
-/** Computed run-state of the autonomous engine on the worker (from settings + histories). */
 export interface AutonomousStatus {
-  /** `paused:true` in settings — the engine's on/off switch. */
-  paused: boolean;
-  /** Effective cron schedule from settings. */
-  cronSchedule: string;
-  /** ISO time of the last recorded tick, or null. */
-  lastTickAt: string | null;
-  /** Last tick outcome: `success` | `failure` | `skip`, or null. */
-  lastResult: string | null;
-  /** Consecutive failure count (auto-pauses at the settings threshold). */
-  consecutiveFails: number;
-  /** Ticks that actually invoked Claude today (local day). */
-  todayTicks: number;
-  /**
-   * The last tick stopped because the books branch `autonomous-books/<base>` is protected — the branch
-   * name, else null. (`<base>` itself may be protected since ADR-0448.)
-   * @adr 0448
-   */
-  booksProtected?: string | null;
-  /**
-   * The last tick stopped before claiming because the project's git credential failed the access check —
-   * "<repo>: <reason>", else null.
-   * @adr 0661
-   */
-  gitAccess?: string | null;
-  /**
-   * The worker would run cycles now — "armed": project switch on ∧ the server's `allowed` ∧ its own
-   * switch on.
-   * @adr 0507 @adr 0317
-   */
-  effective: boolean;
-  /** The project switch as this worker last received it. @adr 0507 */
-  projectEnabled: boolean;
-  /** The server's verdict for this worker, and why not. @adr 0507 */
-  allowed: boolean;
-  allowedReason: string | null;
-  /** Who / what paused this worker. @adr 0507 */
-  pausedBy: string | null;
+    paused: boolean;
+    cronSchedule: string;
+    lastTickAt: string | null;
+    lastResult: string | null;
+    consecutiveFails: number;
+    todayTicks: number;
+    booksProtected?: string | null;
+    gitAccess?: string | null;
+    effective: boolean;
+    projectEnabled: boolean;
+    allowed: boolean;
+    allowedReason: string | null;
+    pausedBy: string | null;
 }
-
-/**
- * One signed approvals-file entry — structurally mirrors `@4pm/dto` `ApprovalEntry` (the cli writes it
- * verbatim; `h`/`kid`/`sig` are absent on an unsigned entry).
- * @adr 0438
- */
 export interface ApprovalEntry {
-  approved: true;
-  by: string;
-  byLabel?: string;
-  at: string;
-  h?: string;
-  kid?: string;
-  sig?: string;
+    approved: true;
+    by: string;
+    byLabel?: string;
+    at: string;
+    h?: string;
+    kid?: string;
+    sig?: string;
 }
-
-/**
- * One signed party approval of an approvals-file entry (`parties[]`) — mirrors `@4pm/dto`
- * `ApprovalPartyEntry`.
- * @adr 0451
- */
 export interface ApprovalPartyEntry {
-  by: string;
-  byLabel?: string;
-  group: "teamLead" | "designated" | "client" | "member";
-  at: string;
-  h: string;
-  kid?: string;
-  sig?: string;
+    by: string;
+    byLabel?: string;
+    group: "teamLead" | "designated" | "client" | "member";
+    at: string;
+    h: string;
+    kid?: string;
+    sig?: string;
 }
-
-/**
- * Mirror of `@4pm/dto` `BookPatch` (the ws package doesn't depend on dto): a book save as row operations —
- * `prev` = hash of the row the editor started from (null = added), `cells` null = delete.
- * @adr 0455
- */
 export interface BookPatchPayload {
-  v: 1;
-  columns: string[];
-  rows: { id: string; prev: string | null; cells: Record<string, string> | null; after?: string | null }[];
-  rest?: { prev: string; before: string; after: string };
+    v: 1;
+    columns: string[];
+    rows: {
+        id: string;
+        prev: string | null;
+        cells: Record<string, string> | null;
+        after?: string | null;
+    }[];
+    rest?: {
+        prev: string;
+        before: string;
+        after: string;
+    };
 }
-
-/** Mirror of `@4pm/dto` `BookConflict`. @adr 0455 */
 export interface BookConflictPayload {
-  id: string;
-  kind: "changed" | "deleted" | "duplicateId" | "rest";
+    id: string;
+    kind: "changed" | "deleted" | "duplicateId" | "rest";
 }
-
-/** approval.keys — server → cli: the published approval-signing public keys (SPKI DER, base64). @adr 0440 */
 export interface ApprovalKeysPayload {
-  keys: { kid: string; publicKey: string }[];
+    keys: {
+        kid: string;
+        publicKey: string;
+    }[];
 }
-
-/** Verification state of one approval — mirrors `@4pm/dto` `ApprovalState`. @adr 0438 */
 export type ApprovalState = "approved" | "unsigned" | "invalid" | "stale";
-
-/** Raw text of the 5 autonomous "books" (the web parses them). */
 export interface AutonomousBooks {
-  userTodo: string;
-  aiTodo: string;
-  aiProgress: string;
-  aiDone: string;
-  userQa: string;
+    userTodo: string;
+    aiTodo: string;
+    aiProgress: string;
+    aiDone: string;
+    userQa: string;
 }
-
-/** autonomous.read reply — the whole autonomous surface in one read. */
 export interface AutonomousReadRequest {
-  /** Page of AI Done rows, newest first (default 1). @adr 0563 */
-  donePage?: number;
-  /** AI Done rows per page (default 50, max 200). @adr 0563 */
-  doneSize?: number;
+    donePage?: number;
+    doneSize?: number;
 }
 export interface AutonomousReadReply {
-  /** `.autonomous.settings.json` text (empty-defaults when absent). */
-  settings: string;
-  status: AutonomousStatus;
-  books: AutonomousBooks;
-  /** `.autonomous.approvals.json` text (`{}` when absent) — who/when approved, per row id. */
-  approvals: string;
-  /** `.autonomous.authors.json` text (`{}` when absent) — who/when wrote each row. @adr 0320 */
-  authors: string;
-  /** `.autonomous.attempts.json` text (`{}` when absent) — per-task attempts / split-pending. @adr 0371 */
-  attempts?: string;
-  /** Intake UI mockups — repo paths of the `.html` files under `mockupDir` on `<base>`. @adr 0418 */
-  mockups?: string[];
-  /** Sequence diagrams — `.md` paths under `sequenceDir` (`TSK-<id>.md` / `QA-<id>.md`). @adr 0453 */
-  sequences?: string[];
-  /** ER change-request paths (`<erDir>/changes/ERC-<n>.md`) with their state. @adr 0453 */
-  ercs?: { id: string; path: string; state: string; title: string; group: string; req: string[]; task?: string; team?: string; source: string }[];
-  /** System-diagram change-request paths (`<diagramDir>/changes/SDC-<n>.md`) with their state. @adr 0530 */
-  sdcs?: { id: string; path: string; state: string; title: string; group: string; req: string[]; task?: string; team?: string; source: string }[];
-  /** The configured system-diagram folder. @adr 0530 */
-  diagramDir?: string;
-  /** Book attachment paths (`<root>/<BOOK>/<ROW-ID>/<file>`, any evidence root) — the Evidences rail. @adr 0453 */
-  evidence?: string[];
-  /** The configured ER / sequence folders. @adr 0453 */
-  erDir?: string;
-  sequenceDir?: string;
-  /**
-   * ISO time of the last commit that touched each listed path (mockups, sequences, ERCs, evidence), on the ref
-   * the listing came from. An uncommitted path has no entry; absent from an older cli.
-   * @adr 0514
-   */
-  modifiedAt?: Record<string, string>;
-  /**
-   * Verification state per approved row id (signature + content binding). Absent from an older cli;
-   * an id without an entry in the approvals file is absent here too.
-   * @adr 0438
-   */
-  approvalStates?: Record<string, ApprovalState>;
-  /** `.autonomous.docs.json` text — the DOC rows' rounds, state, files and reviews (absent from an older cli). @adr 0536 */
-  docs?: string;
-  /** `.autonomous.done-reviews.json` text — AI Done follow-up reviews (absent from an older cli). @adr 0616 */
-  doneReviews?: string;
-  /** `.autonomous.lineage.json` text — which request each book group came from. @adr 0537 */
-  lineage?: string;
-  /** `.autonomous.delivery.json` text — the delivery record of the AI Done rows on this page (absent from an older cli). @adr 0582 */
-  delivery?: string;
-  /** AI Done rows in the live book (`books.aiDone` holds one page of them). @adr 0563 */
-  doneTotal?: number;
-  /** Mockups / sequences that exist only on an open request / DOC branch: path → branch (pass it as machine-0073 `ref`). @adr 0563 */
-  evidenceRefs?: Record<string, string>;
-  /** Archived row ids the live books still name (in a `Depends`) — they count as done. @adr 0563 */
-  archivedDone?: string[];
+    settings: string;
+    status: AutonomousStatus;
+    books: AutonomousBooks;
+    approvals: string;
+    authors: string;
+    attempts?: string;
+    mockups?: string[];
+    sequences?: string[];
+    ercs?: {
+        id: string;
+        path: string;
+        state: string;
+        title: string;
+        group: string;
+        req: string[];
+        task?: string;
+        team?: string;
+        source: string;
+    }[];
+    sdcs?: {
+        id: string;
+        path: string;
+        state: string;
+        title: string;
+        group: string;
+        req: string[];
+        task?: string;
+        team?: string;
+        source: string;
+    }[];
+    diagramDir?: string;
+    evidence?: string[];
+    erDir?: string;
+    sequenceDir?: string;
+    modifiedAt?: Record<string, string>;
+    approvalStates?: Record<string, ApprovalState>;
+    docs?: string;
+    doneReviews?: string;
+    lineage?: string;
+    delivery?: string;
+    doneTotal?: number;
+    evidenceRefs?: Record<string, string>;
+    archivedDone?: string[];
 }
-
-/** autonomous.archive — search the archived book rows. @api machine-0096 @adr 0563 */
 export interface AutonomousArchiveRequest {
-  /** Finish date range `YYYY-MM-DD` (inclusive). */
-  from?: string;
-  to?: string;
-  book?: "USER_TODO" | "USER_QA" | "AI_DONE";
-  /** Row id prefix. */
-  id?: string;
-  /** Case-insensitive text in any cell. */
-  q?: string;
-  team?: string;
-  tag?: string;
-  /** The row author's user id (authors sidecar). */
-  requester?: string;
-  state?: string;
-  delivery?: "open" | "merged" | "closed" | "direct";
-  page?: number;
-  size?: number;
+    from?: string;
+    to?: string;
+    book?: "USER_TODO" | "USER_QA" | "AI_DONE";
+    id?: string;
+    q?: string;
+    team?: string;
+    tag?: string;
+    requester?: string;
+    state?: string;
+    delivery?: "open" | "merged" | "closed" | "direct";
+    page?: number;
+    size?: number;
 }
-
-/** One archived row with its archived sidecar entries. */
 export interface AutonomousArchiveRow {
-  book: "USER_TODO" | "USER_QA" | "AI_DONE";
-  /** `YYYY-MM` folder it is in. */
-  month: string;
-  id: string;
-  title: string;
-  team?: string;
-  tags?: string;
-  state?: string;
-  delivery?: "open" | "merged" | "closed" | "direct";
-  /** AI Done `Timestamp`, or the request's finish time. */
-  finishedAt: string;
-  /** Every cell by its header. */
-  cells: Record<string, string>;
-  approval?: unknown;
-  author?: unknown;
-  lineage?: unknown;
+    book: "USER_TODO" | "USER_QA" | "AI_DONE";
+    month: string;
+    id: string;
+    title: string;
+    team?: string;
+    tags?: string;
+    state?: string;
+    delivery?: "open" | "merged" | "closed" | "direct";
+    finishedAt: string;
+    cells: Record<string, string>;
+    approval?: unknown;
+    author?: unknown;
+    lineage?: unknown;
 }
 export interface AutonomousArchiveReply {
-  rows: AutonomousArchiveRow[];
-  total: number;
-  page: number;
-  size: number;
-  error?: string;
+    rows: AutonomousArchiveRow[];
+    total: number;
+    page: number;
+    size: number;
+    error?: string;
 }
-
-/** autonomous.logs — tail one day's tick log. */
 export interface AutonomousLogsRequest {
-  /** `YYYY-MM-DD`; absent ⇒ today. */
-  date?: string;
+    date?: string;
 }
 export interface AutonomousLogsReply {
-  date: string;
-  lines: string[];
+    date: string;
+    lines: string[];
 }
-
-/** autonomous.write — a discriminated write to the engine. @adr 0152 */
-// Identity carried on every identity-writing autonomous write (ADR-0320): `by` is the **stable userId**
-// (the separation-of-duties match key, immune to an email change) and `byLabel` is the human-readable
-// display (email, else username). Both are server-filled — never the client body.
-export type AutonomousWriteRequest =
-  | { kind: "settings"; settings: string }
-  // Approvals also carry `byIsAdmin` (server-filled from the approver's role) so the cli can enforce
-  // separation of duties — a non-ADMIN can't approve a row they wrote (ADR-0320).
-  // `signed` (ADR-0438): the server-signed entries to write for the approved ids, keyed by id. The cli
-  // re-hashes each row on `<base>` (or in the saved content) and refuses a mismatch (`APPROVAL_STALE`).
-  // Absent (no signing key yet) ⇒ the cli writes an unsigned entry.
-  | {
-      kind: "approvals";
-      taskId: string;
-      approved: boolean;
-      by: string;
-      byLabel?: string;
-      byIsAdmin?: boolean;
-      signed?: Record<string, ApprovalEntry>;
-      parties?: Record<string, ApprovalPartyEntry[]>;
-      clearAll?: boolean;
-    }
-  // Batched approvals (ADR-0311): commit many approve/unapprove ids in one approvals-file write.
-  | {
-      kind: "approvalsBatch";
-      approve: string[];
-      unapprove: string[];
-      by: string;
-      byLabel?: string;
-      byIsAdmin?: boolean;
-      signed?: Record<string, ApprovalEntry>;
-      // Party approvals (ADR-0451): signed entries merged into `parties[]` of each id (dedupe by + group);
-      // `approve` then lists only the ids whose policy is now met (their final entry is in `signed`).
-      parties?: Record<string, ApprovalPartyEntry[]>;
-      // Unapprove: true (ADMIN / the PM) ⇒ drop the whole entry; else only the caller's parties + the final.
-      clearAll?: boolean;
-    }
-  // `id` (ADR-0455): the row id the server allocated (`REQ-GGGGGG-001`); the cli no longer mints it.
-  | { kind: "userTodo"; content: string; id?: string; by: string; byLabel?: string }
-  // Traced book save (ADR-0320): the cli diffs rows by id against the current book and stamps
-  // `.autonomous.authors.json` (author = `by`/`byLabel`) for added/edited rows, so authorship can't be
-  // forged in a client-written `.md` cell. `book` selects the book saved; `aiDone` (AI Verify verdicts on the
-  // read-only AI Done — ADR-0400) is written without an authorship stamp.
-  // `evidence` (ADR-0404): staged files moved into `.4pm/evidence/<BOOK>/…` and committed with the book.
-  | {
-      kind: "bookSave";
-      book: "userTodo" | "userQa" | "aiTodo" | "aiDone";
-      // A row-level patch merged onto the current book by id (ADR-0455) — or `content` (the whole file) with
-      // `baseHash` = hash of the file it was edited from (refused with `BOOK_STALE` when the book moved on).
-      patch?: BookPatchPayload;
-      content?: string;
-      baseHash?: string;
-      by: string;
-      byLabel?: string;
-      evidence?: { stageId: string; path: string }[];
-      // Approvals committed in the same write (ADR-0438) — applied after this save's authorship stamp,
-      // so the editor counts as the author for separation of duties (`byIsAdmin` lifts it).
-      approve?: string[];
-      unapprove?: string[];
-      signed?: Record<string, ApprovalEntry>;
-      byIsAdmin?: boolean;
-      parties?: Record<string, ApprovalPartyEntry[]>;
-      clearAll?: boolean;
-      // Write rules (ADR-0450/0454), checked by the cli against the current book before anything is written:
-      // `editableTeams` — every added / changed / deleted row's old and new `Team` must be in the list
-      //   (`null` or absent = any team; "" in the list = untagged rows) ⇒ else `BOOK_TEAM_FORBIDDEN`;
-      // `ownRowsOnly` — only rows authored by `by` (or new rows) may change ⇒ else `BOOK_ROW_NOT_OWNED`;
-      // `answerOnly` — no row added / deleted and only the `Answer` cell changes ⇒ else `USER_QA_ANSWER_ONLY`.
-      editableTeams?: string[] | null;
-      ownRowsOnly?: boolean;
-      answerOnly?: boolean;
-      // Rows restored from the trash under a new id keep their request's lane: new group → old group (ADR-0537).
-      lineageFrom?: Record<string, string>;
-    }
-  // A person's review of a `DOC-…` round (ADR-0536), recorded in the docs sidecar: `revise` runs another round,
-  // `proceed` moves the DOC to AI Done. Server-built from machine-0063 (`project.task_approve`).
-  | {
-      kind: "docReview";
-      review: { id: string; round: number; decision: "proceed" | "revise"; opinion: string };
-      by: string;
-      byLabel?: string;
-    }
-  // Stage one evidence file in the profile dir until a `bookSave` commits it (ADR-0404). Server-built
-  // from the multipart upload (machine-0072).
-  | { kind: "evidenceStage"; name: string; contentBase64: string; by: string; byLabel?: string }
-  // Discussion batch (ADR-0454): write the rendered `.4pm/discussions/<DSC-ID>.md` files on the books branch in
-  // ONE commit with the trailers `4PM-Discussion-Batch: <batchId>` / `4PM-Ops: <n>`. A file whose current blob
-  // differs from `expectedSha` (edited in the repo) is skipped, not overwritten (`null` = must not exist yet,
-  // `"*"` = overwrite whatever is there — the managers' re-push).
-  | {
-      kind: "discussionBatch";
-      batchId: string;
-      opCount: number;
-      files: { path: string; content: string; expectedSha: string | null }[];
-      by: string;
-      byLabel?: string;
-    }
-  // Run ONE cycle now through the daemon's own path (the `4pm auto-run` trigger, from the public API —
-  // ADR-0482). Every gate of the cycle still applies; the reply only says whether it was submitted.
-  | { kind: "runNow"; by: string; byLabel?: string }
-  // Restore a mockup / sequence file to its content at `rev` as a new books-branch commit (ADR-0515, machine-0086).
-  | { kind: "evidenceRestore"; path: string; rev: string; by: string; byLabel?: string }
-  // Release a task blocked by a merge conflict with its base — clears `blocked` in the attempts sidecar (ADR-0539).
-  | { kind: "taskRetry"; taskId: string; by: string; byLabel?: string }
-  // Close an AI Done row's follow-up review, or record the follow-up rows created from it (ADR-0616) — the server
-  // checked who may (assignee / requester / ADMIN / PM).
-  | { kind: "doneReview"; rowId: string; action: "close" | "created"; createdIds?: string[]; by: string; byLabel?: string };
-// (The `cron` install/uninstall kind was retired by ADR-0392 — the daemon schedules ticks itself.)
+export type AutonomousWriteRequest = {
+    kind: "settings";
+    settings: string;
+} | {
+    kind: "approvals";
+    taskId: string;
+    approved: boolean;
+    by: string;
+    byLabel?: string;
+    byIsAdmin?: boolean;
+    signed?: Record<string, ApprovalEntry>;
+    parties?: Record<string, ApprovalPartyEntry[]>;
+    clearAll?: boolean;
+} | {
+    kind: "approvalsBatch";
+    approve: string[];
+    unapprove: string[];
+    by: string;
+    byLabel?: string;
+    byIsAdmin?: boolean;
+    signed?: Record<string, ApprovalEntry>;
+    parties?: Record<string, ApprovalPartyEntry[]>;
+    clearAll?: boolean;
+} | {
+    kind: "userTodo";
+    content: string;
+    id?: string;
+    by: string;
+    byLabel?: string;
+} | {
+    kind: "bookSave";
+    book: "userTodo" | "userQa" | "aiTodo" | "aiDone";
+    patch?: BookPatchPayload;
+    content?: string;
+    baseHash?: string;
+    by: string;
+    byLabel?: string;
+    evidence?: {
+        stageId: string;
+        path: string;
+    }[];
+    approve?: string[];
+    unapprove?: string[];
+    signed?: Record<string, ApprovalEntry>;
+    byIsAdmin?: boolean;
+    parties?: Record<string, ApprovalPartyEntry[]>;
+    clearAll?: boolean;
+    editableTeams?: string[] | null;
+    ownRowsOnly?: boolean;
+    answerOnly?: boolean;
+    lineageFrom?: Record<string, string>;
+} | {
+    kind: "docReview";
+    review: {
+        id: string;
+        round: number;
+        decision: "proceed" | "revise";
+        opinion: string;
+    };
+    by: string;
+    byLabel?: string;
+} | {
+    kind: "evidenceStage";
+    name: string;
+    contentBase64: string;
+    by: string;
+    byLabel?: string;
+} | {
+    kind: "discussionBatch";
+    batchId: string;
+    opCount: number;
+    files: {
+        path: string;
+        content: string;
+        expectedSha: string | null;
+    }[];
+    by: string;
+    byLabel?: string;
+} | {
+    kind: "runNow";
+    by: string;
+    byLabel?: string;
+} | {
+    kind: "evidenceRestore";
+    path: string;
+    rev: string;
+    by: string;
+    byLabel?: string;
+} | {
+    kind: "taskRetry";
+    taskId: string;
+    by: string;
+    byLabel?: string;
+} | {
+    kind: "doneReview";
+    rowId: string;
+    action: "close" | "created";
+    createdIds?: string[];
+    by: string;
+    byLabel?: string;
+};
 export interface AutonomousWriteReply {
-  ok: boolean;
-  error?: string;
-  /** A machine-readable failure code — e.g. `APPROVAL_SELF` when SoD blocked a self-approval. @adr 0320 */
-  code?: string;
-  /** The row id that failed (e.g. the self-approved id), for the UI to point at. @adr 0320 */
-  failedId?: string;
-  /**
-   * `BOOK_ROW_HAS_DEPENDENTS`: the rows whose `Depends` still name `failedId`; `BOOK_ROW_CLAIMED`: the worker
-   * holding the claim. @adr 0538
-   */
-  blockers?: string[];
-  /** The refreshed status after the write (so the web updates the badge without a re-read). */
-  status?: AutonomousStatus;
-  /** Rows a `userTodo` / `bookSave` added (by id diff) — counted toward the monthly book cap. @adr 0365 */
-  added?: number;
-  /** The ids of the rows a `userTodo` / `bookSave` added (absent from an older cli). @adr 0449 */
-  addedIds?: string[];
-  /** `discussionBatch`: the commit holding the batch (absent when nothing changed). @adr 0454 */
-  commitSha?: string;
-  /** `discussionBatch`: the blob of every written file. */
-  files?: { path: string; blobSha: string }[];
-  /** `discussionBatch`: files left untouched (`changed` = edited in the repo since `expectedSha`). */
-  skipped?: { path: string; reason: "changed" | "invalid"; currentSha: string | null }[];
-  /** The staged file's handle (`evidenceStage`). @adr 0404 */
-  stageId?: string;
-  /** `bookSave` with `code: "BOOK_CONFLICT"`: the rows (or the text around the table) that could not merge. @adr 0455 */
-  conflicts?: BookConflictPayload[];
-  /** `evidenceRestore`: whether a commit was published or the file already had that content. @adr 0515 */
-  result?: "published" | "unchanged";
+    ok: boolean;
+    error?: string;
+    code?: string;
+    failedId?: string;
+    blockers?: string[];
+    status?: AutonomousStatus;
+    added?: number;
+    addedIds?: string[];
+    commitSha?: string;
+    files?: {
+        path: string;
+        blobSha: string;
+    }[];
+    skipped?: {
+        path: string;
+        reason: "changed" | "invalid";
+        currentSha: string | null;
+    }[];
+    stageId?: string;
+    conflicts?: BookConflictPayload[];
+    result?: "published" | "unchanged";
 }
-
-/** autonomous.evidence — read one committed book evidence file. @api machine-0073 @adr 0404 */
 export interface AutonomousEvidenceRequest {
-  /**
-   * `.4pm/evidence/<BOOK>/<ROW-ID>/<file>`, a mockup / sequence / ER file, or — with a DOC branch as `ref` — a doc file
-   * of the spec's docs folders; anything else is refused.
-   * @adr 0536
-   */
-  path: string;
-  /** A task branch to fall back to when the file is not on `<base>` yet (a DOC branch is read first). */
-  ref?: string;
-  /** Read the file at this commit only (7–40 hex), no fallbacks. @adr 0515 */
-  rev?: string;
+    path: string;
+    ref?: string;
+    rev?: string;
 }
-/** Same shape as `FsDownloadReply`: base64 bytes, or `error`. */
 export type AutonomousEvidenceReply = FsDownloadReply;
-
-/** One version of an evidence file: a commit that touched it. @adr 0515 */
 export interface EvidenceCommit {
-  /** Full commit sha. */
-  sha: string;
-  /** ISO commit time. */
-  at: string;
-  author: string;
-  subject: string;
+    sha: string;
+    at: string;
+    author: string;
+    subject: string;
 }
-
-/** autonomous.evidenceHistory — the versions of one mockup / sequence file. @api machine-0085 @adr 0515 */
 export interface AutonomousEvidenceHistoryRequest {
-  path: string;
+    path: string;
 }
 export interface AutonomousEvidenceHistoryReply {
-  /** Newest first, at most 50. */
-  commits?: EvidenceCommit[];
-  error?: string;
+    commits?: EvidenceCommit[];
+    error?: string;
 }
-
-/** Where a repo's AI Done content is read from (the first that exists — ADR-0582 §3). */
 export type DoneFileSource = "merge" | "branch" | "head" | "pr-ref" | "deleted-tip" | "base";
-
-/** One repo of an AI Done row and the commit its content is read from. @adr 0582 */
 export interface DoneFilesRepo {
-  /** `"."` = the root, else the submodule folder. */
-  dir: string;
-  source: DoneFileSource;
-  /** The branch / ref name read. */
-  ref: string;
-  /** The commit read. */
-  sha: string;
-  /** The repo's "before" (its base sha at delivery, else the current base). */
-  baseSha?: string;
-  /** Set when only the current base was left (the task's own commits are gone). */
-  warning?: "base-fallback";
+    dir: string;
+    source: DoneFileSource;
+    ref: string;
+    sha: string;
+    baseSha?: string;
+    warning?: "base-fallback";
 }
-
-/** autonomous.doneFiles — the files of one AI Done row. @api machine-0098 @adr 0582 */
 export interface AutonomousDoneFilesRequest {
-  rowId: string;
+    rowId: string;
 }
 export interface AutonomousDoneFilesReply {
-  repos?: DoneFilesRepo[];
-  /** Root-relative paths; `repo` = the owning repo's `dir`; `?` = from a legacy `Files` cell. */
-  files?: { path: string; repo: string; status: "A" | "M" | "D" | "R" | "?"; dir?: boolean }[];
-  /** No delivery record: the list comes from the `Files` cell (maybe cut at 20). */
-  legacy?: boolean;
-  /** `not-found` = no such AI Done row. */
-  code?: "not-found";
-  error?: string;
+    repos?: DoneFilesRepo[];
+    files?: {
+        path: string;
+        repo: string;
+        status: "A" | "M" | "D" | "R" | "?";
+        dir?: boolean;
+    }[];
+    legacy?: boolean;
+    code?: "not-found";
+    error?: string;
 }
-
-/** autonomous.doneFile — one file of an AI Done row (or a folder's children with `list`). @api machine-0099 @adr 0582 */
 export interface AutonomousDoneFileRequest {
-  rowId: string;
-  path: string;
-  /** `before` = at the repo's base sha; default `after` (the resolved ref). */
-  side?: "after" | "before";
-  /** Return the folder's children instead of content. */
-  list?: boolean;
+    rowId: string;
+    path: string;
+    side?: "after" | "before";
+    list?: boolean;
 }
 export interface AutonomousDoneFileReply extends FsDownloadReply {
-  source?: DoneFileSource;
-  sha?: string;
-  /** With `list`: the folder's children (root-relative). */
-  entries?: { path: string; type: "file" | "dir" }[];
-  /** The file does not exist on that side (an added file's before / a deleted file's after). */
-  missing?: boolean;
-  code?: "not-found";
+    source?: DoneFileSource;
+    sha?: string;
+    entries?: {
+        path: string;
+        type: "file" | "dir";
+    }[];
+    missing?: boolean;
+    code?: "not-found";
 }
-
-/**
- * Subagents & skills management — the dashboard manages subagent files under
- * `.claude/agents/` and skill folders under `.claude/skills/` on the worker via the cli.
- * @adr 0153
- */
-
-/** One subagent/skill summary (name + parsed frontmatter description). */
 export interface AgentSummary {
-  name: string;
-  description: string;
+    name: string;
+    description: string;
 }
-
-/** agents.list — all subagents + skills of the physic project. */
 export interface AgentsListRequest {
-  /** @adr 0511 */
-  target?: FsTarget;
+    target?: FsTarget;
 }
 export interface AgentsListReply {
-  subagents: AgentSummary[];
-  skills: AgentSummary[];
+    subagents: AgentSummary[];
+    skills: AgentSummary[];
 }
-
-/** agents.read — one subagent/skill's content (+ a subagent's short/long memory). */
 export interface AgentReadRequest {
-  kind: "subagent" | "skill";
-  name: string;
-  /** @adr 0511 */
-  target?: FsTarget;
+    kind: "subagent" | "skill";
+    name: string;
+    target?: FsTarget;
 }
 export interface AgentReadReply {
-  content: string;
-  /** Present only for a subagent: its short/long memory text (empty when absent). */
-  memory?: { short: string; long: string };
+    content: string;
+    memory?: {
+        short: string;
+        long: string;
+    };
 }
-
-/** agents.write — create/edit or delete a subagent/skill. */
 export interface AgentWriteRequest extends FsEditor {
-  kind: "subagent" | "skill";
-  /** `base` ⇒ committed to the remote base. @adr 0511 */
-  target?: FsTarget;
-  name: string;
-  action: "write" | "delete";
-  /** File content (required for `write`). */
-  content?: string;
+    kind: "subagent" | "skill";
+    target?: FsTarget;
+    name: string;
+    action: "write" | "delete";
+    content?: string;
 }
 export interface AgentWriteReply {
-  ok: boolean;
-  error?: string;
-  target?: FsTarget;
+    ok: boolean;
+    error?: string;
+    target?: FsTarget;
 }
-
-/**
- * Security & placeholder management — the dashboard manages the security docs and sets
- * placeholder secrets on the worker. Secret VALUES are write-only: they are never returned.
- * @adr 0154
- */
-
-/** One placeholder/secret key with whether a value is set (never the value itself). */
 export interface SecretKeyStatus {
-  name: string;
-  set: boolean;
+    name: string;
+    set: boolean;
 }
-
-/** secrets.read — the security docs + placeholder keys (no values). */
 export interface SecretsReadRequest {
-  _?: never;
+    _?: never;
 }
 export interface SecretsReadReply {
-  /** AI_SECURITY.md text. */
-  security: string;
-  /** AI_PLACEHOLDER.md text. */
-  placeholder: string;
-  /** Union of placeholder keys + secret keys, each with a set/unset flag (no values). */
-  keys: SecretKeyStatus[];
+    security: string;
+    placeholder: string;
+    keys: SecretKeyStatus[];
 }
-
-/** secrets.write — a discriminated write (docs or a write-only secret value). */
-export type SecretsWriteRequest =
-  | { kind: "security"; content: string }
-  | { kind: "placeholder"; content: string }
-  | { kind: "secret"; key: string; value: string }
-  | { kind: "secretDelete"; key: string };
+export type SecretsWriteRequest = {
+    kind: "security";
+    content: string;
+} | {
+    kind: "placeholder";
+    content: string;
+} | {
+    kind: "secret";
+    key: string;
+    value: string;
+} | {
+    kind: "secretDelete";
+    key: string;
+};
 export interface SecretsWriteReply {
-  ok: boolean;
-  error?: string;
+    ok: boolean;
+    error?: string;
 }
-
-/**
- * Agent tool-permission editor — the dashboard edits the Claude `permissions` block of
- * `.claude/settings.json` (shared, committed) or `.claude/settings.local.json` (per-cli local). The
- * cli is the single writer: it splices only the `permissions` block back, preserving all other
- * settings fields and re-injecting the ADR-0154 secrets `deny` on a shared write.
- * @adr 0183
- */
-
-/** Which settings file the policy applies to. */
 export type AgentToolsScope = "shared" | "local";
-
-/**
- * Claude Code permission mode for `permissions.defaultMode`. Headless-only: 4PM always
- * emits `bypassPermissions`; the other members stay for tolerance when reading a hand-edited file.
- * @adr 0328
- */
 export type AgentToolsMode = "default" | "acceptEdits" | "plan" | "bypassPermissions";
-
-/** The `permissions` block of a Claude settings file. Headless-only: no `ask` list. @adr 0328 */
 export interface AgentToolsPermissions {
-  defaultMode: AgentToolsMode;
-  allow: string[];
-  deny: string[];
+    defaultMode: AgentToolsMode;
+    allow: string[];
+    deny: string[];
 }
-
-/** agentTools.read — the permissions block for one scope. */
 export interface AgentToolsReadRequest {
-  scope: AgentToolsScope;
+    scope: AgentToolsScope;
 }
 export interface AgentToolsReadReply {
-  permissions: AgentToolsPermissions;
+    permissions: AgentToolsPermissions;
 }
-
-/** agentTools.write — replace the permissions block for one scope. */
 export interface AgentToolsWriteRequest {
-  scope: AgentToolsScope;
-  permissions: AgentToolsPermissions;
+    scope: AgentToolsScope;
+    permissions: AgentToolsPermissions;
 }
 export interface AgentToolsWriteReply {
-  ok: boolean;
-  error?: string;
+    ok: boolean;
+    error?: string;
 }
-
-/**
- * One MCP server definition as it travels server ⇄ cli — a `.mcp.json` entry, mirroring
- * `@4pm/dto` `McpServerDefinition` without coupling protocol → dto (validated on each side).
- * @adr 0427
- */
 export type McpServerDefinitionWire = Record<string, unknown>;
-
-/** An approved MCP server pushed to the cli (`ws_token.mcpServers` / `project.tokens.mcpServers`). */
 export interface McpServerPush {
-  name: string;
-  definition: McpServerDefinitionWire;
+    name: string;
+    definition: McpServerDefinitionWire;
 }
-
-/** mcp.scan — parse `.mcp.json` at the served root + each declared repo folder. @adr 0427 */
 export type McpScanRequest = Record<string, never>;
 export interface McpScanReply {
-  files: { path: string; servers: { name: string; definition: McpServerDefinitionWire; hash: string }[]; error?: string }[];
-  error?: string;
+    files: {
+        path: string;
+        servers: {
+            name: string;
+            definition: McpServerDefinitionWire;
+            hash: string;
+        }[];
+        error?: string;
+    }[];
+    error?: string;
 }
-
-/**
- * Marketplace packages on the worker — the cli packs a project artifact into a file set (server zips +
- * stores it), installs a downloaded package version into its kind/provider targets (recording
- * `.4pm/packages.json` with per-target hashes for drift), lists what is installed (with drift and the
- * worker's enabled AI providers), and removes an installed package. The server owns the registry; the
- * cli is the single writer (root-clamped, symlink-safe).
- * @adr 0185 @adr 0460 @adr 0461 @adr 0462
- */
-
-/** Every package kind the cli may be asked to install (mirrors `@4pm/dto` MARKET_PACKAGE_KINDS). */
 export type PackageKind = "subagent" | "skill" | "script" | "vscode-task" | "command" | "hook" | "bundle" | "guide";
-
-/** One package payload file: path relative to the artifact root + base64 bytes. */
 export interface PackagePayloadFile {
-  path: string;
-  contentBase64: string;
+    path: string;
+    contentBase64: string;
 }
-
-/** packages.pack — read a project subagent/skill/command for publishing. */
 export interface PackagesPackRequest {
-  kind: "subagent" | "skill" | "command";
-  /** The on-disk artifact name (subagent `<name>.md` / skill dir `<name>` / command `<name>.md`). */
-  name: string;
+    kind: "subagent" | "skill" | "command";
+    name: string;
 }
 export interface PackagesPackReply {
-  ok: boolean;
-  /** The artifact's files (agent.md + memory + agent.codex.toml / SKILL.md + helpers / command.md). */
-  files: PackagePayloadFile[];
-  error?: string;
+    ok: boolean;
+    files: PackagePayloadFile[];
+    error?: string;
 }
-
-/** packages.install — write a downloaded package version into its targets. */
 export interface PackagesInstallRequest {
-  kind: PackageKind;
-  slug: string;
-  version: string;
-  packageId: string;
-  files: PackagePayloadFile[];
-  /** Provider targets for skill/subagent/hook (absent ⇒ claude). */
-  providers?: ("claude" | "codex")[];
-  /** The package's `requires` (`<kind>:<slug>`), recorded for the requiredBy bookkeeping. */
-  requires?: string[];
-  /** Bundle members (kind `bundle`) — payload under `items/<kind>/<slug>/`. */
-  members?: { kind: Exclude<PackageKind, "bundle" | "guide">; slug: string; providers?: ("claude" | "codex")[] }[];
-  /** Guide target file (kind `guide`). */
-  guideTarget?: "CLAUDE.md" | "AGENT.md";
-  /** Write the guide over an existing target (the payload is the user-accepted Adapt-with-AI text). */
-  guideOverwrite?: boolean;
+    kind: PackageKind;
+    slug: string;
+    version: string;
+    packageId: string;
+    files: PackagePayloadFile[];
+    providers?: ("claude" | "codex")[];
+    requires?: string[];
+    members?: {
+        kind: Exclude<PackageKind, "bundle" | "guide">;
+        slug: string;
+        providers?: ("claude" | "codex")[];
+    }[];
+    guideTarget?: "CLAUDE.md" | "AGENT.md";
+    guideOverwrite?: boolean;
 }
 export interface PackagesInstallReply {
-  ok: boolean;
-  /** sha256 over the written targets (recorded in `.4pm/packages.json`). */
-  sha256?: string;
-  /** Non-blocking notes, e.g. `CODEX_HOOKS_EXPERIMENTAL`. */
-  warnings?: string[];
-  error?: string;
+    ok: boolean;
+    sha256?: string;
+    warnings?: string[];
+    error?: string;
 }
-
-/** One installed package as read from `.4pm/packages.json` + the recomputed on-disk state. */
 export interface InstalledPackageState {
-  slug: string;
-  kind: PackageKind;
-  version: string;
-  packageId: string;
-  installedAt: string;
-  /** sha256 recorded at install time. */
-  sha256: string;
-  /** sha256 recomputed now over the on-disk artifact (differs ⇒ local edit / drift). */
-  currentSha256: string;
-  /** Provider targets installed (absent from an old cli ⇒ claude). */
-  providers?: ("claude" | "codex")[];
-  /** The package's own requires. */
-  requires?: string[];
-  /** Installed packages (`<kind>:<slug>`) that require this one. */
-  requiredBy?: string[];
-  /** Guide target file (kind `guide`). */
-  guideTarget?: "CLAUDE.md" | "AGENT.md";
+    slug: string;
+    kind: PackageKind;
+    version: string;
+    packageId: string;
+    installedAt: string;
+    sha256: string;
+    currentSha256: string;
+    providers?: ("claude" | "codex")[];
+    requires?: string[];
+    requiredBy?: string[];
+    guideTarget?: "CLAUDE.md" | "AGENT.md";
 }
-
-/** packages.list — the installed-package manifest with on-disk hashes for the drift guard. */
 export interface PackagesListRequest {
-  _?: never;
+    _?: never;
 }
 export interface PackagesListReply {
-  installed: InstalledPackageState[];
-  /** AI providers with an enabled profile on this worker (`claude`/`codex`/`antigravity`). */
-  enabledProviders?: string[];
+    installed: InstalledPackageState[];
+    enabledProviders?: string[];
 }
-
-/** packages.remove — delete an installed package's targets + its manifest entry. */
 export interface PackagesRemoveRequest {
-  slug: string;
-  /** Required when the slug is installed under two kinds. */
-  kind?: PackageKind;
-  /** Remove even when other installed packages require it. */
-  force?: boolean;
+    slug: string;
+    kind?: PackageKind;
+    force?: boolean;
 }
 export interface PackagesRemoveReply {
-  ok: boolean;
-  /** Set with `error: "REQUIRED_BY"` — the installed packages that still require it. */
-  requiredBy?: string[];
-  error?: string;
+    ok: boolean;
+    requiredBy?: string[];
+    error?: string;
 }
-
-/**
- * Docs & code dependency graph — the cli builds a graph of the physic project from the 4PM Doc Header
- * (docs) and file headers + imports (code); the web renders it as a graph or a tree. Deterministic +
- * bounded.
- * @adr 0155 @adr 0488
- */
-
-/** Node layer — a document or a source file (`er` = a virtual ER-entity node in `all` mode). */
 export type GraphLayer = "doc" | "code" | "er";
-
-/** Typed edge kinds (v2). */
-export type GraphEdgeType =
-  | "parent"
-  | "implements"
-  | "uses"
-  | "extends"
-  | "supersedes"
-  | "tests"
-  | "related"
-  | "mentions"
-  | "imports";
-
-/** One graph node — a document, a source file, or (`all` mode) an ER entity. */
+export type GraphEdgeType = "parent" | "implements" | "uses" | "extends" | "supersedes" | "tests" | "related" | "mentions" | "imports";
 export interface GraphNode {
-  /** Stable id: the Doc Header `id` (else the relpath) for docs, the relpath for code, `er.<ENTITY>`. */
-  id: string;
-  label: string;
-  /** Doc kind (`req`, `adr`, …, `unclassified`) or code kind (`service`, …). */
-  kind: string;
-  /** The source file (relpath); empty for an `er` node. */
-  file: string;
-  layer: GraphLayer;
-  title?: string;
-  feature?: string[];
-  status?: string;
-  parent?: string;
-  /** Depth in the tree (0 = root). */
-  depth?: number;
+    id: string;
+    label: string;
+    kind: string;
+    file: string;
+    layer: GraphLayer;
+    title?: string;
+    feature?: string[];
+    status?: string;
+    parent?: string;
+    depth?: number;
 }
-
-/** One directed edge (from → to). */
 export interface GraphEdge {
-  from: string;
-  to: string;
-  type: GraphEdgeType;
+    from: string;
+    to: string;
+    type: GraphEdgeType;
 }
-
-/** Deterministic structure metrics (v2). */
 export interface GraphMetrics {
-  /** 1–100. */
-  depthScore: number;
-  maxDepth: number;
-  avgDepth: number;
-  idealDepth: number;
-  cycles: number;
-  unclassified: number;
-  brokenRefs: number;
-  perRoot: { id: string; depthScore: number; maxDepth: number }[];
+    depthScore: number;
+    maxDepth: number;
+    avgDepth: number;
+    idealDepth: number;
+    cycles: number;
+    unclassified: number;
+    brokenRefs: number;
+    perRoot: {
+        id: string;
+        depthScore: number;
+        maxDepth: number;
+    }[];
 }
-
-/** One lint finding (same rules as the `4pm-doc-lint` skill). */
 export interface GraphIssue {
-  id?: string;
-  file: string;
-  rule: string;
-  severity: "error" | "warn";
-  message: string;
+    id?: string;
+    file: string;
+    rule: string;
+    severity: "error" | "warn";
+    message: string;
 }
-
-/** graph.build — build the graph for one mode. */
 export interface GraphBuildRequest {
-  mode: "docs" | "code" | "all";
+    mode: "docs" | "code" | "all";
 }
 export interface GraphBuildReply {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-  /** Node ids with no inbound and no outbound edge. */
-  orphans: string[];
-  /** Tree roots. */
-  roots: string[];
-  metrics: GraphMetrics;
-  issues: GraphIssue[];
+    nodes: GraphNode[];
+    edges: GraphEdge[];
+    orphans: string[];
+    roots: string[];
+    metrics: GraphMetrics;
+    issues: GraphIssue[];
 }
-
-/**
- * RAG capability + install — the dashboard checks whether a worker can run RAG and installs a
- * worker-tuned embedding model through the cli (Node engine: transformers.js + sqlite-vec). Install runs
- * in the background as the agent user; the web polls the status.
- * @adr 0156 @adr 0489
- */
-
-/** One install option (embedding model) tuned to the worker's specs. */
 export interface RagOption {
-  id: string;
-  label: string;
-  model: string;
-  sizeMB: number;
-  recommended: boolean;
-  note?: string;
-  /** What the model reads: English only, many languages, or code. @adr 0642 */
-  languages?: "en" | "multi" | "code";
-  /** SPDX licence of the model (only commercial-friendly ones are offered). @adr 0642 */
-  license?: string;
-  /** The model also indexes source files (kind `code`). @adr 0642 */
-  indexesCode?: boolean;
+    id: string;
+    label: string;
+    model: string;
+    sizeMB: number;
+    recommended: boolean;
+    note?: string;
+    languages?: "en" | "multi" | "code";
+    license?: string;
+    indexesCode?: boolean;
 }
-
-/** The worker's relevant hardware (best-effort). */
 export interface RagMachine {
-  ramGB: number;
-  cpus: number;
-  diskFreeGB: number;
-  gpu: boolean;
+    ramGB: number;
+    cpus: number;
+    diskFreeGB: number;
+    gpu: boolean;
 }
-
-/** One prerequisite check, in display order. @adr 0489 */
 export interface RagPrereq {
-  /** `repo` — the project repo is cloned on this worker (RAG writes nothing before). @adr 0573. */
-  key: "repo" | "node" | "npm" | "sqliteExt" | "disk" | "access" | "network";
-  ok: boolean;
-  /** Short detail (version, size); shown under the label. */
-  detail?: string;
-  /** What to do when not ok (English fallback; the web maps `key` to i18n). */
-  hint?: string;
+    key: "repo" | "node" | "npm" | "sqliteExt" | "disk" | "access" | "network";
+    ok: boolean;
+    detail?: string;
+    hint?: string;
 }
-
-/** rag.status — probe the worker's RAG capability + install state. */
 export interface RagStatusRequest {
-  _?: never;
+    _?: never;
 }
 export interface RagStatusReply {
-  installed: boolean;
-  installing: boolean;
-  /** Node engine probe. */
-  runtime: { node: string; nodeOk: boolean; npm: boolean; sqliteExt: boolean };
-  deps: { transformers: boolean; sqliteVec: boolean };
-  /** Ordered prerequisite checklist. */
-  prereqs?: RagPrereq[];
-  model: { present: boolean; name: string };
-  machine: RagMachine;
-  options: RagOption[];
-  /** Tail of the background install log (progress while installing). */
-  installLog: string[];
-  /** The vector index state. @adr 0157 */
-  index: RagIndex;
-  /** This machine user's search settings. @adr 0496 */
-  settings: RagSettings;
-  /** The optional reranker: downloaded and ready, or being downloaded. @adr 0642 */
-  reranker?: { ready: boolean; installing: boolean };
+    installed: boolean;
+    installing: boolean;
+    runtime: {
+        node: string;
+        nodeOk: boolean;
+        npm: boolean;
+        sqliteExt: boolean;
+    };
+    deps: {
+        transformers: boolean;
+        sqliteVec: boolean;
+    };
+    prereqs?: RagPrereq[];
+    model: {
+        present: boolean;
+        name: string;
+    };
+    machine: RagMachine;
+    options: RagOption[];
+    installLog: string[];
+    index: RagIndex;
+    settings: RagSettings;
+    reranker?: {
+        ready: boolean;
+        installing: boolean;
+    };
 }
-
-/** Per-machine-user RAG search settings (`.4pm/rag/settings.json`). @adr 0496 @adr 0573 */
 export interface RagSettings {
-  /** Chunks scoring below this (0–1) are dropped; 0 = keep all. */
-  minScore: number;
-  /** Files per search when the query has no `k` (1–20). */
-  topK: number;
-  /** Re-score the top chunks with the reranker before grouping (downloads it when first turned on). @adr 0642 */
-  rerank?: boolean;
+    minScore: number;
+    topK: number;
+    rerank?: boolean;
 }
-
-/** rag.settings — save this machine user's search settings. @adr 0496 */
 export type RagSettingsRequest = RagSettings;
 export interface RagSettingsReply {
-  ok: boolean;
-  settings: RagSettings;
-  error?: string;
+    ok: boolean;
+    settings: RagSettings;
+    error?: string;
 }
-
-/** rag.install — start a background install of the chosen model. */
 export interface RagInstallRequest {
-  model: string;
+    model: string;
 }
 export interface RagInstallReply {
-  ok: boolean;
-  started: boolean;
-  error?: string;
+    ok: boolean;
+    started: boolean;
+    error?: string;
 }
-
-/** The vector-index state. @adr 0157 */
 export interface RagIndex {
-  present: boolean;
-  indexing: boolean;
-  chunks: number;
-  indexedAt: string;
-  /** Built by another engine (or model) — reindex needed. @adr 0489 */
-  stale?: boolean;
-  /** Docs indexed. */
-  docs?: number;
+    present: boolean;
+    indexing: boolean;
+    chunks: number;
+    indexedAt: string;
+    stale?: boolean;
+    docs?: number;
 }
-
-/** rag.reindex — (re)build the docs vector index in the background. */
 export interface RagReindexRequest {
-  _?: never;
+    _?: never;
 }
 export interface RagReindexReply {
-  ok: boolean;
-  started: boolean;
-  error?: string;
+    ok: boolean;
+    started: boolean;
+    error?: string;
 }
-
-/** One semantic-search hit. */
 export interface RagQueryResult {
-  path: string;
-  snippet: string;
-  score: number;
-  /** Doc Header title / kind. */
-  title?: string;
-  kind?: string;
-  /** Matching chunks in this file (results are grouped per file). @adr 0496 */
-  hits: number;
-  /** Further matching chunks of the same file (best first, ≤ 3). @adr 0496 */
-  more?: { snippet: string; score: number }[];
+    path: string;
+    snippet: string;
+    score: number;
+    title?: string;
+    kind?: string;
+    hits: number;
+    more?: {
+        snippet: string;
+        score: number;
+    }[];
 }
-
-/** rag.query — semantic search over the index. */
 export interface RagQueryRequest {
-  query: string;
-  k?: number;
-  /** Only chunks whose Doc Header `kind` is listed. */
-  kinds?: string[];
+    query: string;
+    k?: number;
+    kinds?: string[];
 }
 export interface RagQueryReply {
-  results: RagQueryResult[];
-  error?: string;
+    results: RagQueryResult[];
+    error?: string;
 }
-
-/** git.diff request/reply — old (HEAD) vs current content of a file (Monaco diff). */
 export interface GitDiffRequest {
-  path: string;
-  /** `client` ⇒ a `.git` / gitignored path replies empty with `hidden`. @adr 0449 */
-  viewer?: FsViewer;
+    path: string;
+    viewer?: FsViewer;
 }
 export interface GitDiffReply {
-  path: string;
-  /** True when the path is hidden from this viewer (both sides empty). @adr 0449 */
-  hidden?: boolean;
-  /** File content at HEAD (empty if untracked/new). Text files only; empty when `isBinary`. */
-  oldContent: string;
-  /** Current working-tree content. Text files only; empty when `isBinary`. */
-  newContent: string;
-  /**
-   * True when the file is binary (e.g. an image): the text fields are empty and the bytes ride in
-   * the `*Base64` fields instead so the dashboard can render an image before/after.
-   * @adr 0282
-   */
-  isBinary?: boolean;
-  /** Best-effort MIME type (binary only), for the `data:` URL the dashboard builds. */
-  contentType?: string;
-  /** HEAD bytes, base64 (binary only; empty for an untracked/new or over-cap file). */
-  oldContentBase64?: string;
-  /** Working-tree bytes, base64 (binary only; empty for a deleted/unreadable or over-cap file). */
-  newContentBase64?: string;
+    path: string;
+    hidden?: boolean;
+    oldContent: string;
+    newContent: string;
+    isBinary?: boolean;
+    contentType?: string;
+    oldContentBase64?: string;
+    newContentBase64?: string;
 }
-
-/**
- * git history browse (read-through cli). Every request carries a `repo`
- * subdir (relative to the physic project root; "" = the root repo); the cli resolves it
- * inside its serving folder and blocks path traversal.
- * @adr 0089
- */
 export interface GitReposRequest {
-  /** Reserved for future filters; the cli auto-discovers repos under the physic root. */
-  repo?: string;
+    repo?: string;
 }
 export interface GitRepoRef {
-  /** Relative subdir under the physic project root ("" = root/primary repo). */
-  subdir: string;
-  /** Display label (basename of subdir; "" ⇒ the project name). */
-  name: string;
-  /** `origin` remote URL, when set. */
-  remote: string | null;
-  /** Current checked-out branch (`git rev-parse --abbrev-ref HEAD`), when resolvable — null otherwise. */
-  branch?: string | null;
+    subdir: string;
+    name: string;
+    remote: string | null;
+    branch?: string | null;
 }
 export interface GitReposReply {
-  repos: GitRepoRef[];
+    repos: GitRepoRef[];
 }
-
 export interface GitLogRequest {
-  repo: string;
-  skip: number;
-  limit: number;
+    repo: string;
+    skip: number;
+    limit: number;
 }
 export interface GitLogEntry {
-  hash: string;
-  shortHash: string;
-  author: string;
-  /** ISO date. */
-  date: string;
-  subject: string;
+    hash: string;
+    shortHash: string;
+    author: string;
+    date: string;
+    subject: string;
 }
 export interface GitLogReply {
-  entries: GitLogEntry[];
-  /** More (older) commits exist beyond this page. */
-  hasMore: boolean;
+    entries: GitLogEntry[];
+    hasMore: boolean;
 }
-
 export interface GitCommitRequest {
-  repo: string;
-  hash: string;
+    repo: string;
+    hash: string;
 }
 export interface GitCommitFile {
-  path: string;
-  /** git status letter (A|M|D|R…). */
-  status: string;
-  /** Original path when renamed. */
-  oldPath?: string;
+    path: string;
+    status: string;
+    oldPath?: string;
 }
 export interface GitCommitReply {
-  hash: string;
-  author: string;
-  date: string;
-  subject: string;
-  files: GitCommitFile[];
+    hash: string;
+    author: string;
+    date: string;
+    subject: string;
+    files: GitCommitFile[];
 }
-
-/** git.commit-diff request — parent↔commit content of one file (reuses GitDiffReply). */
 export interface GitCommitDiffRequest {
-  repo: string;
-  hash: string;
-  path: string;
+    repo: string;
+    hash: string;
+    path: string;
 }
-
-/** fs.read request/reply — read a text file on the worker (project dashboard). */
 export interface FsReadRequest {
-  path: string;
-  target?: FsTarget;
-  /** `client` ⇒ a `.git` / gitignored path is refused (`hidden`). @adr 0449 */
-  viewer?: FsViewer;
+    path: string;
+    target?: FsTarget;
+    viewer?: FsViewer;
 }
 export interface FsReadReply {
-  path: string;
-  /** UTF-8 file content (empty when unreadable). */
-  content: string;
-  /** Content was capped at the size limit. */
-  truncated: boolean;
-  /** True when the path is hidden from this viewer (content empty). @adr 0449 */
-  hidden?: boolean;
-  /**
-   * Set when the project's working tree was held by another job (the autonomous cycle on a task branch,
-   * a Console run, a git write) at the time of this request — the web warns that the file belongs to
-   * that job's branch / may change under it. @adr 0506
-   */
-  repoBusy?: RepoBusyInfo;
-  /** The target actually used. @adr 0511 */
-  target?: FsTarget;
-  /** `base`: the file's blob id on `origin/<base>` (`null` = absent) — send it back as `expectBlob`. @adr 0511 */
-  blob?: string | null;
+    path: string;
+    content: string;
+    truncated: boolean;
+    hidden?: boolean;
+    repoBusy?: RepoBusyInfo;
+    target?: FsTarget;
+    blob?: string | null;
 }
-
-/** quota.check request/reply (cli → server, before spawning an AI cli —
- *  ADR-0020). */
 export interface QuotaCheckRequest {
-  /** Requested metric (ai_tokens | commands | autonomous_minutes). */
-  metric: string;
-  /** Expected amount to use (defaults to 1). */
-  amount?: number;
+    metric: string;
+    amount?: number;
 }
 export interface QuotaCheckReply {
-  allowed: boolean;
-  /** Smallest remaining limit across the blocking dimensions (null = unlimited). */
-  remaining: number | null;
-  /** Reason when blocked (which dimension exceeded). */
-  blockedBy?: string;
+    allowed: boolean;
+    remaining: number | null;
+    blockedBy?: string;
 }
-
-/** usage.report (cli → server — batch). @adr 0020 */
 export interface UsageReportPayload {
-  events: {
-    metric: string;
-    amount: number;
-    /** ISO timestamp when it occurred. */
-    occurredAt: string;
-    /** The AI-CLI profile (account email / dir) this usage ran under — for the
-     *  per-profile breakdown. Absent for non-AI events.
-     * @adr 0072
-     */
-    profile?: string;
-    /** Claude auth mode this run used: `subscription` (OAuth) vs `api-key`
-     *  (ANTHROPIC_API_KEY, API-billed). Present on ai_tokens events so billing can split them.
-     * @adr 0192 §5
-     */
-    authMode?: "subscription" | "api-key";
-    /** The AI provider that produced an `ai_tokens` event — picks the server's
-     *  quota-token weights. Absent (an older cli) ⇒ weighted as `claude`.
-     * @adr 0340
-     */
-    provider?: "claude" | "codex" | "antigravity";
-    /** The `ai_tokens` split: input + output + cache-read + cache-creation — four
-     * DISJOINT components (codex's cached input is not repeated in `inputTokens`)
-     *  summing to `amount` (the raw total). Present only for `ai_tokens` events.
-     * @adr 0145 @adr 0340
-     */
-    inputTokens?: number;
-    outputTokens?: number;
-    cacheReadTokens?: number;
-    cacheCreationTokens?: number;
-  }[];
+    events: {
+        metric: string;
+        amount: number;
+        occurredAt: string;
+        profile?: string;
+        authMode?: "subscription" | "api-key";
+        provider?: "claude" | "codex" | "antigravity";
+        inputTokens?: number;
+        outputTokens?: number;
+        cacheReadTokens?: number;
+        cacheCreationTokens?: number;
+    }[];
 }
-
-/** One usage window (Claude subscription) — utilization % + reset time. */
 export interface MachineUsageWindow {
-  utilizationPct: number;
-  resetsAt: string | null;
+    utilizationPct: number;
+    resetsAt: string | null;
 }
-
-/**
- * machine.usage (cli → server). Claude subscription usage snapshot from the
- * Anthropic OAuth usage API. Carries only utilization/reset/plan — **never** the OAuth token.
- * @adr 0072
- */
 export interface MachineUsagePayload {
-  /** Subscription plan (e.g. "pro", "max") from the OAuth credentials. */
-  plan: string;
-  /** The AI CLI in use (claude | codex). */
-  aiCli?: string;
-  /** The active profile label: the signed-in account email (`oauthAccount.emailAddress`),
-   *  falling back to the config-dir basename (e.g. ".claude-1"). */
-  profile?: string;
-  /** 5-hour rolling window (`five_hour`). */
-  session: MachineUsageWindow;
-  /** 7-day window (`seven_day`). */
-  weekly: MachineUsageWindow;
-  /** Extra on-demand credits used, when enabled. */
-  extra?: { usedCredits: number; currency: string };
-  /** ISO timestamp of this check. */
-  checkedAt: string;
-  /** Worker network probe — mirrors `@4pm/dto` `WorkerNetworkProbe`; observe-only, the web
-   *  warns when the network is left open. Omitted by old clients. Persisted inside `usageSnapshot`.
-   * @adr 0221
-   */
-  network?: {
-    outbound: "open" | "restricted";
-    inbound: "exposed" | "isolated";
-    containerized: boolean;
+    plan: string;
+    aiCli?: string;
+    profile?: string;
+    session: MachineUsageWindow;
+    weekly: MachineUsageWindow;
+    extra?: {
+        usedCredits: number;
+        currency: string;
+    };
     checkedAt: string;
-  };
+    network?: {
+        outbound: "open" | "restricted";
+        inbound: "exposed" | "isolated";
+        containerized: boolean;
+        checkedAt: string;
+    };
 }
-
-/**
- * tool.health report (cli → server): the last-run result of one external tool the
- * cli invokes directly (claude/codex/gh/glab/git). Sent immediately after each run (last-wins
- * per tool); the server merges it into `MachineLink.usageSnapshot.toolHealth`. Carries only a
- * short human reason on failure — never stdout/secrets.
- * @adr 0223
- */
 export interface ToolHealthReport {
-  /** Normalized tool binary name (`claude｜codex｜gh｜glab｜git｜…`). */
-  tool: string;
-  /** Did the last run succeed? */
-  ok: boolean;
-  /** Short human reason when `ok` is false (e.g. "Not logged in"); null on success. */
-  message: string | null;
-  /** ISO timestamp of the run. */
-  at: string;
+    tool: string;
+    ok: boolean;
+    message: string | null;
+    at: string;
 }
-
-/**
- * cli.update-result report (cli → server): the outcome of a cli self-update attempt
- * (idle-aware update + re-exec). A SUCCESS re-execs the process, so it is signalled by the worker
- * reconnecting on the new version — this report carries a FAILURE (`ok:false`) so the server can
- * persist the reason on `MachineLink.usageSnapshot.cliUpdate` and the web "Update" modal shows it
- * instead of spinning forever. Carries only a short human reason — never stdout/secrets.
- * @adr 0305
- */
 export interface CliUpdateResultReport {
-  /** Did the self-update succeed? Practically always false on the wire (success re-execs). */
-  ok: boolean;
-  /** Why it failed (`CliUpdateErrorCode` of `@4pm/dto`) — clients translate it; absent from an older cli. */
-  code?: string | null;
-  /** Short English reason when `ok` is false (e.g. the tar/download error) — a log / fallback, not UI text; null on success. */
-  message: string | null;
-  /** Version the cli was running when it attempted the update. */
-  fromVersion: string;
-  /** Version it tried to update to (the resolved latest); null when unknown. */
-  toVersion: string | null;
-  /** ISO timestamp of the attempt. */
-  at: string;
+    ok: boolean;
+    code?: string | null;
+    message: string | null;
+    fromVersion: string;
+    toVersion: string | null;
+    at: string;
 }
-
-/** log.read request/reply (server → cli): tail the cli's own JSONL logs. @adr 0072 */
 export interface LogReadRequest {
-  /** Max lines from the newest log file (default 200). */
-  limit?: number;
+    limit?: number;
 }
 export interface LogReadReply {
-  /** Raw JSONL lines (newest file, tail), oldest-first. */
-  lines: string[];
+    lines: string[];
 }
-
-/** command.output-read request/reply (server → cli): read a command's captured output. @adr 0115 */
 export interface CommandOutputRequest {
-  commandId: string;
+    commandId: string;
 }
 export interface CommandOutputReply {
-  /** Full captured output, or null when pruned / never captured on this cli. */
-  output: string | null;
+    output: string | null;
 }
-
-/**
- * machine.log (cli → server): a periodic upload of the cli's own JSONL log file so
- * it is stored + retained server-side and counted in the machine user's storage footprint.
- * Sends one (usually the current day's) file plus the authoritative total of all the cli's log
- * files on the worker, so the server can set the footprint exactly + delta the org counter.
- * @adr 0122
- */
 export interface MachineLogPayload {
-  /** Log file name, e.g. `cli-2026-07-21.jsonl`. */
-  fileName: string;
-  /** Full content of that log file (UTF-8). */
-  content: string;
-  /** Total bytes of ALL the cli's `logs/` files on the worker right now. */
-  totalBytes: number;
+    fileName: string;
+    content: string;
+    totalBytes: number;
 }
-
-/**
- * rental.flush request/reply (server → cli): before a rented machine in `releasing`
- * is scrubbed, ask the worker to flush the data the renter keeps (upload its pending log tail; any
- * per-command history was already pushed on finish). The `ok` ack lets the release sweep finalise
- * at once instead of waiting the full timeout. Request carries no fields.
- * @adr 0210
- */
 export interface RentalFlushRequest {
-  /** Reserved for future selective flush; empty for now. */
-  reason?: "release";
+    reason?: "release";
 }
 export interface RentalFlushReply {
-  /** True once the worker has flushed its pending data and is safe to scrub. */
-  ok: boolean;
+    ok: boolean;
 }
-
-/** command.history (cli → server): one finished command's rich record. @adr 0072 */
 export interface CommandHistoryPayload {
-  commandId: string;
-  cmd: string;
-  args: string[];
-  status: string;
-  exitCode?: number | null;
-  tokens?: number;
-  /** The run's `ai_tokens` split — total is `tokens`. Absent when not an AI run. @adr 0145 */
-  tokensBreakdown?: { input: number; output: number; cacheRead: number; cacheCreation: number };
-  projectId?: string | null;
-  startedAt: string;
-  finishedAt?: string | null;
+    commandId: string;
+    cmd: string;
+    args: string[];
+    status: string;
+    exitCode?: number | null;
+    tokens?: number;
+    tokensBreakdown?: {
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheCreation: number;
+    };
+    projectId?: string | null;
+    startedAt: string;
+    finishedAt?: string | null;
 }
-
-/** git.env request/reply. @api machine-0008 */
 export interface GitEnvRequest {
-  provider: string;
+    provider: string;
 }
 export interface GitEnvReply {
-  installed: boolean;
-  authenticated: boolean;
-  account: string | null;
-  claudeCli: boolean;
+    installed: boolean;
+    authenticated: boolean;
+    account: string | null;
+    claudeCli: boolean;
 }
-
-/**
- * git.ssh-key request/reply — manage the rented worker's ssh deploy key. The
- * keypair is generated **on the worker** (`generate`); only the public key + fingerprint
- * are ever returned. `get` reads the current public key; `delete` removes the keypair.
- * @adr 0173
- */
 export interface GitSshKeyRequest {
-  op: "generate" | "get" | "delete";
+    op: "generate" | "get" | "delete";
 }
 export interface GitSshKeyReply {
-  /** OpenSSH public key present on the worker, or null when none exists. */
-  publicKey: string | null;
-  /** SHA256 fingerprint of the key, when present. */
-  fingerprint: string | null;
+    publicKey: string | null;
+    fingerprint: string | null;
 }
-
-/** project.create request — scaffold from the sample template. @api project-0010 */
 export interface ProjectCreatePayload {
-  projectId: string;
-  /**
-   * Project name = the physic folder name; the cli scaffolds into
-   * `<profileDir>/<projectName>` (folder = name). No user-chosen path.
-   * @adr 0064 @adr 0080
-   */
-  projectName: string;
-  /** The PMSpec collected by the wizard (stored as jsonb server-side). */
-  spec?: Record<string, unknown>;
-  /**
-   * The project's git-auth method at dispatch time — mirrors `ws_token.gitAuth` (`null` =
-   * self-managed). The cli re-applies it before the scaffold's publish step when it differs from the
-   * git-auth it currently runs with (e.g. the App was set up after the cli connected).
-   * @adr 0368
-   */
-  gitAuth?: string | null;
-  /** The GitHub App credential host for `gitAuth = github-app` (mirrors `ws_token.gitAuthHost`). */
-  gitAuthHost?: string | null;
+    projectId: string;
+    projectName: string;
+    spec?: Record<string, unknown>;
+    gitAuth?: string | null;
+    gitAuthHost?: string | null;
 }
-
-/**
- * The scaffold's commit → push → pull-request outcome (ADR-0331, recorded by ADR-0368). Every step is
- * best-effort; `step` + `error` name the first one that failed (`null` = fully published).
- */
 export interface ScaffoldPublishResult {
-  /** A scaffold commit exists (made now, or already present). */
-  committed: boolean;
-  /** The branch reached the remote. */
-  pushed: boolean;
-  /** The published branch (null when HEAD's branch is unknown). */
-  branch: string | null;
-  /** The first step that failed, or null (`submodule` = a declared submodule could not be attached). */
-  step: "submodule" | "commit" | "push" | null;
-  /** The failure reason (English, from git/gh/glab), or null. */
-  error: string | null;
-  /** Per-submodule attach outcome. @adr 0370 */
-  submodules?: { dir: string; ok: boolean; error: string | null }[];
+    committed: boolean;
+    pushed: boolean;
+    branch: string | null;
+    step: "submodule" | "commit" | "push" | null;
+    error: string | null;
+    submodules?: {
+        dir: string;
+        ok: boolean;
+        error: string | null;
+    }[];
 }
-
-/**
- * repo.probe request — server → cli (reply): inspect a repo branch before creating.
- * @api project-0076 @adr 0370
- */
 export interface RepoProbeRequest {
-  url: string;
-  branch: string;
-  base?: { kind: "default" | "branch" | "empty"; branch?: string };
-  /** Declared submodules to probe too. @adr 0371 */
-  submodules?: { subdir: string; url: string; branch: string }[];
+    url: string;
+    branch: string;
+    base?: {
+        kind: "default" | "branch" | "empty";
+        branch?: string;
+    };
+    submodules?: {
+        subdir: string;
+        url: string;
+        branch: string;
+    }[];
 }
-
-/** repo.probe reply — branch existence, remote branches and what the source ref already holds. */
-/**
- * git.prResolve (server → cli): resolve the conflicts of one pull request with the AI — merge `base` into `head`
- * in the repo `repo` ("" = the project root), let the agent resolve, check no marker is left, push `head`.
- * @api machine-0091 @adr 0539
- */
 export interface GitPrResolveRequest {
-  repo: string;
-  number: number;
-  head: string;
-  base: string;
-  title: string;
+    repo: string;
+    number: number;
+    head: string;
+    base: string;
+    title: string;
 }
-
-/** A cleanup candidate as the cli reports it (same shape as `@4pm/dto` `BranchCandidate`). @adr 0540 */
 export interface BranchCandidatePayload {
-  name: string;
-  sha: string;
-  kind: "4pm" | "other";
-  reasons: ("merged" | "pr-closed" | "task-gone" | "stale")[];
-  lastCommitAt: string;
-  author: string;
-  pr: { number: number; state: "open" | "merged" | "closed" } | null;
+    name: string;
+    sha: string;
+    kind: "4pm" | "other";
+    reasons: ("merged" | "pr-closed" | "task-gone" | "stale")[];
+    lastCommitAt: string;
+    author: string;
+    pr: {
+        number: number;
+        state: "open" | "merged" | "closed";
+    } | null;
 }
-
-/** One deletion-log entry (same shape as `@4pm/dto` `BranchDeletion`). @adr 0540 */
 export interface BranchDeletionPayload {
-  id: string;
-  repo: string;
-  name: string;
-  sha: string;
-  reasons: BranchCandidatePayload["reasons"];
-  mode: "manual" | "auto";
-  by?: string;
-  byLabel?: string;
-  at: string;
-  restoredAt?: string;
+    id: string;
+    repo: string;
+    name: string;
+    sha: string;
+    reasons: BranchCandidatePayload["reasons"];
+    mode: "manual" | "auto";
+    by?: string;
+    byLabel?: string;
+    at: string;
+    restoredAt?: string;
 }
-
-/** One branch's result in a delete (same shape as `@4pm/dto` `BranchDeleteResult`). @adr 0540 */
 export interface BranchDeleteResultPayload {
-  name: string;
-  outcome: "deleted" | "skipped" | "failed";
-  detail?: string;
-  keptLocal?: boolean;
+    name: string;
+    outcome: "deleted" | "skipped" | "failed";
+    detail?: string;
+    keptLocal?: boolean;
 }
-
-/**
- * git.branchCleanup (server → cli): one operation on the branches of repo `repo` ("" = the project root).
- * @api machine-0092 @api machine-0093 @api machine-0094 @api machine-0095 @adr 0540
- */
-export type GitBranchCleanupRequest =
-  | { op: "list"; repo: string }
-  | { op: "delete"; repo: string; names: string[]; by: string; byLabel?: string }
-  | { op: "log"; repo: string }
-  | { op: "restore"; repo: string; id: string; by: string; byLabel?: string };
-
-/** git.branchCleanup reply; `code` = `BRANCH_EXISTS` / `BRANCH_RESTORE_UNAVAILABLE` on a refused restore. @adr 0540 */
+export type GitBranchCleanupRequest = {
+    op: "list";
+    repo: string;
+} | {
+    op: "delete";
+    repo: string;
+    names: string[];
+    by: string;
+    byLabel?: string;
+} | {
+    op: "log";
+    repo: string;
+} | {
+    op: "restore";
+    repo: string;
+    id: string;
+    by: string;
+    byLabel?: string;
+};
 export interface GitBranchCleanupReply {
-  ok: boolean;
-  error?: string;
-  code?: "BRANCH_EXISTS" | "BRANCH_RESTORE_UNAVAILABLE";
-  candidates?: BranchCandidatePayload[];
-  results?: BranchDeleteResultPayload[];
-  log?: BranchDeletionPayload[];
+    ok: boolean;
+    error?: string;
+    code?: "BRANCH_EXISTS" | "BRANCH_RESTORE_UNAVAILABLE";
+    candidates?: BranchCandidatePayload[];
+    results?: BranchDeleteResultPayload[];
+    log?: BranchDeletionPayload[];
 }
-
-/** git.prResolve reply: started in the background, or why not (busy tree, bad input, no git host). @adr 0539 */
 export interface GitPrResolveReply {
-  started: boolean;
-  error?: string;
+    started: boolean;
+    error?: string;
 }
-
 export interface RepoProbeReply {
-  branchExists: boolean;
-  defaultBranch: string | null;
-  branches: string[];
-  source: {
-    ref: string;
-    hasScaffold: boolean;
-    templateVersion: string | null;
-    keep: string[];
-    overwrite: string[];
-    tracking: string[];
-    /** The parsed `project.spec.json` at `ref`; null when absent or unreadable. @adr 0393 */
-    spec?: Record<string, unknown> | null;
-    /** `project.spec.json` exists but could not be read (bad JSON / too large) — ADR-0393. */
-    specError?: string | null;
-    /** `model` of `.claude/settings.json` at `ref`; null when absent. @adr 0394 */
-    settingsModel?: string | null;
-  } | null;
-  /** Base branch protected on the host; null = unknown / missing. @adr 0371 */
-  protected: boolean | null;
-  submodules: { subdir: string; url: string; branch: string; exists: boolean; protected: boolean | null; error: string | null }[];
-  error: string | null;
+    branchExists: boolean;
+    defaultBranch: string | null;
+    branches: string[];
+    source: {
+        ref: string;
+        hasScaffold: boolean;
+        templateVersion: string | null;
+        keep: string[];
+        overwrite: string[];
+        tracking: string[];
+        spec?: Record<string, unknown> | null;
+        specError?: string | null;
+        settingsModel?: string | null;
+    } | null;
+    protected: boolean | null;
+    submodules: {
+        subdir: string;
+        url: string;
+        branch: string;
+        exists: boolean;
+        protected: boolean | null;
+        error: string | null;
+    }[];
+    error: string | null;
 }
-
-/** ai.models request — server → cli (reply): list the models the worker's AI CLI supports. @adr 0394 */
 export interface AiModelsRequest {
-  provider: "claude" | "codex" | "antigravity";
+    provider: "claude" | "codex" | "antigravity";
 }
-
-/** ai.models reply — the CLI's own model list (empty + `error` when it couldn't be read). */
 export interface AiModelsReply {
-  provider: "claude" | "codex" | "antigravity";
-  models: { value: string; resolvedModel: string | null; displayName: string; description: string }[];
-  /** The provider's CLI is not on the worker. Absent from an older cli. @adr 0396 */
-  cliMissing?: boolean;
-  /** The cli is installing the missing CLI in the background — ask again shortly. @adr 0396 */
-  installing?: boolean;
-  /** The CLI is installed but the agent user cannot execute it (after the cli's repair); `error` says why. @adr 0502 */
-  cliBlocked?: boolean;
-  error: string | null;
+    provider: "claude" | "codex" | "antigravity";
+    models: {
+        value: string;
+        resolvedModel: string | null;
+        displayName: string;
+        description: string;
+    }[];
+    cliMissing?: boolean;
+    installing?: boolean;
+    cliBlocked?: boolean;
+    error: string | null;
 }
-
-/** project.publish request — server → cli (reply): retry the scaffold publish. @api project-0074 @adr 0368 */
 export interface ProjectPublishRequest {
-  projectId: string;
+    projectId: string;
 }
-
-/** project.publish reply — the new publish outcome (or an error when the folder is missing). */
 export interface ProjectPublishReply {
-  publish: ScaffoldPublishResult | null;
-  error?: string;
+    publish: ScaffoldPublishResult | null;
+    error?: string;
 }
-
-/** physic.sync — server → cli: rename/recreate the physic folder on project rename
- * (folder = project name).
- * @adr 0064
- */
 export interface PhysicSyncPayload {
-  /** Previous folder name to remove (null = only create the new one). */
-  oldName: string | null;
-  /** New folder name (= new project name) to create. */
-  newName: string;
-  /**
-   * The link switched to ANOTHER project: delete the old folder (even when it has the same name) instead
-   * of moving it, pause the engine, scrub the ssh key, then create the new folder and clone. Absent = a
-   * rename of the same project (moved in place).
-   * @adr 0569
-   */
-  replace?: boolean;
+    oldName: string | null;
+    newName: string;
+    replace?: boolean;
 }
-
-/** physic.delete — server → cli: the project was deleted ⇒ delete the physic folder
- * `<profile>/<name>`; the cli keeps its pairing and goes idle.
- * @adr 0068
- */
 export interface PhysicDeletePayload {
-  /** Physic folder name (= project name) to delete. */
-  name: string;
+    name: string;
 }
-
-/**
- * project.tokens — server → cli: a project's token settings were **saved**, so push the
- * fresh knobs to every connected serving cli. `ws_token` still **seeds** these on (re)connect; this
- * channel only carries **updates** so a change (e.g. `aiRunTimeoutSec`) applies on the next run
- * instead of only after a reconnect. The cli applies them through the **same** `writeProfileConfig`
- * knob-write it runs from `ws_token.projectTokens` (mirror the fields ADR-0081/0243/0244/0245 deliver).
- * @adr 0256
- */
 export interface ProjectTokensPayload {
-  /**
-   * The served project's output language (English name from spec `output_lang`) for the repo-output prompts; `null` =
-   * no rule. `undefined` (an older server) ⇒ the cli falls back to `project.spec.json`.
-   * @adr 0581
-   */
-  outputLang?: string | null;
-  /** Project AI-run wall-clock override (seconds); `0` = inherit the machine-user default. @adr 0243 */
-  aiRunTimeoutSec: number;
-  /** Project idle auto-clear override (minutes); `0` = inherit the machine-user default. @adr 0244 */
-  autoClearIdleMinutes: number;
-  /** Rotate the Claude profile at/over this 5h-session utilization %; `0` = off. @adr 0081 */
-  sessionSwitchPct: number;
-  /** Reject a prompt whose estimated tokens exceed this; `0` = off. @adr 0081 */
-  perPromptTokenLimit: number;
-  /** Shared-AI-memory override: `inherit` ⇒ use the machine-user config. @adr 0245 */
-  memory?: { mode: "inherit" | "on" | "off"; budgetChars: number };
-  /** Folder-scope hardening (project aiScope) — prepend a guard to every AI prompt (ADR-0082/aiScope). */
-  restrictToFolder?: boolean;
-  /**
-   * Git-auth method — mirrors `ws_token.gitAuth` (`null` = self-managed / nothing special).
-   * `undefined` (an older server) ⇒ the cli leaves its git-auth untouched.
-   * @adr 0368
-   */
-  gitAuth?: string | null;
-  /** GitHub App credential host (mirrors `ws_token.gitAuthHost`); null when not on the App. */
-  gitAuthHost?: string | null;
-  /**
-   * Approved MCP servers — mirrors `ws_token.mcpServers`. `undefined` (an older server) ⇒
-   * the cli keeps its current list.
-   * @adr 0427
-   */
-  mcpServers?: McpServerPush[];
-  /**
-   * The project's effective network policy — mirrors `ws_token.network`. `undefined` (an older server) ⇒
-   * the cli keeps its current policy.
-   * @adr 0439
-   */
-  network?: NetworkPolicyPush;
-  /**
-   * The team codes this cli serves in the project (its routing entries' teams) — `null` = all teams.
-   * `undefined` (an older server) ⇒ the cli keeps its last value.
-   * @adr 0450
-   */
-  servedTeams?: string[] | null;
-  /**
-   * The served project — also the project bound into approval signatures (mirrors `ws_token.approvalProjectId`);
-   * `null` = the link serves nothing. `undefined` (an older server) ⇒ the cli keeps its current value.
-   * @adr 0569
-   */
-  projectId?: string | null;
-  /** Outbound-review policy of this link (mirrors `ws_token.outboundReview`). @adr 0569 */
-  outboundReview?: OutboundReviewPush | null;
-  /** Declared repos of the served project (mirrors `ws_token.repos`), cloned by the following `physic.sync`. @adr 0569 */
-  repos?: RepoPush[];
-  /**
-   * The AI memory stored for this link in the served project — sent only by a served-project switch push; the cli
-   * replaces its memory with it when `projectId` changed (absent ⇒ empty).
-   * @adr 0569
-   */
-  memoryText?: string;
+    outputLang?: string | null;
+    aiRunTimeoutSec: number;
+    autoClearIdleMinutes: number;
+    sessionSwitchPct: number;
+    perPromptTokenLimit: number;
+    memory?: {
+        mode: "inherit" | "on" | "off";
+        budgetChars: number;
+    };
+    restrictToFolder?: boolean;
+    gitAuth?: string | null;
+    gitAuthHost?: string | null;
+    mcpServers?: McpServerPush[];
+    network?: NetworkPolicyPush;
+    servedTeams?: string[] | null;
+    projectId?: string | null;
+    outboundReview?: OutboundReviewPush | null;
+    repos?: RepoPush[];
+    memoryText?: string;
 }
-
-/** One declared repo — structurally mirrors `@4pm/dto` `WsTokenRepo`. @adr 0569 */
 export interface RepoPush {
-  primary: boolean;
-  url?: string;
-  subdir?: string;
-  branch?: string;
+    primary: boolean;
+    url?: string;
+    subdir?: string;
+    branch?: string;
 }
-
-/** Outbound-review policy — structurally mirrors `@4pm/dto` `OutboundReviewCliPolicy`. @adr 0569 */
 export interface OutboundReviewPush {
-  enabled: boolean;
-  ruleCheck: boolean;
-  aiReview: boolean;
-  isOutbound: boolean;
-  allowedRepos: string[];
+    enabled: boolean;
+    ruleCheck: boolean;
+    aiReview: boolean;
+    isOutbound: boolean;
+    allowedRepos: string[];
 }
-
-/**
- * A network egress policy pushed to the cli — structurally mirrors `@4pm/dto` `NetworkPolicy` (the org
- * denylist already merged into `deny`). `port` null = any port.
- * @adr 0439
- */
 export interface NetworkPolicyPush {
-  mode: "off" | "audit" | "enforce";
-  allow: { target: string; port: number | null }[];
-  deny: { target: string; port: number | null }[];
-  /** Org denylist alone — applied to the cli's project-less runs (support, FAQ, research…). */
-  orgDeny: { target: string; port: number | null }[];
-  /** The served project the policy belongs to (events are attributed to it); null = none. */
-  projectId: string | null;
+    mode: "off" | "audit" | "enforce";
+    allow: {
+        target: string;
+        port: number | null;
+    }[];
+    deny: {
+        target: string;
+        port: number | null;
+    }[];
+    orgDeny: {
+        target: string;
+        port: number | null;
+    }[];
+    projectId: string | null;
 }
-
-/** One aggregated egress decision (per run × host × port × decision × minute). @adr 0439 */
 export interface NetworkEventAggregate {
-  host: string;
-  port: number;
-  decision: "allowed" | "would_block" | "blocked" | "denied";
-  mode: "off" | "audit" | "enforce";
-  count: number;
-  firstAt: string;
-  lastAt: string;
-  /** null = a project-less run (support, research…). */
-  projectId: string | null;
-  runId?: string;
-  taskId?: string;
+    host: string;
+    port: number;
+    decision: "allowed" | "would_block" | "blocked" | "denied";
+    mode: "off" | "audit" | "enforce";
+    count: number;
+    firstAt: string;
+    lastAt: string;
+    projectId: string | null;
+    runId?: string;
+    taskId?: string;
 }
-
-/** network.events — cli → server (one-way): aggregated decisions + how many were dropped offline. @adr 0439 */
 export interface NetworkEventsPayload {
-  events: NetworkEventAggregate[];
-  dropped?: number;
+    events: NetworkEventAggregate[];
+    dropped?: number;
 }
-
-/**
- * One declared repo of a project.add request — mirrors `@4pm/dto` `RepoSpec`
- * without coupling protocol → dto. `op:"existing"` clones `url`; `op:"create"` inits a
- * fresh repo. The `primary` repo lands at the target root, sub-repos in `subdir`.
- * @adr 0073
- */
 export interface ProjectAddRepo {
-  role?: string;
-  primary?: boolean;
-  op?: "create" | "existing";
-  provider?: "gh" | "glab";
-  name?: string;
-  visibility?: "private" | "public";
-  /** Existing repo url to clone/link (op=existing). */
-  url?: string;
-  /** Sub-repo subfolder under the target root. */
-  subdir?: string;
-  /** Primary branch to clone / check out; empty/undefined ⇒ the repo's default branch. @adr 0292 */
-  branch?: string;
-  defaultBranch?: string;
-  gitignore?: string;
-  commitConvention?: string;
+    role?: string;
+    primary?: boolean;
+    op?: "create" | "existing";
+    provider?: "gh" | "glab";
+    name?: string;
+    visibility?: "private" | "public";
+    url?: string;
+    subdir?: string;
+    branch?: string;
+    defaultBranch?: string;
+    gitignore?: string;
+    commitConvention?: string;
 }
-
-/**
- * project.add request — register an existing project by cloning/linking its repos.
- * No user-chosen path: the cli derives
- * `<profileDir>/<projectName>` and returns it; no scaffold/AI-init.
- * @api project-0011 @adr 0117 @adr 0080
- */
 export interface ProjectAddPayload {
-  projectId: string;
-  /** Project name = the physic folder name (folder = name). @adr 0064 */
-  projectName: string;
-  /** Multi-repo declaration: ≥1 repo, exactly one primary. @adr 0073 */
-  repos: ProjectAddRepo[];
-  /**
-   * On-demand repo (re)provisioning mode — used by the "update repos" action. `sync`
-   * (default, and the clone-on-connect / retry behaviour): clone a missing repo, else fetch +
-   * check out the configured branch + fast-forward pull an existing one. `force`: delete each
-   * repo folder and re-clone it fresh (destructive).
-   * @adr 0292
-   */
-  mode?: "sync" | "force";
-  /**
-   * Subdirs to **scaffold** after cloning — the add-one-repo-from-Git-subtab flow:
-   * for each listed sibling folder the cli applies the `project-sample` template + writes the spec +
-   * runs AI-init (needs `spec`). Empty/absent ⇒ clone only (Skip, or a plain re-provision).
-   * @adr 0299 §4
-   */
-  scaffoldRepos?: string[];
-  /**
-   * Submodule paths to **remove** after the sync (`deinit` + `git rm` + commit + push) — the Git tab
-   * Configuration "Remove submodule"; refused when one holds local work.
-   * @adr 0441
-   */
-  detachSubmodules?: string[];
-  /**
-   * The project spec. With `scaffoldRepos`: used to scaffold those folders. Without
-   * (the Add-existing wizard): written back as the root's `project.spec.json`, then
-   * committed + pushed to the declared branch. Absent ⇒ clone only (provision).
-   * @adr 0299 §4 @adr 0393
-   */
-  spec?: Record<string, unknown>;
-  /**
-   * The project's git-auth at dispatch (as `ProjectCreatePayload.gitAuth`), applied before the clone —
-   * the Add-existing push and a provision of a worker attached after it connected.
-   * @adr 0393 @adr 0405
-   */
-  gitAuth?: string | null;
-  /** The GitHub App credential host for `gitAuth = github-app` (mirrors `ws_token.gitAuthHost`). */
-  gitAuthHost?: string | null;
+    projectId: string;
+    projectName: string;
+    repos: ProjectAddRepo[];
+    mode?: "sync" | "force";
+    scaffoldRepos?: string[];
+    detachSubmodules?: string[];
+    spec?: Record<string, unknown>;
+    gitAuth?: string | null;
+    gitAuthHost?: string | null;
 }
-
-/** The cli's reply for project.create / project.add (cli-ws 0002). */
 export interface ProjectJobReply {
-  ok: boolean;
-  /** The scaffolded/prepared path on the worker. */
-  path?: string;
-  /** Error message when ok=false (English — log/fallback). */
-  error?: string;
-  /** The step that failed when ok=false — surfaced on the project as `failedStep`. @adr 0263 */
-  step?: string;
-  /**
-   * project.create / spec-carrying project.add — the commit → push outcome, stored as `projects.scaffold_publish`.
-   * @adr 0393 @adr 0368
-   */
-  publish?: ScaffoldPublishResult;
+    ok: boolean;
+    path?: string;
+    error?: string;
+    step?: string;
+    publish?: ScaffoldPublishResult;
 }
-
-/** project.progress event — streamed to the browser during scaffold. @adr 0022 */
 export interface ProjectProgressPayload {
-  projectId: string;
-  /** Short step id (e.g. copy · spec · git · done). */
-  step: string;
-  /** Human message for the step. */
-  message: string;
-  /**
-   * Set by the server when it blanked `message` (a failure step or raw technical text): the classified
-   * `ProjectFailCode` (`@4pm/dto`) the web shows instead. Never sent by the cli. @adr 0501
-   */
-  failCode?: string;
-  /** Terminal event. */
-  done?: boolean;
+    projectId: string;
+    step: string;
+    message: string;
+    failCode?: string;
+    done?: boolean;
 }
-
-// AI spec-assist (suggest/review/compose) no longer uses dedicated ai.* WS messages
-// (ADR-0100): the web dispatches prompts via command.dispatch({ ai:true }) → the cli's
-// profile-failover AI path, and parses the streamed output client-side.
-
-/**
- * Outbound review. A machine cli asks the server to have an outbound cli vet an
- * AI input before spawning: `review.request` (machine→server) → `review.evaluate`
- * (server→outbound) → `review.result` (outbound→server, forwarded to the requester).
- * @adr 0082
- */
 export interface ReviewRequestPayload {
-  /** The command this review gates (correlates the verdict + the 2nd server gate). */
-  commandId: string;
-  /** The input to vet (verbatim prompt the machine cli is about to run). */
-  prompt: string;
+    commandId: string;
+    prompt: string;
 }
-/** server → outbound cli: evaluate `prompt` against the project policy. */
 export interface ReviewEvaluatePayload {
-  commandId: string;
-  prompt: string;
-  /** Which engines to run + the scoping policy. @adr 0082 */
-  ruleCheck: boolean;
-  aiReview: boolean;
-  /** Repos commits may target (host/owner/name); empty = no repo restriction. */
-  allowedRepos: string[];
-  /**
-   * Rule-scan regex the reviewer applies, already resolved by the server
-   * (project override or the built-in default). Each entry is a `/body/flags` literal or a
-   * bare source. Absent (older server) ⇒ the reviewer falls back to its built-in defaults.
-   * @adr 0087
-   */
-  secretPatterns?: string[];
-  envPatterns?: string[];
-  /** Path the input may edit within (e.g. profiles/<profile>/<project-name>). */
-  projectPath?: string;
+    commandId: string;
+    prompt: string;
+    ruleCheck: boolean;
+    aiReview: boolean;
+    allowedRepos: string[];
+    secretPatterns?: string[];
+    envPatterns?: string[];
+    projectPath?: string;
 }
-/** outbound cli → server (and forwarded to the requester): the verdict. */
 export interface ReviewResultPayload {
-  commandId: string;
-  /** true = OK (safe to spawn); false = NG (blocked). */
-  ok: boolean;
-  /** Violation categories when NG (never carries secret values). */
-  reasons: string[];
-  /** Tokens the aiReview consumed (metered like a run). @adr 0072 */
-  tokens?: number;
+    commandId: string;
+    ok: boolean;
+    reasons: string[];
+    tokens?: number;
 }
-
-/** The autonomous conditions a manager must see. @adr 0371 §9 */
-export type AutonomousAlertKind =
-  // The books branch can't take the worker's pushes (ADR-0448; replaced `base-protected`).
-  | "books-protected"
-  | "claim-lost"
-  | "task-failed-limit"
-  | "task-split"
-  | "task-question"
-  // An agent run edited the cli-owned sidecars (approvals / authors / attempts); the edit was reverted (ADR-0438).
-  | "sidecar-tamper"
-  // The cycle found uncommitted changes outside a task branch and stashed them under a named stash (ADR-0506).
-  | "autosave"
-  // The worker paused itself after N consecutive failed cycles (ADR-0507).
-  | "auto-paused"
-  // A project lifecycle pause / close stopped running workers — sent once per project (ADR-0507).
-  | "suspended"
-  // A resumed task's branch conflicts with `<base>` and the agent could not resolve it — task blocked (ADR-0539).
-  | "merge-conflict"
-  // A delivered task's PR conflicts with `<base>` (the pre-delivery merge failed — ADR-0539).
-  | "pr-conflict"
-  // `skipPullRequest`: the direct merge into `<base>` failed (conflict / protected / rejected) — a PR was opened (ADR-0539).
-  | "direct-merge-failed"
-  // The AI could not resolve a PR's conflicts (ADR-0539).
-  | "pr-resolve-failed"
-  // A DOC round finished — its docs wait for a person's review (ADR-0536).
-  | "docs-review"
-  // The asset generator refused an AST round (no credits, refused token, not enabled) — the row waits (ADR-0615).
-  | "asset-generator"
-  // Intake skipped: a book reached the subscription's monthly new-row limit (ADR-0541).
-  | "book-cap"
-  // A request / DOC PR was closed without merge — its group waits until Retry (ADR-0563).
-  | "pr-closed"
-  // A submodule PR a root PR waits for was closed without merge — the root PR stays a draft (ADR-0579).
-  | "submodule-pr-closed"
-  // A root PR that only moves submodule pointers could not be merged by the worker — merge it by hand (ADR-0579).
-  | "pointer-pr-needs-merge"
-  // The project's git credential can't reach / push a repository — the cycle stopped before claiming, or a push was
-  // rejected mid-run (ADR-0661).
-  | "git-access"
-  // An informational cycle event for automation rules (ADR-0458): no notification, `event` carries it.
-  | "event";
-
-/** autonomous.alert — cli → server (one-way): notify the project's managers (deduplicated per day). */
+export type AutonomousAlertKind = "books-protected" | "claim-lost" | "task-failed-limit" | "task-split" | "task-question" | "sidecar-tamper" | "autosave" | "auto-paused" | "suspended" | "merge-conflict" | "pr-conflict" | "direct-merge-failed" | "pr-resolve-failed" | "docs-review" | "asset-generator" | "book-cap" | "pr-closed" | "submodule-pr-closed" | "pointer-pr-needs-merge" | "git-access" | "event";
 export interface AutonomousAlertPayload {
-  kind: AutonomousAlertKind;
-  /** The task concerned (`TSK-…`), when any. */
-  task?: string;
-  /** The repo / branch concerned (books-protected). */
-  repo?: string;
-  branch?: string;
-  /** English detail line (the notification renders its own localized title). */
-  message: string;
-  /**
-   * `kind: "event"`: the automation event — `type` from the event catalog (`task.claimed`,
-   * `task.delivered`, `task.done`, `task.failed`, `task.timeout`, `cycle.paused`, `pr.opened`) and its fields.
-   * @adr 0458
-   */
-  event?: { type: string; fields: Record<string, string | number | boolean> };
+    kind: AutonomousAlertKind;
+    task?: string;
+    repo?: string;
+    branch?: string;
+    message: string;
+    event?: {
+        type: string;
+        fields: Record<string, string | number | boolean>;
+    };
 }
-
-/**
- * discussions.read (server → cli, reply): the discussion files on the books branch — every file's blob
- * (`list`), the content of `paths`, and whether a batch commit exists (`batchId` → its sha, by trailer).
- * @adr 0454
- */
 export interface DiscussionsReadRequest {
-  list?: boolean;
-  paths?: string[];
-  batchId?: string;
+    list?: boolean;
+    paths?: string[];
+    batchId?: string;
 }
 export interface DiscussionsReadReply {
-  files: { path: string; blobSha: string; content?: string }[];
-  /** The commit whose trailer names `batchId`, null when none; absent when not asked. */
-  batchCommit?: string | null;
-  error?: string;
+    files: {
+        path: string;
+        blobSha: string;
+        content?: string;
+    }[];
+    batchCommit?: string | null;
+    error?: string;
 }

@@ -2,7 +2,7 @@
  * Server-managed AI prompt overrides — the admin-edited templates for cli-built prompts,
  * delivered on each ws_token (`promptOverrides`) keyed by prompt key → per-locale content. A builder
  * calls `resolveCliPrompt(key, vars)`: it renders the admin override for the active locale (falling
- * back to the base `en`) when present, else the built-in default (`@4pm/constants`
+ * back to the base `en`) when present, else the built-in default (`@4pm/shared-constants`
  * `CLI_PROMPT_DEFAULTS` — the `cli.*` templates only). Platform-wide; refreshed on each
  * (re)connect, so an older server (no field) simply leaves the built-in default in place.
  *
@@ -12,7 +12,7 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { AI_PROMPT_META, CLI_PROMPT_DEFAULTS, renderCatalogPrompt, specOutputLanguage } from "@4pm/constants";
+import { AI_PROMPT_META, CLI_PROMPT_DEFAULTS, renderCatalogPrompt, specOutputLanguage } from "@4pm/shared-constants";
 import { getLocale } from "../../i18n";
 
 /** The current overrides map ({ "<key>": { "<locale>": "content" } }); empty until a ws_token sets it. */

@@ -9,7 +9,7 @@
  * @adr 0245 @adr 0340 @adr 0520
  */
 import { ONE_SHOT_DISALLOWED_CLAUDE_TOOLS, type AiRunPolicy } from "../../utils/ai-cli";
-import { stripUntrustedMarkers } from "@4pm/constants";
+import { stripUntrustedMarkers } from "@4pm/shared-constants";
 import { resolveCliPrompt } from "../ai/prompt-overrides";
 import type { AiUsage } from "../ai/ai-stream";
 import type { AiTextRunner } from "../ai/ai-text-run";

@@ -1,7 +1,7 @@
 /**
  * Vendor-trim tool (ADR-0194 §1). Produces `vendor/@4pm/*` for the standalone public
  * `4azuo/4pm-cli` repo: only the shared-package source files the CLI actually reaches are
- * copied, so the 175/193 server-only symbols in `@4pm/dto`/`@4pm/constants` never leave the
+ * copied, so the 175/193 server-only symbols in `@4pm/dto`/`@4pm/shared-constants` never leave the
  * monorepo (ADR-0194 Phase-0 finding #4).
  *
  * How: the CLI imports the package *barrels* (`@4pm/dto`, `@4pm/ws`, …), so a file-level
@@ -9,6 +9,10 @@
  * CLI imports to its *defining* source file via the TypeScript checker (which sees through
  * the barrel), then take the transitive closure over those files' own intra-shared imports.
  * A curated `index.ts` re-exporting only the copied files replaces the original barrel.
+ *
+ * Guards (ADR-0714): reaching a server-only package (`@4pm/internal-constants`, `@4pm/env`) fails the
+ * run and writes nothing; every vendored `.ts` file is re-printed without comments (a generated header
+ * only), so the public copy carries no internal notes, env names or doc ids.
  *
  * Usage:
  *   node scripts/vendor-shared.mjs            # report only (default; writes nothing)
@@ -20,6 +24,7 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -52,6 +57,8 @@ const PKG_ROOTS = (() => {
   return roots;
 })();
 const PACKAGES = PKG_ROOTS;
+/** Server-only packages that must never reach the public cli repo. */
+const DENIED_PACKAGES = new Set(["@4pm/internal-constants", "@4pm/env"]);
 /** External npm deps the vendored files import (excludes `node:` builtins) — for package.json. */
 const externalDeps = new Set();
 
@@ -88,6 +95,10 @@ const host = ts.createCompilerHost(program.getCompilerOptions());
 
 /** Files to vendor. */
 const collected = new Set();
+/** For each collected file, the file whose import reached it (to name the culprit of a denied package). */
+const reachedFrom = new Map();
+/** The file whose imports are being processed (the `from` of every `add`). */
+let currentFile = null;
 /** Work queue of files whose imports still need processing. */
 const queue = [];
 /** Namespace-import warnings (`import * as X from "@4pm/..."`) — can't be trimmed. */
@@ -104,6 +115,7 @@ function add(file) {
   const abs = resolve(file);
   if (!packageOf(abs) || isTest(abs) || isPackageBarrel(abs) || collected.has(abs)) return;
   collected.add(abs);
+  if (currentFile) reachedFrom.set(abs, currentFile);
   queue.push(abs);
 }
 
@@ -119,6 +131,7 @@ function collectSymbol(identifier) {
 function processFile(file, isCliSrc) {
   const sf = program.getSourceFile(file);
   if (!sf) return;
+  currentFile = resolve(file);
   sf.forEachChild((node) => {
     const isImport = ts.isImportDeclaration(node);
     const isExport = ts.isExportDeclaration(node);
@@ -163,7 +176,26 @@ for (const sf of program.getSourceFiles()) {
 // 2. Transitive closure over the collected shared files.
 while (queue.length) processFile(queue.pop(), false);
 
-// 3. Group by package + report.
+// 3. Refuse a server-only package: print the import chain back to the cli file and stop.
+const denied = [...collected].filter((f) => DENIED_PACKAGES.has(packageOf(f)));
+if (denied.length) {
+  console.error("vendor-shared: the cli reaches a server-only package — nothing was written:");
+  for (const file of denied) {
+    const chain = [file];
+    while (reachedFrom.has(chain[chain.length - 1])) chain.push(reachedFrom.get(chain[chain.length - 1]));
+    console.error(`  ${packageOf(file)}: ${chain.reverse().map((f) => relative(repoRoot, f)).join(" → ")}`);
+  }
+  process.exit(1);
+}
+
+/** A vendored `.ts` file re-printed without any comment, under a generated header naming its source. */
+function stripComments(pkg, rel, source) {
+  const sf = ts.createSourceFile(rel, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const body = ts.createPrinter({ removeComments: true }).printFile(sf);
+  return `/**\n * Vendored from ${pkg} (${rel}) by scripts/vendor-shared.mjs — do not edit.\n */\n${body}`;
+}
+
+// 4. Group by package + report.
 const byPackage = {};
 for (const name of Object.keys(PACKAGES)) byPackage[name] = [];
 for (const file of collected) byPackage[packageOf(file)].push(file);
@@ -195,7 +227,7 @@ console.log(
   `\n${anyLeakRisk ? "✔ trim excludes server-only files" : "… nothing excluded"} — ${collected.size} files vendored.`,
 );
 
-// 4. Write vendor/@4pm/* (only with --write): copy the files + a curated barrel.
+// 5. Write vendor/@4pm/* (only with --write): the files (TS without comments, JSON as-is) + a curated barrel.
 if (write) {
   const vendorRoot = join(cliDir, "vendor");
   rmSync(vendorRoot, { recursive: true, force: true });
@@ -206,7 +238,8 @@ if (write) {
     for (const rel of files) {
       const dest = join(outDir, rel);
       mkdirSync(dirname(dest), { recursive: true });
-      cpSync(join(root, rel), dest);
+      if (/\.tsx?$/.test(rel)) writeFileSync(dest, stripComments(name, rel, readFileSync(join(root, rel), "utf8")));
+      else cpSync(join(root, rel), dest);
     }
     // Curated barrel: re-export only the copied TS files (never the server-only ones). Non-TS
     // assets (e.g. a `.json` data file) are copied but imported directly, never `export *`-ed

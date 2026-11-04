@@ -7,7 +7,7 @@
  * @adr 0362
  */
 import { randomUUID } from "node:crypto";
-import { UsageMetric } from "@4pm/constants";
+import { UsageMetric } from "@4pm/shared-constants";
 import type { UsageReportPayload } from "@4pm/ws";
 import { createAccountLeaser } from "./ai-account-lease";
 import { runAiFailover, type AiRunHandlers } from "./ai-runner";

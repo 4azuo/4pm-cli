@@ -11,7 +11,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { denySettingsArgs } from "../../utils/agent-deny";
 import { strictMcpArgs } from "../../utils/agent-mcp";
-import { wrapUntrusted } from "@4pm/constants";
+import { wrapUntrusted } from "@4pm/shared-constants";
 import { agentEnv } from "../agent/agent-sandbox";
 import { agentSpawnArgs } from "../agent/agent-spawn";
 

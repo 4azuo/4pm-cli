@@ -10,7 +10,7 @@
  */
 import { createReadStream, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { wrapUntrusted } from "@4pm/constants";
+import { wrapUntrusted } from "@4pm/shared-constants";
 import {
   MARKETING_POSTER_MAX_BYTES,
   MARKETING_ROOT,

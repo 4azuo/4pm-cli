@@ -1,1947 +1,1059 @@
 /**
- * DTO for the machine link + worker + physic project domain
- * (21-api/machine-0001…0013).
+ * Vendored from @4pm/dto (machine.ts) by scripts/vendor-shared.mjs — do not edit.
  */
 import type { McpServerDefinition } from "./mcp";
 import type { ApprovalPublicKey } from "./autonomous-approval";
 import type { AutonomousPolicy } from "./autonomous-policy";
 import type { NetworkPolicy, NetworkPolicyRule } from "./network";
 import { z } from "zod";
-import type {
-  MachineLinkScope,
-  PhysicProjectStatus,
-  WorkerStatus,
-} from "@4pm/constants";
+import type { MachineLinkScope, PhysicProjectStatus, WorkerStatus, } from "@4pm/shared-constants";
 import { hexTokenSchema } from "@4pm/validation";
 import { baseRequestSchema } from "./base";
 import { bookPatchSchema } from "./book-patch";
 import { docReviewSchema } from "./autonomous-docs";
 import type { CommandOrigin } from "./command";
-import type {
-  GitAuthMethod,
-  ProjectMemoryMode,
-  ProjectTokenSettings,
-  WorkerNetworkProbe,
-} from "./project";
-
-/**
- * Shared AI memory pushed to the cli on `ws_token` for the project a link serves: the
- * stored rolling `text` (seeds the cli cache on connect/reconnect) plus the project's override
- * settings the cli resolves against its own machine-user memory config. `null` for orchestrator/idle
- * links or when the project has no stored memory yet.
- * @adr 0245
- */
+import type { GitAuthMethod, ProjectMemoryMode, ProjectTokenSettings, WorkerNetworkProbe, } from "./project";
 export interface ProjectAiMemoryPush {
-  /** The stored compacted memory text for this (project × link); empty when none yet. */
-  text: string;
-  /** Project override of memory enablement (on/off/inherit the machine-user setting). */
-  mode: ProjectMemoryMode;
-  /** Project override of the memory char budget; 0 = inherit the machine-user budget. */
-  budgetChars: number;
+    text: string;
+    mode: ProjectMemoryMode;
+    budgetChars: number;
 }
-
-/** Body POST /machine-links/pair. @api machine-0001 */
 export const pairRequestSchema = z.object({
-  hashcode1: hexTokenSchema,
-  userId: z.string().guid().optional(),
+    hashcode1: hexTokenSchema,
+    userId: z.string().guid().optional(),
 });
 export type PairRequest = z.infer<typeof pairRequestSchema>;
-
-/** 200 data of pair. */
 export interface PairResponse {
-  hashcode2: string;
-  machineLinkId: string;
+    hashcode2: string;
+    machineLinkId: string;
 }
-
-/** Body POST /machine-links/confirm (machine-0002 — CLI side).
- *  fingerprint/hostname: the cli collects these so the server can match/create a worker
- *  (reported at pair time and on every connect). */
 export const confirmRequestSchema = z.object({
-  hashcode2: hexTokenSchema,
-  fingerprint: z.string().max(200).optional(),
-  hostname: z.string().max(200).optional(),
+    hashcode2: hexTokenSchema,
+    fingerprint: z.string().max(200).optional(),
+    hostname: z.string().max(200).optional(),
 });
 export type ConfirmRequest = z.infer<typeof confirmRequestSchema>;
-
-/** 200 data of confirm — the CLI stores `.cre`.
- *  userId/username identify the paired MACHINE user so the cli can name the default
- * profile by userId.
- * @adr 0047
- */
 export interface ConfirmResponse {
-  hashcode3: string;
-  userId: string;
-  username: string;
-  /** Link scope (project | orchestrator); the cli stores it in `.cre`. @adr 0010 */
-  scope: string;
-  /** Logical project the MACHINE user serves (physic folder name), or null — the cli
-   *  scaffolds `<profileDir>/<projectName>` on link (ADR-0064; MEMO). */
-  projectName?: string | null;
+    hashcode3: string;
+    userId: string;
+    username: string;
+    scope: string;
+    projectName?: string | null;
 }
-
-/** Body POST /machine-links/token (machine-0003 — CLI side, daily). */
 export const wsTokenRequestSchema = z.object({
-  hashcode3: hexTokenSchema,
+    hashcode3: hexTokenSchema,
 });
 export type WsTokenRequest = z.infer<typeof wsTokenRequestSchema>;
-
-/**
- * Body POST /machine-links/pair-token (ADR-0192 §6 — headless pairing): a booting cli exchanges a
- * provisioning token for a fresh hashcode3 (reply = `ConfirmResponse`), no interactive hashcode.
- */
 export const pairTokenRequestSchema = z.object({
-  token: z.string().min(16).max(200),
-  fingerprint: z.string().max(200).optional(),
-  hostname: z.string().max(200).optional(),
+    token: z.string().min(16).max(200),
+    fingerprint: z.string().max(200).optional(),
+    hostname: z.string().max(200).optional(),
 });
 export type PairTokenRequest = z.infer<typeof pairTokenRequestSchema>;
-
-/** Body POST /machine-links/provisioning-token — issue a headless-pairing token. @adr 0192 §6 */
 export const issueProvisioningTokenRequestSchema = z.object({
-  machineLinkId: z.string().guid(),
-  /** TTL seconds (0/absent ⇒ a default short TTL applied server-side). */
-  ttlSec: z.number().int().min(0).max(2_592_000).optional(),
+    machineLinkId: z.string().guid(),
+    ttlSec: z.number().int().min(0).max(2592000).optional(),
 });
 export type IssueProvisioningTokenRequest = z.infer<typeof issueProvisioningTokenRequestSchema>;
-
-/**
- * Body POST /machines/:id/provision — how to (re)provision the
- * serving worker's repos. `sync` (default): clone any missing repo, else fetch + check out the
- * configured branch + fast-forward pull an existing one (never clobbers local work). `force`:
- * delete each repo folder and re-clone it fresh (destructive — discards local changes).
- * @api machine-0065 @adr 0292
- */
 export const provisionRequestSchema = z.object({
-  mode: z.enum(["sync", "force"]).optional().default("sync"),
+    mode: z.enum(["sync", "force"]).optional().default("sync"),
 });
 export type ProvisionRequest = z.infer<typeof provisionRequestSchema>;
-
-/**
- * Body POST /machines/provision-for-user — (re)provision the repos of `projectId` on the
- * worker of `userId` (a routing entry). The server resolves that user's serving link for the project
- * and applies the same `mode` (sync/force) as `provision`.
- * @adr 0292
- */
 export const provisionForUserRequestSchema = z.object({
-  userId: z.string().guid(),
-  projectId: z.string().guid(),
-  mode: z.enum(["sync", "force"]).optional().default("sync"),
+    userId: z.string().guid(),
+    projectId: z.string().guid(),
+    mode: z.enum(["sync", "force"]).optional().default("sync"),
 });
 export type ProvisionForUserRequest = z.infer<typeof provisionForUserRequestSchema>;
-
-/** Data POST /machine-links/provisioning-token — the plaintext token (shown once) + expiry. */
 export interface IssueProvisioningTokenResponse {
-  token: string;
-  expiresAt: string | null;
+    token: string;
+    expiresAt: string | null;
 }
-
-/** 200 data of token. */
 export interface WsTokenResponse {
-  wsToken: string;
-  wsTokenExpiresAt: string;
-  /** Link scope (project | orchestrator); the cli heals its `.cre` from this. @adr 0010 */
-  scope: string;
-  /**
-   * Org-configured cap (seconds) on the cli's reconnect backoff. The cli
-   * uses this over its local env var; absent ⇒ the cli falls back to env/default.
-   * @adr 0056
-   */
-  reconnectMaxBackoffSec: number;
-  /** Org toggle for the daily scheduled cli auto-update. @adr 0074 */
-  autoUpdateDaily: boolean;
-  /** Hour of day (0–23) the daily update runs, in the org `timezone` below. @adr 0074 */
-  autoUpdateHour: number;
-  /** Org timezone (IANA) the cli uses to resolve `autoUpdateHour` to local time. @adr 0074 */
-  timezone: string;
-  /**
-   * cli data-retention window (days) for this machine user — the cli prunes its
-   * logs / command-history / command-output older than this. `0` = keep the cli defaults.
-   * Capped server-side at the plan's `retentionDays`.
-   * @adr 0115
-   */
-  cliRetentionDays: number;
-  /**
-   * Runtime token knobs of the project this link serves, pushed so the cli can
-   * rotate its Claude profile on session pressure and cap per-prompt tokens. `null` for
-   * orchestrator links or a project cli not yet attached to a physic project. Budgets
-   * (project/cli token limits) are NOT here — the cli learns them via `quota.check`.
-   * @adr 0081
-   */
-  projectTokens: ProjectTokenSettings | null;
-  /**
-   * Shared AI memory of the project this link serves: the stored rolling text (seeds the
-   * cli cache) + the project's override settings. `null` for orchestrator/idle links.
-   * @adr 0245
-   */
-  aiMemory: ProjectAiMemoryPush | null;
-  /**
-   * Folder-scope hardening of the project this link serves (ADR project aiScope). When
-   * true the cli prepends a guard to every AI prompt telling the agent to only use content
-   * inside the served project folder. `false` for orchestrator/idle links or when the
-   * project has it off.
-   */
-  aiRestrictToFolder: boolean;
-  /**
-   * Git-auth method of the project this link serves — tells the worker how to
-   * authenticate git (`self`/`deploy-key` need no token config; the GitLab methods /`github-app`
-   * configure an injected/minted token for HTTPS). `null` for orchestrator/idle links or `self`.
-   * @adr 0192 §4 @adr 0382 @adr 0435 @adr 0356
-   */
-  gitAuth: GitAuthMethod | null;
-  /**
-   * GitHub host of the project's App credential when `gitAuth` is `github-app` — the cli
-   * scopes its credential helper + `gh` shim to it and pulls tokens over `git.token`. Absent otherwise
-   * (and from an older server).
-   * @adr 0356
-   */
-  gitAuthHost?: string | null;
-  /**
-   * Approved MCP servers of the project this link serves — the cli writes them to its
-   * generated `--mcp-config` and runs every claude spawn with `--strict-mcp-config`. Empty for
-   * orchestrator/idle links; absent from an older server (⇒ no MCP server runs).
-   * @adr 0427
-   */
-  mcpServers?: { name: string; definition: McpServerDefinition }[];
-  /**
-   * The server's approval-signing public keys — the cli persists them and from then on counts an
-   * autonomous approval only when its signature verifies. Absent (no signing key yet) ⇒ the cli keeps
-   * its last stored keys, or accepts unsigned approvals when it never had any.
-   * @adr 0438
-   */
-  approvalKeys?: ApprovalPublicKey[];
-  /**
-   * The project the link serves — bound into every approval signature, so an entry signed for one
-   * project never verifies in another. `null` for an orchestrator / idle link; absent from an older server.
-   * @adr 0438
-   */
-  approvalProjectId?: string | null;
-  /**
-   * The team codes this link serves in its project (routing entries' teams) — the autonomous cycle only
-   * takes in / claims rows of those teams. `null` = all teams; absent (older server) ⇒ all teams.
-   * @adr 0450
-   */
-  servedTeams?: string[] | null;
-  /**
-   * The served project's autonomous policy for this worker — project switch, the server's `allowed`
-   * verdict, the project-scoped knobs; null for an idle / orchestrator link.
-   * @adr 0507
-   */
-  autonomousPolicy?: AutonomousPolicy | null;
-  /**
-   * Network egress policy for the cli's proxy: the served project's policy (org deny merged into `deny`)
-   * + the org denylist alone for project-less runs. Absent from an older server ⇒ the cli keeps Audit with
-   * no rules. `null` mode fields never occur — an idle link gets the org part with mode `audit`.
-   * @adr 0439
-   */
-  network?: NetworkPolicy & { orgDeny: NetworkPolicyRule[]; projectId: string | null };
-  /**
-   * Mask the worker's AI account labels — `true` when the link's user is a platform-pool
-   * (rented) machine user. The cli then shows every renter-visible credential label as `AI account #N`
-   * instead of the account email. Absent (older server) ⇒ treated as `false`.
-   * @adr 0395
-   */
-  maskAiAccounts?: boolean;
-  /**
-   * Outbound-review policy of the project this link serves. Tells the cli to
-   * require an outbound review before spawning AI (`enabled`), which engines to run, and
-   * whether THIS link is itself an outbound reviewer (`isOutbound`). `null` when the
-   * project has no review policy or the link serves no project.
-   * @adr 0082
-   */
-  outboundReview: OutboundReviewCliPolicy | null;
-  /**
-   * This link's machine-user username — the cli's git commit author for the
-   * served project. Push uses the account the worker is already logged in with (gh/glab).
-   * @adr 0097
-   */
-  machineUsername: string;
-  /**
-   * Worker tool restore manifest — the tools + exact versions this machine user should
-   * have, plus its per-tool auto-update flags. On boot the cli reconciles its installed tools to
-   * `manifest` (installing a missing/mismatched version) so a container recreation restores the
-   * toolchain. When a copy-apply is queued (`pendingToolManifest`) that manifest **wins** here
-   * (pending takes precedence over the self-restore snapshot); otherwise it is the link's own last
-   * reported snapshot. `null` when the server holds no snapshot and nothing is queued.
-   * @adr 0254
-   */
-  toolRestore: WorkerToolRestorePush | null;
-  /**
-   * WebSocket base URL the cli should connect to (ADR-0131 phase 3 cutover). When present,
-   * the cli opens `<wsUrl>/ws` on `@4pm/cli-server` instead of the server gateway and heals
-   * it into `.cre`. Absent ⇒ the cli keeps using its `serverUrl` (old behaviour / server
-   * gateway), so both gateways run in parallel during the migration.
-   */
-  wsUrl?: string;
-  /**
-   * Declared repos of the project this link serves — the CLI clones any of these whose
-   * `.git` is missing from the physic folder on connect (idempotent; a present repo is skipped), so
-   * a reconnect always sets up what's missing regardless of the server-side physic status. Empty for
-   * orchestrator/idle links or a project with no declared repos.
-   * @adr 0289
-   */
-  repos: WsTokenRepo[];
-  /**
-   * Admin-edited overrides for cli-built prompts, keyed by the `@4pm/constants` prompt
-   * key → per-locale content map ({ en, vi, ja, zh } → string). Only keys the platform admin has
-   * actually edited are sent (the cli falls back to its built-in default otherwise); absent/empty on
-   * an older server. Platform-wide, so every link carries the same map.
-   * @adr 0381
-   */
-  promptOverrides?: Record<string, Record<string, string>>;
-  /**
-   * The served project's output language (English name from spec `output_lang`); `null` = no rule, absent on an
-   * older server (the cli then reads `project.spec.json`).
-   * @adr 0581
-   */
-  outputLang?: string | null;
+    wsToken: string;
+    wsTokenExpiresAt: string;
+    scope: string;
+    reconnectMaxBackoffSec: number;
+    autoUpdateDaily: boolean;
+    autoUpdateHour: number;
+    timezone: string;
+    cliRetentionDays: number;
+    projectTokens: ProjectTokenSettings | null;
+    aiMemory: ProjectAiMemoryPush | null;
+    aiRestrictToFolder: boolean;
+    gitAuth: GitAuthMethod | null;
+    gitAuthHost?: string | null;
+    mcpServers?: {
+        name: string;
+        definition: McpServerDefinition;
+    }[];
+    approvalKeys?: ApprovalPublicKey[];
+    approvalProjectId?: string | null;
+    servedTeams?: string[] | null;
+    autonomousPolicy?: AutonomousPolicy | null;
+    network?: NetworkPolicy & {
+        orgDeny: NetworkPolicyRule[];
+        projectId: string | null;
+    };
+    maskAiAccounts?: boolean;
+    outboundReview: OutboundReviewCliPolicy | null;
+    machineUsername: string;
+    toolRestore: WorkerToolRestorePush | null;
+    wsUrl?: string;
+    repos: WsTokenRepo[];
+    promptOverrides?: Record<string, Record<string, string>>;
+    outputLang?: string | null;
 }
-
-/** One declared repo pushed to the cli via ws_token for clone-on-connect. @adr 0289 */
 export interface WsTokenRepo {
-  /** The primary repo clones into the folder root; a sub-repo into its `subdir`. */
-  primary: boolean;
-  /** Clone URL (https/ssh); absent ⇒ nothing to clone (an init-only repo). */
-  url?: string;
-  /** Sub-repo subfolder under the physic root (empty/undefined for the primary). */
-  subdir?: string;
-  /** Primary branch to clone / check out; empty/undefined ⇒ the repo's default branch. @adr 0292 */
-  branch?: string;
+    primary: boolean;
+    url?: string;
+    subdir?: string;
+    branch?: string;
 }
-
-/** Outbound-review policy delivered to a cli via ws_token. @adr 0082 */
 export interface OutboundReviewCliPolicy {
-  enabled: boolean;
-  ruleCheck: boolean;
-  aiReview: boolean;
-  /** True when this machine-link is one of the project's outbound reviewers. */
-  isOutbound: boolean;
-  /** Repos commits may target (host/owner/name); empty = derive from git. */
-  allowedRepos: string[];
+    enabled: boolean;
+    ruleCheck: boolean;
+    aiReview: boolean;
+    isOutbound: boolean;
+    allowedRepos: string[];
 }
-
-/** 200 data of whoami (machine-0020 — CLI side): the paired account + its memberships. */
 export interface WhoamiResponse {
-  username: string;
-  /** Link scope (project | orchestrator). @adr 0010 */
-  scope: string;
-  roles: string[];
-  teams: { id: string; name: string }[];
-  projects: { id: string; name: string }[];
+    username: string;
+    scope: string;
+    roles: string[];
+    teams: {
+        id: string;
+        name: string;
+    }[];
+    projects: {
+        id: string;
+        name: string;
+    }[];
 }
-
-/** Machine link returned by the API (never includes the hashes). */
 export interface MachineLinkResponse {
-  id: string;
-  userId: string;
-  username: string;
-  scope: MachineLinkScope;
-  status: string;
-  hashcode3ExpiresAt: string | null;
-  lastConnectedAt: string | null;
-  /** Is the WS open with the server? */
-  connected: boolean;
-  /** The physical machine the cli runs on — null for orchestrator/not yet connected. */
-  workerId: string | null;
-  /** Running cli version the worker last reported; null when unknown. @adr 0015 */
-  cliVersion?: string | null;
-  /** True when the running cli's effective status is `warning` (older than the latest release, or an
-   * admin warning).
-   * @adr 0015 @adr 0363
-   */
-  cliOutdated?: boolean;
-  /** True when the running cli's effective status is `unsupported` (below the minimum, an admin
-   * override or a passed cut-off date): refused the next time it connects.
-   * @adr 0363
-   */
-  cliUnsupported?: boolean;
-  /** ISO cut-off date of a `warning` version; null/omitted when none. @adr 0363 */
-  cliUnsupportedFrom?: string | null;
-  /** The admin's note for the running version; null/omitted when none. @adr 0363 */
-  cliVersionNote?: string | null;
-  /** True when the worker runs an update-locked image — a cli update is refused. @adr 0432 @adr 0434 */
-  cliUpdateLocked?: boolean;
-  /** True while the connected cli drains for a restart / update — it refuses new work until it is back. @adr 0505 */
-  cliRestarting?: boolean;
-  /** Latest worker network probe — the machine-user page shows outbound/inbound posture
-   *  and warns when it's open. Null when the cli hasn't reported one yet (old clients / offline).
-   * @adr 0221
-   */
-  network?: WorkerNetworkProbe | null;
-  /** Tools whose last run failed — surfaced to the tenant web (Machines / Members) so a
-   *  user sees the cli's last tool/connect error, like the admin pools. Empty/omitted = all healthy.
-   * @adr 0223
-   */
-  failingTools?: WorkerFailingTool[];
-  /** Last failed cli self-update — surfaced only while the cli is still outdated, so the
-   *  web "Update" modal shows why an update didn't land. Null/omitted = no recent failure.
-   * @adr 0305
-   */
-  cliUpdateError?: WorkerCliUpdateError | null;
-  /** AI accounts the cli last reported (`machine.status`) — the org's own links only; a rented
-   * (pool) link always returns `[]` (its 4PM accounts are admin-only).
-   * @adr 0354 @adr 0402
-   */
-  aiAccounts?: string[];
-  /** Host-mounted AI logins the cli last reported (`machine.status`) — suggestions for the Worker configs
-   * Profile directory; same visibility as `aiAccounts` (a rented link returns `[]`).
-   * @adr 0479
-   */
-  aiMounts?: AiMount[];
-  /** The AI attempts the worker is running right now (live, from presence); `[]` = idle. @adr 0522 */
-  aiRuns?: MachineAiRun[];
-  createdAt: string;
+    id: string;
+    userId: string;
+    username: string;
+    scope: MachineLinkScope;
+    status: string;
+    hashcode3ExpiresAt: string | null;
+    lastConnectedAt: string | null;
+    connected: boolean;
+    workerId: string | null;
+    cliVersion?: string | null;
+    cliOutdated?: boolean;
+    cliUnsupported?: boolean;
+    cliUnsupportedFrom?: string | null;
+    cliVersionNote?: string | null;
+    cliUpdateLocked?: boolean;
+    cliRestarting?: boolean;
+    network?: WorkerNetworkProbe | null;
+    failingTools?: WorkerFailingTool[];
+    cliUpdateError?: WorkerCliUpdateError | null;
+    aiAccounts?: string[];
+    aiMounts?: AiMount[];
+    aiRuns?: MachineAiRun[];
+    createdAt: string;
 }
-
-/**
- * One AI attempt a worker is running right now (live — from the link's presence, never stored).
- * @adr 0522
- */
 export interface MachineAiRun {
-  /** Display label of the AI account — masked `AI account #N` on a platform-pool worker. */
-  label: string;
-  /** The account as `aiAccounts` names it — only where `aiAccounts` is visible (an org's own link). */
-  account?: string;
-  /** The AI CLI (claude | codex | …). */
-  provider: string;
-  /** What started it: command · local · autonomous · task · support · research · faq · memory. */
-  source: string;
-  /** ISO start time. */
-  startedAt: string;
+    label: string;
+    account?: string;
+    provider: string;
+    source: string;
+    startedAt: string;
 }
-
-/** The expiry + scopes of one token of a worker's own gh / glab login (`MachineLink.gitLogins`). @adr 0680 */
 export interface WorkerGitLogin {
-  tool: "gh" | "glab";
-  host: string;
-  /** True when the provider reported the expiry (`expiresAt` null then = never expires). */
-  expiryKnown: boolean;
-  expiresAt: string | null;
-  scopes: string[] | null;
+    tool: "gh" | "glab";
+    host: string;
+    expiryKnown: boolean;
+    expiresAt: string | null;
+    scopes: string[] | null;
 }
-
-/** Sanitize a stored/reported `gitLogins` JSON (drops malformed entries; ≤ 20, strings capped). @adr 0680 */
 export function readWorkerGitLogins(value: unknown): WorkerGitLogin[] {
-  if (!Array.isArray(value)) return [];
-  const out: WorkerGitLogin[] = [];
-  for (const v of value) {
-    if (!v || typeof v !== "object") continue;
-    const r = v as Record<string, unknown>;
-    if ((r.tool !== "gh" && r.tool !== "glab") || typeof r.host !== "string" || !r.host.trim()) continue;
-    const expiryKnown = "expiresAt" in r && (r.expiresAt === null || typeof r.expiresAt === "string");
-    out.push({
-      tool: r.tool,
-      host: r.host.trim().toLowerCase().slice(0, 255),
-      expiryKnown,
-      expiresAt: typeof r.expiresAt === "string" && !Number.isNaN(Date.parse(r.expiresAt)) ? new Date(r.expiresAt).toISOString() : null,
-      scopes: Array.isArray(r.scopes) ? r.scopes.filter((s): s is string => typeof s === "string").map((s) => s.slice(0, 64)).slice(0, 50) : null,
-    });
-    if (out.length >= 20) break;
-  }
-  return out;
+    if (!Array.isArray(value))
+        return [];
+    const out: WorkerGitLogin[] = [];
+    for (const v of value) {
+        if (!v || typeof v !== "object")
+            continue;
+        const r = v as Record<string, unknown>;
+        if ((r.tool !== "gh" && r.tool !== "glab") || typeof r.host !== "string" || !r.host.trim())
+            continue;
+        const expiryKnown = "expiresAt" in r && (r.expiresAt === null || typeof r.expiresAt === "string");
+        out.push({
+            tool: r.tool,
+            host: r.host.trim().toLowerCase().slice(0, 255),
+            expiryKnown,
+            expiresAt: typeof r.expiresAt === "string" && !Number.isNaN(Date.parse(r.expiresAt)) ? new Date(r.expiresAt).toISOString() : null,
+            scopes: Array.isArray(r.scopes) ? r.scopes.filter((s): s is string => typeof s === "string").map((s) => s.slice(0, 64)).slice(0, 50) : null,
+        });
+        if (out.length >= 20)
+            break;
+    }
+    return out;
 }
-
-/** One host-mounted AI login a worker reported (`MachineLink.aiMounts`). @adr 0479 */
 export interface AiMount {
-  /** AI provider (`claude` / `codex`). */
-  provider: string;
-  /** The profile path a credential uses for it (`ai-creds/<folder>`). */
-  profile: string;
-  /** Signed-in account email when readable; null/omitted otherwise. */
-  account?: string | null;
+    provider: string;
+    profile: string;
+    account?: string | null;
 }
-
-/**
- * Sanitize a stored/reported `aiMounts` JSON into a typed list (drops malformed entries; ≤ 50, strings
- * capped). Tolerant of null / non-array values.
- * @adr 0479
- */
 export function readAiMounts(value: unknown): AiMount[] {
-  if (!Array.isArray(value)) return [];
-  const out: AiMount[] = [];
-  for (const v of value) {
-    if (!v || typeof v !== "object") continue;
-    const { provider, profile, account } = v as Record<string, unknown>;
-    if (typeof provider !== "string" || typeof profile !== "string") continue;
-    if (!provider.trim() || !profile.trim()) continue;
-    out.push({
-      provider: provider.trim().slice(0, 32),
-      profile: profile.trim().slice(0, 256),
-      ...(typeof account === "string" && account.trim() ? { account: account.trim().slice(0, 320) } : {}),
-    });
-    if (out.length >= 50) break;
-  }
-  return out;
+    if (!Array.isArray(value))
+        return [];
+    const out: AiMount[] = [];
+    for (const v of value) {
+        if (!v || typeof v !== "object")
+            continue;
+        const { provider, profile, account } = v as Record<string, unknown>;
+        if (typeof provider !== "string" || typeof profile !== "string")
+            continue;
+        if (!provider.trim() || !profile.trim())
+            continue;
+        out.push({
+            provider: provider.trim().slice(0, 32),
+            profile: profile.trim().slice(0, 256),
+            ...(typeof account === "string" && account.trim() ? { account: account.trim().slice(0, 320) } : {}),
+        });
+        if (out.length >= 50)
+            break;
+    }
+    return out;
 }
-
-/**
- * Per-tool last-run health — stored under `MachineLink.usageSnapshot.toolHealth`,
- * keyed by the external tool name (claude/codex/gh/glab/git). Written by the `tool.health`
- * write-back and preserved across `machine.usage` snapshot overwrites.
- * @adr 0223
- */
 export interface WorkerToolHealthEntry {
-  ok: boolean;
-  message: string | null;
-  at: string;
+    ok: boolean;
+    message: string | null;
+    at: string;
 }
 export type WorkerToolHealth = Record<string, WorkerToolHealthEntry>;
-
-/** A tool whose last run failed — projected for the admin pool lists. @adr 0223 */
 export interface WorkerFailingTool {
-  tool: string;
-  message: string;
-  at: string;
+    tool: string;
+    message: string;
+    at: string;
 }
-
-/**
- * Project the failing tools (last run not ok) from a machine link's `usageSnapshot` JSON,
- * newest-first. Tolerant of null / old snapshots without a `toolHealth` key.
- * @adr 0223
- */
 export function readFailingTools(usageSnapshot: unknown): WorkerFailingTool[] {
-  const th = (usageSnapshot as { toolHealth?: WorkerToolHealth } | null | undefined)?.toolHealth;
-  if (!th || typeof th !== "object") return [];
-  return Object.entries(th)
-    .filter(([, v]) => v && typeof v === "object" && v.ok === false)
-    .map(([tool, v]) => ({ tool, message: v.message ?? "", at: v.at }))
-    .sort((a, b) => (a.at < b.at ? 1 : -1));
+    const th = (usageSnapshot as {
+        toolHealth?: WorkerToolHealth;
+    } | null | undefined)?.toolHealth;
+    if (!th || typeof th !== "object")
+        return [];
+    return Object.entries(th)
+        .filter(([, v]) => v && typeof v === "object" && v.ok === false)
+        .map(([tool, v]) => ({ tool, message: v.message ?? "", at: v.at }))
+        .sort((a, b) => (a.at < b.at ? 1 : -1));
 }
-
-/**
- * Last cli self-update failure — stored under `MachineLink.usageSnapshot.cliUpdate`,
- * written by the `cli.update-result` write-back and preserved across `machine.usage` snapshot
- * overwrites. Carries only a short reason (never stdout/secrets).
- * @adr 0305
- */
 export interface WorkerCliUpdateEntry {
-  ok: boolean;
-  /** Why it failed — a client maps it to its own (i18n) text; absent from an older cli. */
-  code?: CliUpdateErrorCode | null;
-  message: string | null;
-  fromVersion: string;
-  toVersion: string | null;
-  at: string;
+    ok: boolean;
+    code?: CliUpdateErrorCode | null;
+    message: string | null;
+    fromVersion: string;
+    toVersion: string | null;
+    at: string;
 }
-
-/**
- * Why a cli self-update failed. The cli sends it with the English `message`; the web / admin show the
- * translated text for the code and fall back to `message` when a code is absent or unknown.
- * @adr 0305
- */
 export const CLI_UPDATE_ERROR_CODES = [
-  "noSigningKey",
-  "signatureMissing",
-  "signatureInvalid",
-  "checksumMismatch",
-  "downloadFailed",
-  "downloadTimeout",
-  "stageFailed",
-  "extractFailed",
-  "loadFailed",
-  "notApplied",
-  "badVersion",
-  "didNotStart",
-  "locked",
-  "unknown",
+    "noSigningKey",
+    "signatureMissing",
+    "signatureInvalid",
+    "checksumMismatch",
+    "downloadFailed",
+    "downloadTimeout",
+    "stageFailed",
+    "extractFailed",
+    "loadFailed",
+    "notApplied",
+    "badVersion",
+    "didNotStart",
+    "locked",
+    "unknown",
 ] as const;
 export type CliUpdateErrorCode = (typeof CLI_UPDATE_ERROR_CODES)[number];
-
-/** A failed cli self-update projected for the web — reason code + English reason + when it happened. */
 export interface WorkerCliUpdateError {
-  /** Null when the cli sent none (an older cli) or one this build does not know. */
-  code: CliUpdateErrorCode | null;
-  message: string;
-  at: string;
+    code: CliUpdateErrorCode | null;
+    message: string;
+    at: string;
 }
-
-/** Is `value` a known cli self-update error code? */
 export function isCliUpdateErrorCode(value: unknown): value is CliUpdateErrorCode {
-  return typeof value === "string" && (CLI_UPDATE_ERROR_CODES as readonly string[]).includes(value);
+    return typeof value === "string" && (CLI_UPDATE_ERROR_CODES as readonly string[]).includes(value);
 }
-
-/** One worker a bulk cli update pushed `cli.update` to. @adr 0413 */
 export interface CliUpdateAllTarget {
-  /** Machine-link id (web) or pool user id (admin, admin-0140/0141). @api machine-0074 */
-  id: string;
-  /** Display name (username / alias). */
-  label: string;
+    id: string;
+    label: string;
 }
-
-/** Why an online, outdated worker was not pushed by a bulk cli update. @adr 0413 */
 export type CliUpdateAllSkipReason = "autonomous" | "failed" | "locked";
-
-/** One online, outdated worker a bulk cli update skipped. @adr 0413 */
 export interface CliUpdateAllSkip extends CliUpdateAllTarget {
-  reason: CliUpdateAllSkipReason;
+    reason: CliUpdateAllSkipReason;
 }
-
-/**
- * Result of a bulk "Update all CLIs" (machine-0074, admin-0140/0141): the workers that were
- * online + behind the latest release and got `cli.update`, plus the ones skipped. Empty `queued` = no
- * online worker needs an update.
- * @adr 0413
- */
 export interface CliUpdateAllResponse {
-  queued: CliUpdateAllTarget[];
-  skipped: CliUpdateAllSkip[];
+    queued: CliUpdateAllTarget[];
+    skipped: CliUpdateAllSkip[];
 }
-
-/** Body of POST /machines/autonomous-all — `true` stops every armed worker, `false` starts every self-paused one. @api machine-0097 @adr 0571 */
 export const autonomousAllRequestSchema = z.object({ paused: z.boolean() });
 export type AutonomousAllBody = z.infer<typeof autonomousAllRequestSchema>;
-
-/** One worker a bulk Stop / Start autonomous could not switch. @adr 0571 */
 export interface AutonomousAllSkip extends CliUpdateAllTarget {
-  reason: "failed";
+    reason: "failed";
 }
-
-/**
- * Result of a bulk Stop / Start autonomous: the workers whose own switch was written, plus
- * the ones the write failed for. Empty `done` = no worker needed the change.
- * @api machine-0097 @adr 0571
- */
 export interface AutonomousAllResponse {
-  done: CliUpdateAllTarget[];
-  skipped: AutonomousAllSkip[];
+    done: CliUpdateAllTarget[];
+    skipped: AutonomousAllSkip[];
 }
-
-/**
- * Project the last cli self-update FAILURE from a machine link's `usageSnapshot` JSON.
- * Returns null when there is none. Callers gate on `cliOutdated` so a stale failure disappears once
- * the worker eventually comes back on the latest version. Tolerant of null / old snapshots.
- * @adr 0305
- */
 export function readCliUpdateError(usageSnapshot: unknown): WorkerCliUpdateError | null {
-  const cu = (usageSnapshot as { cliUpdate?: WorkerCliUpdateEntry } | null | undefined)?.cliUpdate;
-  if (!cu || typeof cu !== "object" || cu.ok !== false) return null;
-  return {
-    code: isCliUpdateErrorCode(cu.code) ? cu.code : null,
-    // An older cli wrote doc references into its reasons ("… (ADR-0508).") — drop them for display.
-    message: (cu.message ?? "").replace(/\s*(?:\(ADR-\d+(?:\/\d+)*\)|— ADR-\d+)/g, ""),
-    at: cu.at,
-  };
+    const cu = (usageSnapshot as {
+        cliUpdate?: WorkerCliUpdateEntry;
+    } | null | undefined)?.cliUpdate;
+    if (!cu || typeof cu !== "object" || cu.ok !== false)
+        return null;
+    return {
+        code: isCliUpdateErrorCode(cu.code) ? cu.code : null,
+        message: (cu.message ?? "").replace(/\s*(?:\(ADR-\d+(?:\/\d+)*\)|— ADR-\d+)/g, ""),
+        at: cu.at,
+    };
 }
-
-/** Physic project — a project folder on the worker served by one cli. */
 export interface PhysicProjectResponse {
-  id: string;
-  machineLinkId: string;
-  projectId: string;
-  projectName: string;
-  /** null = pending (wizard step 2 has not finalized the folder). */
-  path: string | null;
-  name: string;
-  isAutonomous: boolean;
-  /** The worker's own autonomous switch is off (snapshot `enabled === false`). @adr 0533 */
-  autonomousPaused: boolean;
-  status: PhysicProjectStatus;
-  lastSeenAt: string | null;
+    id: string;
+    machineLinkId: string;
+    projectId: string;
+    projectName: string;
+    path: string | null;
+    name: string;
+    isAutonomous: boolean;
+    autonomousPaused: boolean;
+    status: PhysicProjectStatus;
+    lastSeenAt: string | null;
 }
-
-/** A cli node in the worker tree. @api machine-0009 */
 export interface WorkerMachineLinkNode {
-  id: string;
-  userId: string;
-  username: string;
-  /** Link scope (project | orchestrator). Orchestrator clis don't serve a
-   *  physic project, so the web hides the attach-folder UI for them.
-   * @adr 0010
-   */
-  scope: string;
-  connected: boolean;
-  /** null if the cli has no physic project attached. */
-  physicProject: PhysicProjectResponse | null;
-  /**
-   * Egress enforcement the cli reported (Networks): `container` = enforced, `none` = Audit only (with
-   * `egressReason`), null = an older cli that does not report it.
-   * @adr 0439
-   */
-  egress?: "container" | "none" | null;
-  egressReason?: string | null;
-  /**
-   * Worker hosting (project clis only): the operator's *Allow hosting*, the run modes last reported, whether the
-   * switch applies (never for a rented / platform-pool machine) and the environments it serves now.
-   * @adr 0664
-   */
-  hosting?: {
-    allowed: boolean;
-    modes: ("process" | "compose")[];
-    hostable: boolean;
-    /** The worker environments it serves now (the *Hosting* badge). */
-    serving: { projectName: string; environmentName: string }[];
-  } | null;
+    id: string;
+    userId: string;
+    username: string;
+    scope: string;
+    connected: boolean;
+    physicProject: PhysicProjectResponse | null;
+    egress?: "container" | "none" | null;
+    egressReason?: string | null;
+    hosting?: {
+        allowed: boolean;
+        modes: ("process" | "compose")[];
+        hostable: boolean;
+        serving: {
+            projectName: string;
+            environmentName: string;
+        }[];
+    } | null;
 }
-
-/**
- * Live worker resource snapshot — collected by the cli (cgroup-accurate in a container,
- * `os.*` on bare-metal) and streamed over `machine.metrics`. **Never persisted** — buffered in Redis
- * with a short TTL; `null` on a worker when it isn't currently reporting (offline/unwatched/expired).
- * @adr 0214
- */
 export interface WorkerResources {
-  /** Current CPU utilization (0–100). */
-  cpuPct: number;
-  /** Logical CPU count available to the worker (cgroup quota or host cores). */
-  cpuCount: number;
-  memUsedMb: number;
-  memTotalMb: number;
-  diskUsedGb: number;
-  diskTotalGb: number;
-  /** `linux` | `darwin` | `win32`. */
-  platform: string;
-  /** `x64` | `arm64` | … */
-  arch: string;
-  /** Where the limits came from: `cgroup` (container-accurate) or `os` (bare-metal/VM fallback). */
-  source: "cgroup" | "os";
-  /** ISO timestamp the sample was taken on the worker. */
-  at: string;
-
-  // --- Extended cgroup v2 metrics (ADR-0218) ---
-  // All optional: only present on the `cgroup` source when the controller/file is readable;
-  // the `os` fallback and older clis omit them, and the UI hides what is absent.
-
-  /** % of CPU periods throttled by the cgroup quota this interval (`cpu.stat` nr_throttled/nr_periods). */
-  cpuThrottledPct?: number;
-  /** CPU pressure stall — `cpu.pressure` `some avg10` (0–100). */
-  cpuPressurePct?: number;
-  /** Anonymous (application) memory in MB — `memory.stat` `anon`. */
-  memAnonMb?: number;
-  /** File/page-cache memory in MB — `memory.stat` `file`. */
-  memCacheMb?: number;
-  /** Swap in use (MB) — `memory.swap.current`. */
-  swapUsedMb?: number;
-  /** Swap limit (MB); `null` when unlimited (`memory.swap.max` = `max`). */
-  swapTotalMb?: number | null;
-  /** Memory pressure stall — `memory.pressure` `some avg10` (0–100). */
-  memPressurePct?: number;
-  /** Cumulative OOM-kill count in this cgroup — `memory.events` `oom_kill`. */
-  oomKills?: number;
-  /** Block-device read throughput this interval (MB/s) — `io.stat` rbytes delta. */
-  diskReadMbps?: number;
-  /** Block-device write throughput this interval (MB/s) — `io.stat` wbytes delta. */
-  diskWriteMbps?: number;
-  /** I/O pressure stall — `io.pressure` `some avg10` (0–100). */
-  ioPressurePct?: number;
-  /** Current process/thread count — `pids.current`. */
-  pidsCurrent?: number;
-  /** Process/thread limit; `null` when unlimited (`pids.max` = `max`). */
-  pidsMax?: number | null;
-
-  /**
-   * Over-provision self-check advisories — warn-only, never blocks the worker. Stable codes
-   * the UI maps to text: `cpu-unbounded` / `mem-unbounded` (no cgroup limit ⇒ can consume the whole host),
-   * `cpu-overcommit` / `mem-overcommit` (limit exceeds host physical ⇒ OOM/throttle risk), `disk-full`
-   * (volume near capacity). Omitted/empty when the config looks healthy; older clis omit it entirely.
-   * @adr 0390
-   */
-  warnings?: string[];
+    cpuPct: number;
+    cpuCount: number;
+    memUsedMb: number;
+    memTotalMb: number;
+    diskUsedGb: number;
+    diskTotalGb: number;
+    platform: string;
+    arch: string;
+    source: "cgroup" | "os";
+    at: string;
+    cpuThrottledPct?: number;
+    cpuPressurePct?: number;
+    memAnonMb?: number;
+    memCacheMb?: number;
+    swapUsedMb?: number;
+    swapTotalMb?: number | null;
+    memPressurePct?: number;
+    oomKills?: number;
+    diskReadMbps?: number;
+    diskWriteMbps?: number;
+    ioPressurePct?: number;
+    pidsCurrent?: number;
+    pidsMax?: number | null;
+    warnings?: string[];
 }
-
-/**
- * `machine.metrics` payload (cli → server) — one live resource sample keyed by the
- * worker fingerprint (a worker can host several clis; last-writer-wins per worker).
- * @adr 0214
- */
 export interface MachineMetricsPayload {
-  fingerprint: string;
-  resources: WorkerResources;
+    fingerprint: string;
+    resources: WorkerResources;
 }
-
-/** One point of a worker's ~1-minute resource series. @api machine-0054 @adr 0214 */
 export interface WorkerMetricsSample {
-  cpuPct: number;
-  memUsedMb: number;
-  memTotalMb: number;
-  diskUsedGb: number;
-  diskTotalGb: number;
-  at: string;
-  // Trended cgroup v2 rate/pressure fields (ADR-0218) — optional, mirror `WorkerResources`.
-  cpuThrottledPct?: number;
-  cpuPressurePct?: number;
-  memPressurePct?: number;
-  ioPressurePct?: number;
-  diskReadMbps?: number;
-  diskWriteMbps?: number;
-  swapUsedMb?: number;
+    cpuPct: number;
+    memUsedMb: number;
+    memTotalMb: number;
+    diskUsedGb: number;
+    diskTotalGb: number;
+    at: string;
+    cpuThrottledPct?: number;
+    cpuPressurePct?: number;
+    memPressurePct?: number;
+    ioPressurePct?: number;
+    diskReadMbps?: number;
+    diskWriteMbps?: number;
+    swapUsedMb?: number;
 }
-
-/** Data GET /workers/:id/metrics — the expanded worker's live series. @api machine-0054 @adr 0214 */
 export interface WorkerMetricsSeriesResponse {
-  workerId: string;
-  samples: WorkerMetricsSample[];
-  source: "cgroup" | "os";
-  /**
-   * Latest full resource snapshot — richer than a series point (carries vCPU count,
-   * platform/arch and the extended cgroup v2 metrics), so a standalone viewer (the machine-user
-   * Info tab / the project Dashboard) can render the container-info column without the workers
-   * list row. `null` when the worker isn't currently reporting.
-   */
-  resources: WorkerResources | null;
+    workerId: string;
+    samples: WorkerMetricsSample[];
+    source: "cgroup" | "os";
+    resources: WorkerResources | null;
 }
-
-/** Worker (physical machine) + the cli → physic project tree. @api machine-0009 */
 export interface WorkerResponse {
-  id: string;
-  name: string;
-  fingerprint: string;
-  status: WorkerStatus;
-  lastSeenAt: string | null;
-  machineLinks: WorkerMachineLinkNode[];
-  /** Live resource snapshot from the Redis buffer; null when not reporting. @adr 0214 */
-  resources?: WorkerResources | null;
+    id: string;
+    name: string;
+    fingerprint: string;
+    status: WorkerStatus;
+    lastSeenAt: string | null;
+    machineLinks: WorkerMachineLinkNode[];
+    resources?: WorkerResources | null;
 }
-
-/** One Claude subscription usage window (utilization % + reset). @adr 0072 */
 export interface MachineUsageWindow {
-  utilizationPct: number;
-  resetsAt: string | null;
+    utilizationPct: number;
+    resetsAt: string | null;
 }
-
-/** Claude subscription usage snapshot for a machine-link (from machine.usage). */
 export interface MachineUsageSubscription {
-  plan: string;
-  /** AI CLI in use (claude | codex). */
-  aiCli?: string;
-  /** Active profile label (config-dir basename). */
-  profile?: string;
-  session: MachineUsageWindow;
-  weekly: MachineUsageWindow;
-  extra?: { usedCredits: number; currency: string };
-  checkedAt: string;
+    plan: string;
+    aiCli?: string;
+    profile?: string;
+    session: MachineUsageWindow;
+    weekly: MachineUsageWindow;
+    extra?: {
+        usedCredits: number;
+        currency: string;
+    };
+    checkedAt: string;
 }
-
-/** Live operational status of a machine-link. @adr 0072 */
 export interface MachineUsageStatus {
-  connected: boolean;
-  scope: string;
-  /** Currently processing a prompt. */
-  busy: boolean;
-  /** The AI attempts running right now (live, from presence); `[]` = idle. @adr 0522 */
-  aiRuns?: MachineAiRun[];
-  /** The physic project it serves (label "current"), or null when idle. */
-  serving: { projectId: string; name: string } | null;
-  /** Running cli version the worker last reported (machine.status); null if unknown. @adr 0015 */
-  cliVersion?: string | null;
-  /** True when the running cli's effective status is `warning` (older than the latest release, or an
-   * admin warning).
-   * @adr 0015 @adr 0363
-   */
-  cliOutdated?: boolean;
-  /** True when the running cli's effective status is `unsupported` (below the minimum, an admin
-   * override or a passed cut-off date): refused the next time it connects.
-   * @adr 0363
-   */
-  cliUnsupported?: boolean;
-  /** ISO cut-off date of a `warning` version; null/omitted when none. @adr 0363 */
-  cliUnsupportedFrom?: string | null;
-  /** The admin's note for the running version; null/omitted when none. @adr 0363 */
-  cliVersionNote?: string | null;
-  /** True when the worker runs an update-locked image — a cli update is refused. @adr 0432 @adr 0434 */
-  cliUpdateLocked?: boolean;
-  /** True while the connected cli drains for a restart / update — it refuses new work until it is back. @adr 0505 */
-  cliRestarting?: boolean;
-  /** The latest cli release version (for the "please update" hint); null if not resolved. */
-  latestCliVersion?: string | null;
-  /** The minimum cli version the server still accepts (for the "unsupported" red hint); null if
-   *  not resolved. */
-  minSupportedCliVersion?: string | null;
-  /** Last failed cli self-update — surfaced only while the cli is still outdated, so the
-   *  web "Update" modal shows why an update didn't land instead of spinning forever.
-   * @adr 0305
-   */
-  cliUpdateError?: WorkerCliUpdateError | null;
+    connected: boolean;
+    scope: string;
+    busy: boolean;
+    aiRuns?: MachineAiRun[];
+    serving: {
+        projectId: string;
+        name: string;
+    } | null;
+    cliVersion?: string | null;
+    cliOutdated?: boolean;
+    cliUnsupported?: boolean;
+    cliUnsupportedFrom?: string | null;
+    cliVersionNote?: string | null;
+    cliUpdateLocked?: boolean;
+    cliRestarting?: boolean;
+    latestCliVersion?: string | null;
+    minSupportedCliVersion?: string | null;
+    cliUpdateError?: WorkerCliUpdateError | null;
 }
-
-/** Per-project usage of one machine-link (history). @adr 0072 */
 export interface MachineProjectUsage {
-  projectId: string;
-  name: string;
-  tokens: number;
-  commands: number;
-  /** True for the project it is currently serving (shown on top). */
-  current: boolean;
+    projectId: string;
+    name: string;
+    tokens: number;
+    commands: number;
+    current: boolean;
 }
-
-/** GET /machines/:id/logs — tail of the cli's own JSONL logs. @adr 0072 */
 export interface LogReadResponse {
-  lines: string[];
+    lines: string[];
 }
-
-/** One command-history row for a MACHINE user / project. @api command-0005 @adr 0072 @adr 0107 */
 export interface CommandHistoryItem {
-  id: string;
-  commandId: string;
-  /** `web` (dispatched) | `local` (typed in the cli TUI) — ADR-0107. */
-  origin: CommandOrigin;
-  /** The cli (machine-link) that ran the command. */
-  machineLinkId: string;
-  /**
-   * Display name of the machine-user (cli) that ran the command (command-0005 column) —
-   * `aliasName || username`; a short `machineLinkId` prefix when the machine-user is unknown
-   * (link deleted). Distinct from `initiatedByName` on the activity feed (who dispatched from the web).
-   * @adr 0200 @adr 0249
-   */
-  machineUser: string;
-  cmd: string;
-  args: string[];
-  status: string;
-  exitCode: number | null;
-  tokens: number | null;
-  /** The ai_tokens split for this run; all `null` for non-AI / pre-migration rows. @adr 0145 */
-  inputTokens: number | null;
-  outputTokens: number | null;
-  cacheReadTokens: number | null;
-  cacheCreationTokens: number | null;
-  projectId: string | null;
-  startedAt: string;
-  finishedAt: string | null;
-  /** The project enforced its network policy but this run's worker could only audit egress. @adr 0683 */
-  egressAudited?: boolean;
+    id: string;
+    commandId: string;
+    origin: CommandOrigin;
+    machineLinkId: string;
+    machineUser: string;
+    cmd: string;
+    args: string[];
+    status: string;
+    exitCode: number | null;
+    tokens: number | null;
+    inputTokens: number | null;
+    outputTokens: number | null;
+    cacheReadTokens: number | null;
+    cacheCreationTokens: number | null;
+    projectId: string | null;
+    startedAt: string;
+    finishedAt: string | null;
+    egressAudited?: boolean;
 }
-
-/** GET /machine-links/:id/usage — status + subscription + per-project usage. @adr 0072 */
 export interface MachineUsageResponse {
-  linkId: string;
-  userId: string;
-  username: string;
-  /** The worker (physical machine) hosting this cli — for the per-cli container-metrics panel; null when unpaired. */
-  workerId: string | null;
-  status: MachineUsageStatus;
-  subscription: MachineUsageSubscription | null;
-  projects: MachineProjectUsage[];
-  /** Latest worker network probe — the machine-user Info tab shows outbound/inbound
-   *  posture from it. Null when the cli hasn't reported one yet (old clients / offline).
-   * @adr 0221
-   */
-  network?: WorkerNetworkProbe | null;
+    linkId: string;
+    userId: string;
+    username: string;
+    workerId: string | null;
+    status: MachineUsageStatus;
+    subscription: MachineUsageSubscription | null;
+    projects: MachineProjectUsage[];
+    network?: WorkerNetworkProbe | null;
 }
-
-/**
- * Query GET /workers — `search` matches worker/cli/project; min*Pct filter live resources.
- * @api machine-0009 @adr 0214
- */
 export const listWorkersQuerySchema = baseRequestSchema.extend({
-  status: z.enum(["online", "offline"]).optional(),
-  /** Only workers whose live CPU/memory/disk usage % ≥ the given threshold (0–100). */
-  minCpuPct: z.coerce.number().min(0).max(100).optional(),
-  minMemPct: z.coerce.number().min(0).max(100).optional(),
-  minDiskPct: z.coerce.number().min(0).max(100).optional(),
-  /** Hide workers with no cli attached (clis = 0). The web defaults this on; unchecking the
-   *  "show empty CLIs" box drops it so empty workers are listed too. */
-  hideEmptyClis: z.enum(["true", "false"]).transform((v) => v === "true").optional(),
+    status: z.enum(["online", "offline"]).optional(),
+    minCpuPct: z.coerce.number().min(0).max(100).optional(),
+    minMemPct: z.coerce.number().min(0).max(100).optional(),
+    minDiskPct: z.coerce.number().min(0).max(100).optional(),
+    hideEmptyClis: z.enum(["true", "false"]).transform((v) => v === "true").optional(),
 });
 export type ListWorkersQuery = z.infer<typeof listWorkersQuerySchema>;
-
-/** Body PATCH /workers/:id. @api machine-0010 */
 export const updateWorkerRequestSchema = z.object({
-  name: z.string().min(1).max(100).optional(),
+    name: z.string().min(1).max(100).optional(),
 });
 export type UpdateWorkerRequest = z.infer<typeof updateWorkerRequestSchema>;
-
-/** Body PUT /machine-links/:id/physic-project (machine-0011 — upsert 1:1). */
 export const putPhysicProjectRequestSchema = z.object({
-  projectId: z.string().guid(),
-  /** null/empty ⇒ pending — the folder is finalized in wizard step 2. */
-  path: z.string().min(1).max(500).nullable().optional(),
-  name: z.string().max(100).optional(),
+    projectId: z.string().guid(),
+    path: z.string().min(1).max(500).nullable().optional(),
+    name: z.string().max(100).optional(),
 });
-export type PutPhysicProjectRequest = z.infer<
-  typeof putPhysicProjectRequestSchema
->;
-
-/** Body PATCH /machine-links/:id/physic-project. @api machine-0012 */
+export type PutPhysicProjectRequest = z.infer<typeof putPhysicProjectRequestSchema>;
 export const patchPhysicProjectRequestSchema = z.object({
-  name: z.string().min(1).max(100).optional(),
-  projectId: z.string().guid().optional(),
-  // `isAutonomous` retired by ADR-0507 — autonomous on/off is the project switch + each worker's switch.
-  disabled: z.boolean().optional(),
+    name: z.string().min(1).max(100).optional(),
+    projectId: z.string().guid().optional(),
+    disabled: z.boolean().optional(),
 });
-export type PatchPhysicProjectRequest = z.infer<
-  typeof patchPhysicProjectRequestSchema
->;
-
-/** Query GET /machine-links — BaseRequest + filter status. */
+export type PatchPhysicProjectRequest = z.infer<typeof patchPhysicProjectRequestSchema>;
 export const listMachineLinksQuerySchema = baseRequestSchema.extend({
-  status: z.string().max(20).optional(),
+    status: z.string().max(20).optional(),
 });
 export type ListMachineLinksQuery = z.infer<typeof listMachineLinksQuerySchema>;
-
-/** Body PATCH /machine-links/:id — hashcode (3) TTL; null = never-expiring. */
 export const updateMachineLinkRequestSchema = z.object({
-  hashcode3ExpiresAt: z.string().datetime().nullable(),
+    hashcode3ExpiresAt: z.string().datetime().nullable(),
 });
-export type UpdateMachineLinkRequest = z.infer<
-  typeof updateMachineLinkRequestSchema
->;
-
-/**
- * Where a web file request acts: `base` = the remote base branch (read from `origin/<base>`, a write is a
- * commit pushed to `<base>`), `worktree` = the worker's checkout (default). A `base` request on a project
- * without a remote falls back to `worktree`; responses name the target used.
- * @adr 0511
- */
+export type UpdateMachineLinkRequest = z.infer<typeof updateMachineLinkRequestSchema>;
 export type FsTarget = "base" | "worktree";
-
-/** Zod for an optional `target`. */
 export const fsTargetSchema = z.enum(["base", "worktree"]).optional();
-
-/** The base-commit outcome of a web file write. @adr 0511 */
 export interface FsWriteOutcome {
-  /** The target actually used. */
-  target?: FsTarget;
-  /** `base`: the commit pushed to the remote base (absent when nothing changed). */
-  commit?: string;
+    target?: FsTarget;
+    commit?: string;
 }
-
-/** One entry in a worker directory listing. @api machine-0007 */
 export interface FsEntry {
-  name: string;
-  type: "dir" | "file";
+    name: string;
+    type: "dir" | "file";
 }
-
-/** Data GET /machines/:id/fs — a directory listing on the worker. */
 export interface FsListResponse {
-  /** Normalized absolute path on the worker. */
-  path: string;
-  entries: FsEntry[];
-  /** The target actually used. @adr 0511 */
-  target?: FsTarget;
-  /** `base`: the remote-tracking ref listed (`origin/<base>`). @adr 0511 */
-  ref?: string;
-  /** `base`: the commit sha of `ref` that was listed. @adr 0511 */
-  commit?: string;
+    path: string;
+    entries: FsEntry[];
+    target?: FsTarget;
+    ref?: string;
+    commit?: string;
 }
-
-/** Data GET /machines/:id/file — a text file's content on the worker (project dashboard). */
-/**
- * Who held a project's working tree when a file was read / written from the web — the autonomous cycle
- * on its task branch, a Console run, a git write or a provisioning job.
- * @adr 0506
- */
 export interface RepoBusy {
-  holder: "autonomous" | "command" | "git" | "project";
-  /** The task the autonomous cycle works on, when known. */
-  task?: string;
-  /** The branch checked out in the working tree at that moment. */
-  branch?: string;
+    holder: "autonomous" | "command" | "git" | "project";
+    task?: string;
+    branch?: string;
 }
-
 export interface FsReadResponse {
-  path: string;
-  /** UTF-8 content (empty when unreadable). */
-  content: string;
-  /** Content was capped at the size limit. */
-  truncated: boolean;
-  /** Set when another job held the project's working tree (e.g. the autonomous cycle) — the web warns. @adr 0506 */
-  repoBusy?: RepoBusy;
-  /** The target actually used. @adr 0511 */
-  target?: FsTarget;
-  /** `base`: the file's blob id on the remote base (`null` = absent) — sent back as `expectBlob`. @adr 0511 */
-  blob?: string | null;
+    path: string;
+    content: string;
+    truncated: boolean;
+    repoBusy?: RepoBusy;
+    target?: FsTarget;
+    blob?: string | null;
 }
-
-/** Data GET /machines/:id/config — the paired profile's config.json as text. @api machine-0025 @adr 0141 */
 export interface ConfigReadResponse {
-  /** config.json content as pretty-printed text (empty-defaults when the file is absent). */
-  config: string;
+    config: string;
 }
-
-/** Data PUT /machines/:id/config — result of replacing the profile's config.json. @api machine-0026 */
 export interface ConfigWriteResponse {
-  /** True when written; false with `error` when the submitted text is invalid JSON / bad shape. */
-  ok: boolean;
-  error?: string;
+    ok: boolean;
+    error?: string;
 }
-
-/** Status of one worker tool on the machine (Tools tab). @api machine-0050 @adr 0206 */
 export interface WorkerToolStatus {
-  /** Catalog id or npm package name. */
-  id: string;
-  label: string;
-  category: "runtime" | "ai-cli" | "vcs";
-  installed: boolean;
-  version: string | null;
-  /** False for a detect-only prerequisite (no install/uninstall button). */
-  installable: boolean;
-  /** True when the tool offers update-to-latest (npm-distributed catalog tool or extra). @adr 0252 */
-  updatable: boolean;
-  /** True when this tool is flagged for per-tool auto-update in the worker `config.json`. @adr 0253 */
-  autoUpdate: boolean;
+    id: string;
+    label: string;
+    category: "runtime" | "ai-cli" | "vcs";
+    installed: boolean;
+    version: string | null;
+    installable: boolean;
+    updatable: boolean;
+    autoUpdate: boolean;
 }
-
-/**
- * A tool a 4PM feature installs or needs on its own (Tools tab, read-only "Feature tools" group): the RAG runtime,
- * the marketing capture tools. `source`: `auto` = installed by the feature on first use, `system` = found on the
- * worker's PATH, `detect` = never installed by 4PM (only checked). `detail` = e.g. the RAG model.
- * @adr 0641
- */
 export interface WorkerFeatureToolStatus {
-  id: "rag" | "playwright" | "chromium" | "vhs" | "ttyd" | "ffmpeg" | "xvfb";
-  feature: "rag" | "marketing";
-  label: string;
-  installed: boolean;
-  version: string | null;
-  source: "auto" | "system" | "detect";
-  detail?: string | null;
+    id: "rag" | "playwright" | "chromium" | "vhs" | "ttyd" | "ffmpeg" | "xvfb";
+    feature: "rag" | "marketing";
+    label: string;
+    installed: boolean;
+    version: string | null;
+    source: "auto" | "system" | "detect";
+    detail?: string | null;
 }
-
-/**
- * Data GET /machines/:id/tools — the default catalog + extra global packages. Since
- * ADR-0254 this is read from the DB `MachineLink.toolSnapshot` (not a live probe), so an offline
- * worker still returns its last-synced set; `checkedAt`/`online` drive the panel's staleness + Refresh.
- * @api machine-0050
- */
 export interface WorkerToolsResponse {
-  catalog: WorkerToolStatus[];
-  extras: WorkerToolStatus[];
-  /** When the worker last reported this snapshot; null when it never has. @adr 0254 */
-  checkedAt: string | null;
-  /** Whether the worker is currently online — Refresh (live re-detect + report) is enabled only then. */
-  online: boolean;
-  /** Feature tools (read-only group); empty on an older cli. @adr 0641 */
-  features?: WorkerFeatureToolStatus[];
-  /**
-   * Tools that failed the last restore reconcile — drives the "Restore tools" button's red
-   * count + failed line. Empty/absent when the last restore fully satisfied the recorded snapshot.
-   * @adr 0258
-   */
-  restoreFailed?: ToolRestoreFailure[];
+    catalog: WorkerToolStatus[];
+    extras: WorkerToolStatus[];
+    checkedAt: string | null;
+    online: boolean;
+    features?: WorkerFeatureToolStatus[];
+    restoreFailed?: ToolRestoreFailure[];
 }
-
-/** One tool to reconcile to an exact version on boot / copy-apply. @adr 0254 */
 export interface ToolManifestEntry {
-  /** Catalog id or npm package name. */
-  name: string;
-  /** Exact version to (re)install — `npm i -g <name>@<version>`. */
-  version: string;
-  /** Manager used to (re)install it. */
-  manager: "npm" | "pnpm";
+    name: string;
+    version: string;
+    manager: "npm" | "pnpm";
 }
-
-/**
- * Why a tool failed to reconcile to its recorded version during a restore. `retryable`
- * marks a transient cause (timeout/network) the server may re-drive; a permanent one (`not-found`
- * /`engine`) is surfaced for a human and never auto-re-driven.
- * @adr 0258
- */
 export type ToolRestoreFailReason = "timeout" | "network" | "not-found" | "engine" | "other";
 export interface ToolRestoreFailure {
-  /** Catalog id or npm package name that stayed missing/mismatched after the reconcile. */
-  name: string;
-  /** The exact version the restore tried to install. */
-  version: string;
-  /** Classified cause of the failure (drives the panel's red line + the server re-drive). */
-  reason: ToolRestoreFailReason;
-  /** True when the cause is transient (server may re-drive on the daily tick); false = permanent. */
-  retryable: boolean;
+    name: string;
+    version: string;
+    reason: ToolRestoreFailReason;
+    retryable: boolean;
 }
-
-/**
- * Persisted worker tool snapshot — the JSON stored in `MachineLink.toolSnapshot`: the last
- * detected set the worker reported. Drives the DB-backed Tools panel and is the restore-on-boot target.
- * @adr 0254
- */
 export interface WorkerToolSnapshot {
-  catalog: WorkerToolStatus[];
-  extras: WorkerToolStatus[];
-  /** Feature tools — shown read-only, never a restore target. @adr 0641 */
-  features?: WorkerFeatureToolStatus[];
-  /**
-   * Tools that stayed missing/mismatched after the last restore reconcile — transient,
-   * cleared to empty on a report where every manifest entry is satisfied. Drives the "Restore tools"
-   * button's red count + line and the server's daily re-drive.
-   * @adr 0258
-   */
-  restoreFailed?: ToolRestoreFailure[];
+    catalog: WorkerToolStatus[];
+    extras: WorkerToolStatus[];
+    features?: WorkerFeatureToolStatus[];
+    restoreFailed?: ToolRestoreFailure[];
 }
-
-/**
- * Restore payload seeded to the cli on `ws_token`: the self-restore manifest derived from
- * the last reported snapshot (installed npm-distributed tools at their exact versions) + the per-tool
- * auto-update flags for the daily tick. `null` when the server has no snapshot for this link yet.
- * @adr 0254
- */
 export interface WorkerToolRestorePush {
-  manifest: ToolManifestEntry[];
-  /** Catalog ids / extra names flagged for per-tool auto-update (ADR-0253, now DB-stored). */
-  autoUpdate: string[];
+    manifest: ToolManifestEntry[];
+    autoUpdate: string[];
 }
-
-/**
- * Body POST /machines/tools/copy — copy one machine user's tool set (at its versions) onto
- * others. Validated: a source link + ≥1 distinct target links (all in the caller's org).
- * @adr 0254
- */
 export const workerToolCopySchema = z.object({
-  /** Source machine-link id whose `toolSnapshot` supplies the manifest. */
-  sourceLinkId: z.string().guid(),
-  /** Target machine-link ids to queue the manifest for (pushed on their next connect). */
-  targetLinkIds: z.array(z.string().guid()).min(1).max(200),
+    sourceLinkId: z.string().guid(),
+    targetLinkIds: z.array(z.string().guid()).min(1).max(200),
 });
 export type WorkerToolCopyRequest = z.infer<typeof workerToolCopySchema>;
-
-/** Per-target outcome of a tools copy: the manifest is queued on the target, and the web
- * then drives a streamed restore for the online ones so progress streams per target.
- * @api machine-0053 @adr 0254
- */
-export type WorkerToolCopyTargetStatus =
-  /** Manifest queued + target online — the web drives a streamed restore now (progress streams). */
-  | "online"
-  /** Manifest queued but the target is offline — it applies on its next connect (no live stream). */
-  | "queued"
-  /** Target skipped (no host-tooling access, rented/pool, or the source itself). */
-  | "skipped";
-
-/** Data POST /machines/tools/copy — the per-target outcome so the web can render a progress board. */
+export type WorkerToolCopyTargetStatus = "online" | "queued" | "skipped";
 export interface WorkerToolCopyResponse {
-  results: { targetLinkId: string; status: WorkerToolCopyTargetStatus }[];
+    results: {
+        targetLinkId: string;
+        status: WorkerToolCopyTargetStatus;
+    }[];
 }
-
-/** Body POST /admin/pool-users/tools/copy — copy one pool machine's tool set onto other
- * pool machines of the **same role** (rented↔rented / support↔support). Keyed by pool-user id.
- * @adr 0307
- */
 export const adminPoolToolsCopySchema = z.object({
-  sourceUserId: z.string().guid(),
-  targetUserIds: z.array(z.string().guid()).min(1).max(200),
+    sourceUserId: z.string().guid(),
+    targetUserIds: z.array(z.string().guid()).min(1).max(200),
 });
 export type AdminPoolToolsCopyRequest = z.infer<typeof adminPoolToolsCopySchema>;
-
-/** Data POST /admin/pool-users/tools/copy — per-target outcome (keyed by pool-user id), same statuses
- * as the org copy: `online` (admin then drives a buffered restore), `queued` (offline), `skipped`. */
 export interface AdminPoolToolsCopyResponse {
-  results: { targetUserId: string; status: WorkerToolCopyTargetStatus }[];
+    results: {
+        targetUserId: string;
+        status: WorkerToolCopyTargetStatus;
+    }[];
 }
-
-/** Body POST /machines/:id/tools/install — install a tool. @api machine-0051 @adr 0206 */
 export const workerToolInstallSchema = z.object({
-  /** Catalog id or npm package name (validated npm-name shape on the cli). */
-  name: z.string().trim().min(1).max(214),
-  /** Package manager to run the global install with. */
-  manager: z.enum(["npm", "pnpm"]),
+    name: z.string().trim().min(1).max(214),
+    manager: z.enum(["npm", "pnpm"]),
 });
 export type WorkerToolInstallRequest = z.infer<typeof workerToolInstallSchema>;
-
-/** Body PUT /machines/:id/tools/auto-update — toggle per-tool auto-update. @api machine-0056 @adr 0253 */
 export const workerToolAutoUpdateSchema = z.object({
-  /** Catalog id or installed extra's npm package name. */
-  name: z.string().trim().min(1).max(214),
-  /** true = flag this tool for auto-update to @latest; false = clear it. */
-  enabled: z.boolean(),
+    name: z.string().trim().min(1).max(214),
+    enabled: z.boolean(),
 });
 export type WorkerToolAutoUpdateRequest = z.infer<typeof workerToolAutoUpdateSchema>;
-
-/** Data PUT /machines/:id/tools/auto-update — whether the flag was persisted. @api machine-0056 */
 export interface WorkerToolAutoUpdateResponse {
-  ok: boolean;
+    ok: boolean;
 }
-
-/** Data POST install / DELETE uninstall — the streamed op id to subscribe to (machine-0051/0052). */
 export interface WorkerToolOpResponse {
-  /** Correlates the SSE progress stream. @api machine-0053 */
-  opId: string;
+    opId: string;
 }
-
-/** One SSE frame of a worker-tools install/uninstall op. @api machine-0053 @adr 0206 */
-export type WorkerToolProgressEvent =
-  | { type: "line"; line: string }
-  | { type: "done"; ok: boolean; exitCode: number; error?: string };
-
-/**
- * Buffered result of a worker-tools op (admin-0061/0062) — the admin S2S chain runs the
- * op server-side and returns the collected output at once (no SSE proxy through admin-bff).
- * @adr 0206
- */
+export type WorkerToolProgressEvent = {
+    type: "line";
+    line: string;
+} | {
+    type: "done";
+    ok: boolean;
+    exitCode: number;
+    error?: string;
+};
 export interface WorkerToolOpResult {
-  ok: boolean;
-  exitCode: number;
-  lines: string[];
-  error?: string;
+    ok: boolean;
+    exitCode: number;
+    lines: string[];
+    error?: string;
 }
-
-/** Body PUT /machines/:id/config — the new config.json as text (validated JSON on the cli). */
 export const configWriteRequestSchema = z.object({
-  config: z.string().max(256 * 1024),
+    config: z.string().max(256 * 1024),
 });
 export type ConfigWriteRequestBody = z.infer<typeof configWriteRequestSchema>;
-
-/** Max bytes accepted by a fs.write — mirrors the cli-side cap. @api machine-0027 */
 export const FILE_WRITE_MAX_BYTES = 2 * 1024 * 1024;
-
-/**
- * Body PUT /machines/:id/file — write a file on the worker, physic-root-clamped (machine-0027,
- * ADR-0151). Used by the Git tab's manual conflict resolution (`project.git_write`).
- */
 export const fsWriteRequestSchema = z.object({
-  /** Path relative to the physic-project root; a `..` escaping the root is rejected on the cli. */
-  path: z.string().min(1).max(1024),
-  /** Full new UTF-8 content (replaces the file wholesale). */
-  content: z.string().max(FILE_WRITE_MAX_BYTES),
-  /** `base` ⇒ commit to the remote base. @adr 0511 */
-  target: fsTargetSchema,
-  /** `base`: the blob read (`null` = must not exist); a different remote blob ⇒ `FILE_CHANGED_UPSTREAM`. */
-  expectBlob: z.string().regex(/^[0-9a-f]{40,64}$/).nullable().optional(),
+    path: z.string().min(1).max(1024),
+    content: z.string().max(FILE_WRITE_MAX_BYTES),
+    target: fsTargetSchema,
+    expectBlob: z.string().regex(/^[0-9a-f]{40,64}$/).nullable().optional(),
 });
 export type FsWriteRequestBody = z.infer<typeof fsWriteRequestSchema>;
-
-/** Data PUT /machines/:id/file — result of the worker write. @api machine-0027 */
 export interface FsWriteResponse extends FsWriteOutcome {
-  /** The resolved (clamped) path written. */
-  path: string;
-  /** Bytes written. */
-  bytes: number;
-  /** Set when another job held the project's working tree (e.g. the autonomous cycle) — the web warns. @adr 0506 */
-  repoBusy?: RepoBusy;
+    path: string;
+    bytes: number;
+    repoBusy?: RepoBusy;
 }
-
-/**
- * Body POST /machines/:id/fs/mutate — create/rename/move/delete a file or folder in the project
- * tree, each op physic-root-clamped (machine-0059, ADR-0260, `project.files_write`).
- */
 export const fsMutateRequestSchema = z.object({
-  op: z.enum(["mkdir", "create", "move", "delete"]),
-  path: z.string().max(1024).optional(),
-  content: z.string().max(FILE_WRITE_MAX_BYTES).optional(),
-  from: z.string().max(1024).optional(),
-  to: z.string().max(1024).optional(),
-  /** `base` ⇒ commit to the remote base. @adr 0511 */
-  target: fsTargetSchema,
+    op: z.enum(["mkdir", "create", "move", "delete"]),
+    path: z.string().max(1024).optional(),
+    content: z.string().max(FILE_WRITE_MAX_BYTES).optional(),
+    from: z.string().max(1024).optional(),
+    to: z.string().max(1024).optional(),
+    target: fsTargetSchema,
 });
 export type FsMutateRequestBody = z.infer<typeof fsMutateRequestSchema>;
-
-/** Data POST /machines/:id/fs/mutate — result of the worker mutation. @api machine-0059 */
 export interface FsMutateResponse extends FsWriteOutcome {
-  /** The resolved (clamped) path acted on. */
-  path: string;
-  /** Set when another job held the project's working tree (e.g. the autonomous cycle) — the web warns. @adr 0506 */
-  repoBusy?: RepoBusy;
+    path: string;
+    repoBusy?: RepoBusy;
 }
-
-/**
- * Max raw bytes accepted for a single upload/download transfer (machine-0061/0062).
- * Enforced on both ends (server rejects an over-cap upload; the cli refuses an over-cap download)
- * and pre-checked in the browser. Bounds the WS-frame size + base64 memory blow-up on both hops.
- * @adr 0278
- */
 export const FS_TRANSFER_MAX_BYTES = 10 * 1024 * 1024;
-
-/** Max base64 characters for a transfer (raw cap × 4/3, rounded up + padding slack). */
 const FS_TRANSFER_MAX_BASE64 = Math.ceil((FS_TRANSFER_MAX_BYTES * 4) / 3) + 16;
-
-/**
- * Body POST /machines/:id/fs/upload — write an uploaded/pasted file into the project tree, physic-
- * root-clamped (machine-0061, ADR-0278, `project.files_write`). Bytes ride as base64 (binary the
- * text-only fs.write can't carry).
- */
 export const fsUploadRequestSchema = z.object({
-  /** Destination path relative to the physic-project root; a `..` escaping the root is rejected on the cli. */
-  path: z.string().min(1).max(1024),
-  /** File bytes, base64-encoded (capped to the transfer limit). */
-  contentBase64: z.string().min(1).max(FS_TRANSFER_MAX_BASE64),
-  /** Optional MIME type from the browser (informational). */
-  contentType: z.string().max(255).optional(),
-  /** `base` ⇒ commit to the remote base. @adr 0511 */
-  target: fsTargetSchema,
+    path: z.string().min(1).max(1024),
+    contentBase64: z.string().min(1).max(FS_TRANSFER_MAX_BASE64),
+    contentType: z.string().max(255).optional(),
+    target: fsTargetSchema,
 });
 export type FsUploadRequestBody = z.infer<typeof fsUploadRequestSchema>;
-
-/** Data POST /machines/:id/fs/upload — result of the worker upload. @api machine-0061 */
 export interface FsUploadResponse extends FsWriteOutcome {
-  /** The resolved (clamped) path written. */
-  path: string;
-  /** Bytes written. */
-  bytes: number;
-  /** Set when another job held the project's working tree (e.g. the autonomous cycle) — the web warns. @adr 0506 */
-  repoBusy?: RepoBusy;
+    path: string;
+    bytes: number;
+    repoBusy?: RepoBusy;
 }
-
-/** Data GET /machines/:id/fs/download — a file's raw bytes for the browser to save. @api machine-0062 */
 export interface FsDownloadResponse {
-  /** File bytes, base64-encoded. */
-  contentBase64: string;
-  /** Best-effort MIME type guessed from the extension. */
-  contentType: string;
-  /** The file's basename (for the save dialog). */
-  name: string;
-  /** Raw byte size. */
-  size: number;
+    contentBase64: string;
+    contentType: string;
+    name: string;
+    size: number;
 }
-
-/**
- * Body POST /machines/:id/tasks/approve — approve/unapprove one AI Todo task (machine-0060,
- * ADR-0259 #3). Writes `.autonomous.approvals.json` with the approver (server-filled trace); gated by
- * `project.task_approve`. Reuses the autonomous `approvals` write on the cli.
- */
 export const taskApproveRequestSchema = z.object({
-  taskId: z.string().min(1).max(64),
-  approved: z.boolean(),
+    taskId: z.string().min(1).max(64),
+    approved: z.boolean(),
 });
 export type TaskApproveRequestBody = z.infer<typeof taskApproveRequestSchema>;
-
-/**
- * One task in a batch approve: its id plus the catalog tags it carries (read by the web
- * from the `AI_TODO.md` `Actions` column). Tags are validated as free strings here and filtered to the
- * known `AiTaskTag` catalog server-side (an unknown token maps to no handler and is dropped).
- * @adr 0311
- */
 export const taskApproveEntrySchema = z.object({
-  taskId: z.string().min(1).max(64),
-  tags: z.array(z.string().min(1).max(64)).max(16).default([]),
+    taskId: z.string().min(1).max(64),
+    tags: z.array(z.string().min(1).max(64)).max(16).default([]),
 });
 export type TaskApproveEntry = z.infer<typeof taskApproveEntrySchema>;
-
-
-/** Data POST /machines/:id/tasks/approve-batch — the batch outcome. @api machine-0063 @adr 0311 */
 export interface TaskApproveBatchResponse {
-  /** True when every tag action ran and the approvals were committed. */
-  ok: boolean;
-  /** When `!ok` and a tag action failed: the offending task id (nothing was written). */
-  failedTaskId?: string;
-  /** When `!ok`: a short reason (English; the web maps its own message). */
-  reason?: string;
+    ok: boolean;
+    failedTaskId?: string;
+    reason?: string;
 }
-
-// ── Book evidence (ADR-0404) ─────────────────────────────────────────────────────────────────────
-
-/** Per-file cap of a book evidence file (plain git — keep the history lean). */
 export const EVIDENCE_MAX_BYTES = 5 * 1024 * 1024;
-/** Max new evidence files committed by one book save. */
 export const EVIDENCE_MAX_PER_SAVE = 20;
-/** Default repo-relative root of book evidence files (configurable per worker — `evidenceDir`). @adr 0418 */
 export const EVIDENCE_ROOT = ".4pm/evidence";
-/** Default repo-relative folder of intake UI mockups (`mockupDir`). @adr 0418 */
 export const MOCKUP_ROOT = ".4pm/mockups";
-/** The evidence folder of each book (by its `bookSave` key). */
 export const EVIDENCE_BOOK_DIR = { userTodo: "USER_TODO", userQa: "USER_QA", aiTodo: "AI_TODO", aiDone: "AI_DONE" } as const;
 export type EvidenceBookKey = keyof typeof EVIDENCE_BOOK_DIR;
-/**
- * A safe repo-relative folder (`evidenceDir` / `mockupDir`): `[A-Za-z0-9._-]` segments separated by
- * `/`, no `.`/`..` segment, no leading/trailing `/`, not inside `.git`.
- * @adr 0418
- */
 export function isSafeRepoDir(dir: string): boolean {
-  if (!/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(dir) || dir.length > 200) return false;
-  const segs = dir.split("/");
-  return !segs.some((s) => s === "." || s === "..") && segs[0] !== ".git";
+    if (!/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(dir) || dir.length > 200)
+        return false;
+    const segs = dir.split("/");
+    return !segs.some((s) => s === "." || s === "..") && segs[0] !== ".git";
 }
-/** A safe repo-relative file path (machine-0073 query): a safe folder + a file name. */
 export const SAFE_REPO_PATH_RE = /^(?!\.git\/)(?!.*(?:^|\/)\.{1,2}\/)[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+){0,15}$/;
-/**
- * A valid evidence path under ANY root (ADR-0418 — links keep working after `evidenceDir` changes):
- * `<root>/<BOOK>/<ROW-ID>/<file>` (groups: root, book, row id, file).
- */
-export const EVIDENCE_PATH_RE =
-  /^((?:[A-Za-z0-9._-]+\/){0,8}?[A-Za-z0-9._-]+)\/(USER_TODO|USER_QA|AI_TODO|AI_DONE)\/([A-Z]+-\d{6}-\d{3})\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
-
-/** A book save carries exactly one of a patch or a whole file with its base hash. @adr 0455 */
-function bookSaveShapeOk(b: { patch?: unknown; content?: unknown; baseHash?: unknown }): boolean {
-  return b.patch !== undefined ? b.content === undefined : typeof b.content === "string" && typeof b.baseHash === "string";
+export const EVIDENCE_PATH_RE = /^((?:[A-Za-z0-9._-]+\/){0,8}?[A-Za-z0-9._-]+)\/(USER_TODO|USER_QA|AI_TODO|AI_DONE)\/([A-Z]+-\d{6}-\d{3})\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/;
+function bookSaveShapeOk(b: {
+    patch?: unknown;
+    content?: unknown;
+    baseHash?: unknown;
+}): boolean {
+    return b.patch !== undefined ? b.content === undefined : typeof b.content === "string" && typeof b.baseHash === "string";
 }
-
-/**
- * Body POST /machines/:id/tasks/approve-batch — commit a Save's pending approvals atomically.
- * `approvals` are the tasks to approve (with their tags), `unapprovals` the
- * ids to drop. A tag action (e.g. `UpdateSpecFromDB`) targets the project root — the root IS the repo
- * (single-repo). The server runs every tag action first and, only on full success, writes
- * the approvals batch; any action failure ⇒ nothing is written (the user re-approves). Gated by
- * `project.task_approve`.
- * @api machine-0063 @adr 0311 @adr 0314
- */
 export const taskApproveBatchRequestSchema = z.object({
-  approvals: z.array(taskApproveEntrySchema).max(500).default([]),
-  unapprovals: z.array(z.string().min(1).max(64)).max(500).default([]),
-  /**
-   * The `AI_TODO.md` being saved with these approvals — written in the SAME cli write, so each
-   * approval is signed over the content the approver saved and the editor counts as a row's author
-   * for separation of duties. Absent ⇒ approvals only, signed over the current `<base>` book.
-   * @adr 0438
-   */
-  book: z
-    .object({
-      // A row-level patch (ADR-0455), or — when the draft can't be diffed — the whole file + the hash of the
-      // file it was edited from.
-      patch: bookPatchSchema.optional(),
-      content: z.string().max(256 * 1024).optional(),
-      baseHash: z.string().max(32).optional(),
-      evidence: z
-        .array(z.object({ stageId: z.string().guid(), path: z.string().regex(EVIDENCE_PATH_RE) }))
-        .max(EVIDENCE_MAX_PER_SAVE)
-        .optional(),
+    approvals: z.array(taskApproveEntrySchema).max(500).default([]),
+    unapprovals: z.array(z.string().min(1).max(64)).max(500).default([]),
+    book: z
+        .object({
+        patch: bookPatchSchema.optional(),
+        content: z.string().max(256 * 1024).optional(),
+        baseHash: z.string().max(32).optional(),
+        evidence: z
+            .array(z.object({ stageId: z.string().guid(), path: z.string().regex(EVIDENCE_PATH_RE) }))
+            .max(EVIDENCE_MAX_PER_SAVE)
+            .optional(),
     })
-    .refine(bookSaveShapeOk, { message: "send `patch`, or `content` with `baseHash`" })
-    .optional(),
-  /**
-   * A person's review of a `DOC-…` round (recorded in the docs sidecar after the approvals): `revise` runs another
-   * round, `proceed` moves the DOC to AI Done and releases the group's tasks.
-   * @adr 0536
-   */
-  docReview: docReviewSchema.optional(),
-  /** Rows restored from the trash under a new id: new group → old group (lineage). @adr 0537 */
-  lineageFrom: z.record(z.string().regex(/^\d{6}$/), z.string().regex(/^\d{6}$/)).optional(),
+        .refine(bookSaveShapeOk, { message: "send `patch`, or `content` with `baseHash`" })
+        .optional(),
+    docReview: docReviewSchema.optional(),
+    lineageFrom: z.record(z.string().regex(/^\d{6}$/), z.string().regex(/^\d{6}$/)).optional(),
 });
 export type TaskApproveBatchRequestBody = z.infer<typeof taskApproveBatchRequestSchema>;
-/** A markdown link / image whose target is an evidence path under any root (groups: `!`, label, path). */
-const EVIDENCE_LINK_RE =
-  /(!?)\[([^\]\n]*)\]\(<?((?:[A-Za-z0-9._-]+\/){1,9}(?:USER_TODO|USER_QA|AI_TODO|AI_DONE)\/[A-Z]+-\d{6}-\d{3}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})>?\)/g;
-
-/** True when `path` is an evidence path that is safe to read/write (any root, no `..` / `.git`). */
+const EVIDENCE_LINK_RE = /(!?)\[([^\]\n]*)\]\(<?((?:[A-Za-z0-9._-]+\/){1,9}(?:USER_TODO|USER_QA|AI_TODO|AI_DONE)\/[A-Z]+-\d{6}-\d{3}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})>?\)/g;
 export function isEvidencePath(path: string): boolean {
-  const m = EVIDENCE_PATH_RE.exec(path);
-  return Boolean(m && isSafeRepoDir(m[1] ?? ""));
+    const m = EVIDENCE_PATH_RE.exec(path);
+    return Boolean(m && isSafeRepoDir(m[1] ?? ""));
 }
-
-/** One evidence link found in a cell. */
 export interface EvidenceLink {
-  /** The whole markdown link text (to strip it). */
-  markdown: string;
-  label: string;
-  path: string;
-  /** Written as an image (`![…](…)`). */
-  image: boolean;
+    markdown: string;
+    label: string;
+    path: string;
+    image: boolean;
 }
-
-/** Slug a file name for an evidence path (`[A-Za-z0-9._-]`, ≤ 100 chars, never empty). */
 export function evidenceSlug(name: string): string {
-  const s = name
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[đĐ]/g, (c) => (c === "đ" ? "d" : "D"))
-    .replace(/[^A-Za-z0-9._-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^[-.]+|-+$/g, "");
-  return (s || "file").slice(-100);
+    const s = name
+        .normalize("NFKD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[đĐ]/g, (c) => (c === "đ" ? "d" : "D"))
+        .replace(/[^A-Za-z0-9._-]+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^[-.]+|-+$/g, "");
+    return (s || "file").slice(-100);
 }
-
-/** The repo path of the `k`-th evidence file of a row under the evidence `root`. @adr 0418 */
 export function evidencePath(root: string, book: EvidenceBookKey, rowId: string, k: number, name: string): string {
-  return `${root}/${EVIDENCE_BOOK_DIR[book]}/${rowId}/${k}-${evidenceSlug(name)}`;
+    return `${root}/${EVIDENCE_BOOK_DIR[book]}/${rowId}/${k}-${evidenceSlug(name)}`;
 }
-
-/** The markdown for an evidence file — an image link for images, a plain link otherwise. */
 export function evidenceMarkdown(name: string, path: string, mime: string): string {
-  const label = name.replace(/[[\]\n]/g, " ").trim() || "file";
-  return `${mime.startsWith("image/") ? "!" : ""}[${label}](${path})`;
+    const label = name.replace(/[[\]\n]/g, " ").trim() || "file";
+    return `${mime.startsWith("image/") ? "!" : ""}[${label}](${path})`;
 }
-
-/** Every evidence link in `text`, in order. */
 export function evidenceLinks(text: string): EvidenceLink[] {
-  return [...text.matchAll(EVIDENCE_LINK_RE)].map((m) => ({
-    markdown: m[0],
-    image: m[1] === "!",
-    label: m[2] ?? "",
-    path: m[3] ?? "",
-  }));
+    return [...text.matchAll(EVIDENCE_LINK_RE)].map((m) => ({
+        markdown: m[0],
+        image: m[1] === "!",
+        label: m[2] ?? "",
+        path: m[3] ?? "",
+    }));
 }
-
-/** Next free 1-based file number for a row folder, from the `<k>-…` names already referenced in `text`. */
 export function nextEvidenceNumber(text: string, folder: string): number {
-  let max = 0;
-  for (const l of evidenceLinks(text)) {
-    if (!l.path.startsWith(`${folder}/`)) continue;
-    const k = Number(/^(\d+)-/.exec(l.path.slice(folder.length + 1))?.[1] ?? 0);
-    max = Math.max(max, k);
-  }
-  return max + 1;
+    let max = 0;
+    for (const l of evidenceLinks(text)) {
+        if (!l.path.startsWith(`${folder}/`))
+            continue;
+        const k = Number(/^(\d+)-/.exec(l.path.slice(folder.length + 1))?.[1] ?? 0);
+        max = Math.max(max, k);
+    }
+    return max + 1;
 }
-
-/** Query GET /machines/:id/autonomous/evidence — read one committed evidence file. @api machine-0073 */
-/** A commit id of an evidence version (7–40 hex). @adr 0515 */
 export const EVIDENCE_REV_RE = /^[0-9a-f]{7,40}$/;
-
 export const autonomousEvidenceQuerySchema = z.object({
-  // Any safe repo path — the cli decides what may be read (an evidence path or a mockup — ADR-0418).
-  path: z.string().max(400).regex(SAFE_REPO_PATH_RE),
-  // A task branch to fall back to (an AI Done row whose PR is not merged yet).
-  ref: z.string().regex(/^[A-Za-z0-9._/-]{1,200}$/).optional(),
-  // A past version: read the file at this commit only (ADR-0515).
-  rev: z.string().regex(EVIDENCE_REV_RE).optional(),
+    path: z.string().max(400).regex(SAFE_REPO_PATH_RE),
+    ref: z.string().regex(/^[A-Za-z0-9._/-]{1,200}$/).optional(),
+    rev: z.string().regex(EVIDENCE_REV_RE).optional(),
 });
 export type AutonomousEvidenceQuery = z.infer<typeof autonomousEvidenceQuerySchema>;
-
-/** Query of machine-0085 — the file whose versions to list (a mockup / sequence; the cli decides). @adr 0515 */
 export const evidenceHistoryQuerySchema = z.object({
-  path: z.string().max(400).regex(SAFE_REPO_PATH_RE),
+    path: z.string().max(400).regex(SAFE_REPO_PATH_RE),
 });
 export type EvidenceHistoryQuery = z.infer<typeof evidenceHistoryQuerySchema>;
-
-/** An AI Done row id in a machine-0098 / machine-0099 path (`TSK-…` / `DOC-…`). @adr 0582 */
 export const DONE_ROW_ID_RE = /^(TSK|DOC)-\d{6}-\d{3}$/;
-
-/** Query of machine-0099 — one file of an AI Done row (`side=before` = at its base sha; `list` = a folder's children). @adr 0582 */
 export const doneFileQuerySchema = z.object({
-  path: z.string().min(1).max(400).regex(SAFE_REPO_PATH_RE),
-  side: z.enum(["after", "before"]).optional(),
-  list: z
-    .enum(["true", "false"])
-    .optional()
-    .transform((v) => v === "true"),
+    path: z.string().min(1).max(400).regex(SAFE_REPO_PATH_RE),
+    side: z.enum(["after", "before"]).optional(),
+    list: z
+        .enum(["true", "false"])
+        .optional()
+        .transform((v) => v === "true"),
 });
 export type DoneFileQuery = z.infer<typeof doneFileQuerySchema>;
-
-/** Where a repo's AI Done content is read from. @adr 0582 §3 */
 export type DoneFileSourceKind = "merge" | "branch" | "head" | "pr-ref" | "deleted-tip" | "base";
-
-/** Data of machine-0098 — an AI Done row's files per repo. @api machine-0098 @adr 0582 */
 export interface DoneFilesResponse {
-  repos: { dir: string; source: DoneFileSourceKind; ref: string; sha: string; baseSha?: string; warning?: "base-fallback" }[];
-  /** `dir` = a folder / submodule entry of a legacy row (list its children with machine-0099 `list`). */
-  files: { path: string; repo: string; status: "A" | "M" | "D" | "R" | "?"; dir?: boolean }[];
-  /** No delivery record: the list comes from the row's `Files` cell (maybe cut at 20). */
-  legacy: boolean;
+    repos: {
+        dir: string;
+        source: DoneFileSourceKind;
+        ref: string;
+        sha: string;
+        baseSha?: string;
+        warning?: "base-fallback";
+    }[];
+    files: {
+        path: string;
+        repo: string;
+        status: "A" | "M" | "D" | "R" | "?";
+        dir?: boolean;
+    }[];
+    legacy: boolean;
 }
-
-/** Data of machine-0099 — one file (base64) or a folder's children. @api machine-0099 @adr 0582 */
 export interface DoneFileResponse {
-  contentBase64?: string;
-  contentType?: string;
-  name?: string;
-  size?: number;
-  source?: DoneFileSourceKind;
-  sha?: string;
-  entries?: { path: string; type: "file" | "dir" }[];
-  /** Not on that side (an added file's before / a deleted file's after). */
-  missing?: boolean;
+    contentBase64?: string;
+    contentType?: string;
+    name?: string;
+    size?: number;
+    source?: DoneFileSourceKind;
+    sha?: string;
+    entries?: {
+        path: string;
+        type: "file" | "dir";
+    }[];
+    missing?: boolean;
 }
-
-/** Body of machine-0086 — restore `path` to its content at commit `rev`. @adr 0515 */
 export const evidenceRestoreSchema = z.object({
-  path: z.string().max(400).regex(SAFE_REPO_PATH_RE),
-  rev: z.string().regex(EVIDENCE_REV_RE),
+    path: z.string().max(400).regex(SAFE_REPO_PATH_RE),
+    rev: z.string().regex(EVIDENCE_REV_RE),
 });
 export type EvidenceRestoreInput = z.infer<typeof evidenceRestoreSchema>;
-
-/** A branch name from a body (no option, no `..`). @adr 0539 */
 const GIT_REF_RE = /^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}$/;
-
-/** Body of machine-0091 — let the AI resolve one pull request's conflicts on this worker. @adr 0539 */
 export const gitPrResolveSchema = z.object({
-  /** The repo's subdir ("" = the project root). */
-  repo: z.string().max(200).regex(/^$|^(?!\/)(?!.*\.\.)[A-Za-z0-9._/-]+$/).default(""),
-  number: z.number().int().positive(),
-  head: z.string().regex(GIT_REF_RE),
-  base: z.string().regex(GIT_REF_RE),
-  title: z.string().max(300).default(""),
+    repo: z.string().max(200).regex(/^$|^(?!\/)(?!.*\.\.)[A-Za-z0-9._/-]+$/).default(""),
+    number: z.number().int().positive(),
+    head: z.string().regex(GIT_REF_RE),
+    base: z.string().regex(GIT_REF_RE),
+    title: z.string().max(300).default(""),
 });
 export type GitPrResolveInput = z.infer<typeof gitPrResolveSchema>;
-
-/** Response of machine-0086. @adr 0515 */
 export interface EvidenceRestoreResponse {
-  result: "published" | "unchanged";
+    result: "published" | "unchanged";
 }
-
-/** Response of machine-0072 — the staged file's handle for the next `bookSave.evidence`. */
 export interface AutonomousEvidenceStageResponse {
-  stageId: string;
-  name: string;
-  size: number;
+    stageId: string;
+    name: string;
+    size: number;
 }
-
-/**
- * Body PUT /machines/:id/autonomous — a discriminated write to the autonomous engine.
- * The **author** (`by`) is filled by the server from the
- * authenticated user (trace, not client-supplied) before forwarding to the cli.
- * @api machine-0029 @adr 0152
- */
 export const autonomousWriteRequestSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("settings"), settings: z.string().max(64 * 1024) }),
-  z.object({ kind: z.literal("approvals"), taskId: z.string().min(1).max(64), approved: z.boolean() }),
-  // Batched approvals (ADR-0311): commit many approve/unapprove ids in ONE approvals-file write, so a
-  // Save's coupled batch lands atomically. Constructed by the server after its tag actions succeed.
-  z.object({
-    kind: z.literal("approvalsBatch"),
-    approve: z.array(z.string().min(1).max(64)).max(500),
-    unapprove: z.array(z.string().min(1).max(64)).max(500),
-  }),
-  z.object({ kind: z.literal("userTodo"), content: z.string().min(1).max(16 * 1024) }),
-  // Traced book save (ADR-0320): the cli diffs rows by id + stamps `.autonomous.authors.json` so
-  // authorship is server-filled, not a spoofable `.md` cell. `by`/author are added server-side.
-  z.object({
-    kind: z.literal("bookSave"),
-    // `aiDone` = the AI Verify verdict column on the read-only AI Done (ADR-0400): no authorship, no cap.
-    book: z.enum(["userTodo", "userQa", "aiTodo", "aiDone"]),
-    // A row-level patch (ADR-0455), or — when the draft can't be diffed — the whole file + the hash of the
-    // file it was edited from (the cli refuses a stale one with `BOOK_STALE`).
-    patch: bookPatchSchema.optional(),
-    content: z.string().max(256 * 1024).optional(),
-    baseHash: z.string().max(32).optional(),
-    // Staged evidence files (machine-0072) to commit with the book (ADR-0404); each path must sit under
-    // the saved book's own `.4pm/evidence/<BOOK>/` folder (the cli re-checks).
-    evidence: z
-      .array(z.object({ stageId: z.string().guid(), path: z.string().regex(EVIDENCE_PATH_RE) }))
-      .max(EVIDENCE_MAX_PER_SAVE)
-      .optional(),
-    // Approvals committed with this save (ADR-0438): signed by the server over the saved content; the
-    // cli applies them only after stamping this save's authorship (the editor is the author for SoD).
-    approve: z.array(z.string().min(1).max(64)).max(500).optional(),
-    unapprove: z.array(z.string().min(1).max(64)).max(500).optional(),
-    // Rows restored from the trash under a new id (ADR-0538 §6): new group → old group, so the lineage sidecar
-    // keeps them in their request's lane (ADR-0537).
-    lineageFrom: z.record(z.string().regex(/^\d{6}$/), z.string().regex(/^\d{6}$/)).optional(),
-  }),
-  // (The `cron` install/uninstall kind was retired by ADR-0392 — the cli daemon schedules ticks itself.)
+    z.object({ kind: z.literal("settings"), settings: z.string().max(64 * 1024) }),
+    z.object({ kind: z.literal("approvals"), taskId: z.string().min(1).max(64), approved: z.boolean() }),
+    z.object({
+        kind: z.literal("approvalsBatch"),
+        approve: z.array(z.string().min(1).max(64)).max(500),
+        unapprove: z.array(z.string().min(1).max(64)).max(500),
+    }),
+    z.object({ kind: z.literal("userTodo"), content: z.string().min(1).max(16 * 1024) }),
+    z.object({
+        kind: z.literal("bookSave"),
+        book: z.enum(["userTodo", "userQa", "aiTodo", "aiDone"]),
+        patch: bookPatchSchema.optional(),
+        content: z.string().max(256 * 1024).optional(),
+        baseHash: z.string().max(32).optional(),
+        evidence: z
+            .array(z.object({ stageId: z.string().guid(), path: z.string().regex(EVIDENCE_PATH_RE) }))
+            .max(EVIDENCE_MAX_PER_SAVE)
+            .optional(),
+        approve: z.array(z.string().min(1).max(64)).max(500).optional(),
+        unapprove: z.array(z.string().min(1).max(64)).max(500).optional(),
+        lineageFrom: z.record(z.string().regex(/^\d{6}$/), z.string().regex(/^\d{6}$/)).optional(),
+    }),
 ]).refine((b) => b.kind !== "bookSave" || bookSaveShapeOk(b), { message: "send `patch`, or `content` with `baseHash`" });
 export type AutonomousWriteBody = z.infer<typeof autonomousWriteRequestSchema>;
-
-/** Query GET /machines/:id/autonomous/logs — one day's tick log. @api machine-0030 @adr 0152 */
 export const autonomousLogsQuerySchema = z.object({
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 });
 export type AutonomousLogsQuery = z.infer<typeof autonomousLogsQuerySchema>;
-
-/** Query GET /machines/:id/autonomous — one page of AI Done rows (newest first). @api machine-0028 @adr 0563 */
 export const autonomousReadQuerySchema = z.object({
-  donePage: z.coerce.number().int().min(1).max(100_000).optional(),
-  doneSize: z.coerce.number().int().min(1).max(200).optional(),
+    donePage: z.coerce.number().int().min(1).max(100000).optional(),
+    doneSize: z.coerce.number().int().min(1).max(200).optional(),
 });
 export type AutonomousReadQuery = z.infer<typeof autonomousReadQuerySchema>;
-
-/** A `YYYY-MM-DD` day. */
 const daySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
-
-/** Query GET /machines/:id/autonomous/archive — search the archived book rows. @api machine-0096 @adr 0563 */
 export const autonomousArchiveQuerySchema = z.object({
-  from: daySchema.optional(),
-  to: daySchema.optional(),
-  book: z.enum(["USER_TODO", "USER_QA", "AI_DONE"]).optional(),
-  id: z.string().regex(/^[A-Z]{2,3}(?:-\d{1,6}(?:-\d{0,3})?)?$/).optional(),
-  q: z.string().max(200).optional(),
-  team: z.string().max(40).optional(),
-  tag: z.string().max(60).optional(),
-  requester: z.string().uuid().optional(),
-  state: z.enum(["Taken in", "Done"]).optional(),
-  delivery: z.enum(["open", "merged", "closed", "direct"]).optional(),
-  page: z.coerce.number().int().min(1).max(100_000).optional(),
-  size: z.coerce.number().int().min(1).max(100).optional(),
+    from: daySchema.optional(),
+    to: daySchema.optional(),
+    book: z.enum(["USER_TODO", "USER_QA", "AI_DONE"]).optional(),
+    id: z.string().regex(/^[A-Z]{2,3}(?:-\d{1,6}(?:-\d{0,3})?)?$/).optional(),
+    q: z.string().max(200).optional(),
+    team: z.string().max(40).optional(),
+    tag: z.string().max(60).optional(),
+    requester: z.string().uuid().optional(),
+    state: z.enum(["Taken in", "Done"]).optional(),
+    delivery: z.enum(["open", "merged", "closed", "direct"]).optional(),
+    page: z.coerce.number().int().min(1).max(100000).optional(),
+    size: z.coerce.number().int().min(1).max(100).optional(),
 });
 export type AutonomousArchiveQuery = z.infer<typeof autonomousArchiveQuerySchema>;
-
-/** A subagent/skill name — safe file/dir stem (no traversal). */
 const agentNameSchema = z.string().min(1).max(64).regex(/^[\w.-]+$/);
-
-/** Query GET /machines/:id/agents/item — read one subagent/skill. @api machine-0032 @adr 0153 */
 export const agentReadQuerySchema = z.object({
-  kind: z.enum(["subagent", "skill"]),
-  name: agentNameSchema,
-  /** `base` ⇒ read from the remote base. @adr 0511 */
-  target: fsTargetSchema,
+    kind: z.enum(["subagent", "skill"]),
+    name: agentNameSchema,
+    target: fsTargetSchema,
 });
 export type AgentReadQuery = z.infer<typeof agentReadQuerySchema>;
-
-/** Body POST /machines/:id/rag/install — install a worker-tuned RAG model. @api machine-0038 @adr 0156 */
 export const ragInstallRequestSchema = z.object({
-  model: z.string().min(1).max(200),
+    model: z.string().min(1).max(200),
 });
 export type RagInstallBody = z.infer<typeof ragInstallRequestSchema>;
-
-/** Query GET /machines/:id/rag/query — semantic search over the index. @api machine-0040 @adr 0157 @adr 0489 */
 export const ragQueryQuerySchema = z.object({
-  q: z.string().min(1).max(2000),
-  k: z.coerce.number().int().min(1).max(20).optional(),
-  /** Comma-separated Doc Header kinds (`req,api`) — only chunks of those kinds. */
-  kinds: z
-    .string()
-    .max(400)
-    .regex(/^[a-z][a-z0-9-]{0,31}(,[a-z][a-z0-9-]{0,31}){0,23}$/)
-    .optional(),
+    q: z.string().min(1).max(2000),
+    k: z.coerce.number().int().min(1).max(20).optional(),
+    kinds: z
+        .string()
+        .max(400)
+        .regex(/^[a-z][a-z0-9-]{0,31}(,[a-z][a-z0-9-]{0,31}){0,23}$/)
+        .optional(),
 });
 export type RagQueryQuery = z.infer<typeof ragQueryQuerySchema>;
-
-/** Body PUT /machines/:id/rag/settings — this machine user's RAG search settings. @api machine-0083 @adr 0496 */
 export const ragSettingsRequestSchema = z.object({
-  minScore: z.number().min(0).max(1),
-  topK: z.number().int().min(1).max(20),
-  /** Re-rank results with the reranker model; absent = off. @adr 0642 */
-  rerank: z.boolean().optional(),
+    minScore: z.number().min(0).max(1),
+    topK: z.number().int().min(1).max(20),
+    rerank: z.boolean().optional(),
 });
 export type RagSettingsBody = z.infer<typeof ragSettingsRequestSchema>;
-
-/** Query GET /machines/:id/graph — build the docs/code dependency graph. @api machine-0036 @adr 0155 @adr 0488 */
 export const graphBuildQuerySchema = z.object({
-  mode: z.enum(["docs", "code", "all"]),
+    mode: z.enum(["docs", "code", "all"]),
 });
 export type GraphBuildQuery = z.infer<typeof graphBuildQuerySchema>;
-
-/** A placeholder/secret key — safe key stem. */
 const secretKeySchema = z.string().min(1).max(128).regex(/^[\w.-]+$/);
-
-/**
- * Body PUT /machines/:id/secrets — manage security docs + write-only secrets (machine-0035,
- * ADR-0154). A secret `value` is write-only: it is never returned by any read.
- */
 export const secretsWriteRequestSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("security"), content: z.string().max(128 * 1024) }),
-  z.object({ kind: z.literal("placeholder"), content: z.string().max(128 * 1024) }),
-  z.object({ kind: z.literal("secret"), key: secretKeySchema, value: z.string().max(8192) }),
-  z.object({ kind: z.literal("secretDelete"), key: secretKeySchema }),
+    z.object({ kind: z.literal("security"), content: z.string().max(128 * 1024) }),
+    z.object({ kind: z.literal("placeholder"), content: z.string().max(128 * 1024) }),
+    z.object({ kind: z.literal("secret"), key: secretKeySchema, value: z.string().max(8192) }),
+    z.object({ kind: z.literal("secretDelete"), key: secretKeySchema }),
 ]);
 export type SecretsWriteBody = z.infer<typeof secretsWriteRequestSchema>;
-
-/** Body PUT /machines/:id/agents — create/edit or delete a subagent/skill. @api machine-0033 @adr 0153 */
 export const agentWriteRequestSchema = z
-  .object({
+    .object({
     kind: z.enum(["subagent", "skill"]),
     name: agentNameSchema,
     action: z.enum(["write", "delete"]),
     content: z.string().max(128 * 1024).optional(),
-    /** `base` ⇒ commit to the remote base. @adr 0511 */
     target: fsTargetSchema,
-  })
-  .superRefine((v, ctx) => {
+})
+    .superRefine((v, ctx) => {
     if (v.action === "write" && (v.content === undefined || v.content.length === 0)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["content"], message: "content is required for write" });
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["content"], message: "content is required for write" });
     }
-  });
-export type AgentWriteBody = z.infer<typeof agentWriteRequestSchema>;
-
-/** A single Claude tool-permission rule (e.g. `Bash(git status)`, `Read(./src/**)`). */
-const toolRuleSchema = z.string().min(1).max(500);
-/**
- * The `permissions` block of a Claude settings file. Headless-only: `ask` is
- * gone and `defaultMode` is effectively always `bypassPermissions` — the enum stays tolerant of an
- * older client's value (the cli coerces to `bypassPermissions` on write); a stray `ask` key is
- * stripped by the non-strict object.
- * @adr 0183 @adr 0328
- */
-const agentToolsPermissionsSchema = z.object({
-  defaultMode: z.enum(["default", "acceptEdits", "plan", "bypassPermissions"]),
-  allow: z.array(toolRuleSchema).max(500),
-  deny: z.array(toolRuleSchema).max(500),
 });
-
-/** Query GET /machines/:id/agent-tools — which settings file to read. @api machine-0044 @adr 0183 */
+export type AgentWriteBody = z.infer<typeof agentWriteRequestSchema>;
+const toolRuleSchema = z.string().min(1).max(500);
+const agentToolsPermissionsSchema = z.object({
+    defaultMode: z.enum(["default", "acceptEdits", "plan", "bypassPermissions"]),
+    allow: z.array(toolRuleSchema).max(500),
+    deny: z.array(toolRuleSchema).max(500),
+});
 export const agentToolsReadQuerySchema = z.object({
-  scope: z.enum(["shared", "local"]),
+    scope: z.enum(["shared", "local"]),
 });
 export type AgentToolsReadQuery = z.infer<typeof agentToolsReadQuerySchema>;
-
-/** Body PUT /machines/:id/agent-tools — replace a permissions block. @api machine-0045 @adr 0183 */
 export const agentToolsWriteRequestSchema = z.object({
-  scope: z.enum(["shared", "local"]),
-  permissions: agentToolsPermissionsSchema,
+    scope: z.enum(["shared", "local"]),
+    permissions: agentToolsPermissionsSchema,
 });
 export type AgentToolsWriteBody = z.infer<typeof agentToolsWriteRequestSchema>;
-
-/**
- * Data GET /machines/:id/diff — old (HEAD) vs current content of a file. Text files ride in
- * `oldContent`/`newContent` (Monaco diff); binary files (images) set `isBinary` and ride as base64
- * so the dashboard can render an image before/after. Mirrors the cli `GitDiffReply`.
- * @adr 0282
- */
 export interface GitDiffResponse {
-  path: string;
-  oldContent: string;
-  newContent: string;
-  /** True when the file is binary: the text fields are empty and the bytes ride in `*Base64`. */
-  isBinary?: boolean;
-  /** Best-effort MIME type (binary only), for the `data:` URL the dashboard builds. */
-  contentType?: string;
-  /** HEAD bytes, base64 (binary only; empty for an untracked/new or over-cap file). */
-  oldContentBase64?: string;
-  /** Working-tree bytes, base64 (binary only; empty for a deleted/unreadable or over-cap file). */
-  newContentBase64?: string;
+    path: string;
+    oldContent: string;
+    newContent: string;
+    isBinary?: boolean;
+    contentType?: string;
+    oldContentBase64?: string;
+    newContentBase64?: string;
 }
-
-/** Data GET /machines/:id/git/repos — a git repo found under the physic project. @api machine-0021 */
 export interface GitRepoRef {
-  /** Relative subdir under the physic project root ("" = root/primary repo). */
-  subdir: string;
-  name: string;
-  remote: string | null;
-  /** Current checked-out branch, when resolvable — null otherwise. */
-  branch?: string | null;
+    subdir: string;
+    name: string;
+    remote: string | null;
+    branch?: string | null;
 }
-
-/** One commit in the history. @api machine-0022 */
 export interface GitLogEntry {
-  hash: string;
-  shortHash: string;
-  author: string;
-  date: string;
-  subject: string;
+    hash: string;
+    shortHash: string;
+    author: string;
+    date: string;
+    subject: string;
 }
-
-/** Data GET /machines/:id/git/log — a page of commit history. @api machine-0022 */
 export interface GitLogResponse {
-  entries: GitLogEntry[];
-  hasMore: boolean;
+    entries: GitLogEntry[];
+    hasMore: boolean;
 }
-
-/** A file changed in a commit. @api machine-0023 */
 export interface GitCommitFile {
-  path: string;
-  status: string;
-  oldPath?: string;
+    path: string;
+    status: string;
+    oldPath?: string;
 }
-
-/** Data GET /machines/:id/git/commit — a commit + its changed files. @api machine-0023 */
 export interface GitCommitResponse {
-  hash: string;
-  author: string;
-  date: string;
-  subject: string;
-  files: GitCommitFile[];
+    hash: string;
+    author: string;
+    date: string;
+    subject: string;
+    files: GitCommitFile[];
 }
-
-/** Data GET /machines/:id/git-env — worker git + AI CLI environment. @api machine-0008 */
 export interface GitEnvResponse {
-  /** The `gh`/`glab` CLI is present on the worker. */
-  installed: boolean;
-  /** Logged into the provider. */
-  authenticated: boolean;
-  /** The logged-in account, when known. */
-  account: string | null;
-  /** The Claude CLI is present (prerequisite for AI init). */
-  claudeCli: boolean;
+    installed: boolean;
+    authenticated: boolean;
+    account: string | null;
+    claudeCli: boolean;
 }
-
-/**
- * Data GET/POST/DELETE /machines/:id/ssh-key (machine-0041/0042/0043) — the ssh deploy key
- * of a **rented** machine-user, generated on its worker. The private key never
- * leaves the worker; only the public key + fingerprint are returned. `publicKey` is `null`
- * when none has been generated.
- * @adr 0173
- */
 export interface SshDeployKeyResponse {
-  /** The OpenSSH public key present on the worker, or `null` when none exists. */
-  publicKey: string | null;
-  /** SHA256 fingerprint of the key, when present. */
-  fingerprint: string | null;
+    publicKey: string | null;
+    fingerprint: string | null;
 }
-
-/** The AI providers a model list can be asked for — mirrors the cli's `AiProvider`. @adr 0394 */
 export const AI_MODEL_PROVIDERS = ["claude", "codex", "antigravity"] as const;
 export type AiModelProvider = (typeof AI_MODEL_PROVIDERS)[number];
-
-/**
- * Query of the ai-models endpoints — provider, default claude.
- * @api template-0013 @api machine-0071 @api project-0082
- */
 export const aiModelsQuerySchema = z.object({
-  provider: z.enum(AI_MODEL_PROVIDERS).optional().default("claude"),
+    provider: z.enum(AI_MODEL_PROVIDERS).optional().default("claude"),
 });
 export type AiModelsQuery = z.infer<typeof aiModelsQuerySchema>;
-
-/** One model the worker's AI CLI supports — `value` is what goes into `--model` / settings. @adr 0394 */
 export interface AiModelOption {
-  /** Alias or id the CLI accepts (`default`, `opus`, `claude-opus-5`…). */
-  value: string;
-  /** The concrete model the alias resolves to, when the CLI reports it. */
-  resolvedModel: string | null;
-  /** Human label (`Opus 5.5`). */
-  displayName: string;
-  /** One-line description from the CLI. */
-  description: string;
+    value: string;
+    resolvedModel: string | null;
+    displayName: string;
+    description: string;
 }
-
-/** Data of the ai-models endpoints — the CLI's own list, `error` when it couldn't be read. @adr 0394 */
 export interface AiModelsResponse {
-  provider: AiModelProvider;
-  models: AiModelOption[];
-  /** The provider's CLI is not installed on the worker. @adr 0396 */
-  cliMissing: boolean;
-  /** The worker is installing that CLI now — poll again. @adr 0396 */
-  installing: boolean;
-  /** The CLI is installed but the worker's agent user cannot execute it; `error` names the blocking path. @adr 0502 */
-  cliBlocked: boolean;
-  error: string | null;
+    provider: AiModelProvider;
+    models: AiModelOption[];
+    cliMissing: boolean;
+    installing: boolean;
+    cliBlocked: boolean;
+    error: string | null;
 }
